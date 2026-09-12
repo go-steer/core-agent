@@ -40,10 +40,10 @@ var childCalls = []toolcalls.Call{
 }
 
 // TestCompletionResultCarriesTheCallsTheChildMade is the #1014 fix at
-// the spawn_agent door: across the fifteen archived GKE drill runs, 48%
-// of the parent's post-handoff reads were repeats of a read its
-// subagent had already done, because prose cannot be cited and the
-// result carried nothing else. It carries something else now.
+// the spawn_agent door: in 4 of 6 GKE drill OOMKill runs the parent
+// repeated a read its subagent had already done, because prose cannot
+// be cited and the result carried nothing else. It carries something
+// else now, and the figure is 0 of 11 (#1034).
 func TestCompletionResultCarriesTheCallsTheChildMade(t *testing.T) {
 	t.Parallel()
 	res := completionResult(finished(StatusCompleted, &autonomous.RunResult{

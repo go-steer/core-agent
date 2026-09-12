@@ -410,9 +410,10 @@ type spawnAgentResult struct {
 	//
 	// Output and FinalText are prose, and prose cannot be cited. A
 	// parent required to ground its claims in evidence therefore
-	// re-issues the reads its child already made — 48% of everything
-	// the parent read after the handoff across the fifteen archived GKE
-	// drill runs, 61% of the bytes, two runs at 100% (#1014). Calls is
+	// re-issues the reads its child already made — on the GKE drill's
+	// OOMKill scenario, which asks for both a value and its source, 4
+	// of 6 runs before this and 0 of 11 after (#1014; not a corpus-wide
+	// rate, see #1034). Calls is
 	// the missing half of the contract: the parent can say "the cluster
 	// subagent read deployment/emailservice and it returned cleanly"
 	// without spending a second read to earn the right to say it.

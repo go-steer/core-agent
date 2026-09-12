@@ -12,6 +12,15 @@ seed-1 settings on purpose. The three sheets from this sitting (`-a-`, `-b-`, `-
 should be read together, and the corpus arithmetic is in the `-c-` sheet under
 *What the rubric missed*, filed once rather than three times.
 
+> [!NOTE]
+> **Superseded on frequency by the 2026-09-12 20-run batch**, which is the
+> measurement of record: scenario B 0 of 11 runs hit (p = 5.6 × 10⁻⁶), scenario
+> C 10 of 11 — unmoved, and correctly so, because C's follow-up asks for a value
+> the child never relayed and #1031 returns provenance rather than payload. See
+> [`2026-09-12-std-simian-test-bc-20run.md`](2026-09-12-std-simian-test-bc-20run.md)
+> and [#1034](https://github.com/go-steer/core-agent/issues/1034). Scenario A's
+> standing as a **control** is unchanged and is confirmed by the larger archive.
+
 |  |  |
 |---|---|
 | date (UTC) | 2026-09-11 |

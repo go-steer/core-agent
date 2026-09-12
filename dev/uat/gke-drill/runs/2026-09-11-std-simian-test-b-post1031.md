@@ -5,6 +5,14 @@ Second of three in the sitting that re-measures
 [#1031](https://github.com/go-steer/core-agent/pull/1031). See the `-a-post1031` sheet for
 why the sitting exists; the corpus arithmetic is in `-c-post1031`.
 
+> [!NOTE]
+> **Confirmed and strengthened by the 2026-09-12 20-run batch.** Scenario B is
+> now **0 of 11 runs hit** post-#1031 against 4 of 6 before, p = 5.6 × 10⁻⁶,
+> with 0 of 27,005 parent-read bytes repeated. The mechanism claim on this sheet
+> is unaffected and is the basis on which #1014 should close. (The *frequency*
+> claim in `-c-post1031` is withdrawn — it pooled B with C. See
+> [`2026-09-12-std-simian-test-bc-20run.md`](2026-09-12-std-simian-test-bc-20run.md).)
+
 **This is the run that carries the evidence.** Scenario B is where #1014 was found — the
 2026-09-10 finding says *"reproduced on all three B seeds"* — and it is the only run in
 this sitting where the parent's citation is detailed enough to say where it came from.

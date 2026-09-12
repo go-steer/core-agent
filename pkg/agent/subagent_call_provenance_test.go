@@ -83,10 +83,10 @@ func delegationResponse(t *testing.T, child *Agent, h *eventlog.Handle) map[stri
 
 // TestSubagentTool_HandsBackTheCallsItMade is #1014 at the synchronous
 // door. The parent is graded on grounding its claims, the child hands
-// back prose, and prose cannot be cited — so across the fifteen
-// archived GKE drill runs the parent re-issued 48% of the reads its
-// child had already done. It no longer has to: the calls come back as
-// the runtime observed them.
+// back prose, and prose cannot be cited — so in 4 of 6 GKE drill
+// OOMKill runs the parent re-issued a read its child had already done.
+// It no longer has to: the calls come back as the runtime observed
+// them, and the figure is now 0 of 11 (#1034).
 func TestSubagentTool_HandsBackTheCallsItMade(t *testing.T) {
 	t.Parallel()
 	h := newTestEventLog(t)

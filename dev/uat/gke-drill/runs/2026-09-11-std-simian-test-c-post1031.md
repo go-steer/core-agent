@@ -1,5 +1,16 @@
 # GKE drill scorecard — 2026-09-11 · std-simian-test · scenario C · post-#1031
 
+> [!WARNING]
+> **Corrected 2026-09-12. The frequency claim in *How strong is it* below is
+> withdrawn.** Twenty further runs (10 × B, 10 × C) put scenario C at **10 of 11
+> runs hit** — this run's zero was the outlier, not the new normal — and
+> scenario B at 0 of 11, p = 5.6 × 10⁻⁶. The p ≈ 0.04 subgroup figure pooled two
+> scenarios that measure opposite things and was never valid at any sample size.
+> See [`2026-09-12-std-simian-test-bc-20run.md`](2026-09-12-std-simian-test-bc-20run.md)
+> and [#1034](https://github.com/go-steer/core-agent/issues/1034).
+> **The six-box scoring on this sheet stands.** Only the corpus arithmetic at the
+> bottom is affected.
+
 Third of three in the sitting that re-measures
 [#1014](https://github.com/go-steer/core-agent/issues/1014) against
 [#1031](https://github.com/go-steer/core-agent/pull/1031). See `-a-post1031` for why the
@@ -176,6 +187,13 @@ same way.
 Scenario A never exhibited #1014 and is a control, not a result. Only B and C carry signal.
 
 ### How strong is it
+
+> [!WARNING]
+> **This subsection is withdrawn — superseded by the 2026-09-12 20-run batch.**
+> Left in place rather than deleted, because the way it went wrong is worth
+> keeping: it hedged the sample size correctly and still drew the wrong
+> conclusion, since the real error was pooling B and C at all. Corrected reading
+> in [`2026-09-12-std-simian-test-bc-20run.md`](2026-09-12-std-simian-test-bc-20run.md).
 
 **Weak on frequency.** Three runs. Against the all-scenario per-run hit rate of 8/15,
 seeing zero affected runs in three has p ≈ 0.10. Restricted to the two scenarios that ever

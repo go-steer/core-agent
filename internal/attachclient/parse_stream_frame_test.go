@@ -167,6 +167,58 @@ func TestParseStreamFrame_TurnError(t *testing.T) {
 	}
 }
 
+func TestParseStreamFrame_GuardrailTrip(t *testing.T) {
+	// Protocol 1.13.0 (#891). Both variants, because `halted_turn` is
+	// the whole reason one event covers two situations and a decoder
+	// that routes the name but loses the flag leaves a client unable
+	// to tell a cut turn from a finished one.
+	for _, tc := range []struct {
+		name       string
+		raw        string
+		guardrail  string
+		haltedTurn bool
+	}{
+		{
+			name:       "in-turn halt",
+			raw:        `{"guardrail":"cost_ceiling","reason":"per-turn cost ceiling exceeded","halted_turn":true}`,
+			guardrail:  attach.GuardrailCostCeiling,
+			haltedTurn: true,
+		},
+		{
+			// The absent-vs-false case a `,omitempty` would create:
+			// here the field is present and false, and must survive.
+			name:       "turn boundary",
+			raw:        `{"guardrail":"watchdog","reason":"looping on read_file","halted_turn":false}`,
+			guardrail:  attach.GuardrailWatchdog,
+			haltedTurn: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame, ok := parseStreamFrame(attach.EventGuardrailTrip, tc.raw)
+			if !ok {
+				t.Fatalf("parseStreamFrame returned !ok — the trip is being dropped as an " +
+					"unknown name, and it is now the only frame carrying the halt reason")
+			}
+			if frame.Type != attach.EventGuardrailTrip {
+				t.Errorf("Type = %q, want %q", frame.Type, attach.EventGuardrailTrip)
+			}
+			p, isTrip := frame.TypedData.(*attach.GuardrailTrip)
+			if !isTrip || p == nil {
+				t.Fatalf("TypedData = %T (%v), want *attach.GuardrailTrip non-nil", frame.TypedData, frame.TypedData)
+			}
+			if p.Guardrail != tc.guardrail {
+				t.Errorf("Guardrail = %q, want %q", p.Guardrail, tc.guardrail)
+			}
+			if p.HaltedTurn != tc.haltedTurn {
+				t.Errorf("HaltedTurn = %v, want %v", p.HaltedTurn, tc.haltedTurn)
+			}
+			if p.Reason == "" {
+				t.Errorf("Reason not parsed from %q", tc.raw)
+			}
+		})
+	}
+}
+
 func TestParseStreamFrame_Capabilities(t *testing.T) {
 	raw := `{"protocol_version":"1.1.0","event_types":["status-update","usage-update","inbox","turn-complete","turn-error"],"server":"core-agent"}`
 	frame, ok := parseStreamFrame(attach.EventCapabilities, raw)
@@ -201,6 +253,7 @@ func TestParseStreamFrame_MalformedJSONDropped(t *testing.T) {
 		attach.EventInbox,
 		attach.EventTurnComplete,
 		attach.EventTurnError,
+		attach.EventGuardrailTrip,
 		attach.EventCapabilities,
 	} {
 		_, ok := parseStreamFrame(et, `{not json}`)

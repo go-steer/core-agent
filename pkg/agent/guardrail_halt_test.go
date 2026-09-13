@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -28,12 +29,19 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
-// terminalRecorder collects the terminal frames an agent emits. Wired
-// through SetOperatorEventEmitter, the same seam the attach broadcaster
-// uses, so what it sees is exactly what a subscriber would.
+// terminalRecorder collects the frames an agent emits. Wired through
+// SetOperatorEventEmitter, the same seam the attach broadcaster uses, so
+// what it sees is exactly what a subscriber would.
+//
+// Terminal and non-terminal frames go into SEPARATE slices, which is the
+// point of the type since #891: the contract these tests exist to guard
+// is "exactly one terminal frame per turn", and that assertion is only
+// worth anything if a `guardrail-trip` cannot accidentally satisfy it.
 type terminalRecorder struct {
-	mu   sync.Mutex
-	kind []string // "" for turn-complete, the TurnError.Kind otherwise
+	mu    sync.Mutex
+	kind  []string // "turn-complete", or "turn-error:<kind>"
+	trips []attach.GuardrailTrip
+	all   []string // every frame above, interleaved, in emission order
 }
 
 func (r *terminalRecorder) attachTo(a *Agent) {
@@ -43,9 +51,15 @@ func (r *terminalRecorder) attachTo(a *Agent) {
 		switch eventType {
 		case attach.EventTurnComplete:
 			r.kind = append(r.kind, "turn-complete")
+			r.all = append(r.all, "turn-complete")
 		case attach.EventTurnError:
 			te, _ := payload.(attach.TurnError)
 			r.kind = append(r.kind, "turn-error:"+te.Kind)
+			r.all = append(r.all, "turn-error:"+te.Kind)
+		case attach.EventGuardrailTrip:
+			gt, _ := payload.(attach.GuardrailTrip)
+			r.trips = append(r.trips, gt)
+			r.all = append(r.all, "guardrail-trip:"+gt.Guardrail)
 		}
 	})
 }
@@ -56,15 +70,64 @@ func (r *terminalRecorder) frames() []string {
 	return append([]string(nil), r.kind...)
 }
 
+// order returns terminal and non-terminal frames interleaved. A trip has
+// to REACH the client before the frame it explains, or an operator reads
+// a bare `canceled` and only learns why afterwards.
+func (r *terminalRecorder) order() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.all...)
+}
+
+// guardrailTrips returns the non-terminal trips, in order.
+func (r *terminalRecorder) guardrailTrips() []attach.GuardrailTrip {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]attach.GuardrailTrip(nil), r.trips...)
+}
+
+// assertOneTrip checks that exactly one guardrail-trip went out, naming
+// the expected guardrail and shape, and that it carries a reason — an
+// empty one would technically satisfy the protocol while losing the only
+// thing the event exists to deliver.
+func assertOneTrip(t *testing.T, rec *terminalRecorder, guardrail string, haltedTurn bool) {
+	t.Helper()
+	trips := rec.guardrailTrips()
+	if len(trips) != 1 {
+		t.Fatalf("got %d guardrail-trip events %+v, want exactly 1", len(trips), trips)
+	}
+	if trips[0].Guardrail != guardrail {
+		t.Errorf("trip names guardrail %q, want %q", trips[0].Guardrail, guardrail)
+	}
+	if trips[0].HaltedTurn != haltedTurn {
+		t.Errorf("halted_turn = %v, want %v — a client reads this to know whether a "+
+			"canceled turn-error or a turn-complete follows", trips[0].HaltedTurn, haltedTurn)
+	}
+	if trips[0].Reason == "" {
+		t.Error("trip carries no reason; the event exists to tell the operator why the agent is about to refuse everything")
+	}
+}
+
 // TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame is the #818
-// part-1 regression, run over both in-turn guardrails.
+// part-1 regression, run over both in-turn guardrails, re-pinned to the
+// shape #891 replaced it with.
 //
-// A guardrail that trips mid-turn emits its own turn-error carrying the
-// reason and then calls Interrupt. Before this fix the cancellation that
-// followed was classified by Run's cleanup like any other, so the turn
-// produced a SECOND terminal frame — a contentless `canceled` — breaking
-// the one-terminal-frame-per-turn contract and stacking a redundant
-// warning block under the one that actually explains the halt.
+// A guardrail that trips mid-turn reports the trip and then calls
+// Interrupt. Before #818 the cancellation that followed was classified by
+// Run's cleanup like any other, so the turn produced a SECOND terminal
+// frame — a contentless `canceled` — breaking the one-terminal-frame-per-
+// turn contract and stacking a redundant warning block under the one that
+// actually explains the halt. #818 fixed that by suppressing the
+// `canceled`; #891 fixes it the other way round, which is the right way
+// round: the trip is not a turn outcome, so it leaves the terminal slot
+// entirely and rides a non-terminal `guardrail-trip`. The turn then
+// reports what actually happened to it — it was canceled — and the count
+// is still one.
+//
+// So the invariant under test is unchanged and the frame carrying it is
+// not. Both halves are asserted, because dropping either reintroduces a
+// defect: two terminal frames (#818), or a cut turn whose operator never
+// learns why (the whole point of the event).
 //
 // Drives the real Run loop with a runaway tool-call loop, because the
 // bug is in how two independently-correct paths compose, not in either
@@ -73,9 +136,10 @@ func TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		options  func() []Option
-		wantKind string
+		name          string
+		options       func() []Option
+		wantGuardrail string // on the trip
+		wantKind      string // on the metric point
 	}{
 		{
 			// $10/MTok × 1000 tokens = $0.01 per model call against a
@@ -88,7 +152,8 @@ func TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame(t *testing.T) {
 					WithCostCeiling(CostCeiling{MaxTurnUSD: 0.05}),
 				}
 			},
-			wantKind: attach.TurnErrorCostCeiling,
+			wantGuardrail: attach.GuardrailCostCeiling,
+			wantKind:      attach.TurnErrorCostCeiling,
 		},
 		{
 			// Critical on the first observed tool call, so the halt
@@ -102,7 +167,8 @@ func TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame(t *testing.T) {
 				}}}
 				return []Option{WithWatchdog(w, nil), WithWatchdogEnforce()}
 			},
-			wantKind: attach.TurnErrorWatchdog,
+			wantGuardrail: attach.GuardrailWatchdog,
+			wantKind:      attach.TurnErrorWatchdog,
 		},
 	}
 
@@ -143,12 +209,22 @@ func TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame(t *testing.T) {
 			got := rec.frames()
 			if len(got) != 1 {
 				t.Fatalf("turn emitted %d terminal frames %v, want exactly 1.\n"+
-					"The guardrail already reported this turn's outcome; the cancellation "+
-					"it caused must not add a contentless second frame (#818).", len(got), got)
+					"A trip is not a turn outcome and must not occupy the terminal "+
+					"slot; the cut turn's own `canceled` is the only frame (#818, #891).", len(got), got)
 			}
-			if want := "turn-error:" + tc.wantKind; got[0] != want {
-				t.Errorf("terminal frame = %q, want %q — the surviving frame must be the "+
-					"one carrying the operator-facing reason", got[0], want)
+			if want := "turn-error:" + attach.TurnErrorCanceled; got[0] != want {
+				t.Errorf("terminal frame = %q, want %q — the turn was cut, and since #891 "+
+					"that is what it says", got[0], want)
+			}
+
+			// The reason did not vanish with the turn-error that used to
+			// carry it: it precedes the cut on its own event, flagged as
+			// having taken the turn down with it.
+			assertOneTrip(t, &rec, tc.wantGuardrail, true)
+			wantOrder := []string{"guardrail-trip:" + tc.wantGuardrail, "turn-error:" + attach.TurnErrorCanceled}
+			if order := rec.order(); !slices.Equal(order, wantOrder) {
+				t.Errorf("frame order = %v, want %v — the explanation has to arrive before "+
+					"the bare cancellation it explains", order, wantOrder)
 			}
 
 			// The metric has to agree with the frame. The turn error is
@@ -204,17 +280,24 @@ func TestRun_OperatorInterrupt_StillReportsCanceled(t *testing.T) {
 	}
 }
 
-// TestRun_PostTurnGuardrailTrip_KeepsTurnComplete pins the shape #818
-// part 1 deliberately leaves alone: a guardrail that trips at the turn
-// BOUNDARY emits its turn-error from the post-turn hook, and the turn —
-// which finished, and produced an answer — still reports turn-complete.
+// TestRun_PostTurnGuardrailTrip_KeepsTurnComplete covers the case #818
+// part 1 deliberately left alone and #891 finished: a guardrail that
+// trips at the turn BOUNDARY reports the trip from the post-turn hook,
+// and the turn — which finished, and produced an answer — reports
+// turn-complete.
 //
-// Two frames, but not the same defect: neither is contentless and
-// dropping either loses something (the reason the agent will start
-// refusing turns, or the completion a consumer is waiting on). Modelling
-// a trip as a non-terminal notification is the protocol fix; until then
-// this is the documented shape, and this test exists so a future change
-// to it is a deliberate one.
+// Pre-#891 this was two TERMINAL frames (turn-error:watchdog, then
+// turn-complete), which #818 left standing because neither was
+// contentless and dropping either lost something real: the reason the
+// agent is about to start refusing turns, or the completion a consumer
+// is blocked on. The protocol violation was in the modelling, not in
+// either frame — nothing had happened to this turn, so calling the trip
+// a turn-error was the error. Now the trip is non-terminal and the count
+// is one, with no information given up on either side.
+//
+// halted_turn is false here and true in the in-turn test above, and that
+// is the whole reason the field exists: same event, and only this flag
+// tells a consumer whether to expect a `canceled` next or a clean finish.
 func TestRun_PostTurnGuardrailTrip_KeepsTurnComplete(t *testing.T) {
 	t.Parallel()
 	w := &fakeWatchdog{pending: []watchdog.Alert{{
@@ -239,9 +322,14 @@ func TestRun_PostTurnGuardrailTrip_KeepsTurnComplete(t *testing.T) {
 		}
 	}
 
-	got := rec.frames()
-	want := []string{"turn-error:" + attach.TurnErrorWatchdog, "turn-complete"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("terminal frames = %v, want %v (the boundary-trip shape is unchanged by #818)", got, want)
+	if got, want := rec.frames(), []string{"turn-complete"}; !slices.Equal(got, want) {
+		t.Errorf("terminal frames = %v, want %v — the turn finished, and a guardrail "+
+			"tripping at its boundary does not change that", got, want)
+	}
+	assertOneTrip(t, &rec, attach.GuardrailWatchdog, false)
+
+	wantOrder := []string{"guardrail-trip:" + attach.GuardrailWatchdog, "turn-complete"}
+	if got := rec.order(); !slices.Equal(got, wantOrder) {
+		t.Errorf("frame order = %v, want %v", got, wantOrder)
 	}
 }

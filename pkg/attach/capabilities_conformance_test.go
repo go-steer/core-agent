@@ -131,6 +131,39 @@ func TestSupportedEventTypes_AdvertisesWake(t *testing.T) {
 	}
 }
 
+// TestConformance_GuardrailTripV1_13_0 pins the boundary-trip variant
+// (#891), which is the one worth a fixture: `halted_turn: false` is a
+// false bool that MUST be on the wire, and the reflex that removes it
+// — adding `omitempty` to a bool, as happened to `stopped` in #897 —
+// leaves a client unable to distinguish "the turn survived" from "this
+// producer predates the field". Both readings render, and they render
+// differently.
+func TestConformance_GuardrailTripV1_13_0(t *testing.T) {
+	t.Parallel()
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/guardrail-trip-boundary-v1.13.0.json",
+		GuardrailTrip{
+			Guardrail: GuardrailWatchdog,
+			Reason: "watchdog halted the agent (repeated-tool-call): looping on read_file " +
+				"with identical args. Clear it with /guardrail reset watchdog, or " +
+				"POST /sessions/{app}/{sid}/guardrails/reset.",
+			HaltedTurn: false,
+		})
+}
+
+// TestSupportedEventTypes_AdvertisesGuardrailTrip is the #891 half of
+// the same omission TestSupportedEventTypes_AdvertisesWake guards. It
+// bites harder here: a consumer that feature-detects and does not find
+// `guardrail-trip` has to keep reading the trip off the turn-error it
+// no longer arrives on, so the operator loses the halt reason entirely
+// rather than merely rendering it the old way.
+func TestSupportedEventTypes_AdvertisesGuardrailTrip(t *testing.T) {
+	t.Parallel()
+	if !slices.Contains(supportedEventTypes, EventGuardrailTrip) {
+		t.Errorf("supportedEventTypes = %v, missing %q", supportedEventTypes, EventGuardrailTrip)
+	}
+}
+
 // assertMatchesConformanceFixture marshals v, canonicalizes both the
 // output and the fixture (Go's encoder sorts map keys alphabetically;
 // the fixture is hand-written), and fails with a readable diff on

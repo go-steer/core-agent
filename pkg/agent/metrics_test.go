@@ -258,7 +258,7 @@ func TestDrainWatchdogAlerts_CountsWithoutCallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {

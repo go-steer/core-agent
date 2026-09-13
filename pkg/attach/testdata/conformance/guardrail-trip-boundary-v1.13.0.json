@@ -1,0 +1,5 @@
+{
+  "guardrail": "watchdog",
+  "reason": "watchdog halted the agent (repeated-tool-call): looping on read_file with identical args. Clear it with /guardrail reset watchdog, or POST /sessions/{app}/{sid}/guardrails/reset.",
+  "halted_turn": false
+}

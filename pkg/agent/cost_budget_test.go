@@ -127,7 +127,7 @@ func TestMaybeEnforceCostCeiling_SeesAddedBudget(t *testing.T) {
 	a := &Agent{tracker: tr, costCeiling: CostCeiling{MaxSessionUSD: 1}}
 	a.snapshotTurnStartCost()
 	tr.Append("test", 1_200_000, 0, usage.Pricing{InputPerMTok: 1}) // $1.20
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	if tripped, _ := a.CostCeilingTripped(); !tripped {
 		t.Fatal("should trip at $1.20 against a $1.00 session ceiling")
 	}
@@ -137,7 +137,7 @@ func TestMaybeEnforceCostCeiling_SeesAddedBudget(t *testing.T) {
 	}
 	a.ResetCostCeiling()
 	a.snapshotTurnStartCost()
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	if tripped, reason := a.CostCeilingTripped(); tripped {
 		t.Errorf("re-tripped against the pre-bump ceiling: %s", reason)
 	}
@@ -152,7 +152,7 @@ func TestCostCeilingReason_NamesAnOperatorAffordance(t *testing.T) {
 	a := &Agent{tracker: tr, costCeiling: CostCeiling{MaxSessionUSD: 1}}
 	a.snapshotTurnStartCost()
 	tr.Append("test", 2_000_000, 0, usage.Pricing{InputPerMTok: 1})
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	_, reason := a.CostCeilingTripped()
 	for _, want := range []string{"/guardrail reset", "guardrails/reset", "additional_budget_usd"} {
 		if !strings.Contains(reason, want) {

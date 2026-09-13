@@ -1481,7 +1481,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// (snapshotTurnStartCost below hasn't reset it yet), so the delta is
 	// the prior turn's true cost. Idempotent + a no-op when no ceiling
 	// is configured, so this is cheap on the common path.
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	// Flush any guardrail row the pass above just queued (#643). No
 	// turn is in flight yet, so this is a safe write window — and it
 	// must happen before the pre-flights below, which return early and
@@ -1749,8 +1749,8 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// that the next Run call drains before its own work.
 		a.maybeMarkCheckpointPending()
 		a.maybeMarkCompactionPending()
-		a.maybeEnforceCostCeiling()
-		a.drainWatchdogAlerts()
+		a.maybeEnforceCostCeiling(false)
+		a.drainWatchdogAlerts(false)
 		// Operator-interrupt audit (#565): if a /interrupt fired during
 		// this turn, append its audit row now — after the event stream
 		// drained and runCtx was cancelled above, so the write can't
@@ -1767,12 +1767,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		}
 
 		// Terminal event per spec: exactly one turn-complete OR
-		// turn-error fires per turn — including when a guardrail
-		// halted the turn in flight, in which case the guardrail
-		// already emitted it and the cancellation it caused must not
-		// add a second (#818; see guardrail_halt.go for why the
-		// marker, and not the error, is what decides — and why the
-		// metric below is labelled from it too).
+		// turn-error fires per turn, unconditionally — including
+		// when a guardrail halted the turn in flight, where
+		// `canceled` is simply what happened to it. The trip that
+		// caused the cancellation is reported by its own
+		// non-terminal `guardrail-trip` event (#891), so there is
+		// exactly one terminal frame here without anyone having to
+		// suppress the other. The marker survives only to label the
+		// metric below; see guardrail_halt.go.
 		//
 		// usage-update fires separately
 		// from the tracker.Append callback wired in SetAttachEmitter,
@@ -1797,9 +1799,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		}
 
 		switch {
-		case turnErr != nil && guardrailHalt == "":
+		case turnErr != nil:
 			a.emit(attach.EventTurnError, attach.ClassifyTurnError(turnErr))
-		case turnErr == nil:
+		default:
 			a.emit(attach.EventTurnComplete, attach.TurnComplete{
 				PromptID:  promptID,
 				Model:     a.modelName,

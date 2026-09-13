@@ -171,6 +171,61 @@ func TestTranslateTypedFrame_TurnError(t *testing.T) {
 	}
 }
 
+func TestTranslateTypedFrame_GuardrailTrip_HaltedTurn(t *testing.T) {
+	src := &attach.GuardrailTrip{
+		Guardrail:  "watchdog",
+		Reason:     "repeated-tool-call: list_agents called 12 times; run /guardrail reset to clear",
+		HaltedTurn: true,
+	}
+	ev, ok := translateTypedFrame(attach.Frame{Type: attach.EventGuardrailTrip, TypedData: src})
+	if !ok {
+		t.Fatal("guardrail-trip should emit a coretui.Event")
+	}
+	if ev.GuardrailTrip == nil {
+		t.Fatal("GuardrailTrip nil")
+	}
+	if ev.GuardrailTrip.Guardrail != src.Guardrail {
+		t.Errorf("Guardrail = %q, want %q", ev.GuardrailTrip.Guardrail, src.Guardrail)
+	}
+	// Verbatim, not reworded or truncated: the reason is the producer's
+	// prose and names the reset command for the guardrail that tripped.
+	if ev.GuardrailTrip.Reason != src.Reason {
+		t.Errorf("Reason = %q, want it passed through verbatim as %q", ev.GuardrailTrip.Reason, src.Reason)
+	}
+	if !ev.GuardrailTrip.HaltedTurn {
+		t.Error("HaltedTurn must survive the hop: core-tui arms its one-shot cancel absorb off it, " +
+			"and dropping it paints a contentless cancel block under every in-turn halt")
+	}
+	// A trip is not a turn outcome. Projecting it into either terminal
+	// field would make core-tui finalize a turn that has not ended.
+	if ev.TurnError != nil || ev.TurnComplete != nil {
+		t.Errorf("guardrail-trip must not project as a terminal event: TurnError=%+v TurnComplete=%+v",
+			ev.TurnError, ev.TurnComplete)
+	}
+}
+
+func TestTranslateTypedFrame_GuardrailTrip_BoundaryTrip(t *testing.T) {
+	// The other shape: tripped in the post-turn hook, so the turn already
+	// produced its answer and `turn-complete` follows. false is a real
+	// answer here rather than an absent field, and a consumer that armed
+	// the absorb on it would eat the operator's next Esc.
+	src := &attach.GuardrailTrip{
+		Guardrail:  "cost_ceiling",
+		Reason:     "session cost $5.02 crossed the $5.00 ceiling",
+		HaltedTurn: false,
+	}
+	ev, ok := translateTypedFrame(attach.Frame{Type: attach.EventGuardrailTrip, TypedData: src})
+	if !ok || ev.GuardrailTrip == nil {
+		t.Fatalf("guardrail-trip should emit: ok=%v trip=%+v", ok, ev.GuardrailTrip)
+	}
+	if ev.GuardrailTrip.HaltedTurn {
+		t.Error("HaltedTurn = true, want false for a boundary trip")
+	}
+	if ev.GuardrailTrip.Guardrail != "cost_ceiling" {
+		t.Errorf("Guardrail = %q, want %q", ev.GuardrailTrip.Guardrail, "cost_ceiling")
+	}
+}
+
 func TestTranslateTypedFrame_CapabilitiesIgnored(t *testing.T) {
 	// Capabilities is a handshake frame for Phase 2 negotiation; for
 	// v1 we acknowledge and drop. Returning ok=false keeps the event
@@ -209,6 +264,7 @@ func TestTranslateTypedFrame_NilPayloadDropped(t *testing.T) {
 	for _, et := range []string{
 		attach.EventStatusUpdate, attach.EventUsageUpdate,
 		attach.EventInbox, attach.EventTurnComplete, attach.EventTurnError,
+		attach.EventGuardrailTrip,
 	} {
 		_, ok := translateTypedFrame(attach.Frame{Type: et, TypedData: nil})
 		if ok {

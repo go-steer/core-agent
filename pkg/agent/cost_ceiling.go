@@ -279,7 +279,18 @@ func (a *Agent) CostCeilingTripped() (bool, string) {
 // kept: the tap only fires on events, so the last append of a turn
 // (and anything a harness appends after the stream drains) still needs
 // a post-turn and a settle-time pass behind it.
-func (a *Agent) maybeEnforceCostCeiling() {
+//
+// haltedTurn says which of those shapes the caller is (#891): true only
+// from the in-turn tap, which cuts the running turn the moment this
+// trips, false from both boundary passes, where the turn either already
+// completed or has not started. It rides out on the `guardrail-trip`
+// event so a client knows whether to expect a `canceled` turn-error or
+// a `turn-complete` next. A parameter rather than a turnInFlight()
+// probe on purpose: the post-turn hook's in-flight state is an artifact
+// of where Run clears its cancel func, and hanging an operator-visible
+// field off that is the kind of coupling that breaks silently when the
+// cleanup order is rearranged. The call sites know the answer.
+func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) {
 	if a == nil || a.tracker == nil {
 		return
 	}
@@ -335,7 +346,7 @@ func (a *Agent) maybeEnforceCostCeiling() {
 	// or pod roll can't hand the runaway a fresh budget.
 	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, reason))
 
-	a.emit(attach.EventTurnError, costCeilingTurnError(reason))
+	a.emitGuardrailTrip(attach.GuardrailCostCeiling, reason, haltedTurn)
 }
 
 // enforceCostCeilingInTurn is the in-turn arm of the cost ceiling
@@ -360,8 +371,10 @@ func (a *Agent) maybeEnforceCostCeiling() {
 // A trip cancels the turn in flight via Interrupt, which only cancels
 // the per-turn context — it does not mark an operator-interrupt audit,
 // so the halt is recorded as a cost-ceiling trip and not mislabeled.
-// The cancellation it causes is likewise not re-reported as a `canceled`
-// turn-error: the trip's own frame is the turn's terminal one (#818).
+// The cancellation it causes IS reported as a `canceled` turn-error —
+// that is the cut turn's accurate outcome and its only terminal frame,
+// now that the trip has its own non-terminal event to ride (#891,
+// replacing #818's suppression).
 //
 // Cheap when unarmed: one uncontended lock read decides it, so a
 // session with no ceiling configured (the default) pays nothing per
@@ -376,11 +389,14 @@ func (a *Agent) enforceCostCeilingInTurn() {
 	if !armed {
 		return
 	}
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(true)
 	if exceeded, _ := a.CostCeilingTripped(); exceeded {
-		// The emit above is this turn's terminal frame; mark before
-		// cutting the turn so the cancellation doesn't produce a
-		// second one (#818, see guardrail_halt.go).
+		// Mark before cutting so the turn's metric point is labelled
+		// with the guardrail rather than the bare `canceled` the
+		// Interrupt produces (#818 part 2; see guardrail_halt.go). The
+		// `canceled` turn-error itself now stands as this turn's one
+		// terminal frame — the trip went out on its own non-terminal
+		// event above, so there is nothing left to suppress (#891).
 		a.markGuardrailHalt(attach.TurnErrorCostCeiling)
 		a.Interrupt()
 	}

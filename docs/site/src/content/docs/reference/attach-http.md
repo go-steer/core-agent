@@ -549,7 +549,16 @@ $ curl -s http://localhost:7777/healthz
 | `ok` | `true` iff every registered check passed. |
 | `checks` | Per-subsystem status: `ready`, `failed`, or `timeout`. Omitted entirely when no checks are registered. |
 
-**What it checks.** One subsystem today: `session_db`, a real bounded read against the event log's table — not a connection-pool ping, which on SQLite stays green against a file that has been deleted or a volume that has gone read-only. Every attach shape has an event log since [#973](https://github.com/go-steer/core-agent/issues/973), so a daemon always reports it.
+**What it checks.** Two subsystems:
+
+- **`session_db`** — a real bounded read against the event log's table, not a connection-pool ping, which on SQLite stays green against a file that has been deleted or a volume that has gone read-only. Every attach shape has an event log since [#973](https://github.com/go-steer/core-agent/issues/973), so a daemon always reports it.
+- **`wake_loops`** (v2.10.0-dev, [#978](https://github.com/go-steer/core-agent/issues/978)) — one aggregate over every live session's wake loop. A wake loop never dies: it logs a failed turn and goes back to blocking. That is right for liveness and invisible from outside, so a daemon whose every turn fails looks exactly like a daemon with nothing to do. This check is what tells them apart. It reports `failed` only when **every** live loop has failed **three turns in a row** with no clean turn since. Both halves of that are deliberate: a partial outage stays green because readiness is a routing decision and one session with revoked RBAC must not pull a pod serving forty-nine healthy ones out of its Service, and one bad turn stays green because a single provider 429 kills a turn often enough that descheduling a pod for it would make the gate a signal operators learn to ignore. A daemon with no sessions yet is green. So is a session that was interrupted or whose guardrail halted it: those are the system obeying somebody, and they neither count as failures nor clear a fault that is still standing.
+
+`wake_loops` is deliberately one check and not one per session: the `checks` map would otherwise grow without bound under a kubelet re-probing on a fixed period, and session ids are not an unauthenticated caller's business. The per-session detail — which sessions, how many consecutive failures, the [`turn-error` kind](#turn-error-kinds), how long it has been failing — rides the error text into the daemon log:
+
+```
+core-agent: healthz: wake_loops is not ready: all 2 wake loop(s) are failing: [session=s-4f2a failures=9 kind=auth_error since=2026-09-13T18:04:11Z] [session=s-91bc failures=4 kind=auth_error since=2026-09-13T18:09:57Z]
+```
 
 **What it deliberately does not check**, because a probe that cannot fail is worse than no probe:
 
@@ -578,7 +587,9 @@ readinessProbe:
   periodSeconds: 10
 ```
 
-Prefer this to `tcpSocket` where the image supports it: TCP proves only that something is accepting connections, and cannot tell that apart from a daemon whose session store has gone away.
+Prefer this to `tcpSocket` where the image supports it: TCP proves only that something is accepting connections, and cannot tell that apart from a daemon whose session store has gone away or whose every turn is failing.
+
+Use it as a **readiness** probe, not a liveness one. A daemon that reports `wake_loops: failed` is usually broken by something a restart cannot fix — a revoked binding, an expired credential, an exhausted quota — and restarting it drops the operator's in-flight context on the floor for nothing.
 
 ## Streaming endpoints (summary)
 

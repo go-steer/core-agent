@@ -118,6 +118,15 @@ type SessionFactoryDeps struct {
 	// Optional: nil means "no join point", the pre-#751 behavior.
 	WakeLoops *WakeLoopGroup
 
+	// LoopHealth, when non-nil, is the daemon's registry of live wake
+	// loops, read by the aggregate `wake_loops` check on GET /healthz
+	// (#978). The factory registers each loop it starts and deregisters
+	// it when the loop returns, so an evicted session stops counting.
+	//
+	// Optional: nil means the loops keep no health state, which is the
+	// right answer for a test or an embedding host with no probe.
+	LoopHealth *runner.LoopHealthSet
+
 	Model adkmodel.LLM
 	// TitleModel is the cheap-tier model each session names itself
 	// with (#808). Optional: nil means sessions fall back to a title
@@ -672,12 +681,20 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// construction can't see a count of zero and report a drain that
 	// never happened (#751).
 	deps.WakeLoops.add()
+	// Registered on this goroutine too, for the same reason: a
+	// /healthz probe that races construction must not read an aggregate
+	// this session is missing from. Deregistering when the loop returns
+	// keeps an evicted session's last failure out of the aggregate
+	// forever (#978).
+	loopHealth, unregisterHealth := deps.LoopHealth.Register(sid)
 	go func() {
 		defer deps.WakeLoops.done()
+		defer unregisterHealth()
 		runner.WakeLoop(loopCtx, ag, runner.WakeLoopOptions{
 			Tracker: sessionTracker,
 			Model:   cust.Model.Name(),
 			Pricing: pricingRate,
+			Health:  loopHealth,
 		})
 	}()
 	if bgClose == nil {

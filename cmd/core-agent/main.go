@@ -2110,6 +2110,13 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	autoContinueFreshness := acRes.freshness
 	autoContinueRetry := acRes.retry
 	autoContinueRetryInterval := acRes.retryInterval
+	// Wake-loop health, read by the aggregate `wake_loops` check on
+	// GET /healthz (#978). Declared at function scope because both
+	// daemon shapes register into it — the per-session factory inside
+	// the attach block below, and the single --no-repl loop after it —
+	// and the attach server that serves the check is built between the
+	// two.
+	loopHealth := &runner.LoopHealthSet{}
 	// In-lifetime auto-continue retry driver lifecycle (#575 defect B).
 	// The driver(s) get a dedicated child context cancelled in the defer
 	// below, and the WaitGroup is joined there too. Registered AFTER the
@@ -2266,6 +2273,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			factoryDeps := compose.SessionFactoryDeps{
 				DaemonCtx:    wakeCtx,
 				WakeLoops:    wakeLoops,
+				LoopHealth:   loopHealth,
 				Model:        m,
 				TitleModel:   titleModel,
 				Template:     template,
@@ -2425,7 +2433,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			SessionFactory:      sessionFactory,
 			Resumer:             sessionResumer,
 			SessionIdleTimeout:  sessionIdleTimeout,
-			HealthChecks:        daemonHealthChecks(eventlogHandle),
+			HealthChecks:        daemonHealthChecks(eventlogHandle, loopHealth),
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)
@@ -2598,10 +2606,16 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// inbox through an empty-prompt turn, accounts usage via
 		// the shared usage.TurnTap discipline, repeats until ctx
 		// cancels. Errors are surfaced per-turn; the loop stays up.
+		// The single-session daemon registers its one loop in the same
+		// set the multi-session factory uses, so `wake_loops` on
+		// /healthz means the same thing in both shapes (#978).
+		singleLoopHealth, unregisterLoopHealth := loopHealth.Register(a.SessionID())
+		defer unregisterLoopHealth()
 		runner.WakeLoop(ctx, a, runner.WakeLoopOptions{
 			Tracker: tracker,
 			Model:   m.Name(),
 			Pricing: pricingRate,
+			Health:  singleLoopHealth,
 			OnTurnError: func(err error) {
 				fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", err)
 			},

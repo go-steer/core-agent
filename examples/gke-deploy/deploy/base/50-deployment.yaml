@@ -289,8 +289,14 @@ spec:
           # plain HTTP — the SPIFFE SVID mounted below is for outbound
           # mTLS to other agents, not for the attach port.
           livenessProbe:
-            httpGet:
-              path: /healthz
+            # NOT /healthz, as of core-agent #978: readiness now reports
+            # `wake_loops`, and the faults that trip it — a revoked
+            # binding, an expired credential, an exhausted quota — are
+            # exactly the ones a restart cannot fix. Sharing readiness's
+            # definition here would turn a visible, injectable, still-
+            # serving daemon into a restart loop. Readiness stops routing
+            # work at it; that is enough.
+            tcpSocket:
               port: attach
             initialDelaySeconds: 10
             periodSeconds: 30

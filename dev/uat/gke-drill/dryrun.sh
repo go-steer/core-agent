@@ -125,6 +125,18 @@ run_case() {
     jsonl_to_sse < "${FAKE_TRANSCRIPT}" > "${DRILL_FAKE_DIR}/events.sse"
     jq -c '{events: (.cluster // []), truncated: false}' "${CLEAN}/subagents.json" \
         > "${DRILL_FAKE_DIR}/subagent-cluster.json"
+    if [[ "${FAKE_FAT_SUBAGENT:-}" == "1" ]]; then
+        # Pad each event so the merged array clears 128 KiB, which is
+        # MAX_ARG_STRLEN — the per-argument execve cap, not ARG_MAX, and
+        # not raisable with ulimit. --argjson used to carry the whole
+        # accumulator through it.
+        jq -c --arg pad "$(tr '\0' 'x' < /dev/zero | head -c 70000)" \
+            '{events: [.events[] | . + {dryrun_pad: $pad}], truncated: false}' \
+            "${DRILL_FAKE_DIR}/subagent-cluster.json" \
+            > "${DRILL_FAKE_DIR}/subagent-cluster.json.tmp"
+        mv "${DRILL_FAKE_DIR}/subagent-cluster.json.tmp" \
+           "${DRILL_FAKE_DIR}/subagent-cluster.json"
+    fi
     jq -nc '{sessions: [{sessionID: "sess-preexisting", last_touched_at: "2026-01-01T00:00:00Z"}]}' \
         > "${DRILL_FAKE_DIR}/sessions-before.json"
     jq -nc --arg sid "${FAKE_SESSION_ID}" \
@@ -616,6 +628,48 @@ if want 13; then
     else
         bad "burned the whole budget on a terminal state (${ELAPSED}s)"
     fi
+fi
+
+# ── 14. A subagent chatty enough to blow the argv cap ────────────────
+#
+# Observed live on 2026-09-13, run 20260913T110018Z-c: the capture
+# itself succeeded — 36 frames streamed and written — and the run was
+# then lost on the way to disk, because the merged event array went
+# through `jq --argjson`. That is a single argv entry, and Linux caps
+# one of those at MAX_ARG_STRLEN = 128 KiB. It fails as "Argument list
+# too long", which reads like a total-size problem and is not one: the
+# limit is per argument and no ulimit raises it. Typical captures in
+# this recipe run 50-60 KiB, so the margin was about 2x.
+#
+# The second assertion is the one that turned a lost capture into a
+# lost run. drill_write_meta redirected straight into meta.json, so the
+# truncation happened before jq ran and a failure left a 0-byte file —
+# and score.py raises JSONDecodeError on that rather than rendering the
+# partial sheet the trap exists to produce.
+
+if want 14; then
+    head_ "14. subagent capture over the 128 KiB argv cap"
+    reset_env
+    export FAKE_FAT_SUBAGENT=1
+    run_case c
+
+    eq "exits 0" "${RC}" "0"
+    eq "all four frames survived" \
+        "$(jq '.cluster | length' "${RUN_DIR}/subagents.json")" "4"
+
+    SIZE=$(wc -c < "${RUN_DIR}/subagents.json")
+    if (( SIZE > 131072 )); then
+        ok "the fixture really is over the cap (${SIZE} bytes)"
+    else
+        bad "fixture only ${SIZE} bytes — it cannot exercise the bug"
+    fi
+
+    if jq -e . "${RUN_DIR}/meta.json" >/dev/null 2>&1; then
+        ok "meta.json is valid JSON"
+    else
+        bad "meta.json is empty or malformed — score.py cannot read it"
+    fi
+    have "the sheet still rendered" "${RUN_DIR}/evidence.md"
 fi
 
 head_ "Result"

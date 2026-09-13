@@ -438,10 +438,20 @@ drill_capture_subagents() {
     fi
 
     echo '{}' > "${out}"
+    # The accumulator goes through a FILE, not --argjson.
+    #
+    # A single argv entry is capped at MAX_ARG_STRLEN — 128 KiB on Linux,
+    # and unlike ARG_MAX it is not raisable with ulimit. The merged event
+    # array crosses that on a chatty subagent and execve fails with
+    # "Argument list too long", which reads like a total-size problem and
+    # is not one. It cost run 20260913T110018Z-c: capture had already
+    # succeeded, and the run was lost on the way to disk. Typical captures
+    # here are 50-60 KiB, so the old code had about 2x of headroom.
+    local acc="${DRILL_RUN_DIR}/.subagents-acc.json"
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
-        local body since=0 page merged='[]' truncated
-        merged='[]'
+        local since=0 page truncated
+        echo '[]' > "${acc}"
         while true; do
             page=$(hub_get "/sessions/${DRILL_APP}/${sid}/agents/${name}/events?since=${since}&limit=500" 2>/dev/null || true)
             [[ -n "${page}" ]] || break
@@ -453,15 +463,17 @@ drill_capture_subagents() {
                 drill_warn "subagent '${name}': $(jq -r '.error' <<<"${page}")"
                 break
             fi
-            merged=$(jq -c --argjson m "${merged}" '$m + (.events // [])' <<<"${page}")
+            jq -c --slurpfile m "${acc}" '$m[0] + (.events // [])' <<<"${page}" \
+                > "${acc}.tmp" && mv "${acc}.tmp" "${acc}"
             truncated=$(jq -r '.truncated // false' <<<"${page}")
             [[ "${truncated}" == "true" ]] || break
             since=$(jq -r '.next_since' <<<"${page}")
         done
-        body=$(jq -c --arg n "${name}" --argjson e "${merged}" '. + {($n): $e}' "${out}")
-        printf '%s\n' "${body}" > "${out}"
+        jq -c --arg n "${name}" --slurpfile e "${acc}" '. + {($n): $e[0]}' "${out}" \
+            > "${out}.tmp" && mv "${out}.tmp" "${out}"
         drill_ok "subagent ${name}: $(jq -r --arg n "${name}" '.[$n] | length' "${out}") frames"
     done <<< "${names}"
+    rm -f "${acc}" "${acc}.tmp" "${out}.tmp"
 }
 
 # ── G4 evidence: did anything actually change in the cluster? ────────

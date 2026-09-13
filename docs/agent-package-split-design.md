@@ -153,10 +153,18 @@ also grows a **manager seam interface** rather than only accessors:
 type SubagentManager interface {
     AttachParent(*Agent)
     PrependPendingAlerts(prompt string) string
+    HasPendingAlerts() bool
     ListSubagents() []attach.AgentInfo
     SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error)
 }
 ```
+
+`HasPendingAlerts` (#1040) exists because `PrependPendingAlerts`
+*consumes*, and a guardrail reset has to ask "is an alert waiting?"
+without answering it — see `docs/guardrail-reset-design.md`. Adding it
+to the interface rather than probing for it with a type assertion is
+deliberate: an out-of-tree manager predating the method would
+otherwise silently strand the alert it was asked about.
 
 `agent.WithBackgroundManager` and `agent.BackgroundManager()` traffic in
 this interface; `*background.Manager` implements it. Callers needing the

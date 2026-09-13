@@ -41,6 +41,7 @@ type stubManager struct {
 
 func (m *stubManager) AttachParent(a *agent.Agent)               { m.parent = a }
 func (m *stubManager) PrependPendingAlerts(prompt string) string { return prompt }
+func (m *stubManager) HasPendingAlerts() bool                    { return false }
 func (m *stubManager) ListSubagents() []attach.AgentInfo         { return nil }
 func (m *stubManager) ListSubagentCatalog() []attach.SubagentCatalogInfo {
 	return m.catalog

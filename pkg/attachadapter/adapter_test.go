@@ -707,6 +707,7 @@ type fakeSubagentManager struct {
 
 func (f *fakeSubagentManager) AttachParent(*agent.Agent)            {}
 func (f *fakeSubagentManager) PrependPendingAlerts(p string) string { return p }
+func (f *fakeSubagentManager) HasPendingAlerts() bool               { return false }
 func (f *fakeSubagentManager) ListSubagents() []attach.AgentInfo    { return f.live }
 func (f *fakeSubagentManager) ListSubagentCatalog() []attach.SubagentCatalogInfo {
 	return f.catalog

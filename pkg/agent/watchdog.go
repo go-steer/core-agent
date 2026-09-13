@@ -546,6 +546,19 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert) {
 // reset it. Called at the very top of Run, before any model calls —
 // the refusal is structural, so an auto-continue re-drive of the
 // looping turn is refused here rather than re-issuing the runaway call.
+//
+// The message leads with the refusal rather than repeating the halt
+// verbatim (#1040). A refused turn is not a new detection, and a log
+// that says "watchdog halted the agent" thirteen times for one halt
+// reads as thirteen runaways — which is exactly how long the live
+// livelock took to identify. The halt's own text still follows so the
+// line stays self-contained for whoever is reading it.
+//
+// That reader is a log reader. A refused turn emits no frame (Run
+// records the invocation and yields), so this error reaches
+// WakeLoop.OnTurnError and the daemon's stderr, plus `error.type` on
+// gen_ai.agent.invocation.duration via #818 — not an attached operator.
+// Telling the operator is #891's job.
 func (a *Agent) preflightWatchdog() error {
 	if a == nil {
 		return nil
@@ -555,7 +568,7 @@ func (a *Agent) preflightWatchdog() error {
 	if !a.watchdogTripped {
 		return nil
 	}
-	return &watchdogError{reason: a.watchdogReason}
+	return &watchdogError{reason: refusalReason(a.watchdogReason)}
 }
 
 // ResetWatchdog clears a tripped enforce-mode watchdog, letting the
@@ -582,6 +595,11 @@ func (a *Agent) ResetWatchdog() {
 	if w != nil {
 		w.Reset()
 	}
+	// Release any wake the halt swallowed, so input queued behind the
+	// trip drives the next turn instead of waiting for the next inject
+	// to arrive (#1040). No-op when the cost ceiling is also tripped —
+	// the next turn would just be refused by that instead.
+	a.releaseFencedWake()
 }
 
 // WatchdogTripped reports whether the agent is currently blocking new

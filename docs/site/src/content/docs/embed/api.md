@@ -620,6 +620,8 @@ The bundled Scion adapter uses exactly this pattern — see `extras/scion-agent/
 
 Both coalesce per channel: a burst between drains is one pending notification, and a wake fired before you start reading is latched, not lost. Subscribe early — a `SubscribeWake` channel only latches wakes fired after it exists, so anything fired between the agent going live and the subscription being taken is missed.
 
+One asymmetry the split exists for: while a [guardrail halt](/concepts/context-management/#resetting-a-tripped-guardrail) stands, the **driver's** wake is withheld and observers still get theirs ([#1040](https://github.com/go-steer/core-agent/issues/1040)). A halted agent refuses turns above `drainInboxFull`, so waking the driver could only produce another refusal — but a TUI watching the session still needs to see that input arrived. The wake is released by `Agent.ResetWatchdog` / `Agent.ResetCostCeiling`, and the queued input drives the first post-reset turn. Nothing changes for an observer, and a driver that calls `Run` on its own schedule rather than on a wake still reaches the pre-flight and is still refused (cheaply — a refusal costs no model call).
+
 ```go
 wakes, unsubscribe := a.SubscribeWake()
 defer unsubscribe()

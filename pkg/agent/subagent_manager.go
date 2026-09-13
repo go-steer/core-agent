@@ -43,6 +43,21 @@ type SubagentManager interface {
 	// Agent.Run.
 	PrependPendingAlerts(prompt string) string
 
+	// HasPendingAlerts reports whether a drain right now would return
+	// anything — i.e. whether a turn is OWED to the alert queue. Read
+	// only; it must not consume.
+	//
+	// Exists for releaseFencedWake (#1040), which has to decide after a
+	// guardrail reset whether anything is waiting for a turn. The inbox
+	// answers for itself (hasWakingMessages); alerts are the other queue
+	// Run drains, and without this they are the one class of waiting
+	// input a reset cannot see. The race it closes: an alert wakes the
+	// driver, the in-flight turn then trips the watchdog in its post-turn
+	// hook, and the wake that alert fired is consumed by a turn refused
+	// before PrependPendingAlerts ever runs — leaving the alert queued
+	// with nothing fenced.
+	HasPendingAlerts() bool
+
 	// ListSubagents returns attach-facing metadata for the manager's
 	// live subagents. Backs attachadapter.AttachAgents
 	// (attach.AgentsProvider).

@@ -106,6 +106,43 @@ func (w *wakeSignal) fire() {
 	}
 }
 
+// fireExceptDefault fans out to every subscription EXCEPT the default
+// one. This is what a FENCED wake still does (#1040).
+//
+// The split matters because def is the DRIVER's subscription and the
+// subscribe() channels are the observers'. WakeRequested hands out def
+// and only def, and its callers are the things that call Run —
+// pkg/runner's REPL loop, pkg/runner.WakeLoop, the autonomous
+// scheduler. Everything that merely wants to REPORT a wake holds a
+// subscribe() channel instead; the local --tui adapter is the in-tree
+// example.
+//
+// Suppressing the whole fan-out would therefore re-create the bug #813
+// fixed, one halt at a time: an inject into a halted session publishes
+// no `wake` event (see injectAs) and its `inbox` frame goes to the
+// attach SSE stream, which a LOCAL tui does not read, so that
+// subscription is the only in-process signal the message arrived. Fence
+// the driver and the turn does not run; fence the observers too and the
+// operator at the terminal never learns anything came in.
+func (w *wakeSignal) fireExceptDefault() {
+	if w == nil {
+		return
+	}
+	subs := w.subs.Load()
+	if subs == nil {
+		return
+	}
+	for _, ch := range *subs {
+		if ch == w.def {
+			continue
+		}
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // channel returns the receive end of the default subscription.
 // Nil-safe so callers can plumb the channel through context without
 // nil-checking at every layer; a nil channel in a select blocks
@@ -222,11 +259,26 @@ func (w *wakeSignal) subscribe() (<-chan struct{}, func()) {
 // Agent structs used in tests don't necessarily wire one up) — but the
 // event still publishes, because "something asked for a wake" is true
 // regardless of whether a scheduler was listening.
+// Fenced while a guardrail halt stands (#1040): the DRIVER's wake is
+// swallowed and replayed by the reset, because every caller above wants
+// a turn to run and the pre-flight would only refuse one. Observers
+// (SubscribeWake) still get theirs, and the EVENT still publishes, for
+// the same reason it publishes on an agent with no wake signal wired —
+// "something asked for a wake" is true regardless of whether a driver
+// was listening, and an operator watching a halted session needs to see
+// that alerts are still arriving for it.
+//
+// Known sharp edge, deliberately not addressed here: the attach
+// `POST /sessions/<id>/wake` handler still answers 200 after a fenced
+// wake, so an operator's explicit "run now" against a halted session
+// gets a success response and no turn. Saying so in the response is a
+// protocol change and belongs with #891, which gives the halt its own
+// non-terminal event and a core-tui row to render it.
 func (a *Agent) RequestWake() {
 	if a == nil {
 		return
 	}
-	a.wake.fire()
+	a.fireWakeFenced()
 	a.emit(attach.EventWake, attach.WakeEvent{At: time.Now().UTC()})
 }
 

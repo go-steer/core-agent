@@ -109,6 +109,7 @@ const (
 	acSkippedTurnInFlight                              // a local turn is generating the answer right now (#796)
 	acSkippedOperatorInput                             // operator input already queued — it drives the next turn (#624)
 	acSkippedPaused                                    // operator parked the loop; resume drives the next turn
+	acSkippedGuardrailHalt                             // watchdog or cost ceiling is refusing turns (#1040)
 	acSkippedInjectErr                                 // inject itself failed
 )
 
@@ -126,7 +127,13 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // reply), or an operator having queued input
 // that will drive the next turn itself (#624 — no note was injected),
 // or the session being parked by an operator (no note was injected and
-// the operator's resume drives the next turn).
+// the operator's resume drives the next turn), or a guardrail refusing
+// turns (#1040 — same shape as parked: no note was injected, and the
+// reset releases the fenced wake). Charging the halt case instead would
+// spend the session's hourly cap on ticks that did nothing, so a
+// session reset inside the freshness window would come back with
+// auto-continue already exhausted — penalising it for the guardrail
+// having worked.
 // Everything else stays charged:
 // a queued note is a real attempt, and a failed resume/inject or an
 // unexpected lock error must stay counted because a PERSISTENT such
@@ -136,7 +143,7 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // conservative, which is the safe direction.
 func (o autoContinueOutcome) refundable() bool {
 	switch o {
-	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedTurnInFlight, acSkippedOperatorInput, acSkippedPaused:
+	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedTurnInFlight, acSkippedOperatorInput, acSkippedPaused, acSkippedGuardrailHalt:
 		return true
 	default:
 		return false
@@ -264,6 +271,45 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 	if ag.Paused() {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: session is paused; standing down until the operator resumes\n", sid)
 		return acSkippedPaused
+	}
+	// A guardrail halt is the strongest possible "start nothing" and,
+	// until #1040, the only one of these four this pass did not check.
+	// Two separate reasons it has to:
+	//
+	// Nothing can deliver the note. Both pre-flights refuse at the top of
+	// Agent.Run, above drainInboxFull, so a note injected now is
+	// unreachable for as long as the halt stands — and the retry driver
+	// re-runs this pass every retry_interval, so a halt that outlives the
+	// freshness window accumulates one undeliverable note per tick. The
+	// inbox is bounded and drops the OLDEST past its cap, which is how a
+	// long halt silently discards the operator's real messages to make
+	// room for our own notes.
+	//
+	// And the note argues with the halt. The restore path prepends a
+	// `restored-watchdog-halt` block that tells the model not to resume
+	// the call pattern that tripped it (guardrail_persist.go); a stack of
+	// "continue the task you were doing" notes draining into that same
+	// turn says the opposite, in the operator's voice, without the
+	// operator.
+	//
+	// Stand down entirely. The reset releases the fenced wake, and
+	// whatever the operator sends with it drives the next turn.
+	//
+	// RestoreGuardrails first, because this pass is reached on exactly
+	// the path where the in-memory flags are still false: both the boot
+	// scan and lazy resume construct the agent through Registry.Lookup
+	// and have run no turn yet, and Agent.Run is the only thing that
+	// folds the durable guardrail events back in. Without this, a pod
+	// restarted while a session was halted queues a continuation note
+	// into it — the one case where "the operator is not watching" is
+	// guaranteed rather than likely. Idempotent and a no-op with no
+	// eventlog wired; the error is deliberately swallowed, because
+	// auto-continue must never break its caller and a read failure here
+	// leaves us exactly where we were before the call.
+	_ = ag.RestoreGuardrails(ctx)
+	if halted, reason := ag.GuardrailHalted(); halted {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: guardrail is tripped (%s); standing down until it is reset\n", sid, reason)
+		return acSkippedGuardrailHalt
 	}
 	if err := ag.InjectAs(agent.AutoContinueNoteFor(interruptedAt, verdict.InterruptedCalls), auth.Caller{Identity: agent.AutoContinueOriginator}); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: inject: %v\n", sid, err)

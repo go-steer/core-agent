@@ -720,8 +720,14 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 	// there. The `inbox`/queued event above still goes out, so a
 	// deferred message is visible to attached operators the moment it
 	// lands — it just doesn't interrupt anything.
+	//
+	// Fenced, not fired, while a guardrail halt stands (#1040): the
+	// driver it would wake can only be refused by Run's pre-flight, and
+	// the message stays queued either way. The reset releases it. Same
+	// shape as the pause gate above — queue now, deliver when the
+	// operator opens the door — and for the same reason.
 	if mode.wake {
-		a.wake.fire()
+		a.fireWakeFenced()
 	}
 	return id, nil
 }
@@ -812,6 +818,21 @@ func (a *Agent) drainInboxFull() inboxDrain {
 	if len(msgs) == 0 {
 		return inboxDrain{}
 	}
+	// Whoever took the messages took the turn that was owed for them, so
+	// a fenced wake held on their behalf is spent (#1040). Without this
+	// the flag outlives what it stands for: core-tui exposes DrainInbox
+	// as its InboxDrainer, so an operator who reads their queued
+	// messages during a halt and then clears the halt would get one
+	// unsolicited empty turn — the exact thing releaseFencedWake's
+	// three-way check exists to avoid.
+	//
+	// Only on a non-empty drain. A fence with nothing behind it belongs
+	// to a bare RequestWake, which nobody has taken delivery of, so it
+	// must survive. Run's own pre-turn drain lands here too, where the
+	// flag is already false — a refused turn returns above it.
+	a.mu.Lock()
+	a.wakeFenced = false
+	a.mu.Unlock()
 	d := inboxDrain{
 		texts:   make([]string, len(msgs)),
 		senders: make([]string, len(msgs)),
@@ -887,6 +908,43 @@ func (a *Agent) HasPendingOperatorInput() bool {
 			continue
 		}
 		if m.caller.Identity != AutoContinueOriginator {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWakingMessages reports whether the queue holds any message that
+// was injected with wake semantics — i.e. one that is waiting for a
+// driver to start a turn for it. Deferred messages (QueueAsContext,
+// #698) are excluded: not waking is the feature there, so a queue
+// holding only those has nobody waiting.
+//
+// Unlike HasPendingOperatorInput this counts auto-continue's own note,
+// because the question here is "is a turn owed?", not "whose turn is
+// it?" — a continuation note stranded behind a guardrail halt needs the
+// post-reset wake just as much as an operator's message does.
+//
+// A CLOSED inbox holds nothing waking even when messages remain in the
+// slice — close() sets the flag without clearing it. WakeLoop closes the
+// inbox on eviction and shutdown, so the session's driver is gone;
+// firing a wake for those leftovers would promise a turn nothing will
+// run.
+//
+// On the inbox rather than the Agent: the one caller
+// (releaseFencedWake) already holds no lock and must not take a.mu,
+// which it has just released.
+func (q *inbox) hasWakingMessages() bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return false
+	}
+	for _, m := range q.messages {
+		if !m.quiet {
 			return true
 		}
 	}

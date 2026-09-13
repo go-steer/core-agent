@@ -350,6 +350,57 @@ func TestPrependPendingAlerts_PrependsAndDrains(t *testing.T) {
 	}
 }
 
+// TestHasPendingAlerts_ReadsWithoutConsuming pins both halves of the
+// contract agent.SubagentManager states for it (#1040): it must answer
+// the same question PrependPendingAlerts would, and it must NOT drain.
+//
+// The non-consuming half is the one worth a test. Its caller is
+// releaseFencedWake, which asks "is a turn owed?" in order to decide
+// whether to WAKE one — so an implementation that answered by draining
+// would discard every queued subagent report at each guardrail reset,
+// and the turn it then woke would find nothing to deliver.
+func TestHasPendingAlerts_ReadsWithoutConsuming(t *testing.T) {
+	t.Parallel()
+	mgr, _ := newFakeManager(t)
+	if mgr.HasPendingAlerts() {
+		t.Errorf("an empty manager owes no turn")
+	}
+
+	mgr.pushAlert(Alert{From: "watch-prod", Text: "pod restarted"})
+
+	if !mgr.HasPendingAlerts() {
+		t.Fatalf("a queued alert must report as pending")
+	}
+	// Asked twice, because a draining implementation passes the first
+	// call and fails here.
+	if !mgr.HasPendingAlerts() {
+		t.Errorf("HasPendingAlerts consumed the alert; it is read-only by contract")
+	}
+	if got := mgr.PrependPendingAlerts("what now?"); !strings.Contains(got, "pod restarted") {
+		t.Errorf("the alert must still be deliverable to the turn; got %q", got)
+	}
+	if mgr.HasPendingAlerts() {
+		t.Errorf("after a real drain nothing is owed")
+	}
+}
+
+// TestHasPendingAlerts_CountsDropNotice covers the arm the doc comment
+// argues hardest for. An eviction leaves no alert in the channel, only
+// a counter, but "some reports were lost" is itself a report (#780) —
+// a reset that skipped the wake because the channel happened to be
+// empty would strand it.
+func TestHasPendingAlerts_CountsDropNotice(t *testing.T) {
+	t.Parallel()
+	mgr, _ := newFakeManager(t)
+	mgr.mu.Lock()
+	mgr.droppedAlerts = 2
+	mgr.mu.Unlock()
+
+	if !mgr.HasPendingAlerts() {
+		t.Errorf("an evicted-alert notice is pending work; the turn has to carry it")
+	}
+}
+
 func TestSpawn_TerminalAlertIsPushed(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)

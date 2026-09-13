@@ -214,6 +214,12 @@ Both backstops share one recovery surface ([#666](https://github.com/go-steer/co
 
 `/guardrail` with no arguments prints what is armed, what tripped, why, and — when a bare reset would re-trip — how much budget to add. The reset is `SessionWrite`, not admin: the next thing an operator does after clearing a halt is `POST /inject`, which is itself `SessionWrite`, so gating the reset harder would buy no safety.
 
+#### A halted session goes quiet, and nothing is lost while it waits
+
+A tripped guardrail refuses turns *before* the agent reads its inbox, so anything sent to a halted session is queued, not delivered — and as of [#1040](https://github.com/go-steer/core-agent/issues/1040) it no longer wakes the agent to be refused again either. The session simply goes inert until an operator resets it, at which point the queued messages drive the first turn. Sending to a halted session is therefore safe and does nothing visible: `POST /inject` still returns 200, an attached TUI still shows the message arriving, and auto-continue stands down instead of piling continuation notes into a queue nobody can drain. Before this, a halted session woke on every arriving message, refused every time (no model spend, but a log line every few minutes), and — because the inbox is bounded and drops the *oldest* message when full — could silently discard an operator's earliest instructions if the halt stood long enough.
+
+The one thing a halt does not currently do is tell you: a refused turn emits no frame, so the evidence is in the daemon log rather than in your client. `GET /sessions/{id}/guardrails` and `/guardrail` are how you ask ([#891](https://github.com/go-steer/core-agent/issues/891) tracks surfacing it unprompted).
+
 #### Halts survive a restart
 
 A halt that a restart clears is not a halt. Since v2.9.0-dev ([#643](https://github.com/go-steer/core-agent/issues/643)) both trips — and the operator resets that clear them — are written to the eventlog and folded forward by the next process over the same session. A crash, an OOM kill, or a pod roll no longer hands a runaway loop a fresh budget, which matters most for exactly the unattended deployments [#642](https://github.com/go-steer/core-agent/issues/642) turned these backstops on for. Budget an operator granted before the restart is preserved too, so a resumed session doesn't re-halt at the old bar.

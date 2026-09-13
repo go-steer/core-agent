@@ -22,6 +22,7 @@ import (
 	"github.com/glebarez/sqlite"
 
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/runner"
 )
 
 // TestDaemonHealthChecksNilHandle: no handle, no check. Registering a
@@ -30,8 +31,8 @@ import (
 // fix, dressed up as a green light.
 func TestDaemonHealthChecksNilHandle(t *testing.T) {
 	t.Parallel()
-	if got := daemonHealthChecks(nil); len(got) != 0 {
-		t.Errorf("daemonHealthChecks(nil) = %v, want none", got)
+	if got := daemonHealthChecks(nil, nil); len(got) != 0 {
+		t.Errorf("daemonHealthChecks(nil, nil) = %v, want none", got)
 	}
 }
 
@@ -46,7 +47,7 @@ func TestDaemonHealthChecksSessionDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eventlog.Open: %v", err)
 	}
-	checks := daemonHealthChecks(h)
+	checks := daemonHealthChecks(h, nil)
 	if len(checks) != 1 || checks[0].Name != "session_db" {
 		t.Fatalf("checks = %+v, want exactly one named session_db", checks)
 	}
@@ -58,5 +59,48 @@ func TestDaemonHealthChecksSessionDB(t *testing.T) {
 	}
 	if err := checks[0].Check(context.Background()); err == nil {
 		t.Error("closed log reports healthy — the check is not reading anything")
+	}
+}
+
+// TestDaemonHealthChecksWakeLoops: ONE aggregate check, whatever the
+// session count (#978). One check per session would grow the list
+// without bound under a kubelet re-probing on a fixed period, and would
+// put session ids in front of an unauthenticated caller. What the
+// aggregate reports for a partial versus a total outage is
+// runner.LoopHealthSet.Err's contract, tested in pkg/runner against the
+// unexported writers only a wake loop gets to call.
+func TestDaemonHealthChecksWakeLoops(t *testing.T) {
+	t.Parallel()
+	var loops runner.LoopHealthSet
+	for _, sid := range []string{"alpha", "bravo", "charlie"} {
+		loops.Register(sid)
+	}
+	checks := daemonHealthChecks(nil, &loops)
+	if len(checks) != 1 || checks[0].Name != "wake_loops" {
+		t.Fatalf("checks = %+v, want exactly one named wake_loops", checks)
+	}
+	if err := checks[0].Check(context.Background()); err != nil {
+		t.Errorf("three idle sessions report %v, want nil", err)
+	}
+}
+
+// A daemon wired with both subsystems registers both, in a stable
+// order. /healthz names each check in its body, and a field that moves
+// between probes is a field operators learn to ignore.
+func TestDaemonHealthChecksRegistersBothSubsystems(t *testing.T) {
+	t.Parallel()
+	dsn := filepath.Join(t.TempDir(), "eventlog.db")
+	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	checks := daemonHealthChecks(h, &runner.LoopHealthSet{})
+	var names []string
+	for _, c := range checks {
+		names = append(names, c.Name)
+	}
+	if len(names) != 2 || names[0] != "session_db" || names[1] != "wake_loops" {
+		t.Errorf("check names = %v, want [session_db wake_loops]", names)
 	}
 }

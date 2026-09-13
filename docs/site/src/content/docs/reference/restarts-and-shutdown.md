@@ -70,3 +70,4 @@ spec:
 - PVC for the session DB — without it every other guarantee on this page is moot.
 - `strategy: Recreate` (or a leader lock) with RWO volumes — two daemons must not share one SQLite file.
 - Raise `terminationGracePeriodSeconds` in lockstep if you raise `attach.shutdown_timeout`.
+- Point **readiness** at [`GET /healthz`](/reference/attach-http/#get-healthz-v290-dev-946) and leave **liveness** on `tcpSocket`. Since [#978](https://github.com/go-steer/core-agent/issues/978) readiness reports whether the wake loops are getting any work done, and the faults that answer no — a revoked binding, an expired credential, an exhausted quota — are the ones a restart cannot fix. Sharing one definition between the two probes turns a daemon that is still up, still accepting injects, and still telling you what is wrong into a restart loop. The bundled recipes are wired this way.

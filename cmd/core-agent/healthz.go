@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/runner"
 )
 
 // daemonHealthChecks builds the subsystem probes behind the attach
@@ -45,18 +46,37 @@ import (
 // What is left is the session database, which is genuinely dynamic:
 // the file can be deleted out from under a running daemon, the volume
 // can go read-only, another writer can hold the lock. Every attach
-// shape has one since #973 made attach mode imply it, so in daemon
-// mode this always returns exactly one check.
+// shape has one since #973 made attach mode imply it.
 //
-// A nil handle yields no checks rather than a passing one. That
-// degrades /healthz to what TCP already proves, which is the honest
-// answer when there is nothing to interrogate.
-func daemonHealthChecks(h *eventlog.Handle) []attach.HealthCheck {
-	if h == nil {
-		return nil
+// And, since #978, the wake loops. That one is the whole reason the
+// endpoint is more than a liveness probe: a daemon whose every turn
+// fails looks identical from outside to a daemon with nothing to do —
+// a running pod, a green probe, and no work getting done. It is ONE
+// aggregate check rather than one per session, because the check list
+// would otherwise grow without bound under a kubelet re-probing on a
+// fixed period, and because HealthCheck.Name is a compile-time
+// constant on purpose: the endpoint is unauthenticated and a session
+// id is not the caller's business. The per-session detail rides the
+// error, which the handler writes to the daemon log and not to the
+// body. See runner.LoopHealthSet.Err for why a PARTIAL failure keeps
+// the check green.
+//
+// A nil handle yields no session_db check rather than a passing one.
+// That degrades /healthz to what TCP already proves, which is the
+// honest answer when there is nothing to interrogate.
+func daemonHealthChecks(h *eventlog.Handle, loops *runner.LoopHealthSet) []attach.HealthCheck {
+	var checks []attach.HealthCheck
+	if h != nil {
+		checks = append(checks, attach.HealthCheck{
+			Name:  "session_db",
+			Check: func(ctx context.Context) error { return h.Ping(ctx) },
+		})
 	}
-	return []attach.HealthCheck{{
-		Name:  "session_db",
-		Check: func(ctx context.Context) error { return h.Ping(ctx) },
-	}}
+	if loops != nil {
+		checks = append(checks, attach.HealthCheck{
+			Name:  "wake_loops",
+			Check: func(context.Context) error { return loops.Err() },
+		})
+	}
+	return checks
 }

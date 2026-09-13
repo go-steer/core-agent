@@ -191,13 +191,18 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            # Same endpoint, longer period. Liveness restarts the pod, so
-            # it deliberately shares readiness's definition of healthy
-            # rather than inventing a weaker one — a subsystem that stays
-            # degraded through several readiness failures is a restart
-            # candidate, and that is what the 15s/20s spacing encodes.
-            httpGet:
-              path: /healthz
+            # NOT /healthz, as of core-agent #978. Liveness used to share
+            # readiness's definition of healthy on the argument that a
+            # subsystem still degraded after several readiness failures
+            # is a restart candidate. That argument died when /healthz
+            # grew the `wake_loops` check: the conditions it reports —
+            # a revoked binding, an expired credential, an exhausted
+            # quota — are exactly the ones a restart cannot fix, so
+            # sharing the definition converts a visible, injectable,
+            # still-serving daemon into a restart loop that drops the
+            # operator's context every 60s. Readiness stops routing work
+            # at it; that is the correct response, and it is enough.
+            tcpSocket:
               port: attach
             initialDelaySeconds: 15
             periodSeconds: 20

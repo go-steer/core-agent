@@ -913,3 +913,195 @@ func TestMaybeAutoContinue_TransientBudgetStopsReDriving(t *testing.T) {
 		t.Fatalf("inbox = %v, want empty — the transient re-drive budget is not bounding anything", msgs)
 	}
 }
+
+// seedACAt is seedAC against a caller-chosen database path, so a test
+// can open a SECOND handle on the same file — two daemons sharing one
+// session DB, which is the whole subject of #977.
+func seedACAt(t *testing.T, path string, events ...*session.Event) *eventlog.Handle {
+	t.Helper()
+	ctx := context.Background()
+	h := openACAt(t, path)
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{AppName: "core-agent", UserID: acUser, SessionID: acSID}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	resp, err := h.Service.Get(ctx, &session.GetRequest{AppName: "core-agent", UserID: acUser, SessionID: acSID})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	for _, ev := range events {
+		if err := h.Service.AppendEvent(ctx, resp.Session, ev); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	return h
+}
+
+// openACAt attaches a handle to a session DB at a known path, the way a
+// peer daemon does.
+func openACAt(t *testing.T, path string) *eventlog.Handle {
+	t.Helper()
+	h, err := eventlog.Open(context.Background(), sqlite.Open(path))
+	if err != nil {
+		t.Fatalf("eventlog.Open(%s): %v", path, err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	return h
+}
+
+// peerAgent is a second daemon's agent object for the same session.
+func peerAgent(t *testing.T, h *eventlog.Handle) *agent.Agent {
+	t.Helper()
+	ag, err := agent.New(stubLLM{}, agent.WithEventLog(h), agent.WithSession(acUser, acSID))
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	return ag
+}
+
+// TestTwoDaemonsOnOneDBContinueAnInterruptionOnce is #977.
+//
+// No concurrency, and that is a finding rather than a shortcut: the bug
+// is not a race. agent_run_lock is released before the continuation turn
+// runs, and the turn runs asynchronously in the wake loop, so the second
+// daemon's pass — a whole tick later — acquires the lock with no
+// contention at all, reads a tail that still looks interrupted because
+// the first daemon's turn has committed nothing yet, and injects a
+// second continuation. Two sequential calls reproduce it every time.
+//
+// Fails on pre-fix code: both inboxes get the note.
+func TestTwoDaemonsOnOneDBContinueAnInterruptionOnce(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "shared.db")
+
+	ha := seedACAt(t, path, acUserEvent("what is wrong with the cluster?", time.Now().Add(-5*time.Minute)))
+	hb := openACAt(t, path)
+	agA, agB := peerAgent(t, ha), peerAgent(t, hb)
+
+	if got := lockClassifyInject(ctx, ha, agA, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+		t.Fatalf("daemon A outcome = %v, want acInjected (%v) — the fixture is not interrupted", got, acInjected)
+	}
+	// Daemon A's lock is long since released and its turn has committed
+	// nothing: from the database, the tail is exactly what A saw.
+	if got := lockClassifyInject(ctx, hb, agB, "core-agent", acUser, acSID, time.Hour); got != acSkippedClaimed {
+		t.Errorf("daemon B outcome = %v, want acSkippedClaimed (%v)", got, acSkippedClaimed)
+	}
+
+	if msgs := agA.DrainInbox(); len(msgs) != 1 {
+		t.Errorf("daemon A inbox = %v, want the one continuation note", msgs)
+	}
+	if msgs := agB.DrainInbox(); len(msgs) != 0 {
+		t.Errorf("daemon B inbox = %v, want empty — that is the duplicated continuation turn", msgs)
+	}
+}
+
+// The claim is about one interruption, not about the session. A session
+// that goes quiet AGAIN after a continuation has run must be continued
+// again, or the first claim silently disables auto-continue for that
+// session for the rest of its life.
+func TestAClaimedSessionIsStillContinuedOnItsNextInterruption(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := time.Now().Add(-10 * time.Minute)
+
+	h := seedACAt(t, filepath.Join(t.TempDir(), "shared.db"), acUserEvent("first question", base))
+	ag := acAgent(t, h)
+	if got := lockClassifyInject(ctx, h, ag, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+		t.Fatalf("first pass = %v, want acInjected", got)
+	}
+	ag.DrainInbox()
+
+	// The continuation ran and answered, the operator asked again, and
+	// that turn was interrupted too. A later tail, so a later instant.
+	resp, err := h.Service.Get(ctx, &session.GetRequest{AppName: "core-agent", UserID: acUser, SessionID: acSID})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	for _, ev := range []*session.Event{
+		acModelEvent("here is the answer", base.Add(time.Minute)),
+		acUserEvent("and what about the other namespace?", base.Add(2*time.Minute)),
+	} {
+		if err := h.Service.AppendEvent(ctx, resp.Session, ev); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	if got := lockClassifyInject(ctx, h, ag, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+		t.Errorf("second interruption = %v, want acInjected — the claim keyed on the session, not the interruption", got)
+	}
+	if msgs := ag.DrainInbox(); len(msgs) != 1 {
+		t.Errorf("inbox = %v, want the second continuation note", msgs)
+	}
+}
+
+// A failed inject hands the claim back. Otherwise one transient inject
+// failure strands the session until it is interrupted again — and the
+// retry driver, whose entire job is to recover exactly this, would find
+// the interruption permanently claimed by the attempt that failed.
+func TestAFailedInjectHandsTheClaimBack(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "shared.db")
+
+	h := seedACAt(t, path, acUserEvent("what is wrong with the cluster?", time.Now().Add(-5*time.Minute)))
+	ag := acAgent(t, h)
+
+	// A closed inbox is how InjectAs fails on a session that is shutting
+	// down, and it is the only inject failure this path has.
+	ag.CloseInbox()
+	if got := lockClassifyInject(ctx, h, ag, "core-agent", acUser, acSID, time.Hour); got != acSkippedInjectErr {
+		t.Fatalf("outcome = %v, want acSkippedInjectErr (%v)", got, acSkippedInjectErr)
+	}
+
+	hb := openACAt(t, path)
+	agB := peerAgent(t, hb)
+	if got := lockClassifyInject(ctx, hb, agB, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+		t.Errorf("after a failed inject = %v, want acInjected — the claim was never handed back", got)
+	}
+	if msgs := agB.DrainInbox(); len(msgs) != 1 {
+		t.Errorf("inbox = %v, want the continuation note", msgs)
+	}
+}
+
+// A stand-down must NOT claim. The in-process guards — #796
+// turn-in-flight, #624 queued operator input, an operator pause — are
+// facts about THIS daemon that a peer neither sees nor shares, so
+// claiming on the way past would let one daemon's local state suppress
+// a continuation a peer is perfectly able to run.
+func TestAStandDownDoesNotClaimTheInterruption(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "shared.db")
+
+	h := seedACAt(t, path, acUserEvent("what is wrong with the cluster?", time.Now().Add(-5*time.Minute)))
+	ag := acAgent(t, h)
+	ag.Pause("operator parked this daemon")
+	if got := lockClassifyInject(ctx, h, ag, "core-agent", acUser, acSID, time.Hour); got != acSkippedPaused {
+		t.Fatalf("outcome = %v, want acSkippedPaused (%v)", got, acSkippedPaused)
+	}
+
+	hb := openACAt(t, path)
+	agB := peerAgent(t, hb)
+	if got := lockClassifyInject(ctx, hb, agB, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+		t.Errorf("peer daemon = %v, want acInjected — one daemon's local pause claimed the interruption", got)
+	}
+}
+
+// TestClaimedSkip_IsRefundable pins the accounting half, for the #575
+// reason the run-lock skip refunds: the loser made no attempt and the
+// winner is handling it, so charging the loser spends the shared
+// per-session cap on daemons that never got a fair shot. A claim ERROR
+// stays charged, because a persistent one is a crash-loop vector that
+// only the cap can bound.
+func TestClaimedSkip_IsRefundable(t *testing.T) {
+	t.Parallel()
+	if !acSkippedClaimed.refundable() {
+		t.Error("acSkippedClaimed must refund the write-ahead attempt charge")
+	}
+	if acSkippedClaimErr.refundable() {
+		t.Error("acSkippedClaimErr must stay charged")
+	}
+	if acSkippedClaimed.injected() || acSkippedClaimErr.injected() {
+		t.Error("a claim skip queued no continuation and must not count as one")
+	}
+}

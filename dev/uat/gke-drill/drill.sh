@@ -111,6 +111,12 @@ drill_log "run dir: ${DRILL_RUN_DIR}"
 # the first step runs, so an unset one is a bug in the rig rather than a
 # run that stopped early, and `set -u` should say so rather than write a
 # sheet describing a cluster it cannot name.
+#
+# Written through a temp file. `> meta.json` truncates before jq runs, so
+# a jq that then fails leaves a 0-byte meta.json, and score.py dies on it
+# with a JSONDecodeError rather than the partial sheet the paragraph above
+# promises. That is what turned one lost subagent capture into one lost
+# run on 2026-09-13.
 drill_write_meta() {
     local frames=0
     [[ -s "${DRILL_RUN_DIR}/transcript.jsonl" ]] &&
@@ -137,7 +143,8 @@ drill_write_meta() {
         --argjson expect_terms "$(printf '%s\n' "${SCENARIO_EXPECT_TERMS[@]}" | jq -R . | jq -s .)" \
         --argjson fingerprint_before "$(printf '%s\n' "${FINGERPRINT_BEFORE:-}" | grep . | jq -R . | jq -s . || echo '[]')" \
         --argjson fingerprint_after "$(printf '%s\n' "${FINGERPRINT_AFTER:-}" | grep . | jq -R . | jq -s . || echo '[]')" \
-        '$ARGS.named' > "${DRILL_RUN_DIR}/meta.json"
+        '$ARGS.named' > "${DRILL_RUN_DIR}/meta.json.tmp" &&
+        mv "${DRILL_RUN_DIR}/meta.json.tmp" "${DRILL_RUN_DIR}/meta.json"
 }
 
 # ── Cleanup ──────────────────────────────────────────────────────────

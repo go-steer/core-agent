@@ -256,7 +256,7 @@ Once any content has reached the caller the stream is pass-through: a later erro
 
 The predicate is deliberately narrow — only `429`/`RESOURCE_EXHAUSTED` and `503`/`UNAVAILABLE`, matched on the status code *and* its status word. A `400 INVALID_ARGUMENT` is never retried, including the shape tracked in [#898](https://github.com/go-steer/core-agent/issues/898): its cause is unknown, and re-sending a request the server has already said it cannot parse spends a second request to be told the same thing.
 
-Retries are logged, so a recovered failure is visible rather than silent:
+The retry logs to the daemon's stderr — `kubectl logs deploy/core-agent` on a cluster deploy. It is not in the session transcript, so a run that recovers from a 429 leaves no trace of it in its own history:
 
 ```
 core-agent: gemini: transient provider error (Error 429, …, Status: RESOURCE_EXHAUSTED, Details: []) — retrying once after 2s
@@ -268,6 +268,8 @@ and so is a retry the cooldown suppressed:
 ```
 core-agent: gemini: transient provider error (…) NOT retried: another retry fired within the 30s cooldown
 ```
+
+**The `retrying once` line is the reliable one; the outcome line often does not appear.** In a 90-minute drill batch that logged 13 retries, only 3 logged an outcome — when the consumer stops reading mid-stream after taking the recovered content, the policy returns without reaching the line. Read a `retrying once` with no following outcome as "probably recovered", not as "still running". Tracked in [#1039](https://github.com/go-steer/core-agent/issues/1039), along with the cooldown's behaviour in a burst: because 429s arrive correlated, the single shared rescue per window goes to whichever caller is rejected first, and a second caller rejected seconds later is not retried.
 
 ### Context caching
 

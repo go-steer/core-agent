@@ -80,14 +80,14 @@ const (
 // enabled. The wake loop (started by the caller right after) drains
 // the injected note as the session's first turn.
 //
-// Lock staging note: v1 holds agent_run_lock across detection +
+// Lock staging note: agent_run_lock is held across detection +
 // injection only, not across the continuation turn itself (the turn
 // runs asynchronously in the wake loop; holding a lease across it
 // needs a turn-end hook this path doesn't have). The residual window
-// — two shared-DB daemons both lazily resuming the same session
-// after one's injection but before its turn commits — requires
-// near-simultaneous cross-daemon touches inside the freshness window.
-// The design doc's implementation notes record this deviation.
+// that left — two shared-DB daemons both resuming the same session
+// after one's injection but before its turn commits — is closed by the
+// durable continuation claim (#977) rather than by a longer lease; see
+// lockClassifyInject and pkg/eventlog/claim.go.
 func maybeAutoContinue(deps SessionFactoryDeps, caller auth.Caller, sid string, ag *agent.Agent) {
 	lockClassifyInject(deps.DaemonCtx, deps.EventlogHandle, ag, "core-agent", caller.Identity, sid, deps.AutoContinueFreshness)
 }
@@ -110,6 +110,8 @@ const (
 	acSkippedOperatorInput                             // operator input already queued — it drives the next turn (#624)
 	acSkippedPaused                                    // operator parked the loop; resume drives the next turn
 	acSkippedGuardrailHalt                             // watchdog or cost ceiling is refusing turns (#1040)
+	acSkippedClaimed                                   // this interruption was already continued by someone (#977)
+	acSkippedClaimErr                                  // the claim write failed; stand down rather than risk a duplicate (#977)
 	acSkippedInjectErr                                 // inject itself failed
 )
 
@@ -134,6 +136,10 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // session reset inside the freshness window would come back with
 // auto-continue already exhausted — penalising it for the guardrail
 // having worked.
+// A claim already held by somebody else (#977) refunds for exactly the
+// #575 reason acSkippedLocked does: we made no attempt and another
+// daemon did, so charging us would spend the shared per-session cap on
+// the losers of a race the winner is already handling.
 // Everything else stays charged:
 // a queued note is a real attempt, and a failed resume/inject or an
 // unexpected lock error must stay counted because a PERSISTENT such
@@ -143,7 +149,7 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // conservative, which is the safe direction.
 func (o autoContinueOutcome) refundable() bool {
 	switch o {
-	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedTurnInFlight, acSkippedOperatorInput, acSkippedPaused, acSkippedGuardrailHalt:
+	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedTurnInFlight, acSkippedOperatorInput, acSkippedPaused, acSkippedGuardrailHalt, acSkippedClaimed:
 		return true
 	default:
 		return false
@@ -170,7 +176,9 @@ func deferAutoContinueInject(ctx context.Context) bool {
 // committed tail under it, apply the freshness window, stand down on
 // live local agent state the tail cannot show (a turn already
 // generating — #796, queued operator input — #624, an operator pause),
-// then inject the synthesized note. Every skip path returns silently or with one stderr
+// claim the interruption durably (#977 — the lock covers the decision,
+// the claim covers the interruption), then inject the synthesized note.
+// Every skip path returns silently or with one stderr
 // line; callers must never fail because auto-continue couldn't run. The
 // returned outcome lets the boot scan account only real attempts.
 func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, app, user, sid string, freshness time.Duration) autoContinueOutcome {
@@ -311,8 +319,48 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: guardrail is tripped (%s); standing down until it is reset\n", sid, reason)
 		return acSkippedGuardrailHalt
 	}
+	// Claim this specific interruption before injecting for it (#977).
+	//
+	// The run lock above is fleet mutual exclusion for the DECISION, and
+	// it is released before the continuation turn runs — the turn
+	// executes asynchronously in the wake loop and this path has no
+	// turn-end hook to hold a lease across. So a peer daemon that
+	// acquires the lock a moment later reads a tail that still looks
+	// interrupted, because our turn has committed nothing yet, and
+	// injects a second continuation into the same session. The window is
+	// not "two turns overlap", it is "two daemons read the same
+	// interrupted tail and both act on it", and a durable claim is what
+	// closes it: a fact that stays true after its writer has moved on,
+	// which is precisely what a lease cannot be.
+	//
+	// Keyed on the interruption instant, not on the session, so a session
+	// that goes quiet again later is continued again. See
+	// pkg/eventlog/claim.go for why this is not a lock held longer.
+	claimed, err := h.ClaimContinuation(ctx, app, user, sid, interruptedAt, lock.Holder())
+	if err != nil {
+		// Stand down. Injecting unclaimed is the one outcome this exists
+		// to prevent, and a DB that cannot take this write is not going
+		// to carry the continuation turn either. Stays CHARGED, like
+		// acSkippedLockErr: a persistent failure here is a crash-loop
+		// vector only the per-session cap can bound.
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: claim continuation: %v — standing down\n", sid, err)
+		return acSkippedClaimErr
+	}
+	if !claimed {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: this interruption has already been continued; standing down\n", sid)
+		return acSkippedClaimed
+	}
 	if err := ag.InjectAs(agent.AutoContinueNoteFor(interruptedAt, verdict.InterruptedCalls), auth.Caller{Identity: agent.AutoContinueOriginator}); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: inject: %v\n", sid, err)
+		// Hand the claim back: no note was queued, so the interruption is
+		// still uncontinued and the retry driver or a peer must be able
+		// to take it. Logged rather than retried — a claim that is never
+		// released costs a continuation, which is the same direction of
+		// error as the release never running, and neither produces the
+		// duplicate the claim exists to prevent.
+		if rerr := h.ReleaseContinuationClaim(ctx, app, user, sid, interruptedAt, lock.Holder()); rerr != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: release claim after a failed inject: %v\n", sid, rerr)
+		}
 		return acSkippedInjectErr
 	}
 	fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue queued (turn interrupted %s ago)\n",

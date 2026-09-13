@@ -437,9 +437,20 @@ func TestDelegationMatchesTheArchive(t *testing.T) {
 	if _, err := os.Stat(root); err != nil {
 		t.Skipf("no drill archive at %s — run dev/uat/gke-drill first", root)
 	}
-	runs, err := LoadRuns(root)
+	runs, skipped, err := LoadRuns(root)
 	if err != nil {
 		t.Fatalf("LoadRuns(%s): %v", root, err)
+	}
+	// An unreadable run no longer takes the corpus down with it, but a
+	// PINNED one going unreadable is a different animal from an archive
+	// being pruned, and the denominator guard below cannot tell them
+	// apart. Say which it is.
+	for _, s := range skipped {
+		if _, pinned := archiveDelegationCounts[filepath.Base(s.Dir)]; pinned {
+			t.Errorf("pinned run is unreadable: %v", s)
+			continue
+		}
+		t.Logf("skipping unreadable run %v", s)
 	}
 
 	checked, totals := 0, map[string]int{}

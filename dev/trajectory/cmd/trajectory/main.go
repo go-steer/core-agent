@@ -59,9 +59,10 @@ func run() error {
 	dir := flag.Arg(0)
 
 	var runs []*trajectory.Trajectory
+	var skipped []trajectory.SkippedRun
 	var err error
 	if *all {
-		runs, err = trajectory.LoadRuns(dir)
+		runs, skipped, err = trajectory.LoadRuns(dir)
 	} else {
 		var t *trajectory.Trajectory
 		t, err = trajectory.LoadRun(dir)
@@ -69,6 +70,11 @@ func run() error {
 	}
 	if err != nil {
 		return err
+	}
+	// Loud, on stderr, before anything else: a reader who pipes the table
+	// or the JSON somewhere still sees that the corpus is short.
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stderr, "trajectory: skipped unreadable run %s\n", s)
 	}
 	if len(runs) == 0 {
 		return fmt.Errorf("no runs under %s (a run directory is one containing transcript.jsonl)", dir)

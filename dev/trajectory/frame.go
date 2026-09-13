@@ -208,16 +208,37 @@ func LoadRun(dir string) (*Trajectory, error) {
 	return t, nil
 }
 
+// SkippedRun is a run directory that looked like a run but could not be
+// read. It is returned rather than logged so the caller decides what a
+// broken run means: the CLI prints it, a test asserting on the archive
+// can fail on it, and neither can miss it by forgetting to look.
+type SkippedRun struct {
+	Dir string
+	Err error
+}
+
+func (s SkippedRun) String() string { return s.Dir + ": " + s.Err.Error() }
+
 // LoadRuns reads every immediate subdirectory of root that looks like a
-// run (it has a transcript.jsonl), oldest first. A directory that fails
-// to load is returned as an error rather than skipped — a run we cannot
-// read is a finding about the recorder, not a run to drop quietly.
-func LoadRuns(root string) ([]*Trajectory, error) {
+// run (it has a transcript.jsonl), oldest first, and returns the runs it
+// could read alongside the ones it could not.
+//
+// A run we cannot read is still a finding about the recorder, not a run
+// to drop quietly — but it is not a reason to refuse the other sixty
+// either. The archive is append-only history: one run truncated by a rig
+// defect in September permanently blocks every analysis of every run
+// before and after it if an unreadable directory is fatal. That happened
+// — a jq failure left a 0-byte meta.json (since fixed in drill.sh by
+// writing through a temp file), and it took the whole corpus down with
+// it. So the second return value carries the casualties and the caller
+// decides.
+func LoadRuns(root string) ([]*Trajectory, []SkippedRun, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []*Trajectory
+	var skipped []SkippedRun
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -228,12 +249,14 @@ func LoadRuns(root string) ([]*Trajectory, error) {
 		}
 		t, err := LoadRun(dir)
 		if err != nil {
-			return nil, err
+			skipped = append(skipped, SkippedRun{Dir: dir, Err: err})
+			continue
 		}
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Meta.RunID < out[j].Meta.RunID })
-	return out, nil
+	sort.Slice(skipped, func(i, j int) bool { return skipped[i].Dir < skipped[j].Dir })
+	return out, skipped, nil
 }
 
 func decodeFrame(agent string, seq int, raw json.RawMessage) (Frame, error) {

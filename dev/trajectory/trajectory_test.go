@@ -232,7 +232,7 @@ func TestMissingSubagentsIsNotAnError(t *testing.T) {
 
 // A directory we cannot parse is a finding about the recorder. Skipping
 // it would make a corrupt archive look like a smaller one.
-func TestUnreadableRunIsAnErrorNotASkip(t *testing.T) {
+func TestUnreadableRunIsReportedNotDropped(t *testing.T) {
 	root := t.TempDir()
 	good := filepath.Join(root, "good")
 	bad := filepath.Join(root, "bad")
@@ -247,10 +247,52 @@ func TestUnreadableRunIsAnErrorNotASkip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := LoadRuns(root); err == nil {
-		t.Fatal("LoadRuns returned nil error over an unparseable run")
-	} else if !strings.Contains(err.Error(), "transcript.jsonl:1") {
-		t.Errorf("error does not name the offending line: %v", err)
+	runs, skipped, err := LoadRuns(root)
+	if err != nil {
+		t.Fatalf("LoadRuns: %v", err)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped = %v, want the one unparseable run", skipped)
+	}
+	if !strings.Contains(skipped[0].Err.Error(), "transcript.jsonl:1") {
+		t.Errorf("skip does not name the offending line: %v", skipped[0])
+	}
+	if !strings.Contains(skipped[0].Dir, "bad") {
+		t.Errorf("skip names %q, want the bad run", skipped[0].Dir)
+	}
+	// The point of the change: the readable run survives its neighbour.
+	if len(runs) != 1 {
+		t.Errorf("got %d runs, want the one good run to have loaded anyway", len(runs))
+	}
+}
+
+// The failure that motivated the shape: a 0-byte meta.json, which is what
+// a jq failure in drill.sh left behind on 2026-09-13. Every run in the
+// archive was unreadable for as long as that one directory sat there.
+func TestATruncatedMetaSkipsOnlyItsOwnRun(t *testing.T) {
+	root := t.TempDir()
+	good := filepath.Join(root, "good")
+	bad := filepath.Join(root, "bad")
+	for _, d := range []string{good, bad} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		copyFile(t, filepath.Join(basicRun, "transcript.jsonl"), filepath.Join(d, "transcript.jsonl"))
+	}
+	copyFile(t, filepath.Join(basicRun, "meta.json"), filepath.Join(good, "meta.json"))
+	if err := os.WriteFile(filepath.Join(bad, "meta.json"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, skipped, err := LoadRuns(root)
+	if err != nil {
+		t.Fatalf("LoadRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Errorf("got %d runs, want 1 — a truncated meta.json took the corpus with it", len(runs))
+	}
+	if len(skipped) != 1 || !strings.Contains(skipped[0].Dir, "bad") {
+		t.Errorf("skipped = %v, want just the run with the empty meta.json", skipped)
 	}
 }
 
@@ -261,12 +303,17 @@ func TestLoadRunsSkipsNonRunDirectories(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "not-a-run"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runs, err := LoadRuns(root)
+	runs, skipped, err := LoadRuns(root)
 	if err != nil {
 		t.Fatalf("LoadRuns: %v", err)
 	}
 	if len(runs) != 0 {
 		t.Errorf("got %d runs, want 0", len(runs))
+	}
+	// Not a run and not a casualty either — "no transcript.jsonl" is how
+	// you say "this is a notes folder", not "the recorder broke".
+	if len(skipped) != 0 {
+		t.Errorf("skipped = %v, want a non-run directory to be invisible", skipped)
 	}
 }
 
@@ -385,9 +432,12 @@ func TestAgreesWithScorePyOnTheArchive(t *testing.T) {
 		t.Skipf("no drill archive at %s — run dev/uat/gke-drill first", root)
 	}
 
-	runs, err := LoadRuns(root)
+	runs, skipped, err := LoadRuns(root)
 	if err != nil {
 		t.Fatalf("LoadRuns(%s): %v", root, err)
+	}
+	for _, s := range skipped {
+		t.Logf("skipping unreadable run %v", s)
 	}
 	if len(runs) == 0 {
 		t.Skipf("%s holds no runs", root)

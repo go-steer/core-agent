@@ -826,6 +826,27 @@ func (m *Manager) takeDroppedAlerts() int {
 	return n
 }
 
+// HasPendingAlerts reports whether PrependPendingAlerts would return
+// anything if it ran now. Read-only by contract (agent.SubagentManager):
+// it must not consume, because the caller is deciding whether to WAKE a
+// turn, and the turn is what does the draining.
+//
+// Counts an evicted-alert notice as pending for the same reason
+// PrependPendingAlerts renders one: "some reports were lost" is a report
+// in its own right (#780), and a reset that skipped the wake because the
+// channel happened to be empty would strand it.
+func (m *Manager) HasPendingAlerts() bool {
+	if m == nil {
+		return false
+	}
+	if len(m.alerts) > 0 {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.droppedAlerts > 0
+}
+
 // List returns all currently-tracked handles, sorted by start time.
 // Terminal handles remain in the list until Close (so operator
 // surfaces can still report final status). Defensive copy of slice.

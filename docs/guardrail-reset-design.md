@@ -72,6 +72,29 @@ The watchdog has no accumulator, so its reset is just "clear the
 tripped flag." The loop-detection state resets with it; if the model
 resumes the same loop, it trips again, which is the correct outcome.
 
+### The reset is also what un-fences the wake signal (#1040)
+
+Both pre-flights refuse at the top of `Agent.Run`, above
+`drainInboxFull`, so while a halt stands a queued inject cannot be
+delivered and nothing discards it. As of #1040 a halted agent therefore
+stops handing the **driver** a wake — observers and the `wake` event
+still fire, so an attached TUI still sees input arrive — and the reset
+releases what the halt withheld.
+
+Two consequences worth stating here rather than leaving to the code:
+
+- **Resetting one guardrail while the other is still tripped releases
+  nothing.** The next turn would only be refused by the other one. A
+  session halted by both needs both cleared before anything moves.
+- **A reset does not always drive a turn.** It fires a wake only if
+  something is actually waiting: a fenced wake, a queued inbox message,
+  or a pending subagent alert. `Run` with nothing to deliver is still a
+  model call, and a reset that spends one on an empty session is a bill
+  for nothing. The queue checks are not redundant with the fence flag —
+  a turn that trips the watchdog in its post-turn hook has already
+  consumed the wake that drove it, so whatever arrived alongside is
+  queued with nothing fenced.
+
 ### Consequence: a bare reset of a session trip is refused
 
 If the session has spent $12 against a $10 ceiling, clearing the

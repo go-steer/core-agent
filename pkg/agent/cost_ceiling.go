@@ -161,6 +161,13 @@ func (a *Agent) ResetCostCeiling() {
 	a.costCeilingExceeded = false
 	a.costCeilingReason = ""
 	a.mu.Unlock()
+	// Release any wake the halt swallowed (#1040). No-op when the
+	// watchdog is also tripped. Note this fires even when the reset
+	// will immediately re-trip (WouldRetripCostCeiling) — the re-trip
+	// happens on the next turn's enforcement pass, which is the
+	// operator-visible way to learn that a bare reset was not enough;
+	// swallowing the wake here would make that silent instead.
+	a.releaseFencedWake()
 }
 
 // CostCeilingLimits returns the ceilings currently in force, including
@@ -400,6 +407,11 @@ func (a *Agent) snapshotTurnStartCost() {
 // it. Called at the very top of Run, before any tracker writes or
 // model calls — the refusal is structural, not driven by a fresh
 // attempt that might also fail.
+//
+// Leads with the refusal rather than repeating the trip verbatim —
+// see preflightWatchdog for why (#1040). Same defect on this arm: the
+// spend line is identical whether the ceiling just tripped or tripped
+// an hour ago, so a log cannot tell one incident from N.
 func (a *Agent) preflightCostCeiling() error {
 	if a == nil {
 		return nil
@@ -409,5 +421,5 @@ func (a *Agent) preflightCostCeiling() error {
 	if !a.costCeilingExceeded {
 		return nil
 	}
-	return &costCeilingError{reason: a.costCeilingReason}
+	return &costCeilingError{reason: refusalReason(a.costCeilingReason)}
 }

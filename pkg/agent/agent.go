@@ -400,6 +400,23 @@ type Agent struct {
 	// guardrail_halt.go.
 	guardrailHaltKind string
 
+	// wakeFenced records that a wake was swallowed because a guardrail
+	// halt was standing when something tried to drive a turn (#1040).
+	// Released by whichever reset clears the last halt, so the input
+	// that was queued behind it drives the first post-reset turn
+	// instead of sitting in the inbox until drop-oldest eats it. See
+	// guardrail_fence.go.
+	wakeFenced bool
+
+	// fencedLogReason is the halt text the fence last wrote a log line
+	// for, so repeated fenced wakes under one halt stay quiet while a
+	// SECOND guardrail tripping — or one of two being cleared — still
+	// gets a line. Log de-duplication only; nothing reads it for
+	// control flow. Cleared when the last halt is, so a guardrail that
+	// trips again for the same reason after an operator reset is a new
+	// halt and gets its own line.
+	fencedLogReason string
+
 	// Watchdog (#123 PR 2). Optional behavioral observer; nil when
 	// not wired. onWatchdogAlert is called for each alert returned by
 	// watchdog.Check in the post-turn hook; default nil = collect-only

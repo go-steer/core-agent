@@ -48,6 +48,30 @@ func captureTurnErrors(a *Agent) *[]attach.TurnError {
 	return &got
 }
 
+// assertRefusalMatchesTrip checks the anti-drift property both
+// TestClassifyRefusal_* tests were written for: one construction site
+// feeds the trip frame and the refusal classification, so every routed
+// field has to agree.
+//
+// Message is the one deliberate exception (#1040). A refusal is not a
+// new detection, and a daemon log that repeats the halt verbatim on
+// every refused turn reads as N separate runaways — thirteen of them,
+// for one halt, on the run that found this. So the refusal leads with
+// refusalPrefix and carries the trip's text behind it: still one
+// source, still no drift, and now distinguishable. Asserting the
+// relationship rather than equality is what keeps that from decaying
+// into two independently-worded strings.
+func assertRefusalMatchesTrip(t *testing.T, trip, refusal attach.TurnError) {
+	t.Helper()
+	if want := refusalPrefix + trip.Message; refusal.Message != want {
+		t.Errorf("refusal message is not the trip's, prefixed:\n got  = %q\n want = %q", refusal.Message, want)
+	}
+	trip.Message, refusal.Message = "", ""
+	if trip != refusal {
+		t.Errorf("trip frame and refusal classification disagree outside Message:\n trip = %+v\n refusal = %+v", trip, refusal)
+	}
+}
+
 // TestClassifyRefusal_CostCeiling drives the real trip and the real
 // refusal, then classifies the refusal the way pkg/agent's metrics
 // path does.
@@ -83,9 +107,7 @@ func TestClassifyRefusal_CostCeiling(t *testing.T) {
 	// The doc comments on AsTurnError claim the refusal and the trip
 	// cannot drift apart. That is only true while one construction
 	// site feeds both, so assert it rather than assert it in prose.
-	if trip := firstTurnError(t, *emitted); trip != got {
-		t.Errorf("trip frame and refusal classification disagree:\n trip = %+v\n refusal = %+v", trip, got)
-	}
+	assertRefusalMatchesTrip(t, firstTurnError(t, *emitted), got)
 }
 
 // TestClassifyRefusal_Watchdog is the watchdog half. Same pre-#818
@@ -113,9 +135,7 @@ func TestClassifyRefusal_Watchdog(t *testing.T) {
 	if got.Retryable {
 		t.Errorf("Retryable = true, want false — re-driving a refused turn is what the watchdog exists to stop (full: %+v)", got)
 	}
-	if trip := firstTurnError(t, *emitted); trip != got {
-		t.Errorf("trip frame and refusal classification disagree:\n trip = %+v\n refusal = %+v", trip, got)
-	}
+	assertRefusalMatchesTrip(t, firstTurnError(t, *emitted), got)
 }
 
 // TestClassifyRefusal_WatchdogReasonCarriesModelText is the sharp edge

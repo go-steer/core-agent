@@ -261,6 +261,17 @@ Proxying is not a usable tell either: a chat gateway proxies for a real human wh
 
 This is a minor version rather than a major because no frame, field, or status code changes shape; nothing a client *parses* is affected. It is recorded here at length precisely because the additive-minor convention would otherwise imply no behavior changed, and it did.
 
+### Injecting into a guardrail-halted session
+
+A parked session is waiting for a verb. A session whose [watchdog or cost ceiling has tripped](/concepts/context-management/#resetting-a-tripped-guardrail) is waiting for a **reset**, and until it gets one it refuses turns above the point where it would read its inbox. An inject still behaves the same way it does against a parked session — queued, `inbox`/queued frame published, 200 back — and as of [#1040](https://github.com/go-steer/core-agent/issues/1040) it no longer wakes the agent to be refused, so a halted session with a producer pointed at it goes quiet instead of logging a refusal every few minutes. The queued messages drive the first turn after `POST /sessions/{id}/guardrails/reset`.
+
+Two sharp edges for clients:
+
+- **A 200 from `/inject` has never meant a turn will run**, and on a halted session it definitely doesn't. `GET /sessions/{id}/guardrails` is the authoritative answer to "will anything happen with this?"; poll it before concluding the agent is ignoring you.
+- **`POST /wake` returns 200 and runs nothing** against a halted session, which is the least honest response on this page. It is unchanged by #1040 and tracked as [#891](https://github.com/go-steer/core-agent/issues/891), which adds the non-terminal `guardrail-trip` event that would let a client learn this from the stream rather than by polling.
+
+The inbox is bounded and drops the **oldest** message when full, so a producer that keeps injecting into a long-standing halt will eventually lose its earliest signals. That is the same contract as any other queue-without-drain on this page; the reset is the drain.
+
 ### Keying state by turn (protocol 1.10.0)
 
 `POST /inject` returns the `prompt_id` it assigned to the message ([#840](https://github.com/go-steer/core-agent/issues/840)):

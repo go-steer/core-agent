@@ -694,6 +694,87 @@ func TestMaybeAutoContinue_OperatorInputOutranksNote(t *testing.T) {
 	}
 }
 
+// #1040: auto-continue must not queue a continuation note into a
+// session a guardrail is refusing turns for. Nothing can deliver it —
+// both pre-flights refuse above drainInboxFull — so the note sits in a
+// bounded, drop-oldest inbox, one per retry tick, evicting the
+// operator's real messages to make room for our own.
+//
+// The halt here comes from DURABLE state with no turn ever having run,
+// which is the shape that actually happens: a pod restarted while a
+// session was halted reaches this pass through Registry.Lookup with the
+// in-memory flags still false, because Agent.Run is the only thing that
+// folds the persisted guardrail events back in. A guard that reads the
+// flags without restoring first is blind on exactly the path it was
+// written for.
+//
+// Fails on pre-fix code, which injects the note regardless.
+func TestMaybeAutoContinue_StandsDownWhileAGuardrailIsTripped(t *testing.T) {
+	t.Parallel()
+	// The trip row lands last, the way a post-turn cost trip actually
+	// does: it carries no Content, so the tail classifier walks past it
+	// and still sees the interrupted call. The session is genuinely
+	// continuable — the halt is the only reason not to.
+	h := seedAC(t,
+		acUserEvent("keep digging", time.Now().Add(-5*time.Minute)),
+		acCallEvent("kubectl_get", time.Now().Add(-1*time.Minute)),
+		attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling,
+			"per-session cost ceiling exceeded: session has cost $5.0000, limit $5.0000"),
+	)
+
+	// A ceiling must be configured for the restore to arm the halt:
+	// durable state restores a trip, it does not enable a bound the
+	// operator turned off. acAgent sets no ceiling, so this builds its
+	// own agent.
+	ag, err := agent.New(stubLLM{},
+		agent.WithEventLog(h),
+		agent.WithSession(acUser, acSID),
+		agent.WithCostCeiling(agent.CostCeiling{MaxSessionUSD: 5}))
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	// Precondition, and the whole point of the test: nothing has run a
+	// turn, so the in-memory flags are still clear. A guard that only
+	// read them would sail straight past.
+	if halted, _ := ag.GuardrailHalted(); halted {
+		t.Fatalf("precondition: a freshly constructed agent has not folded durable state yet")
+	}
+
+	got := lockClassifyInject(context.Background(), h, ag, "core-agent", acUser, acSID, time.Hour)
+
+	if got != acSkippedGuardrailHalt {
+		t.Errorf("outcome = %v, want acSkippedGuardrailHalt (%v)", got, acSkippedGuardrailHalt)
+	}
+	if msgs := ag.DrainInbox(); len(msgs) != 0 {
+		t.Errorf("a halted session must get no continuation note; inbox = %q", msgs)
+	}
+	// The pass must have folded the durable halt in, not merely missed
+	// it — that fold is what makes the stand-down reachable at all.
+	if halted, _ := ag.GuardrailHalted(); !halted {
+		t.Errorf("the pass must restore the durable halt")
+	}
+	// And it must not have parked the run lock on the way out.
+	lock, err := h.AcquireLock(context.Background(), "core-agent", acUser, acSID)
+	if err != nil {
+		t.Fatalf("run lock still held after a stand-down: %v", err)
+	}
+	lock.Release()
+}
+
+// TestGuardrailHaltSkip_IsRefundable pins the accounting half. A
+// stand-down injected nothing, so charging it would spend the session's
+// hourly cap on ticks that did no work — and a session reset inside the
+// freshness window would come back with auto-continue already dead.
+func TestGuardrailHaltSkip_IsRefundable(t *testing.T) {
+	t.Parallel()
+	if !acSkippedGuardrailHalt.refundable() {
+		t.Errorf("a guardrail stand-down must refund the write-ahead attempt charge")
+	}
+	if acSkippedGuardrailHalt.injected() {
+		t.Errorf("a guardrail stand-down injected nothing")
+	}
+}
+
 // #624 part (a): a tail interrupted mid read-only call gets a
 // continuation note that does NOT nudge re-issuing it. Fails on
 // pre-change code, whose note always says "re-issue interrupted tool

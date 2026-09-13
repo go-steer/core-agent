@@ -150,7 +150,7 @@ func TestDrainWatchdogAlerts_DispatchesToCallback(t *testing.T) {
 		watchdog:        w,
 		onWatchdogAlert: func(al watchdog.Alert) { got = append(got, al) },
 	}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 alerts dispatched; got %d", len(got))
 	}
@@ -165,7 +165,7 @@ func TestDrainWatchdogAlerts_NoCallbackDrainsButDoesNotPanic(t *testing.T) {
 	// (so they don't leak into the next turn) but silently discarded.
 	w := &fakeWatchdog{pending: []watchdog.Alert{{Signal: "x"}}}
 	a := &Agent{watchdog: w /* no onWatchdogAlert */}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 }
 
 func TestDrainWatchdogAlerts_NilWatchdogIsNoOp(t *testing.T) {
@@ -173,7 +173,7 @@ func TestDrainWatchdogAlerts_NilWatchdogIsNoOp(t *testing.T) {
 	a := &Agent{}
 	// Should NOT panic, should NOT call the callback (no callback,
 	// no watchdog — pure no-op).
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 }
 
 func TestWithWatchdog_SetsBothFields(t *testing.T) {

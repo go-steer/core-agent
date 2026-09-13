@@ -357,7 +357,12 @@ func toolResponseNoOp(resp map[string]any) bool {
 // alerts the watchdog accumulated during the just-ended turn and
 // dispatches them to the configured onWatchdogAlert callback. No-op
 // when no watchdog is wired or no callback is set.
-func (a *Agent) drainWatchdogAlerts() {
+//
+// haltedTurn is passed straight through to a trip this drain causes
+// (#891): true from enforceWatchdogInTurn, which cuts the running turn
+// immediately after, false from the post-turn hook, where the turn has
+// already produced its answer and will emit `turn-complete`.
+func (a *Agent) drainWatchdogAlerts(haltedTurn bool) {
 	if a.watchdog == nil {
 		return
 	}
@@ -394,7 +399,7 @@ func (a *Agent) drainWatchdogAlerts() {
 	// and outside the onWatchdogAlert==nil guard above so enforcement
 	// fires even when no warn-mode callback is wired.
 	if a.watchdogEnforce {
-		a.maybeTripWatchdog(alerts)
+		a.maybeTripWatchdog(alerts, haltedTurn)
 	}
 }
 
@@ -437,9 +442,11 @@ func (a *Agent) drainWatchdogAlerts() {
 // Check() already emptied the buffer and maybeTripWatchdog is
 // idempotent. It does NOT set pendingInterruptAudit — that flag is
 // only raised by MarkInterruptPending from the attach handler — so a
-// watchdog halt is never mislabeled as an operator interrupt. Nor does
-// the cleanup re-report the cancellation as a `canceled` turn-error: the
-// trip's own frame is the turn's terminal one (#818).
+// watchdog halt is never mislabeled as an operator interrupt. The
+// cleanup DOES report the cancellation as a `canceled` turn-error —
+// that is the cut turn's accurate outcome and its only terminal frame,
+// now that the trip has its own non-terminal event to ride (#891,
+// replacing #818's suppression).
 func (a *Agent) enforceWatchdogInTurn() {
 	if a == nil || a.watchdog == nil || !a.watchdogEnforce {
 		return
@@ -451,11 +458,14 @@ func (a *Agent) enforceWatchdogInTurn() {
 	if tripped, _ := a.WatchdogTripped(); tripped {
 		return
 	}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(true)
 	if tripped, _ := a.WatchdogTripped(); tripped {
-		// The trip's turn-error is this turn's terminal frame; mark
-		// before cutting the turn so the cancellation doesn't produce
-		// a second one (#818, see guardrail_halt.go).
+		// Mark before cutting so the turn's metric point is labelled
+		// with the guardrail rather than the bare `canceled` the
+		// Interrupt produces (#818 part 2; see guardrail_halt.go). The
+		// `canceled` turn-error itself now stands as this turn's one
+		// terminal frame — the trip went out on its own non-terminal
+		// event above, so there is nothing left to suppress (#891).
 		a.markGuardrailHalt(attach.TurnErrorWatchdog)
 		a.Interrupt()
 	}
@@ -499,10 +509,12 @@ func (a *Agent) prependWatchdogFeedback(prompt string) string {
 
 // maybeTripWatchdog halts the agent when any alert this turn is
 // Critical. Sets watchdogTripped + watchdogReason and emits a
-// watchdog turn-error, exactly mirroring maybeEnforceCostCeiling.
+// non-terminal `guardrail-trip` event, exactly mirroring
+// maybeEnforceCostCeiling — including haltedTurn, which is true only
+// from the in-turn arm that is about to cut the running turn (#891).
 // Idempotent: once tripped, later turns' drains are a no-op so we
 // don't re-emit. Non-Critical alerts never trip.
-func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert) {
+func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert, haltedTurn bool) {
 	if len(alerts) == 0 {
 		return
 	}
@@ -538,7 +550,7 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert) {
 	// shape that would otherwise resume looping in the next pod.
 	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, reason))
 
-	a.emit(attach.EventTurnError, watchdogTurnError(reason))
+	a.emitGuardrailTrip(attach.GuardrailWatchdog, reason, haltedTurn)
 }
 
 // preflightWatchdog returns a non-nil watchdogError when a prior turn

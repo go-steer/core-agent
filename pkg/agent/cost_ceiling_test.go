@@ -81,7 +81,7 @@ func TestMaybeEnforceCostCeiling_DisabledIsNoOp(t *testing.T) {
 	tr := usage.NewTracker()
 	tr.Append("test", 1_000_000, 0, usage.Pricing{InputPerMTok: 100}) // big spend
 	a := &Agent{tracker: tr /* no costCeiling configured */}
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	tripped, _ := a.CostCeilingTripped()
 	if tripped {
 		t.Errorf("ceiling should not trip when none configured")
@@ -107,7 +107,7 @@ func TestMaybeEnforceCostCeiling_PerTurn_Trips(t *testing.T) {
 	a.snapshotTurnStartCost()
 	// Append a turn worth $0.15 — exceeds the $0.10 per-turn cap.
 	tr.Append("test", 1_500_000, 0, usage.Pricing{InputPerMTok: 0.10})
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	tripped, reason := a.CostCeilingTripped()
 	if !tripped {
 		t.Fatalf("ceiling should have tripped")
@@ -135,7 +135,7 @@ func TestMaybeEnforceCostCeiling_PerTurn_DoesNotTripUnderCap(t *testing.T) {
 	}
 	a.snapshotTurnStartCost()
 	tr.Append("test", 50_000, 0, usage.Pricing{InputPerMTok: 0.10}) // $0.005
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	tripped, _ := a.CostCeilingTripped()
 	if tripped {
 		t.Errorf("ceiling should not trip at $0.005 vs $0.10 cap")
@@ -158,7 +158,7 @@ func TestMaybeEnforceCostCeiling_PerSession_Trips(t *testing.T) {
 	}
 	a.snapshotTurnStartCost() // captures $0.80 as turn start
 	tr.Append("test", 500_000, 0, usage.Pricing{InputPerMTok: 1})
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	tripped, reason := a.CostCeilingTripped()
 	if !tripped {
 		t.Fatalf("ceiling should have tripped on session bound")
@@ -179,7 +179,7 @@ func TestMaybeEnforceCostCeiling_AlreadyTripped_IsIdempotent(t *testing.T) {
 	}
 	a.snapshotTurnStartCost()
 	tr.Append("test", 10_000_000, 0, usage.Pricing{InputPerMTok: 0.10}) // $1.00
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	tripped, reason := a.CostCeilingTripped()
 	if !tripped {
 		t.Errorf("should still be tripped (was tripped before)")

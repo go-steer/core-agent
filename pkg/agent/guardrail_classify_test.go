@@ -23,35 +23,56 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
-// firstTurnError returns the payload of the first turn-error the
-// emitter recorded, or fails the test.
-func firstTurnError(t *testing.T, events []attach.TurnError) attach.TurnError {
+// firstGuardrailTrip returns the payload of the first guardrail-trip
+// the emitter recorded, or fails the test.
+func firstGuardrailTrip(t *testing.T, events []attach.GuardrailTrip) attach.GuardrailTrip {
 	t.Helper()
 	if len(events) == 0 {
-		t.Fatalf("no turn-error was emitted")
+		t.Fatalf("no guardrail-trip was emitted")
 	}
 	return events[0]
 }
 
-// captureTurnErrors wires an emitter that keeps every turn-error
-// payload, in order.
-func captureTurnErrors(a *Agent) *[]attach.TurnError {
-	var got []attach.TurnError
+// captureGuardrailTrips wires an emitter that keeps every
+// guardrail-trip payload, in order.
+func captureGuardrailTrips(a *Agent) *[]attach.GuardrailTrip {
+	var got []attach.GuardrailTrip
 	a.SetOperatorEventEmitter(func(kind string, payload any) {
-		if kind != attach.EventTurnError {
+		if kind != attach.EventGuardrailTrip {
 			return
 		}
-		if te, ok := payload.(attach.TurnError); ok {
-			got = append(got, te)
+		if gt, ok := payload.(attach.GuardrailTrip); ok {
+			got = append(got, gt)
 		}
 	})
 	return &got
 }
 
+// There is deliberately no captureTurnErrors alongside the above.
+// The refusal these tests check against never reaches an emitter:
+// preflightCostCeiling and preflightWatchdog return an iterator that
+// yields the error straight to the caller, short-circuiting above the
+// tree's only emit(EventTurnError) site, so a capture helper here
+// would return an empty slice and read as a producer bug rather than
+// as the wire fact it is (#891).
+
 // assertRefusalMatchesTrip checks the anti-drift property both
 // TestClassifyRefusal_* tests were written for: one construction site
-// feeds the trip frame and the refusal classification, so every routed
-// field has to agree.
+// feeds the trip and the refusal, so every field the two share has to
+// agree.
+//
+// The two now travel in different frames (#891 — the trip is a
+// non-terminal guardrail-trip, the refusal is still a turn-error,
+// because a refused turn's outcome is genuinely that it was refused),
+// which makes this assertion MORE load-bearing rather than less: they
+// no longer share a struct, so nothing but this test stops the two
+// descriptions of one halt from wandering apart.
+//
+// Guardrail and Kind are asserted equal as strings, not merely
+// corresponding. attach.GuardrailCostCeiling and
+// attach.TurnErrorCostCeiling are separately-declared constants that
+// happen to hold the same text, and an operator UI keying one off the
+// other would break silently if either were renamed.
 //
 // Message is the one deliberate exception (#1040). A refusal is not a
 // new detection, and a daemon log that repeats the halt verbatim on
@@ -61,14 +82,16 @@ func captureTurnErrors(a *Agent) *[]attach.TurnError {
 // source, still no drift, and now distinguishable. Asserting the
 // relationship rather than equality is what keeps that from decaying
 // into two independently-worded strings.
-func assertRefusalMatchesTrip(t *testing.T, trip, refusal attach.TurnError) {
+func assertRefusalMatchesTrip(t *testing.T, trip attach.GuardrailTrip, refusal attach.TurnError) {
 	t.Helper()
-	if want := refusalPrefix + trip.Message; refusal.Message != want {
+	if want := refusalPrefix + trip.Reason; refusal.Message != want {
 		t.Errorf("refusal message is not the trip's, prefixed:\n got  = %q\n want = %q", refusal.Message, want)
 	}
-	trip.Message, refusal.Message = "", ""
-	if trip != refusal {
-		t.Errorf("trip frame and refusal classification disagree outside Message:\n trip = %+v\n refusal = %+v", trip, refusal)
+	if trip.Guardrail != refusal.Kind {
+		t.Errorf("trip names guardrail %q but the refusal classifies as kind %q — one halt, two names", trip.Guardrail, refusal.Kind)
+	}
+	if refusal.Retryable {
+		t.Errorf("refusal is Retryable; a halt only an operator can clear must never invite a re-drive (full: %+v)", refusal)
 	}
 }
 
@@ -85,11 +108,11 @@ func TestClassifyRefusal_CostCeiling(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
 	a := &Agent{tracker: tr, costCeiling: CostCeiling{MaxTurnUSD: 0.10}}
-	emitted := captureTurnErrors(a)
+	emitted := captureGuardrailTrips(a)
 
 	a.snapshotTurnStartCost()
 	tr.Append("test", 1_500_000, 0, usage.Pricing{InputPerMTok: 0.10})
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 
 	err := a.preflightCostCeiling()
 	if err == nil {
@@ -107,7 +130,7 @@ func TestClassifyRefusal_CostCeiling(t *testing.T) {
 	// The doc comments on AsTurnError claim the refusal and the trip
 	// cannot drift apart. That is only true while one construction
 	// site feeds both, so assert it rather than assert it in prose.
-	assertRefusalMatchesTrip(t, firstTurnError(t, *emitted), got)
+	assertRefusalMatchesTrip(t, firstGuardrailTrip(t, *emitted), got)
 }
 
 // TestClassifyRefusal_Watchdog is the watchdog half. Same pre-#818
@@ -120,9 +143,9 @@ func TestClassifyRefusal_Watchdog(t *testing.T) {
 		{Signal: "repeated-tool-call", Severity: watchdog.SeverityCritical, Reason: "looping on read_file 5x."},
 	}}
 	a := &Agent{watchdog: w, watchdogEnforce: true}
-	emitted := captureTurnErrors(a)
+	emitted := captureGuardrailTrips(a)
 
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 
 	err := a.preflightWatchdog()
 	if err == nil {
@@ -135,7 +158,7 @@ func TestClassifyRefusal_Watchdog(t *testing.T) {
 	if got.Retryable {
 		t.Errorf("Retryable = true, want false — re-driving a refused turn is what the watchdog exists to stop (full: %+v)", got)
 	}
-	assertRefusalMatchesTrip(t, firstTurnError(t, *emitted), got)
+	assertRefusalMatchesTrip(t, firstGuardrailTrip(t, *emitted), got)
 }
 
 // TestClassifyRefusal_WatchdogReasonCarriesModelText is the sharp edge
@@ -153,7 +176,7 @@ func TestClassifyRefusal_WatchdogReasonCarriesModelText(t *testing.T) {
 		Reason:   `looping on kubectl_get with identical args. Args: {"q":"pod not found"}`,
 	}}}
 	a := &Agent{watchdog: w, watchdogEnforce: true}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 
 	err := a.preflightWatchdog()
 	if err == nil {

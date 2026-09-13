@@ -247,7 +247,42 @@ import "time"
 // as that claim, and `stopped` only as whether it was the one who did
 // it. A minor rather than a major for the same reason as 1.11.0:
 // nothing a client parses changes shape.
-const protocolVersion = "1.12.0"
+//
+// v1.13.0 (#891): new non-terminal `guardrail-trip` event type,
+// `{"guardrail","reason","halted_turn"}`, and a guardrail trip stops
+// being reported as a `turn-error`. A trip is not a turn outcome, and
+// modelling it as one made a single frame answer two questions that
+// come apart in both of the shapes a trip arrives in: cut mid-turn, the
+// accurate terminal frame is the `canceled` that the Interrupt produces
+// — which #818 had to suppress, because the guardrail frame was already
+// claiming that slot; tripped at the turn boundary, the turn genuinely
+// completed and emits `turn-complete`, so a consumer saw a `turn-error`
+// and a `turn-complete` for one turn with no way to tell which was
+// terminal. Now the trip rides its own non-terminal event in both
+// shapes, `halted_turn` says which one it is, the turn's real outcome
+// follows unmodified, and #818's suppression is deleted.
+//
+// `cost_ceiling` / `watchdog` stay in the turn-error kind enum for the
+// REFUSAL path — a turn the pre-flight declined because the session was
+// already halted, which IS that turn's outcome.
+//
+// Additive in shape and a minor for that reason, but read the next
+// paragraph before treating it as a free upgrade. **A pre-1.13.0 client
+// stops seeing the trip reason.** It drops the unknown event name per
+// spec §3, and the `turn-error` it used to render the reason from is no
+// longer emitted for a trip; on the in-flight shape it now gets a bare
+// `canceled`, and on the boundary shape nothing at all. Losing the one
+// sentence that explains why the agent is about to refuse everything is
+// a worse regression than the framing oddity this fixes, which is why
+// the change landed together with its consumer (core-tui) rather than
+// ahead of it. A client detects support the usual way: look for
+// "guardrail-trip" in the capabilities frame's `event_types`.
+//
+// The durable fact is unchanged and was always modelled correctly — the
+// `guardrail-trip` eventlog row (#643) predates this and the wire event
+// takes its name, so a trip reads the same off the stream and out of
+// history.
+const protocolVersion = "1.13.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -285,6 +320,16 @@ const (
 	// explicit wake request in the same call.
 	EventWake = "wake"
 
+	// EventGuardrailTrip (v1.13.0) reports that a guardrail halted the
+	// session. Non-terminal — see the GuardrailTrip payload for why a
+	// trip stopped being a turn outcome.
+	//
+	// The name matches GuardrailTripEventName, the durable eventlog row
+	// #643 already writes for the same fact, deliberately: one thing
+	// that happened, one name for it, whether you read it off the wire
+	// or out of the session's history.
+	EventGuardrailTrip = "guardrail-trip"
+
 	// EventAgent is the legacy event type carrying ADK session.Event
 	// payloads (stream-chunk / tool-call / tool-result are all
 	// multiplexed onto this one event today). Kept for back-compat
@@ -309,6 +354,7 @@ var supportedEventTypes = []string{
 	EventTurnError,
 	EventPause,
 	EventWake,
+	EventGuardrailTrip,
 	"stream-chunk",
 	"tool-call",
 	"tool-result",
@@ -630,20 +676,36 @@ const (
 	// turns until the operator calls ResetCostCeiling on the agent
 	// (typically via a slash command). Retryable=false on this kind
 	// — the host should surface the message + halt automated retry.
+	// Since v1.13.0 (#891) this kind classifies the REFUSAL only — a
+	// turn the pre-flight declined because a prior turn already tripped
+	// the ceiling, which genuinely is that turn's outcome. The trip
+	// itself is no longer reported here; it gets its own non-terminal
+	// `guardrail-trip` event.
+	//
+	// Which means core-agent stops putting this kind on the SSE wire
+	// altogether, and a client watching for it will simply stop seeing
+	// it: the refusal short-circuits above the point where Run installs
+	// the cleanup that emits `turn-error`, so it is delivered as the
+	// iterator's error and as `error.type` on the invocation metric,
+	// not as a frame. The kind stays in the enum because that error and
+	// that label are what a host classifies, and because a different
+	// producer may well emit it.
 	TurnErrorCostCeiling = "cost_ceiling"
 	// TurnErrorWatchdog fires when the behavioral watchdog trips a
 	// Critical runaway signal under --watchdog=enforce (#623). Like the
 	// cost ceiling, the agent refuses new turns until the operator calls
 	// ResetWatchdog on the agent. Retryable=false — the host should
 	// surface the message + halt automated retry (an auto-continue
-	// re-drive would just re-trip the same loop).
+	// re-drive would just re-trip the same loop). Also refusal-only
+	// since v1.13.0; see the note on TurnErrorCostCeiling.
 	TurnErrorWatchdog = "watchdog"
 	// TurnErrorCanceled fires when the turn's context was cancelled
 	// (#816): an operator interrupt (POST /interrupt, the TUI's ESC),
 	// a parent-context cancel at shutdown, or a guardrail halting the
-	// turn in flight — that last one via Interrupt, so it emits its
-	// own cost_ceiling / watchdog turn-error first and this one for
-	// the cut turn second. Every one of those is a deliberate stop,
+	// turn in flight — that last one via Interrupt, and since v1.13.0
+	// (#891) it is the cut turn's ONLY terminal frame, preceded by a
+	// non-terminal `guardrail-trip` carrying the reason. Every one of
+	// those is a deliberate stop,
 	// so Retryable=false: re-running the work is the opposite of what
 	// was asked for. Distinct from a context.DeadlineExceeded, which
 	// stays transient_network and retryable — a call that ran out of
@@ -662,6 +724,59 @@ type TurnError struct {
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
 	Hint      string `json:"hint,omitempty"`
+}
+
+// GuardrailTrip (v1.13.0, #891) reports that a guardrail halted the
+// session: the watchdog tripped on a runaway, or a spend cap was
+// crossed. The session now refuses turns until an operator resets it.
+//
+// Non-terminal, and that is the whole point. Until v1.13.0 a trip rode
+// out as a `turn-error` with kind `cost_ceiling` / `watchdog`, which
+// made one frame do two unrelated jobs — "the session has halted, here
+// is why" and "this turn ended" — and the two shapes a trip comes in
+// need those answered differently:
+//
+//   - Tripped mid-turn: the guardrail cuts the turn via Interrupt. The
+//     turn genuinely ended, so something must be its terminal frame —
+//     but the `canceled` turn-error that the cancellation produces is
+//     the accurate one, and #818 had to SUPPRESS it to avoid emitting
+//     two terminal frames for one turn.
+//   - Tripped at the turn boundary, in the post-turn hook: the turn
+//     already produced its answer and emits `turn-complete`. So a
+//     consumer saw a `turn-error` followed by a `turn-complete` for the
+//     same turn and could not tell from either frame whether the
+//     guardrail frame was terminal.
+//
+// Neither half was droppable — without the guardrail frame an operator
+// never learns why the agent is about to start refusing, and without
+// `turn-complete` a consumer waits forever for a turn that ended. So
+// the trip stops being a turn outcome. It does not participate in the
+// exactly-one-terminal-frame-per-turn rule, it fires identically in both
+// shapes, and the turn's real outcome (`canceled` or `turn-complete`)
+// follows it unmodified. #818's suppression is gone with it.
+//
+// `cost_ceiling` / `watchdog` remain in the turn-error kind enum for the
+// REFUSAL path — a turn the pre-flight declined because the session was
+// already halted, which is that turn's outcome and nothing else's.
+type GuardrailTrip struct {
+	// Guardrail is GuardrailWatchdog or GuardrailCostCeiling — the same
+	// vocabulary as the durable trip row (#643) and the reset endpoint,
+	// so an operator UI has one set of names to know.
+	Guardrail string `json:"guardrail"`
+
+	// Reason is the operator-facing explanation, verbatim from the
+	// guardrail that tripped, including what to do about it.
+	Reason string `json:"reason"`
+
+	// HaltedTurn distinguishes the two shapes: true means a turn was cut
+	// short and its terminal frame is the `canceled` turn-error that
+	// follows; false means the turn completed and `turn-complete`
+	// follows. A client that renders a "turn was killed" affordance
+	// needs this, because the frames after it differ.
+	//
+	// Deliberately NOT omitempty. False is a real answer, and a client
+	// must not have to distinguish it from a field the daemon left out.
+	HaltedTurn bool `json:"halted_turn"`
 }
 
 // OperatorEventTarget is the optional capability a Registrant can

@@ -25,6 +25,7 @@ follow their own convention — see "REST response fixtures" below.
 | `capabilities-v1.4.0.json` | `capabilities` | 1.4.0 |
 | `status-update-with-capabilities-v1.4.0.json` | `status-update` merge frame carrying an embedded `capabilities` hot-update | 1.4.0 |
 | `wake-v1.7.0.json` | `wake` — the agent's wake signal fired (`POST /wake`, or a host calling `Agent.RequestWake` on e.g. a background alert) | 1.7.0 |
+| `guardrail-trip-boundary-v1.13.0.json` | `guardrail-trip` — a guardrail halted the session; the boundary variant, which pins `halted_turn: false` | 1.13.0 |
 
 `wake` is an *edge*, not a state: there is no matching "unwake" and
 nothing to reconcile on reconnect. The payload is only `at` because no
@@ -33,6 +34,20 @@ waking reports itself through its own frames. Neither side promises
 coalescing; two wakes microseconds apart may arrive as one frame or
 two. A consumer must not assume a wake means an alert is waiting: in a
 stock daemon the only producer is `POST /wake`.
+
+`guardrail-trip` *is* a state transition, unlike `wake`, but it is no
+more reconcilable from the stream: it fires once, and a client that
+attaches afterwards learns the session is halted from `GET
+/guardrails`, not by replaying frames. Only the boundary variant is
+fixtured because the two variants differ in exactly one field and it
+is the `false` one a later `omitempty` would erase. `halted_turn:
+true` means the producer is about to interrupt, so a `turn-error` with
+kind `canceled` follows and this event is the only thing that says
+why; `false` means the turn was not cut, so `turn-complete` follows,
+or nothing does when no turn was running. A consumer MUST NOT go on
+inferring the trip from the turn-error: since 1.13.0 the
+`cost_ceiling` and `watchdog` kinds appear only on a turn *refused* by
+an already-tripped guardrail, never on the turn that tripped it.
 
 ## REST response fixtures
 

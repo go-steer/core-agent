@@ -268,7 +268,7 @@ A parked session is waiting for a verb. A session whose [watchdog or cost ceilin
 Two sharp edges for clients:
 
 - **A 200 from `/inject` has never meant a turn will run**, and on a halted session it definitely doesn't. `GET /sessions/{id}/guardrails` is the authoritative answer to "will anything happen with this?"; poll it before concluding the agent is ignoring you.
-- **`POST /wake` returns 200 and runs nothing** against a halted session, which is the least honest response on this page. It is unchanged by #1040 and tracked as [#891](https://github.com/go-steer/core-agent/issues/891), which adds the non-terminal `guardrail-trip` event that would let a client learn this from the stream rather than by polling.
+- **`POST /wake` returns 200 and runs nothing** against a halted session, which is the least honest response on this page. It is unchanged by #1040 and still unchanged by [#891](https://github.com/go-steer/core-agent/issues/891) — the response is as uninformative as it ever was. What #891 changes is that a client watching `/events` will have seen the [`guardrail-trip`](#guardrail-trips-protocol-1130) when the halt happened, so it can know the wake is futile without polling for it.
 
 The inbox is bounded and drops the **oldest** message when full, so a producer that keeps injecting into a long-standing halt will eventually lose its earliest signals. That is the same contract as any other queue-without-drain on this page; the reset is the drain.
 
@@ -375,6 +375,32 @@ Detect it the normal way: look for `"wake"` in the `capabilities` frame's `event
 core-tui answers a wake with a toast **and** a permanent `system` row. Through v0.22.0 that row asserted *"an external alert (typically a background subagent's report) is waiting in the inbox"* — true for the alert-wired producer, and false for a bare `POST /wake`, where nothing is waiting and the operator goes hunting for a message that does not exist. Since v0.23.0 the copy states only what the frame can support: a signal arrived, it carries no detail, and the inbox reading is given conditionally, with the `/subagents` pointer kept. The payload has no `reason` for a consumer to branch on — and cannot, because `coretui.WakeRequester` is a `<-chan struct{}` — which is why the fix had to be a wording change on the core-tui side rather than a field on this one.
 :::
 
+### Guardrail trips (protocol 1.13.0)
+
+A **guardrail trip** is the watchdog or the cost ceiling deciding the session must stop. From that moment the agent refuses every turn until an operator resets it, so it is the single most important thing an attached client can be told, and since 1.13.0 it arrives as its own non-terminal frame ([#891](https://github.com/go-steer/core-agent/issues/891)):
+
+```
+event: guardrail-trip
+data: {"guardrail":"watchdog","reason":"watchdog halted the agent (repeated-tool-call): looping on read_file with identical args. Clear it with /guardrail reset watchdog, or POST /sessions/{app}/{sid}/guardrails/reset.","halted_turn":false}
+```
+
+`guardrail` is `watchdog` or `cost_ceiling` — the same vocabulary `GET /guardrails` and `POST /guardrails/reset` speak. `reason` is the operator-facing text, and it names the reset affordance rather than a Go symbol ([#666](https://github.com/go-steer/core-agent/issues/666)), so it is renderable verbatim.
+
+**`halted_turn` is the field to read.** A guardrail trips in one of two places and they need different handling:
+
+- **`true` — the trip cut a turn short.** The agent is about to cancel the in-flight turn, so a `turn-error` with `kind: "canceled"` follows immediately. That frame carries no reason (a cancel looks the same whoever caused it), so this event is the only explanation the operator will get. A client that renders both will stack a contentless warning under the one that means something; absorb the `canceled` into the trip you just rendered, which is what core-tui does.
+- **`false` — the turn was not cut.** Either the trip came from the post-turn hook, in which case the turn finished and produced an answer and its `turn-complete` follows; or no turn was running at all, in which case nothing follows. Both are the same to a consumer: render the halt, change nothing about the turn.
+
+The field is always present, including when false. Do not read its absence as `false` — that is a pre-1.13.0 producer, which sends no `guardrail-trip` at all.
+
+**Why it is not a `turn-error`.** Through 1.12.0 it was one, and the mismatch showed up as a protocol violation. A trip is not a turn's outcome: at the boundary the turn *succeeded*, and a session sitting halted with no turn in flight has no outcome to report. Emitting a `turn-error` anyway produced two terminal frames for one turn, which breaks the exactly-one rule above, double-counts every halt for a client tallying outcomes, and delivers a frame to a client that already finalized on the first. [#818](https://github.com/go-steer/core-agent/issues/818) bought time by suppressing the *cancel* instead; 1.13.0 fixes the modelling, so the terminal slot goes back to the turn and the halt gets a frame of its own.
+
+**This is a behavior change, not an addition, and a client that ignores it goes blind.** The `cost_ceiling` and `watchdog` [`turn-error` kinds](#turn-error-kinds) still exist and still mean what they meant, but core-agent no longer puts either on the stream — see that section for where they do still surface. A client that learned about halts by matching those kinds on `/events` will receive nothing at all on a 1.13.0 daemon, which is why the version is worth checking rather than treating the new event as an extra you can adopt later.
+
+Detect it the normal way: `"guardrail-trip"` in the `capabilities` frame's `event_types`. A pre-1.13.0 daemon omits the key and reports trips the old way, so one client can handle both — match the event where it is advertised, and fall back to the turn-error kinds where it is not.
+
+The durable half is unchanged and predates this: a trip has appended a `guardrail-trip` event row (`Author=agent/guardrail-trip`) to the session log since [#643](https://github.com/go-steer/core-agent/issues/643), and that is still how a client that attaches *after* the halt finds out — along with `GET /guardrails`, which is the authoritative answer. The wire event deliberately reuses the row's name. The stream frame is the live notification; it is not replayed.
+
 ### Side questions (`/slash/btw`)
 
 A side question is answered **outside** the session's turn loop: it runs
@@ -427,7 +453,7 @@ A failed automatic run now also appends a durable `context-reduction-failed` eve
 | `consecutive_failures` | compaction's backoff counter; **omitted** when zero (the checkpoint path has no backoff) |
 | `cooldown_turns` | turns until the next attempt; **omitted** when zero |
 
-Like the guardrail rows this is an ordinary event, so it reaches every client over the existing back-compat `agent` frame on `/events` and stays readable from `GET /sessions/{app}/{sid}/events` after a reconnect. **No protocol change** — there is no typed frame for it, because the protocol has no non-terminal notification event and `turn-error` is reserved for turn outcomes (exactly one terminal frame per turn). A client that wants to surface this to a human should match on the author and render the row itself.
+Like the guardrail rows this is an ordinary event, so it reaches every client over the existing back-compat `agent` frame on `/events` and stays readable from `GET /sessions/{app}/{sid}/events` after a reconnect. **No protocol change** — it has no typed frame, because `turn-error` is reserved for turn outcomes (exactly one terminal frame per turn) and a swallowed compaction failure is not one. A client that wants to surface this to a human should match on the author and render the row itself. Protocol 1.13.0 did add a non-terminal notification event, so the structural objection is gone; whether this failure deserves one of its own is a separate question from [#891](https://github.com/go-steer/core-agent/issues/891), which answered it only for guardrail trips.
 
 A *manual* `/slash/compact` or `/slash/done` writes no row: the failure is already the caller's response.
 
@@ -637,8 +663,8 @@ A failed turn ends with `event: turn-error` carrying `{kind, code?, message, ret
 | `model_not_found` | false | Model name / location mismatch (404, `NOT_FOUND`). |
 | `rate_limited` | true | Quota or rate limit (429, `RESOURCE_EXHAUSTED`). |
 | `transient_network` | true | Unreachable or timed-out upstream (502/503/504, `UNAVAILABLE`, **and a model call that hit its deadline**). |
-| `cost_ceiling` | false | A configured per-turn or per-session spend bound tripped. The operator must reset it. |
-| `watchdog` | false | The behavioral watchdog tripped a Critical runaway signal under `--watchdog=enforce`. The operator must reset it. |
+| `cost_ceiling` | false | A configured per-turn or per-session spend bound tripped. The operator must reset it. **Not emitted on the stream by core-agent since 1.13.0** — see below. |
+| `watchdog` | false | The behavioral watchdog tripped a Critical runaway signal under `--watchdog=enforce`. The operator must reset it. **Not emitted on the stream by core-agent since 1.13.0** — see below. |
 | `canceled` | false | The turn's context was cancelled — see below (protocol 1.8.0). |
 | `unknown` | false | Anything the classifier couldn't categorize. `message` still carries the upstream text. |
 
@@ -648,18 +674,19 @@ A failed turn ends with `event: turn-error` carrying `{kind, code?, message, ret
 
 One consequence worth knowing: a cancel and a **timeout** are now on opposite sides of the flag. `context.DeadlineExceeded` stays `transient_network` / retryable, because nobody asked for it.
 
-**Guardrail halts emit one terminal frame (v2.9.0-dev.4, [#818](https://github.com/go-steer/core-agent/issues/818)).** A guardrail that trips *during* a turn emits its own `turn-error` (`cost_ceiling` / `watchdog`, carrying the operator-facing reason) and then cancels the turn. That cancellation used to be classified like any other, so the turn produced a **second** terminal frame — a contentless `canceled` behind the one that explained the halt. Two terminal frames for one turn breaks the exactly-one rule above, double-counts every halt for a client tallying outcomes, and delivers a frame to a client that finalized on the first. The cancel a guardrail causes is now suppressed, and the guardrail's own frame is the turn's terminal frame. Only that cancel: an operator `POST /interrupt`, an Esc, a daemon shutdown, or a halted turn that ends in some *other* error all still report normally — nothing else explains those, so suppressing them would lose the outcome entirely.
+**`cost_ceiling` and `watchdog` leave the stream (protocol 1.13.0, [#891](https://github.com/go-steer/core-agent/issues/891)).** Both kinds describe two different events, and only one of them was ever a turn outcome:
 
-A guardrail can also trip at the turn **boundary**, from the post-turn hook, after the turn has produced its answer. That shape is unchanged and emits both frames: the guardrail's `turn-error`, then this turn's `turn-complete`. Nothing there is redundant — the turn did finish, and dropping either frame would lose either the answer's completion or the reason the agent is about to start refusing turns. So the rule for consumers is:
+- **The trip** — the halt itself. Through 1.12.0 this was a `turn-error`, and for an in-turn trip that meant a **second** terminal frame behind the cancellation it caused; [#818](https://github.com/go-steer/core-agent/issues/818) bought time by suppressing that cancel. It is now a [`guardrail-trip`](#guardrail-trips-protocol-1130), the suppression is gone with the thing that needed it, and the cut turn reports the plain `canceled` below.
+- **The refusal** — a later turn declined at the top because the session is still halted. That genuinely *is* the turn's outcome, and the kind still names it. But it has never reached the stream as a frame: the refusal short-circuits above the point where a turn installs the cleanup that emits its terminal frame, so it arrives as the error the call returns and as `error.type` on the invocation metric. The kinds stay in the table because that is what a host classifying that error will get.
 
-- Read a `cost_ceiling` / `watchdog` frame as **"the session has halted, here is why"**, not necessarily as this turn's outcome.
-- Use `status-update` with `turn_state: "idle"` as the end-of-turn marker. It fires exactly once per turn in both shapes.
+Net effect for a consumer: on a 1.13.0 daemon these two values stop appearing on `/events` entirely. Two follow-on consequences:
 
-Modelling a trip as what it is — a non-terminal notification rather than a turn outcome — is [#891](https://github.com/go-steer/core-agent/issues/891), a future protocol minor that lands with its core-tui row.
+- A `canceled` may now be a guardrail's doing, and the `guardrail-trip` immediately before it is what says so. On a pre-1.13.0 daemon that cancel was swallowed, so a client that saw one knew it was an operator's.
+- `status-update` with `turn_state: "idle"` remains the end-of-turn marker that fires exactly once per turn in every shape. It was worth saying when trips could occupy the terminal slot; it is still the most robust thing to key on.
 
 The same value rides `error.type` on the `gen_ai.agent.invocation.duration` metric where metrics are enabled, so a dashboard keyed on a `transient_network` rate stops counting deliberate stops as network failures on a daemon carrying this change.
 
-**Guardrail-refused turns are labelled (v2.9.0-dev, [#818](https://github.com/go-steer/core-agent/issues/818)).** A turn refused at the top by an already-tripped guardrail emits no frame of its own — it points back at the `cost_ceiling` / `watchdog` frame from the trip that halted the session — but it *is* recorded on `gen_ai.agent.invocation.duration`. Before this change that record carried `error.type: unknown`: the classifier is substring-based and a guardrail reason matches none of its patterns, so `cost_ceiling` and `watchdog` were the only kinds in the table above that no classifier path could produce, and the spend-cap and runaway series went dark during exactly the incidents they exist for. Refusals now carry their own kind, and so does the turn a guardrail *halted* — labelling that one by the `canceled` its cancellation classifies as would leave the same series dark for the same reason, one turn earlier. Nothing on the wire changes.
+**Guardrail-refused turns are labelled (v2.9.0-dev, [#818](https://github.com/go-steer/core-agent/issues/818)).** A turn refused at the top by an already-tripped guardrail emits no frame of its own — it points back at the `guardrail-trip` that halted the session — but it *is* recorded on `gen_ai.agent.invocation.duration`. Before this change that record carried `error.type: unknown`: the classifier is substring-based and a guardrail reason matches none of its patterns, so `cost_ceiling` and `watchdog` were the only kinds in the table above that no classifier path could produce, and the spend-cap and runaway series went dark during exactly the incidents they exist for. Refusals now carry their own kind, and so does the turn a guardrail *halted* — labelling that one by the `canceled` its cancellation classifies as would leave the same series dark for the same reason, one turn earlier. Nothing on the wire changes.
 
 ### Protocol version negotiation
 

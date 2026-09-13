@@ -75,10 +75,11 @@ func (a *Adapter) consumeTypedFrame(frame attach.Frame) (coretui.Event, bool) {
 
 // translateTypedFrame projects an attach.Frame carrying a typed
 // SSE payload (StatusUpdate / UsageUpdate / InboxEvent /
-// TurnComplete / TurnError / Capabilities) into a coretui.Event
-// with the matching push-mode field set. Returns false when the
-// frame's Type is unrecognized, TypedData is nil, or the payload
-// is of an unexpected concrete type — caller skips the emit.
+// TurnComplete / TurnError / PauseEvent / GuardrailTrip /
+// Capabilities) into a coretui.Event with the matching push-mode
+// field set. Returns false when the frame's Type is unrecognized,
+// TypedData is nil, or the payload is of an unexpected concrete
+// type — caller skips the emit.
 //
 // Capabilities is intentionally a no-op for v1: it's a handshake
 // frame consumed only by the future RemoteTransport=Auto
@@ -138,6 +139,12 @@ func translateTypedFrame(frame attach.Frame) (coretui.Event, bool) {
 			return coretui.Event{}, false
 		}
 		return coretui.Event{Pause: pauseEventToCoreTui(p)}, true
+	case attach.EventGuardrailTrip:
+		p, ok := frame.TypedData.(*attach.GuardrailTrip)
+		if !ok || p == nil {
+			return coretui.Event{}, false
+		}
+		return coretui.Event{GuardrailTrip: guardrailTripToCoreTui(p)}, true
 	case attach.EventCapabilities:
 		// Phase 2 will read this to negotiate poll-vs-push. For now,
 		// acknowledge the frame and drop it so the stream stays
@@ -205,6 +212,30 @@ func turnCompleteToCoreTui(p *attach.TurnComplete) *coretui.TurnSummary {
 		out.CostUSD = *p.CostUSD
 	}
 	return out
+}
+
+// guardrailTripToCoreTui projects the v1.13.0 guardrail-trip payload
+// across the module boundary field-for-field. No translation to do and
+// deliberately none invented: Guardrail carries the daemon's own
+// vocabulary (`watchdog` / `cost_ceiling`), which core-tui matches
+// against its GuardrailWatchdog / GuardrailCostCeiling constants and
+// otherwise renders as given, and Reason is operator-facing prose the
+// guardrail wrote — an adapter that reworded either would be putting
+// this side's guess in front of the producer's answer.
+//
+// HaltedTurn is the field that has to survive the hop intact. core-tui
+// arms a one-shot absorb off it so the `canceled` turn-error that
+// follows an in-turn halt renders nothing; drop it and every halt
+// paints a contentless cancel block under the row that just explained
+// itself. It is a plain bool on both sides with no zero-value
+// ambiguity — false means the turn completed and `turn-complete`
+// follows, which is a real answer and not an absent one.
+func guardrailTripToCoreTui(p *attach.GuardrailTrip) *coretui.GuardrailTrip {
+	return &coretui.GuardrailTrip{
+		Guardrail:  p.Guardrail,
+		Reason:     p.Reason,
+		HaltedTurn: p.HaltedTurn,
+	}
 }
 
 func turnErrorToCoreTui(p *attach.TurnError) *coretui.TurnError {

@@ -365,7 +365,7 @@ func TestGuardrailPersist_CostTripSurvivesRestart(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	tr.Append("test", 1_500_000, 0, usage.Pricing{InputPerMTok: 0.10}) // $0.15 > $0.10
-	first.maybeEnforceCostCeiling()
+	first.maybeEnforceCostCeiling(false)
 	if tripped, _ := first.CostCeilingTripped(); !tripped {
 		t.Fatalf("cost ceiling should have tripped")
 	}
@@ -431,7 +431,7 @@ func TestMaybeEnforceCostCeiling_ResumedSessionDoesNotFalseTripPerTurn(t *testin
 		costCeiling: CostCeiling{MaxTurnUSD: 0.10},
 	}
 	// No snapshotTurnStartCost: this process has not run a turn yet.
-	a.maybeEnforceCostCeiling()
+	a.maybeEnforceCostCeiling(false)
 	if tripped, reason := a.CostCeilingTripped(); tripped {
 		t.Errorf("per-turn ceiling tripped on replayed history, not on this turn's spend: %s", reason)
 	}
@@ -442,7 +442,7 @@ func TestMaybeEnforceCostCeiling_ResumedSessionDoesNotFalseTripPerTurn(t *testin
 		tracker:     tr,
 		costCeiling: CostCeiling{MaxSessionUSD: 0.10},
 	}
-	b.maybeEnforceCostCeiling()
+	b.maybeEnforceCostCeiling(false)
 	if tripped, _ := b.CostCeilingTripped(); !tripped {
 		t.Error("per-session ceiling should still trip on replayed spend")
 	}

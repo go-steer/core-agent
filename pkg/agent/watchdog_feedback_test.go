@@ -245,7 +245,7 @@ func TestDrainWatchdogAlerts_WarnModeQueuesNothing(t *testing.T) {
 	a := &Agent{watchdog: &fakeWatchdog{pending: []watchdog.Alert{
 		{Signal: "repeated-tool-call", Severity: watchdog.SeverityCritical, Guidance: "stop"},
 	}}}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.watchdogPending) != 0 {
@@ -265,7 +265,7 @@ func TestDrainWatchdogAlerts_FeedbackQueuesWithoutCallback(t *testing.T) {
 		}},
 		watchdogFeedback: true,
 	}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 	if got := a.prependWatchdogFeedback("next"); !strings.Contains(got, "stop") {
 		t.Errorf("feedback should queue with no operator callback wired; got %q", got)
 	}

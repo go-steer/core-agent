@@ -65,9 +65,14 @@ func TestIsWatchdogTripped(t *testing.T) {
 
 // TestDrainWatchdogAlerts_EnforceTripsOnCritical is the core enforce
 // gate. A Critical alert under enforce mode must: set the tripped flag,
-// record an operator-facing reason, and emit a watchdog turn-error.
-// Fails on pre-#623 code (drainWatchdogAlerts had no enforce path — the
-// alert would dispatch to the callback and nothing would trip).
+// record an operator-facing reason, and tell the client. Fails on
+// pre-#623 code (drainWatchdogAlerts had no enforce path — the alert
+// would dispatch to the callback and nothing would trip).
+//
+// The telling is a `guardrail-trip` since #891; it was a turn-error
+// before. Nothing about the gate changed, only which frame carries the
+// news — this drain runs outside any turn, so there was never a turn for
+// that turn-error to be the outcome of.
 func TestDrainWatchdogAlerts_EnforceTripsOnCritical(t *testing.T) {
 	t.Parallel()
 	w := &fakeWatchdog{pending: []watchdog.Alert{
@@ -85,7 +90,7 @@ func TestDrainWatchdogAlerts_EnforceTripsOnCritical(t *testing.T) {
 		}{kind, payload})
 	})
 
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 
 	tripped, reason := a.WatchdogTripped()
 	if !tripped {
@@ -99,25 +104,34 @@ func TestDrainWatchdogAlerts_EnforceTripsOnCritical(t *testing.T) {
 	if !strings.Contains(reason, "/guardrail reset") || !strings.Contains(reason, "guardrails/reset") {
 		t.Errorf("reason should point the operator at the slash command and the endpoint; got %q", reason)
 	}
-	// A watchdog turn-error must have been emitted.
+	// A guardrail-trip naming the watchdog must have gone out.
 	var found bool
 	for _, e := range events {
-		if e.kind != attach.EventTurnError {
+		if e.kind == attach.EventTurnError {
+			t.Errorf("a drain outside a turn emitted a turn-error %+v; there is no turn "+
+				"for it to be the outcome of (#891)", e.payload)
 			continue
 		}
-		te, ok := e.payload.(attach.TurnError)
-		if !ok {
-			t.Fatalf("turn-error payload is %T, want attach.TurnError", e.payload)
+		if e.kind != attach.EventGuardrailTrip {
+			continue
 		}
-		if te.Kind == attach.TurnErrorWatchdog {
+		gt, ok := e.payload.(attach.GuardrailTrip)
+		if !ok {
+			t.Fatalf("guardrail-trip payload is %T, want attach.GuardrailTrip", e.payload)
+		}
+		if gt.Guardrail == attach.GuardrailWatchdog {
 			found = true
-			if te.Retryable {
-				t.Errorf("watchdog turn-error should be non-retryable")
+			if !strings.Contains(gt.Reason, "read_file") {
+				t.Errorf("trip reason should carry the alert reason; got %q", gt.Reason)
+			}
+			if gt.HaltedTurn {
+				t.Errorf("halted_turn = true, but this drain cut no turn — a client would "+
+					"sit waiting for a cancellation that never comes (full: %+v)", gt)
 			}
 		}
 	}
 	if !found {
-		t.Errorf("expected a turn-error with kind=%q; got events %+v", attach.TurnErrorWatchdog, events)
+		t.Errorf("expected a guardrail-trip naming %q; got events %+v", attach.GuardrailWatchdog, events)
 	}
 }
 
@@ -134,7 +148,7 @@ func TestDrainWatchdogAlerts_WarnModeDoesNotTrip(t *testing.T) {
 		watchdog:        w, // watchdogEnforce defaults false
 		onWatchdogAlert: func(watchdog.Alert) { dispatched++ },
 	}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 	if dispatched != 1 {
 		t.Errorf("warn mode should still dispatch the alert to the callback; got %d", dispatched)
 	}
@@ -152,7 +166,7 @@ func TestDrainWatchdogAlerts_EnforceIgnoresNonCritical(t *testing.T) {
 		{Signal: "some-future-signal", Severity: watchdog.SeverityWarn, Reason: "advisory"},
 	}}
 	a := &Agent{watchdog: w, watchdogEnforce: true}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 	if tripped, _ := a.WatchdogTripped(); tripped {
 		t.Errorf("enforce should not trip on a non-Critical (warn) alert")
 	}
@@ -168,7 +182,7 @@ func TestDrainWatchdogAlerts_EnforceTripsWithoutCallback(t *testing.T) {
 		{Signal: "repeated-tool-call", Severity: watchdog.SeverityCritical, Reason: "loop"},
 	}}
 	a := &Agent{watchdog: w, watchdogEnforce: true /* no onWatchdogAlert */}
-	a.drainWatchdogAlerts()
+	a.drainWatchdogAlerts(false)
 	if tripped, _ := a.WatchdogTripped(); !tripped {
 		t.Fatalf("enforce should trip even with no warn-mode callback wired")
 	}
@@ -188,7 +202,7 @@ func TestMaybeTripWatchdog_Idempotent(t *testing.T) {
 	a.SetOperatorEventEmitter(func(string, any) { emits++ })
 	a.maybeTripWatchdog([]watchdog.Alert{
 		{Signal: "repeated-tool-call", Severity: watchdog.SeverityCritical, Reason: "new loop"},
-	})
+	}, false)
 	if emits != 0 {
 		t.Errorf("already-tripped agent should not re-emit; got %d emits", emits)
 	}

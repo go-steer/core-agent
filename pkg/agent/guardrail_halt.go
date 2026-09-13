@@ -12,66 +12,69 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// One terminal frame for a guardrail halt (#818 part 1).
+// Labelling a turn a guardrail cut (#818 part 2, #891).
 //
-// A guardrail that trips DURING a turn does two things: it emits its own
-// `turn-error` carrying the operator-facing reason (`cost_ceiling` /
-// `watchdog`), and it calls Interrupt to cut the turn short. The second
-// half then unwinds through the ordinary cancelled-context path, and
-// Run's cleanup — which has no idea why runCtx died — classified the
-// cancellation and emitted a SECOND terminal frame, `canceled`. Two
-// terminal frames for one turn: a protocol violation (spec v1.x: exactly
-// one turn-complete OR turn-error per turn), and on screen a redundant
-// "⚠ canceled · turn canceled" block stacked under the warning that
-// actually says what happened. Any consumer counting turn outcomes
-// double-counts, and one that finalizes on the first terminal frame sees
-// a frame arrive after the turn it already closed.
+// A guardrail that trips DURING a turn calls Interrupt to cut it short,
+// and that unwinds through the ordinary cancelled-context path. Run's
+// cleanup has no idea why runCtx died: `context.Canceled` looks
+// identical whether the operator hit /interrupt, the daemon is shutting
+// down, or a guardrail pulled the plug. Only the site that pulled it can
+// say, so the two in-turn enforcement arms (enforceCostCeilingInTurn,
+// enforceWatchdogInTurn) leave a per-turn marker immediately before
+// their Interrupt call and Run's cleanup consumes it.
 //
-// The fix is a per-turn marker rather than an inspection of the error:
-// `context.Canceled` looks identical whether the operator hit /interrupt,
-// the daemon is shutting down, or a guardrail pulled the plug, so only
-// the site that pulled it can say. The two in-turn enforcement arms
-// (enforceCostCeilingInTurn, enforceWatchdogInTurn) set it immediately
-// before their Interrupt call.
+// What the marker is FOR has narrowed. Originally (#818 part 1) it did
+// two jobs: label the turn's metric point, and SUPPRESS the `canceled`
+// turn-error, because the guardrail had already emitted a `turn-error`
+// of its own and two terminal frames for one turn is a protocol
+// violation (spec v1.x: exactly one turn-complete OR turn-error per
+// turn). The second job is gone. #891 stopped modelling a trip as a turn
+// outcome at all — it rides a non-terminal `guardrail-trip` event now —
+// so the terminal slot is free and `canceled` is simply the accurate
+// answer for a turn that was cut. Nothing to suppress.
 //
-// Deliberately NOT set at the emit sites (maybeEnforceCostCeiling,
-// maybeTripWatchdog). Both also run as post-turn hooks from Run's own
-// cleanup, which is the other shape #818 describes: a guardrail that
-// trips at the turn BOUNDARY emits its turn-error and is then followed by
-// this turn's `turn-complete`, because the turn did finish and did
-// produce an answer. That pairing is odd but not wrong in the same way —
-// nothing is duplicated and nothing is contentless — and suppressing
-// either half would be worse than the pairing (drop the turn-complete and
-// a consumer waits forever for a turn that ended; drop the guardrail
-// frame and the reason the agent is about to start refusing turns never
-// reaches the operator). Modelling a guardrail trip as what it actually
-// is — a non-terminal notification rather than a turn outcome — is the
-// v3.0 protocol fix (`guardrail-trip`, tracked separately); marking only
-// the in-flight sites keeps this change to the half that is unambiguously
-// a defect.
-//
-// Suppression is also conditional on the classified kind being
-// `canceled`. If a marked turn ends in some other error — the model call
-// failed on its way out, say — that error is real, unreported elsewhere,
-// and gets its frame.
-//
-// The marker carries WHICH guardrail rather than a bare bool, because
-// the turn's metric point needs the same answer: the turn error is a
-// bare context.Canceled, so `gen_ai.agent.invocation.duration` would
+// The labelling job remains, and is the reason the marker carries WHICH
+// guardrail rather than a bare bool. The turn error is a bare
+// context.Canceled, so `gen_ai.agent.invocation.duration` would
 // otherwise label a runaway halt `canceled` while the client that
-// watched it happen was told `watchdog`. Same defect as #818's part 2,
-// one turn earlier in the sequence.
+// watched it happen was told `watchdog` — #818's part 2 defect, one turn
+// earlier in the sequence. The wire moving to a separate event does not
+// help here: a metrics backend has no `guardrail-trip` series to
+// correlate against, only this label.
+//
+// Still conditional on the classified kind being `canceled`. If a marked
+// turn ends in some other error — the model call failed on its way out,
+// say — that error is what happened to the turn, and labelling it with
+// the guardrail would be a second mislabelling in place of the first.
 
 package agent
 
 import "github.com/go-steer/core-agent/v2/pkg/attach"
 
+// emitGuardrailTrip puts a trip on the attach stream as the
+// non-terminal `guardrail-trip` event (#891). One construction site for
+// both guardrails, so the two cannot drift — they were already meant to
+// be mirror images and the payload is now shared rather than parallel.
+//
+// haltedTurn tells the consumer which frame to expect next: true means
+// the caller is about to Interrupt and a `canceled` turn-error follows;
+// false means the turn completed (or never started) and `turn-complete`
+// follows, or nothing does.
+func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn bool) {
+	a.emit(attach.EventGuardrailTrip, attach.GuardrailTrip{
+		Guardrail:  guardrail,
+		Reason:     reason,
+		HaltedTurn: haltedTurn,
+	})
+}
+
 // markGuardrailHalt records that a guardrail is cutting the turn that is
-// currently in flight, so Run's cleanup can recognise the cancellation it
-// is about to classify as one the guardrail already reported. Called
+// currently in flight, so Run's cleanup can label the turn's metric point
+// with the guardrail instead of the bare cancellation it sees. Called
 // immediately before Interrupt by the in-turn enforcement arms; kind is
-// the turn-error kind that guardrail emitted (attach.TurnErrorCostCeiling
-// or attach.TurnErrorWatchdog).
+// the guardrail's turn-error kind (attach.TurnErrorCostCeiling or
+// attach.TurnErrorWatchdog), which is the vocabulary `error.type` on
+// gen_ai.agent.invocation.duration already speaks.
 func (a *Agent) markGuardrailHalt(kind string) {
 	if a == nil {
 		return
@@ -82,9 +85,9 @@ func (a *Agent) markGuardrailHalt(kind string) {
 }
 
 // clearGuardrailHalt resets the marker at turn start. Belt-and-braces
-// against a stale flag suppressing a later, legitimate `canceled`: the
-// consume path below already clears it on every terminal frame, but a
-// turn that never reaches its cleanup (a panic unwinding past it, an
+// against a stale flag mislabelling a later, legitimate cancellation:
+// the consume path below already clears it on every terminal frame, but
+// a turn that never reaches its cleanup (a panic unwinding past it, an
 // abandoned iterator) would otherwise leave it armed for the next one.
 func (a *Agent) clearGuardrailHalt() {
 	if a == nil {
@@ -95,13 +98,15 @@ func (a *Agent) clearGuardrailHalt() {
 	a.mu.Unlock()
 }
 
-// consumeGuardrailHalt returns the guardrail kind that halted this turn
-// — meaning the terminal `turn-error` must be suppressed, because that
-// guardrail already emitted the turn's one terminal frame, and the
-// turn's metric point should carry this kind rather than `canceled`.
-// Empty means the ordinary path: emit and classify as usual. Always
+// consumeGuardrailHalt returns the guardrail kind that halted this turn,
+// meaning the turn's metric point should carry this kind rather than
+// `canceled`. Empty means the ordinary path: classify as usual. Always
 // clears the marker, whatever it answers — it describes one turn and
 // must not outlive it.
+//
+// It no longer has any say over which frame goes on the wire: since #891
+// the cut turn emits its `canceled` turn-error unconditionally, because
+// the trip that caused it is reported separately and non-terminally.
 func (a *Agent) consumeGuardrailHalt(turnErr error) string {
 	if a == nil {
 		return ""

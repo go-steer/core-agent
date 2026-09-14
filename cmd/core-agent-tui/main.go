@@ -84,10 +84,7 @@ func main() {
 	}
 	args := positionals
 
-	token := ""
-	if *opts.tokenEnv != "" {
-		token = os.Getenv(*opts.tokenEnv)
-	}
+	token := attachclient.ResolveTokenEnv("core-agent-tui", *opts.tokenEnv, *opts.legacyToken, os.Stderr)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	err := run(ctx, args, token, *opts.authMode, *opts.theme, *opts.alias, *opts.newSession,
@@ -102,6 +99,7 @@ func main() {
 // cliFlags holds the parsed destinations for every command-line flag.
 type cliFlags struct {
 	tokenEnv     *string
+	legacyToken  *string
 	authMode     *string
 	theme        *string
 	alias        *string
@@ -120,7 +118,8 @@ type cliFlags struct {
 // is covered by the arg-order tests the moment it is defined.
 func registerFlags(fs *flag.FlagSet) *cliFlags {
 	return &cliFlags{
-		tokenEnv:     fs.String("token", "", "env var holding the bearer token (e.g. ATTACH_TOKEN)"),
+		tokenEnv:     fs.String("token-env", "", "NAME of an env var holding the bearer token (e.g. --token-env=ATTACH_TOKEN). Not the token itself — passing the secret on the command line is what this flag exists to avoid (#947)."),
+		legacyToken:  fs.String("token", "", "deprecated alias for --token-env; same meaning (the NAME of an env var), warns on use"),
 		authMode:     fs.String("auth", "bearer", "auth strategy for outbound attach requests. 'bearer' (default): send attach token in Authorization: Bearer — the direct-attach path. 'google-id-token' (recommended for Cloud Run IAM / IAP): mint a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamp Authorization + X-Attach-Token. End-user ADC requires service-account impersonation (gcloud auth application-default login --impersonate-service-account=...). 'google-oauth': uses OAuth access tokens via google.FindDefaultCredentials (matches MCP's pattern for Google APIs) — Cloud Run IAM rejects this in many deployments, prefer 'google-id-token' for the IAM/IAP case."),
 		theme:        fs.String("theme", "", "force a theme: 'dark', 'light', or empty for auto (queries the terminal via OSC 11)"),
 		alias:        fs.String("alias", "", "agent identity label shown in the status banner; default uses the session ID"),

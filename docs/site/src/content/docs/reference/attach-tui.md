@@ -35,7 +35,7 @@ ATTACH_TOKEN=$(openssl rand -hex 32) \
   core-agent --no-repl --attach-listen=:7777 \
   --attach-token=ATTACH_TOKEN
 
-core-agent-tui http://localhost:7777 --token=ATTACH_TOKEN
+core-agent-tui http://localhost:7777 --token-env=ATTACH_TOKEN
 ```
 
 `--no-repl` runs `core-agent` as an attach-only daemon (no stdin REPL, no in-process TUI). A durable eventlog comes with it — attach mode turns `--session-db` on by itself, because the live-tail broadcaster has nothing to pump from without one. Pass `--session-db-path=PATH` to choose where it lands; see [Sessions](/concepts/sessions/#attach-mode-implies-durability).
@@ -54,7 +54,7 @@ URL forms (same grammar as `core-agent attach`):
 
 | Flag | Purpose |
 |---|---|
-| `--token=<ENVVAR>` | Name of the env var holding the bearer token (same indirection as `--attach-token` on the listener side). The secret never appears on the command line. |
+| `--token-env=<ENVVAR>` | Name of the env var holding the bearer token (same indirection as `--attach-token` on the listener side). The secret never appears on the command line. |
 | `--auth=<strategy>` | Auth strategy for outbound attach requests. `bearer` (default) sends the attach token in `Authorization: Bearer` — the direct-attach path. `google-id-token` (recommended for Cloud Run IAM / IAP) mints a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamps both `Authorization: Bearer <ID-token>` + `X-Attach-Token`. `google-oauth` is an alternative that uses OAuth access tokens via `google.FindDefaultCredentials` (matches MCP's pattern for Google APIs) — Cloud Run IAM rejects this in many deployments, prefer `google-id-token` unless you specifically need OAuth scope behavior. See "Behind an identity gateway" below. |
 | `--theme=auto\|dark\|light` | Force a glamour theme for markdown rendering. Empty = auto (terminal background detection via OSC 11). |
 | `--alias=<label>` | Display label for the agent identity in the status bar. Defaults to the session ID. |
@@ -90,7 +90,7 @@ gcloud auth application-default login
 
 # Attach. Audience derives from the connection URL automatically.
 core-agent-tui --auth=google-id-token \
-  --token=ATTACH_TOKEN \
+  --token-env=ATTACH_TOKEN \
   https://my-svc-abc123-uc.a.run.app
 ```
 
@@ -107,7 +107,7 @@ Behavior:
 | `Application Default Credentials unavailable` at startup | ADC isn't configured | `gcloud auth application-default login` |
 | `unsupported credentials type: "authorized_user"` at startup | `idtoken.NewTokenSource` requires service-account-shaped ADC; end-user ADC isn't accepted. Most common on local workstations after a plain `gcloud auth application-default login`. | Re-login ADC with service-account impersonation: `gcloud auth application-default login --impersonate-service-account=SA_EMAIL` (operator needs `roles/iam.serviceAccountTokenCreator` on SA_EMAIL). Alternatively, set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa-key.json`. |
 | Gateway 401 from Cloud Run | Operator (or impersonated SA) lacks `roles/run.invoker` on the service | `gcloud run services add-iam-policy-binding <svc> --member="user:$(gcloud config get-value account)" --role=roles/run.invoker` (or the same for the impersonated SA) |
-| Core-agent 401 after gateway passes | Wrong `ATTACH_TOKEN` or daemon running without `--attach-token` | Verify env var resolves to the right value; if daemon is in Posture B, omit `--token=` entirely (see below) |
+| Core-agent 401 after gateway passes | Wrong `ATTACH_TOKEN` or daemon running without `--attach-token` | Verify env var resolves to the right value; if daemon is in Posture B, omit `--token-env=` entirely (see below) |
 
 #### Client-side: `--auth=google-oauth` (alternative; not recommended for Cloud Run IAM)
 
@@ -117,8 +117,8 @@ Uses `google.FindDefaultCredentials` to source a Google OAuth2 access token, sta
 
 **Two postures the daemon can run in:**
 
-- **Posture A — IAM + ATTACH_TOKEN (default-recommended, belt-and-suspenders):** server launched with `--attach-token=ATTACH_TOKEN`, client passes `--token=ATTACH_TOKEN`. Defense in depth against IAM misconfig (accidental grant to `allAuthenticatedUsers`, leaked invoker service account, future org-policy changes).
-- **Posture B — IAM only (simpler, trusts IAM as the sole gate):** server launched without `--attach-token`, client omits `--token=` entirely. Removes a managed secret. Sensible when IAM bindings are tightly scoped to a small group of named principals.
+- **Posture A — IAM + ATTACH_TOKEN (default-recommended, belt-and-suspenders):** server launched with `--attach-token=ATTACH_TOKEN`, client passes `--token-env=ATTACH_TOKEN`. Defense in depth against IAM misconfig (accidental grant to `allAuthenticatedUsers`, leaked invoker service account, future org-policy changes).
+- **Posture B — IAM only (simpler, trusts IAM as the sole gate):** server launched without `--attach-token`, client omits `--token-env=` entirely. Removes a managed secret. Sensible when IAM bindings are tightly scoped to a small group of named principals.
 
 #### IAP / other gateways
 
@@ -158,7 +158,7 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/sessions` | Pop back to the startup session picker (kills the TUI, re-launches). |
 | `/switch [<sid>]`, `/sess` | Detach + reattach to a different session **in place**. Bare form opens an in-chat picker (local + peer sessions fanned in parallel via `GET /peers` → per-peer `GET /sessions`; peer rows tagged `[peer:<name>]`); `/switch <sid>` direct-jumps to a local session. Chat wipes; local SSE reader closes; the outgoing daemon session keeps running for later re-attach. |
 | `/new` | POST `/sessions` on the current daemon (per-caller bearer auth, ACL-isolated) and detach + reattach to the fresh session in place. Companion to `/switch` for the "I need a clean slate" flow. |
-| `/attach <url>`, `/attach <url> <sid>` | Escape hatch for reaching a daemon that isn't peer-registered on the current one (issue #246). Bare form enumerates that daemon's sessions into a system message; `/attach <url> <sid>` direct-jumps in place. An operator-typed URL is explicit intent, so it inherits the operator's startup `--auth` mode + `--token`. (Hub-advertised **peer** endpoints do NOT — see the credential-forwarding note below.) |
+| `/attach <url>`, `/attach <url> <sid>` | Escape hatch for reaching a daemon that isn't peer-registered on the current one (issue #246). Bare form enumerates that daemon's sessions into a system message; `/attach <url> <sid>` direct-jumps in place. An operator-typed URL is explicit intent, so it inherits the operator's startup `--auth` mode + `--token-env`. (Hub-advertised **peer** endpoints do NOT — see the credential-forwarding note below.) |
 | `/transcripts [name]` | Lists and loads the transcript files core-tui writes under `AgentsDir/sessions`. **Not available in attach mode** — `core-agent-tui` wires no `AgentsDir`, so it answers `no AgentsDir wired`. Listed here because the command appears in `/help`; it is a local-TUI feature. (Renamed from `/resume` in core-tui v0.24.0, since `POST /resume` is the endpoint behind `/continue` and `/abandon`.) |
 | `/theme dark\|light` | Switch glamour theme; re-renders existing assistant messages. |
 
@@ -202,7 +202,7 @@ Three pieces make it work:
 
 2. **`/switch`** (TUI, in-process) — inside a running TUI, `/switch` opens an in-chat picker that fans `GET /sessions` in parallel across the current daemon's hub PLUS every registered peer (5 s per-peer timeout so a slow peer doesn't block the list). Pick a row, the TUI detaches from the current session and reattaches to the picked one in place — chat wipes, but the outgoing session keeps running on its daemon for later re-attach. Peer rows tag as `[peer:<name>]`; local rows are unadorned. Bare `/switch` opens the picker; `/switch <sid>` direct-jumps to a local session.
 
-3. **`/attach <url>`** (TUI, escape hatch) — for reaching a daemon that ISN'T peer-registered on the current one (fresh laptop-local daemon, operator-typed URL from a Slack link, ad-hoc jump to a peer that hadn't checked in yet). Bare `/attach <url>` enumerates that daemon's sessions into a system message so the operator can pick manually; `/attach <url> <sid>` direct-jumps in place. An operator-typed `/attach` URL is explicit intent, so it inherits the operator's startup `--auth` mode + `--token` env var.
+3. **`/attach <url>`** (TUI, escape hatch) — for reaching a daemon that ISN'T peer-registered on the current one (fresh laptop-local daemon, operator-typed URL from a Slack link, ad-hoc jump to a peer that hadn't checked in yet). Bare `/attach <url>` enumerates that daemon's sessions into a system message so the operator can pick manually; `/attach <url> <sid>` direct-jumps in place. An operator-typed `/attach` URL is explicit intent, so it inherits the operator's startup `--auth` mode + `--token-env` env var.
 
 **Credential forwarding to peers.** Hub-advertised peer endpoints (the rows `/switch` fans in from `GET /peers`) are attacker-influenceable: any registrant on the hub can publish an arbitrary `endpoint`, and connecting to it with the operator's bearer/OAuth token would hand that token to whoever registered the row ([#384](https://github.com/go-steer/core-agent/issues/384)). The TUI therefore only forwards the operator's credentials to a peer endpoint when its **host matches the hub's own host** or is listed in `--trusted-peers` (comma-separated hostnames, no port); every other peer endpoint is contacted **credential-less**. Server-side, the peer hub validates endpoints (absolute http/https URL required), scopes each registration to its owner (only the owner or an admin can deregister), and hides `registration_id` from non-owners. Operator-typed `/attach <url>` targets are exempt — an explicitly typed URL is intent, not attacker-supplied data.
 
@@ -211,13 +211,13 @@ Three pieces make it work:
 ```bash
 # Terminal setup — one TUI, connected to staging (the hub daemon):
 core-agent-tui --auth=google-id-token \
-  --token=ATTACH_TOKEN \
+  --token-env=ATTACH_TOKEN \
   https://staging.example.com
 
 # Inside the TUI:
 /switch                # → picker shows staging + prod sessions (peer)
 /switch <prod-sid>     # → direct-jump to a known prod session
-/attach http://localhost:7777 --token=DEV_TOKEN
+/attach http://localhost:7777 --token-env=DEV_TOKEN
                        # → escape hatch to the local daemon (not peer-registered)
 /new                   # → fresh session on whichever daemon you're currently on
 ```

@@ -176,20 +176,20 @@ cmd_tail() {
     ensure_built
     local url="${1:-http://localhost:${HUB_PORT}}"
     log "core-agent attach ${url}"
-    ATTACH_TOKEN="${ATTACH_TOKEN}" "${BIN}" attach --token=ATTACH_TOKEN "${url}"
+    ATTACH_TOKEN="${ATTACH_TOKEN}" "${BIN}" attach --token-env=ATTACH_TOKEN "${url}"
 }
 
 cmd_tui() {
     ensure_tui_built
     local url="${1:-http://localhost:${HUB_PORT}}"
     log "core-agent-tui ${url}"
-    ATTACH_TOKEN="${ATTACH_TOKEN}" "${TUI_BIN}" --token=ATTACH_TOKEN "${url}"
+    ATTACH_TOKEN="${ATTACH_TOKEN}" "${TUI_BIN}" --token-env=ATTACH_TOKEN "${url}"
 }
 
 cmd_ls() {
     ensure_built
     local url="${1:-http://localhost:${HUB_PORT}}"
-    ATTACH_TOKEN="${ATTACH_TOKEN}" "${BIN}" ls --token=ATTACH_TOKEN "${url}"
+    ATTACH_TOKEN="${ATTACH_TOKEN}" "${BIN}" ls --token-env=ATTACH_TOKEN "${url}"
 }
 
 cmd_inject() {

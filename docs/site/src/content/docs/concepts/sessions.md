@@ -101,6 +101,8 @@ Two tables in the same database:
 
 The `seq` column is the cursor `Stream.Since` and `Stream.Watch` operate on. ADK's events table doesn't expose monotonic ordering — its event IDs are timestamp-based strings — so the overlay is what makes "everything since seq N" semantics possible.
 
+Both rows are written in one transaction (v3.0+). Because the overlay is the index every `Since` and `Watch` consumer reads, an event with no overlay row isn't late — it's permanently invisible to live tail, attach replay and every transcript built on them. `AppendEvent` used to write the two independently, so a crash, OOM kill or node eviction landing between them produced exactly that. The overlay insert now runs inside ADK's own event transaction, so the two rows commit together or not at all; if the overlay write fails, the event is rolled back with it and the caller sees the error, which is the recoverable failure of the two. On a database where that wiring can't be established the log falls back to the older two-write path rather than refusing to open.
+
 ---
 
 ## Replay

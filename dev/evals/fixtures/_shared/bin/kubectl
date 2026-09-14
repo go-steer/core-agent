@@ -366,6 +366,18 @@ def describe_deployment(world, args, name):
     return "", 'deployments.apps "%s" not found' % name
 
 
+# What kubelet says a container is waiting FOR, keyed on the pod status
+# the world declares. A pod with no logs is a pod that never started, and
+# real kubectl names the reason it never started; a shim that says
+# "trying and failing to pull image" regardless would hand the agent a
+# confident wrong diagnosis for every non-image failure the corpus plants
+# — which is worse than saying nothing, because it is quotable.
+WAITING_DETAIL = {
+    "ImagePullBackOff": "trying and failing to pull image",
+    "ErrImagePull": "trying and failing to pull image",
+}
+
+
 def pod_logs(world, args, name):
     for ns in resolve_ns(world, args):
         for dep in namespaces(world)[ns].get("deployments", []):
@@ -373,10 +385,13 @@ def pod_logs(world, args, name):
                 if pod["name"] == name:
                     logs = pod.get("logs")
                     if logs is None:
+                        reason = pod.get("status", "")
+                        detail = WAITING_DETAIL.get(
+                            reason, reason or "ContainerCreating")
                         return "", ('Error from server (BadRequest): container '
-                                    '"%s" in pod "%s" is waiting to start: '
-                                    'trying and failing to pull image'
-                                    % (dep.get("container", dep["name"]), name))
+                                    '"%s" in pod "%s" is waiting to start: %s'
+                                    % (dep.get("container", dep["name"]), name,
+                                       detail))
                     return logs, None
     return "", 'pods "%s" not found' % name
 

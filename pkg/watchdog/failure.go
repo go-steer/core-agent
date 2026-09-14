@@ -65,6 +65,18 @@ type ToolResult struct {
 	// a tool that sets both is reporting an error, which
 	// ToolFailureStreakSignal already covers.
 	NoOp bool
+
+	// Digest is a stable fingerprint of the result payload — what the
+	// call actually returned, as opposed to what it was asked (#655).
+	// Empty means the caller could not compute one, which every
+	// consumer must read as "unknown", never as "unchanged": see
+	// NoNewStateSignal, which resets on it.
+	//
+	// The value is opaque and its algorithm is the producer's business;
+	// the only contract is that equal payloads give equal digests and
+	// the encoding is stable across calls within a process. The agent
+	// tap computes it in pkg/agent/watchdog.go.
+	Digest string
 }
 
 // Failed reports whether the call errored.
@@ -88,6 +100,46 @@ type ToolResultObserver interface {
 // simply never sees results.
 type SignalResultObserver interface {
 	ObserveToolResult(ToolResult) *Alert
+}
+
+// TurnObserver is the same optional extension for turn boundaries: a
+// watchdog that scopes any of its evidence to a single turn implements
+// it, and the agent calls it at the top of every turn through a type
+// assertion. Separate from Watchdog for the reason above — a custom
+// watchdog that never needed a turn boundary must not have to grow one.
+//
+// Scoping matters because the watchdog outlives the turn. Its state is
+// cleared only by an operator Reset, so a signal that remembers what it
+// has already seen would, on a daemon woken every ten minutes to check
+// a stable cluster, read the second wake's identical readings as a
+// stall. That agent is doing its job; see NoNewStateSignal.
+type TurnObserver interface {
+	ObserveTurnStart()
+}
+
+// SignalTurnObserver is that extension one level down, for signals
+// inside DefaultWatchdog. A Signal that doesn't implement it keeps its
+// state across turns, which is right for every streak detector here:
+// a streak is already self-limiting, because the next call that breaks
+// it clears it whether or not a turn ended in between.
+type SignalTurnObserver interface {
+	ObserveTurnStart()
+}
+
+// ObserveTurnStart fans a turn boundary across every wired signal that
+// implements SignalTurnObserver. Implements TurnObserver.
+//
+// Deliberately does not touch w.alerts: Check drains them and the
+// post-turn hook is what calls it, so clearing here would discard the
+// alerts raised by the turn that just ended.
+func (w *DefaultWatchdog) ObserveTurnStart() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, s := range w.signals {
+		if to, ok := s.(SignalTurnObserver); ok {
+			to.ObserveTurnStart()
+		}
+	}
 }
 
 // ObserveToolResult fans a tool outcome across every wired signal that

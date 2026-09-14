@@ -334,3 +334,70 @@ func TestToolResponseNoOp(t *testing.T) {
 		})
 	}
 }
+
+// The payload digest (#655). NoNewStateSignal keys on what came back,
+// so the tap has to produce a fingerprint that is equal for equal
+// payloads, different for different ones, and empty when it cannot
+// tell — empty being read downstream as "unknown", never "unchanged".
+func TestToolResponseDigest(t *testing.T) {
+	t.Parallel()
+
+	same := map[string]any{"result": "pod dispatch-worker-0 is Pending", "count": 2}
+	// Same content, built in a different key order. encoding/json sorts
+	// map keys, so this must hash identically — a digest that depended
+	// on iteration order would be random and the signal would be dead.
+	reordered := map[string]any{"count": 2, "result": "pod dispatch-worker-0 is Pending"}
+	other := map[string]any{"result": "pod dispatch-worker-0 is Running", "count": 2}
+
+	if a, b := toolResponseDigest(same), toolResponseDigest(reordered); a != b {
+		t.Errorf("equal payloads gave different digests: %q vs %q", a, b)
+	}
+	if a, b := toolResponseDigest(same), toolResponseDigest(other); a == b {
+		t.Errorf("different payloads collided on %q", a)
+	}
+	if got := toolResponseDigest(nil); got != "" {
+		t.Errorf("nil payload = %q, want empty", got)
+	}
+	if got := toolResponseDigest(map[string]any{}); got != "" {
+		t.Errorf("empty payload = %q, want empty", got)
+	}
+	// Unencodable values yield "" rather than a partial hash, so the
+	// failure costs recall and not precision.
+	if got := toolResponseDigest(map[string]any{"ch": make(chan int)}); got != "" {
+		t.Errorf("unencodable payload = %q, want empty", got)
+	}
+}
+
+// The digest reaches the watchdog, which is the half a unit test of the
+// helper alone would not catch: a correct fingerprint the tap forgets
+// to attach is a signal that can never fire.
+func TestObserveToolResultsForWatchdog_CarriesTheDigest(t *testing.T) {
+	t.Parallel()
+	w := &resultWatchdog{}
+	a := &Agent{watchdog: w}
+
+	a.observeToolResultsForWatchdog(wdResultEvent(
+		wdResultPart("1", "read_file", map[string]any{"result": "same bytes"}),
+		wdResultPart("2", "grep", map[string]any{"result": "same bytes"}),
+		wdResultPart("3", "read_file", map[string]any{"result": "different"}),
+	), map[string]struct{}{})
+
+	if len(w.results) != 3 {
+		t.Fatalf("observed %d results, want 3", len(w.results))
+	}
+	for i, r := range w.results {
+		if r.Digest == "" {
+			t.Fatalf("result %d carries no digest", i)
+		}
+	}
+	// Two different tools returning the identical payload must share a
+	// digest: that is the reworded-loop case the signal exists for, and
+	// folding the tool name into the hash would blind it.
+	if w.results[0].Digest != w.results[1].Digest {
+		t.Errorf("identical payloads from different tools did not share a digest: %q vs %q",
+			w.results[0].Digest, w.results[1].Digest)
+	}
+	if w.results[0].Digest == w.results[2].Digest {
+		t.Errorf("different payloads collided on %q", w.results[0].Digest)
+	}
+}

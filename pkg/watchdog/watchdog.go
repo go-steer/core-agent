@@ -65,12 +65,20 @@
 //     tool makes about its own result, so this one infers nothing
 //     and is Critical. See noop.go.
 //
+//   - A progress-stall detector (#655), the third consumer of that
+//     outcome stream and the first that reads the result's *payload*:
+//     six results in a row carrying data the turn has already seen. It
+//     is the answer to the deferred "these two calls ask the same
+//     question differently" — not by comparing the questions, which
+//     needs semantics, but by noticing the answers are identical, which
+//     does not. See stall.go.
+//
 // Future scope (deferred — see design doc §"Piece 2"):
 //
 //   - Additional signals: tools-without-text, files-not-touched,
-//     context-growth-rate, cost-burn-rate. Semantic (rather than
-//     syntactic) loop detection — "these two calls ask the same
-//     question differently" — is v3.0 scope.
+//     context-growth-rate, cost-burn-rate (#655 remains open for
+//     these, and for the recorded-transcript corpus its acceptance
+//     criteria ask for).
 //   - "Prompt" mode: pause turn, ask operator y/n via the existing
 //     permissions prompter, resume on either path.
 //   - "Auto" mode: invoke Agent.SwapModel (also unshipped) to
@@ -231,8 +239,12 @@ const DefaultRepeatThreshold = 5
 //     call changed nothing. The only signal that needs no inference —
 //     the tools said it themselves — and the one that reaches the
 //     free-text loop the four above structurally cannot (#907).
+//   - NoNewState (6 in a row): six results whose payloads this turn has
+//     already seen. Keys on the ANSWER rather than the call, which is
+//     how it catches "these two calls ask the same question
+//     differently" without having to understand either one (#655).
 //
-// Four of the six are Critical, so they halt under --watchdog=enforce.
+// Four of the seven are Critical, so they halt under --watchdog=enforce.
 // The three args-keyed loop detectors qualify because each can prove
 // the calls are identical, so the agent is provably learning nothing;
 // NoOpStreak qualifies for the opposite reason — it proves nothing and
@@ -243,6 +255,10 @@ const DefaultRepeatThreshold = 5
 // see RepeatedToolNameSignal. ToolFailureStreak is Warn for a related
 // reason: a run of denials may be a legitimate RBAC probe, and see
 // NoOpStreakSignal for why that argument does not carry across to it.
+// NoNewState is Warn on the RepeatedToolName argument transposed from
+// the call to the result: a repeated payload cannot distinguish a loop
+// from a poll, and polling a cluster until it converges is most of what
+// this project's agents legitimately do.
 // A Warn never halts; it reaches the operator log plus — under
 // --watchdog=feedback — the model's own next turn. Operators wanting
 // different thresholds, or a subset, construct DefaultWatchdog
@@ -257,6 +273,7 @@ func NewDefaultWatchdog() *DefaultWatchdog {
 			NewRepeatedToolNameSignal(DefaultToolNameRun, DefaultRepeatThreshold),
 			NewToolFailureStreakSignal(DefaultFailureStreak),
 			NewNoOpStreakSignal(DefaultNoOpStreak),
+			NewNoNewStateSignal(DefaultStallRun, DefaultStallMemory),
 		},
 	}
 }

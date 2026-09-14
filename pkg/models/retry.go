@@ -30,6 +30,35 @@ const (
 	DefaultRetryCooldown = 30 * time.Second
 )
 
+// RetryBurst is how many retries the shared budget holds at once
+// (#1039). The budget refills at one per Cooldown, so the steady-state
+// added load is unchanged from the single-timestamp guard this replaces;
+// the burst is what a correlated rejection can draw down.
+//
+// Three, because 429s arrive correlated by construction. A provider
+// shedding load rejects several concurrent callers within seconds of
+// each other, and a one-rescue-per-window budget hands that rescue to
+// whichever caller was rejected first and abandons the rest — measured
+// on a live cluster as thirteen retries that rescued their caller and
+// one suppression that killed a delegation, which is the exact failure
+// #935 was opened to remove. Three covers a parent plus two subagents,
+// the largest correlated burst the drill archive shows, at a worst case
+// of three extra requests per window rather than one.
+const RetryBurst = 3
+
+// retryOutcome is what became of a retry that fired, for the one
+// summary line Wrap logs on the way out. outcomeUnset is a real
+// answer, not a missing one: it means the retry neither recovered nor
+// persisted, which is what a consumer that stopped reading looks like.
+type retryOutcome int
+
+const (
+	outcomeUnset retryOutcome = iota
+	outcomeRecovered
+	outcomePersisted
+	outcomeAbandoned
+)
+
 // RetryPolicy retries a streaming model call once when the provider
 // rejects it transiently, and does nothing otherwise.
 //
@@ -58,11 +87,18 @@ const (
 // The counter-evidence is real and shapes the guard: two of the four
 // arrived 8 minutes apart at the tail of a sustained batch, so
 // cumulative pressure exists even though no individual rejection
-// persisted. That is why Cooldown is not optional. It bounds the extra
-// load this can generate to one additional request per cooldown window
-// per policy, whatever the provider is doing — so a genuine shed, where
-// every call fails, costs one retry and then degrades to plain
-// pass-through instead of doubling traffic.
+// persisted. That is why the budget is not optional. It bounds the
+// extra load this can generate to a steady state of one additional
+// request per Cooldown per policy, whatever the provider is doing — so
+// a genuine shed, where every call fails, costs a few retries and then
+// degrades to plain pass-through instead of doubling traffic.
+//
+// The budget is a token bucket, not a single timestamp (#1039). A
+// timestamp is right for the steady state and wrong for the burst: 429s
+// are correlated, several concurrent callers get rejected within
+// seconds of each other, and a one-rescue-per-window budget gives that
+// rescue to whichever was rejected first and abandons the rest. See
+// RetryBurst.
 //
 // # What it will not do
 //
@@ -91,7 +127,7 @@ const (
 // worse than not retrying.
 //
 // A RetryPolicy is safe for concurrent use and is meant to be shared
-// across the calls of one provider instance — the cooldown is only
+// across the calls of one provider instance — the budget is only
 // meaningful if it is.
 type RetryPolicy struct {
 	// IsTransient reports whether err is a transient provider
@@ -102,10 +138,11 @@ type RetryPolicy struct {
 	// DefaultRetryBackoff.
 	Backoff time.Duration
 
-	// Cooldown is the minimum interval between two retries from this
-	// policy. Zero means DefaultRetryCooldown. A negative value
-	// disables the guard, which is not recommended and exists so a
-	// test can exercise back-to-back retries.
+	// Cooldown is the refill interval of this policy's retry budget:
+	// one retry is returned to the bucket per Cooldown, up to a
+	// ceiling of RetryBurst. Zero means DefaultRetryCooldown. A
+	// negative value disables the guard, which is not recommended and
+	// exists so a test can exercise back-to-back retries.
 	Cooldown time.Duration
 
 	// Log receives one line per retry decision, so a recovered failure
@@ -116,8 +153,12 @@ type RetryPolicy struct {
 	now   func() time.Time
 	sleep func(context.Context, time.Duration) bool
 
-	mu        sync.Mutex
-	lastRetry time.Time
+	mu sync.Mutex
+	// tokens is the retry budget, in whole retries; lastRefill is when
+	// it was last brought up to date. A zero lastRefill means the
+	// bucket has never been touched and starts full.
+	tokens     float64
+	lastRefill time.Time
 }
 
 // Wrap returns an iterator that runs fn, and on a transient failure
@@ -137,6 +178,37 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 			resp *adkmodel.LLMResponse
 			err  error
 		}
+
+		// Outcome reporting is a defer, not a line at the end of the
+		// happy path (#1039). This iterator has eight `return`s and
+		// six of them are a consumer that stopped reading mid-flush,
+		// so logging where the stream happens to finish tidily meant
+		// most real retries reported nothing at all: on a live GKE
+		// batch, 10 of 13 retries that rescued their caller left no
+		// record of having done so, which is most of the point of
+		// retrying visibly. A defer fires from every exit.
+		//
+		// retriedFor is non-nil exactly when a retry fired, and is the
+		// error it fired for; nothing is logged unless it is set,
+		// because a call that never retried has no outcome to report.
+		var retriedFor error
+		outcome, outcomeAttempt := outcomeUnset, 0
+		defer func() {
+			if retriedFor == nil {
+				return
+			}
+			switch outcome {
+			case outcomeRecovered:
+				p.logf("transient provider error recovered on retry (attempt %d/%d)", outcomeAttempt, maxAttempts)
+			case outcomePersisted:
+				p.logf("transient provider error persisted after retry — surfacing to caller: %v", retriedFor)
+			case outcomeAbandoned:
+				p.logf("transient provider error retry abandoned: context ended during the %s backoff, surfacing the original error: %v", p.backoff(), retriedFor)
+			default:
+				p.logf("transient provider error retry ended with no outcome: the consumer stopped reading, or the retry returned nothing usable (original error: %v)", retriedFor)
+			}
+		}()
+
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			var buf []pending
 			var transient error
@@ -162,6 +234,15 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 					// Past the point where a retry decision is
 					// meaningful: content is about to reach the caller
 					// and cannot be taken back.
+					if attempt > 1 && outcome == outcomeUnset {
+						// Recorded BEFORE the first yield, deliberately.
+						// The retry has already succeeded by the time
+						// usable content exists; whether the consumer
+						// goes on to read all of it is a separate
+						// question, and answering it here would lose
+						// the line for every early stop.
+						outcome, outcomeAttempt = outcomeRecovered, attempt
+					}
 					for _, b := range buf {
 						if !yield(b.resp, b.err) {
 							return
@@ -191,15 +272,13 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 			}
 
 			if flushed {
-				if attempt > 1 {
-					p.logf("transient provider error recovered on retry (attempt %d/%d)", attempt, maxAttempts)
-				}
 				return
 			}
 			if transient != nil && !hardErr && attempt < maxAttempts {
 				if !p.allowRetry() {
-					p.logf("transient provider error (%v) NOT retried: another retry fired within the %s cooldown", transient, p.cooldown())
+					p.logf("transient provider error (%v) NOT retried: the shared retry budget is spent (burst %d, one refill per %s)", transient, RetryBurst, p.cooldown())
 				} else {
+					retriedFor = transient
 					p.logf("transient provider error (%v) — retrying once after %s", transient, p.backoff())
 					if !p.wait(ctx, p.backoff()) {
 						// Context died during the backoff. Surface the
@@ -207,6 +286,7 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 						// the provider rejection is what the caller
 						// needs to see, and ctx.Err() is available to
 						// them anyway.
+						outcome = outcomeAbandoned
 						for _, b := range buf {
 							if !yield(b.resp, b.err) {
 								return
@@ -229,7 +309,7 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 			}
 			if transient != nil {
 				if attempt > 1 {
-					p.logf("transient provider error persisted after retry — surfacing to caller: %v", transient)
+					outcome = outcomePersisted
 				}
 				yield(nil, transient)
 			}
@@ -238,9 +318,10 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 	}
 }
 
-// allowRetry reports whether a retry may fire now, recording it if so.
-// This is the whole rate-limit guard: one extra request per cooldown,
-// no matter how many calls are failing.
+// allowRetry reports whether a retry may fire now, spending a token
+// from the shared budget if so. This is the whole rate-limit guard:
+// RetryBurst retries in hand, refilling at one per cooldown, no matter
+// how many calls are failing.
 func (p *RetryPolicy) allowRetry() bool {
 	cd := p.cooldown()
 	if cd < 0 {
@@ -254,10 +335,17 @@ func (p *RetryPolicy) allowRetry() bool {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.lastRetry.IsZero() && t.Sub(p.lastRetry) < cd {
+	switch {
+	case p.lastRefill.IsZero():
+		p.tokens = RetryBurst
+	case t.After(p.lastRefill):
+		p.tokens = min(RetryBurst, p.tokens+float64(t.Sub(p.lastRefill))/float64(cd))
+	}
+	p.lastRefill = t
+	if p.tokens < 1 {
 		return false
 	}
-	p.lastRetry = t
+	p.tokens--
 	return true
 }
 

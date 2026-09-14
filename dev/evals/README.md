@@ -1,18 +1,50 @@
 # Behavioural evals
 
-One case, run against a real model, graded by a deterministic verifier
-that reads what the run left behind (#652).
+Cases run against a real model, graded by a deterministic verifier that
+reads what the run left behind (#652 for the harness, #966 for the
+corpus).
 
 Everything else in this repository measures something adjacent. Unit
 tests prove functions work. `examples/internal/recipecheck` proves files
 have the right shape. The GKE drill proves an operator with a clipboard
 can get through a script. None of them answers the question this
-directory exists for: **did the agent find the thing it was asked to
-find, when nobody told it where to look?**
+directory exists for: **did the agent behave — did it find the thing it
+was asked to find when nobody told it where to look, and did it still
+know what it had been asked once everything else in the context had had
+its say?**
 
 The machinery is `internal/evals`; the runner is
-`dev/smoke/cmd/evalrun`; the CI leg is `dev/smoke/11-evals-cluster-fact.sh`,
+`dev/smoke/cmd/evalrun`; the CI leg is `dev/smoke/11-evals-corpus.sh`,
 wired as the third leg of `dev/tools/e2e-real-provider`.
+
+## The corpus
+
+| Case | Fixture | What it measures | Derived from |
+|---|---|---|---|
+| `cluster-fact-image-pull` | `cluster-image-pull` | finds a workload nobody located for it, and quotes the registry's own wording rather than paraphrasing | the shape of every GKE triage the drill runs |
+| `skill-steer-delegated-subject` | `skill-steered-subject` | keeps the subject the task named when a skill's Step 0 re-derives the task and points at a healthier one | #711 — 44 turns, 1.4M input tokens, $1.33 against $0.26 comparable |
+
+The second case is the corpus rule from #966 in its purest form: it is
+not a scenario somebody invented, it is an incident with a session id
+and a bill, planted back into a world where it can be graded. The defect
+lives in `.agents/skills/gke-triage/SKILL.md`, which the fixture ships
+inside the workspace the agent starts in — skills are discovered by
+walking up from the working directory, and `Runner.exec` starts the
+agent in the fixture's workdir, so a fixture can carry its own skills
+with no flag and no Go. What it grades is
+`pkg/skills/framing.go`'s `InstructionFraming`, the trailer appended to
+every skill body that says a skill does not get to change *what* you
+were asked or *which* subject you were asked about. That trailer was
+written against #711 and until now nothing measured whether it holds.
+
+Note the coupling a fixture like that introduces, because it is the one
+thing in this directory that is asserted in two places rather than one:
+the substituted subject is written in `SKILL.md`, which does the
+steering, and in `cluster.json`'s `planted`, which the check reads. They
+have to agree, and if they drift the check stops being able to fail
+rather than starting to fail. Everything else here is arranged so that
+cannot happen (see *Facts live inside the world file*, below); a skill
+that steers is prose, and prose cannot be read out of the world file.
 
 ## Running one
 
@@ -113,7 +145,13 @@ sound baseline.
 No Go. A case is a JSON file, its world is a JSON file, and the shim
 that renders that world is shared. **If a second case needs code, the
 schema is wrong** — that is the check on this design, and it is meant to
-be applied.
+be applied. It was applied: `skill-steer-delegated-subject` is a case
+file, a fixture directory and a skill, and it added no case-specific
+code. It did surface one fidelity gap in the shared shim — `kubectl
+logs` against a pod that never started used to say "trying and failing
+to pull image" whatever the pod was actually waiting for, which is a
+confident wrong diagnosis the agent can quote — and that is the
+instrument improving rather than the schema failing.
 
 ```
 dev/evals/
@@ -124,7 +162,47 @@ dev/evals/
       fixture.json          roles, witnesses, facts_from, env
       cluster.json          the world AND the facts, one file
       workspace/            where the agent starts
+        .agents/skills/     optional: skills the agent will discover
 ```
+
+The file name is the case id and the case id is the file name;
+`internal/evals/corpus_test.go` refuses a disagreement, because the
+report, an issue and a `--case` flag all address a case by that string.
+
+**One answer-sourced check with an `all_of` or `any_of` term is
+mandatory, and the reason is not obvious.** On the no-access tier every
+witness is absent, because nothing reached the world — so every
+witness-sourced check is vacuous there by construction, and a vacuous
+check does not score either way. `BaselineHolds` requires at least one
+check that actually observed something, or the baseline's zero is the
+absence of a measurement rather than a measurement of absence. The
+answer is the only source that is always present. A `none_of`-only
+answer check does not do it either: against a present, non-empty answer
+it *passes*, which means it scores on the baseline and `BaselineHolds`
+rejects the case for measuring vocabulary. The check has to be able to
+fail on the answer, which means an `all_of` or an `any_of`.
+`corpus_test.go` enforces this offline, so it costs a unit-test run
+rather than two provider runs to find out.
+
+## What runs without a model
+
+`internal/evals/corpus_test.go` is the offline half of the corpus's
+rules, and it is there because of where the expensive half lives. "Every
+objective check scores zero with no tool access" costs two provider runs
+to answer and is answered in `dev/tools/e2e-real-provider` by whoever
+pushed. A prompt that leaks a fact, a `${fact.…}` nothing resolves, a
+witness the fixture does not declare, a probe missing from the
+materialized world, a duplicated case id, and the baseline precondition
+above are all decidable for nothing, and they are decided in unit CI.
+
+It also checks the thing the withhold-the-location rule does not reach.
+`Case.Bind` guards the prompt; it says nothing about the fixture's own
+workspace, and a fixture that ships prose the agent is meant to read —
+notes, settings, a skill — can put a graded term one `read_file` away
+from the model. So every answer-sourced `all_of`/`any_of` term is
+searched for in every workspace file, and finding one is an error.
+`none_of` terms are exempt: the substituted subject a skill steers
+towards has to be written down somewhere, or there is no steer.
 
 `_shared/` is copied first and the fixture second, so a fixture inherits
 the shim by default and overrides it by shipping a file at the same
@@ -172,6 +250,13 @@ than by reading it:
   takes global flags on either side of the verb, so `kubectl -n prod get
   pods` is valid and an instrument that calls it an unknown command is
   measuring itself.
+- **A pod that never started is waiting for a named reason.** `kubectl
+  logs` on it returns `waiting to start: <reason>`, and the shim derives
+  the reason from the pod's declared status instead of hardcoding the
+  image-pull wording. The hardcoded version was fine while one fixture
+  existed and became a confident wrong diagnosis the moment a second one
+  planted a config failure — and the agent quotes it, which is worse
+  than a gap.
 
 Mutating verbs are refused with a `Forbidden` error, so the
 `changed-nothing` check measures intent rather than damage — which is the
@@ -187,10 +272,16 @@ fooled by flag placement is exactly the one asserting nothing changed.
 ## What this is not
 
 Not a scorecard. `SCORECARD.md` is under a maintainer hold and the rubric
-is not to be automated here; the metric program (#967) and the corpus
-grown from our own incidents (#966) are separate and both sequence after
-this. This directory is the walking skeleton: one case, end to end,
-honest about what it did and did not observe.
+is not to be automated here; the metric program (#967) is separate and
+sequences after this. Nothing in this directory grades an answer against
+a rubric — every check is a fixed string that a fact about the world
+either does or does not contain.
+
+Not 15–30 scenarios yet, either. #966 names five shapes and two of them
+are here; the three that are left — the runaway loop that is stopped,
+the subagent that returns findings rather than a summary, the goal that
+survives compaction — need a witness this harness does not have, because
+their evidence is in the session rather than in the cluster.
 
 Not a taxonomy of check types either. There is one `Check` type, and
 every question this skeleton can ask has the same shape.

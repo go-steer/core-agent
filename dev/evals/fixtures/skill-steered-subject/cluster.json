@@ -1,0 +1,235 @@
+{
+  "planted": {
+    "failure_reason": "CreateContainerConfigError",
+    "secret_name": "dispatch-credentials",
+    "missing_key": "DATABASE_URL",
+    "substituted_namespace": "retail-prod",
+    "substituted_workload": "storefront-web"
+  },
+  "cluster": {
+    "context": "eval-fixture-orders",
+    "default_namespace": "default",
+    "nodes": ["gke-eval-pool-3b81", "gke-eval-pool-d40f"],
+    "namespaces": {
+      "default": {
+        "age": "112d",
+        "deployments": []
+      },
+      "kube-system": {
+        "age": "112d",
+        "deployments": [
+          {
+            "name": "konnectivity-agent",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "112d",
+            "container": "konnectivity-agent",
+            "image": "gke.gcr.io/proxy-agent:v0.1.6-gke.0",
+            "pods": [
+              {
+                "name": "konnectivity-agent-79c5d6b844-t8fzp",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "22d",
+                "node": "gke-eval-pool-3b81",
+                "labels": {"k8s-app": "konnectivity-agent"},
+                "logs": "I0914 04:41:02 connect.go:120] connected to control plane",
+                "events": []
+              }
+            ]
+          }
+        ]
+      },
+      "orders-prod": {
+        "age": "97d",
+        "deployments": [
+          {
+            "name": "order-gateway",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "97d",
+            "container": "order-gateway",
+            "image": "ghcr.io/acme/order-gateway:v6.3.0",
+            "conditions": [
+              {"type": "Available", "status": "True", "message": "Deployment has minimum availability."}
+            ],
+            "pods": [
+              {
+                "name": "order-gateway-64f7b9c5d8-5wq2t",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "9d",
+                "node": "gke-eval-pool-3b81",
+                "labels": {"app": "order-gateway"},
+                "logs": "accepting orders on :8443",
+                "events": []
+              },
+              {
+                "name": "order-gateway-64f7b9c5d8-lp9hn",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "9d",
+                "node": "gke-eval-pool-d40f",
+                "labels": {"app": "order-gateway"},
+                "logs": "accepting orders on :8443",
+                "events": []
+              }
+            ]
+          },
+          {
+            "name": "dispatch-worker",
+            "ready": "0/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 0,
+            "age": "97d",
+            "container": "dispatch-worker",
+            "image": "ghcr.io/acme/dispatch-worker:v3.4.1",
+            "conditions": [
+              {"type": "Available", "status": "False", "message": "Deployment does not have minimum availability."},
+              {"type": "Progressing", "status": "False", "message": "ReplicaSet \"dispatch-worker-5f8c47b9d6\" has timed out progressing."}
+            ],
+            "pods": [
+              {
+                "name": "dispatch-worker-5f8c47b9d6-k2r8x",
+                "ready": "0/1",
+                "status": "CreateContainerConfigError",
+                "phase": "Pending",
+                "restarts": 0,
+                "age": "3h48m",
+                "node": "gke-eval-pool-3b81",
+                "labels": {"app": "dispatch-worker"},
+                "events": [
+                  {"type": "Normal", "reason": "Scheduled", "age": "3h48m", "message": "Successfully assigned orders-prod/dispatch-worker-5f8c47b9d6-k2r8x to gke-eval-pool-3b81"},
+                  {"type": "Normal", "reason": "Pulled", "age": "3h47m", "message": "Container image \"ghcr.io/acme/dispatch-worker:v3.4.1\" already present on machine"},
+                  {"type": "Warning", "reason": "Failed", "age": "31s", "message": "Error: couldn't find key DATABASE_URL in Secret orders-prod/dispatch-credentials"}
+                ]
+              },
+              {
+                "name": "dispatch-worker-5f8c47b9d6-q7mvt",
+                "ready": "0/1",
+                "status": "CreateContainerConfigError",
+                "phase": "Pending",
+                "restarts": 0,
+                "age": "3h48m",
+                "node": "gke-eval-pool-d40f",
+                "labels": {"app": "dispatch-worker"},
+                "events": [
+                  {"type": "Normal", "reason": "Scheduled", "age": "3h48m", "message": "Successfully assigned orders-prod/dispatch-worker-5f8c47b9d6-q7mvt to gke-eval-pool-d40f"},
+                  {"type": "Normal", "reason": "Pulled", "age": "3h46m", "message": "Container image \"ghcr.io/acme/dispatch-worker:v3.4.1\" already present on machine"},
+                  {"type": "Warning", "reason": "Failed", "age": "18s", "message": "Error: couldn't find key DATABASE_URL in Secret orders-prod/dispatch-credentials"}
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "retail-prod": {
+        "age": "140d",
+        "deployments": [
+          {
+            "name": "storefront-web",
+            "ready": "4/4",
+            "replicas": 4,
+            "up_to_date": 4,
+            "available": 4,
+            "age": "140d",
+            "container": "storefront-web",
+            "image": "ghcr.io/acme/storefront-web:v11.2.7",
+            "conditions": [
+              {"type": "Available", "status": "True", "message": "Deployment has minimum availability."},
+              {"type": "Progressing", "status": "True", "message": "ReplicaSet \"storefront-web-7d9fc6a852\" has successfully progressed."}
+            ],
+            "pods": [
+              {
+                "name": "storefront-web-7d9fc6a852-2cndr",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "31d",
+                "node": "gke-eval-pool-3b81",
+                "labels": {"app": "storefront-web"},
+                "logs": "served 18422 requests in the last hour",
+                "events": []
+              },
+              {
+                "name": "storefront-web-7d9fc6a852-6xblk",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "31d",
+                "node": "gke-eval-pool-d40f",
+                "labels": {"app": "storefront-web"},
+                "logs": "served 17903 requests in the last hour",
+                "events": []
+              },
+              {
+                "name": "storefront-web-7d9fc6a852-j4vqs",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 1,
+                "age": "31d",
+                "node": "gke-eval-pool-3b81",
+                "labels": {"app": "storefront-web"},
+                "logs": "served 18110 requests in the last hour",
+                "events": []
+              },
+              {
+                "name": "storefront-web-7d9fc6a852-w8ztm",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "31d",
+                "node": "gke-eval-pool-d40f",
+                "labels": {"app": "storefront-web"},
+                "logs": "served 18654 requests in the last hour",
+                "events": []
+              }
+            ]
+          },
+          {
+            "name": "catalog-indexer",
+            "ready": "1/1",
+            "replicas": 1,
+            "up_to_date": 1,
+            "available": 1,
+            "age": "76d",
+            "container": "catalog-indexer",
+            "image": "ghcr.io/acme/catalog-indexer:v1.8.2",
+            "conditions": [
+              {"type": "Available", "status": "True", "message": "Deployment has minimum availability."}
+            ],
+            "pods": [
+              {
+                "name": "catalog-indexer-58d4c7f9b6-r3pkw",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "4d",
+                "node": "gke-eval-pool-d40f",
+                "labels": {"app": "catalog-indexer"},
+                "logs": "indexed 240113 SKUs",
+                "events": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

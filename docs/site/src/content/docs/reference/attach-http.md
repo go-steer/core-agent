@@ -459,6 +459,20 @@ Like the guardrail rows this is an ordinary event, so it reaches every client ov
 
 A *manual* `/slash/compact` or `/slash/done` writes no row: the failure is already the caller's response.
 
+### Degraded context reduction (v2.10.0-dev)
+
+"Did not run" and "ran, but worse" read oppositely during an incident, so [#974](https://github.com/go-steer/core-agent/issues/974) gives the second one its own row rather than another `operation` value on the failure row. A durable `context-reduction-degraded` event (`Author=agent/context-reduction` — deliberately the *same* author, so a client already matching on it gets both) carries:
+
+| Key | Value |
+|---|---|
+| `source` | `agent` |
+| `operation` | `window-unknown` or `mechanical-compaction` |
+| `detail` | the operator-facing explanation, including the model id and the assumed window size for `window-unknown`, and the failure count that forced the fallback for `mechanical-compaction` |
+
+The two rows are distinguished by event name, not by author: `attach.ContextReductionFailure` matches only `context-reduction-failed` and `attach.ContextReductionDegraded` only `context-reduction-degraded`. A reader that matched on the author alone before this change would have read a degraded row as a failure, which is the opposite of what it means.
+
+Each condition announces itself **at most once per process**. Both describe a state rather than an attempt, and a state re-announced every turn is one operators filter out. If compaction later recovers — a summarizer that starts answering again — there is no "recovered" row; the absence of further degraded rows is not evidence either way. See [Context management](/concepts/context-management/) for what each condition means and what to do about it.
+
 ## UsageMetadata schema
 
 `GET /sessions/{sid}/usage` (v2.7.0-dev.3+, [#222](https://github.com/go-steer/core-agent/issues/222)). Response type `attach.UsageInfo`:

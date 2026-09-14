@@ -127,15 +127,23 @@ func NewDefaultCompactor() Compactor {
 
 // ShouldCompact returns true when the agent's usage tracker reports
 // context-window utilization at or above the resolved threshold for
-// the current model's tier. Returns false when the tracker doesn't
-// yet know the window size (no turn has landed, or the model isn't
-// in usage.ContextWindowSizeFor's table) so a session with an
-// unknown model never triggers premature compaction.
+// the current model's tier.
+//
+// An unknown model is measured against AssumedContextWindowSize and
+// announced once, rather than treated as "not full yet" (#974). Until
+// then, pinning a model the pricing catalogue had never heard of
+// disabled compaction outright — silently, and observable only when the
+// provider eventually hard-failed on an oversized request thousands of
+// turns later. Compacting a session too early costs money; not
+// compacting it at all ends the run.
+//
+// Still false before any turn has landed: that is an empty session, not
+// a degraded one.
 func (c *DefaultCompactor) ShouldCompact(_ context.Context, a *Agent) bool {
 	if a == nil || a.tracker == nil {
 		return false
 	}
-	size := a.tracker.ContextWindowSize()
+	size, _ := a.compactionWindowSize()
 	if size == 0 {
 		return false
 	}
@@ -486,6 +494,15 @@ func (a *Agent) runPendingCompaction(ctx context.Context) {
 		// happening is the failure an operator most needs told about,
 		// because the symptom arrives much later as a context wall.
 		a.recordContextReductionFailure(attach.ContextReductionCompaction, err, failures, cooldown)
+		// Backing off is the right answer to a summarizer that might
+		// come back. It is the wrong answer to one that will not: the
+		// cooldown grows to 32 turns while history grows the whole
+		// time, and the strategy depends on the very resource that is
+		// failing. Past MechanicalCompactionAfterFailures, bound the
+		// context without the model (#974).
+		if failures >= MechanicalCompactionAfterFailures {
+			a.fallBackToMechanicalCompaction(ctx, err)
+		}
 		return
 	}
 	// Success — clear the backoff state.

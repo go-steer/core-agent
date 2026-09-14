@@ -340,13 +340,18 @@ type Agent struct {
 	// pauseCh non-nil IS the "paused" signal; Run blocks on it before
 	// starting a turn and Resume closes it. The rest is the operator-
 	// facing projection surfaced through PauseState.
-	pauseCh               chan struct{}
-	pauseSince            time.Time
-	pauseReason           string
-	pauseInterrupted      bool
-	compactionPending     bool
-	compactionFailures    int    // consecutive failed auto-compactions; drives backoff (#356)
-	compactionCooldown    int    // turns to skip before the next auto-compaction attempt (#356)
+	pauseCh            chan struct{}
+	pauseSince         time.Time
+	pauseReason        string
+	pauseInterrupted   bool
+	compactionPending  bool
+	compactionFailures int // consecutive failed auto-compactions; drives backoff (#356)
+	compactionCooldown int // turns to skip before the next auto-compaction attempt (#356)
+	// Degraded-mode latches (#974). Each condition announces itself
+	// once per process: both describe a state rather than an attempt,
+	// and a state re-announced every turn is one operators filter out.
+	warnedUnknownWindow   bool   // the assumed-context-window notice has been emitted
+	warnedMechanical      bool   // the mechanical-compaction notice has been emitted
 	checkpointRequested   bool   // flipped by mark_task_done tool handler during a turn
 	checkpointPending     bool   // promoted from checkpointRequested by post-turn hook
 	pendingCheckpointNote string // detail from the mark_task_done call (or /done arg)

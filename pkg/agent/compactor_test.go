@@ -338,15 +338,50 @@ func TestSliceFromSummary_DropsPreSummaryEvents(t *testing.T) {
 	}
 }
 
-func TestDefaultCompactor_ShouldCompact_UnknownWindowSkips(t *testing.T) {
+// This test used to assert the opposite, and the assertion WAS the bug
+// (#974): an unknown model meant compaction never fired, silently, until
+// the provider hard-failed on an oversized request thousands of turns
+// later. An assumed window that compacts too early costs money; a
+// disabled one ends the run.
+func TestDefaultCompactor_ShouldCompact_UnknownWindowUsesTheAssumedOne(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
-	// Unknown model — ContextWindowSize returns 0 → never compact.
+	// Unknown model, far past any plausible window.
 	tr.Append("some-future-llm-7b", 999_999, 100, usage.Pricing{})
 	a := &Agent{tracker: tr}
 	c := NewDefaultCompactor()
+	if !c.ShouldCompact(context.Background(), a) {
+		t.Errorf("ShouldCompact = false at %d tokens on an unknown model; want true against the assumed %d-token window",
+			999_999, AssumedContextWindowSize)
+	}
+}
+
+// The other side of it: the assumed window must not turn every unknown
+// model into a session that compacts constantly. Under the threshold is
+// still under the threshold.
+func TestDefaultCompactor_ShouldCompact_UnknownWindowStillRespectsTheThreshold(t *testing.T) {
+	t.Parallel()
+	tr := usage.NewTracker()
+	tr.Append("some-future-llm-7b", AssumedContextWindowSize/10, 100, usage.Pricing{})
+	a := &Agent{tracker: tr}
+	c := NewDefaultCompactor()
 	if c.ShouldCompact(context.Background(), a) {
-		t.Errorf("ShouldCompact = true on unknown window; want false (skip when size=0)")
+		t.Errorf("ShouldCompact = true at 10%% of the assumed window; want false")
+	}
+}
+
+// And an empty session is not a degraded one. No turn has landed, so
+// there is no model to be unknown ABOUT and nothing to compact — the
+// assumed window must not manufacture a reason to fire.
+func TestDefaultCompactor_ShouldCompact_NoTurnYetIsNotDegraded(t *testing.T) {
+	t.Parallel()
+	a := &Agent{tracker: usage.NewTracker()}
+	c := NewDefaultCompactor()
+	if c.ShouldCompact(context.Background(), a) {
+		t.Errorf("ShouldCompact = true before any turn landed; want false")
+	}
+	if a.warnedUnknownWindow {
+		t.Errorf("an empty session announced a degraded context window")
 	}
 }
 

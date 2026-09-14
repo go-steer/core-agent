@@ -44,3 +44,20 @@ func (a *Agent) recordContextReductionFailure(operation string, err error, conse
 	a.queueOutOfBandEvent(attach.NewContextReductionFailedEvent(
 		operation, err.Error(), consecutiveFailures, cooldownTurns))
 }
+
+// recordContextReductionDegraded writes the durable row for a context
+// reduction that is still happening but on an assumption or a fallback
+// rather than on the real thing (#974) — an unknown context window, or a
+// compaction done by mechanical truncation because the summarizer was
+// unavailable.
+//
+// Separate from the failure path above for the reason the row's own
+// documentation gives: "did not run" and "ran, worse" are opposite
+// readings during an incident. Callers own the at-most-once discipline;
+// this writes whatever it is handed.
+func (a *Agent) recordContextReductionDegraded(operation, detail string) {
+	if a == nil || operation == "" {
+		return
+	}
+	a.queueOutOfBandEvent(attach.NewContextReductionDegradedEvent(operation, detail))
+}

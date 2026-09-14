@@ -120,14 +120,95 @@ func NewContextReductionFailedEvent(operation, reason string, consecutiveFailure
 // Exists so a client (or a test) matches on the row through one function
 // rather than re-deriving the key names, which is how the two halves of
 // a metadata contract drift apart.
+//
+// Matches on the event name as well as the author: the degraded row
+// below shares this author deliberately, and an author-only match would
+// report a working-but-degraded compactor as a failed one (#974).
 func ContextReductionFailure(ev *session.Event) (operation, reason string, ok bool) {
 	if ev == nil || ev.CustomMetadata == nil {
 		return "", "", false
 	}
-	if ev.Author != ContextReductionFailedEventAuthor {
+	if ev.Author != ContextReductionFailedEventAuthor || ev.InvocationID != ContextReductionFailedEventName {
 		return "", "", false
 	}
 	operation, _ = ev.CustomMetadata[ctxReductionMetaOp].(string)
 	reason, _ = ev.CustomMetadata[ctxReductionMetaReason].(string)
 	return operation, reason, true
+}
+
+// A context reduction that is still happening, but worse (#974).
+//
+// Distinct from the failure row above rather than an extra `operation`
+// value on it, because the two say opposite things to whoever is reading
+// during an incident. "Failed and was swallowed" means the mechanism did
+// not run and the context is not being reduced. "Degraded" means it ran
+// — the session is still bounded — on an assumption or a fallback that
+// is worse than the real thing. Filing both under a row literally named
+// `context-reduction-failed` would make a working-but-guessing compactor
+// indistinguishable from an absent one, which is the exact confusion
+// #974 exists to remove.
+const (
+	// ContextReductionDegradedEventName is the event name of the row.
+	ContextReductionDegradedEventName = "context-reduction-degraded"
+	// ContextReductionDegradedEventAuthor authors the row. Same author
+	// as the failure row: an eventlog tail filtered to this prefix
+	// should show the whole story of a session's context reduction.
+	ContextReductionDegradedEventAuthor = ContextReductionFailedEventAuthor
+)
+
+// Values carried under the degraded row's `operation` metadata key.
+const (
+	// ContextReductionWindowUnknown marks a session whose model is not
+	// in the context-window table, so the compaction threshold is being
+	// applied against an assumed window rather than a known one. The
+	// detail carries the model id and the size assumed.
+	ContextReductionWindowUnknown = "window-unknown"
+	// ContextReductionMechanical marks a compaction that was performed
+	// by mechanical truncation because the summarizer was unavailable.
+	// The detail says how much was dropped.
+	ContextReductionMechanical = "mechanical-compaction"
+)
+
+// ctxReductionMetaDetail carries the degraded row's human-readable
+// explanation. Named `detail` rather than reusing `reason` because
+// `reason` on the failure row is defined as verbatim error text, and a
+// consumer that has learned to render it as an error would render this
+// as one too.
+const ctxReductionMetaDetail = "detail"
+
+// NewContextReductionDegradedEvent builds the eventlog row recording
+// that context reduction is running in a degraded mode.
+//
+// operation is ContextReductionWindowUnknown or
+// ContextReductionMechanical. detail is the operator-facing explanation
+// — the model id and assumed window, or what the truncation dropped.
+//
+// Writers are expected to emit this at most once per distinct condition
+// per session. It describes a state, not an attempt, and a state
+// re-announced every turn is one operators filter out.
+func NewContextReductionDegradedEvent(operation, detail string) *session.Event {
+	ev := session.NewEvent(ContextReductionDegradedEventName)
+	ev.Author = ContextReductionDegradedEventAuthor
+	ev.CustomMetadata = map[string]any{
+		ctxReductionMetaSource: "agent",
+		ctxReductionMetaOp:     operation,
+		ctxReductionMetaDetail: detail,
+	}
+	return ev
+}
+
+// ContextReductionDegraded reads a degraded row back out of an eventlog
+// tail. Returns ok=false for any other event — including the failure
+// row, which shares an author and is matched by ContextReductionFailure
+// instead.
+func ContextReductionDegraded(ev *session.Event) (operation, detail string, ok bool) {
+	if ev == nil || ev.CustomMetadata == nil {
+		return "", "", false
+	}
+	if ev.Author != ContextReductionDegradedEventAuthor || ev.InvocationID != ContextReductionDegradedEventName {
+		return "", "", false
+	}
+	operation, _ = ev.CustomMetadata[ctxReductionMetaOp].(string)
+	detail, _ = ev.CustomMetadata[ctxReductionMetaDetail].(string)
+	return operation, detail, true
 }

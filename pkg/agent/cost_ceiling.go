@@ -26,26 +26,42 @@
 //     but the session adds up to more than expected (typical for long-
 //     running autonomous deploys).
 //
-// Enforcement runs in the post-turn hook (same place as compactor and
-// checkpointer). When a ceiling trips, the agent:
+// The two bounds do NOT have the same consequence (#1049), and the
+// difference is the bound's own name:
 //
-//  1. Emits a structured `turn-error` event with kind=cost_ceiling.
-//  2. Sets costCeilingExceeded so the next Run call refuses to start.
-//  3. Records the reason on costCeilingReason for /stats and similar
-//     surfaces to display.
+//   - A per-SESSION trip halts the session. The accumulator it measures
+//     does not reset, so the next turn would trip it again anyway, and
+//     the halt is written durably (#643) so a pod roll cannot hand a
+//     runaway a fresh budget. Reset is operator-driven via
+//     Agent.ResetCostCeiling and wants AddSessionCostBudget beside it.
+//   - A per-TURN trip ends its turn and nothing more. No flag, no
+//     durable row, next turn starts from a fresh baseline. One
+//     expensive turn in an eight-hour unattended run should not end the
+//     run, and a single turn's spend should not outlive the pod that
+//     spent it.
 //
-// Reset is operator-driven via Agent.ResetCostCeiling — typically wired
-// to a slash command like `/resume-after-cost-ceiling`. There's no
-// automatic reset: ceilings are a "stop, get human attention" signal,
-// not a throttle.
+// What keeps the second of those from becoming an unbounded spend loop
+// against a driver that re-drives is maxConsecutiveTurnCeilingTrips: N
+// turns in a row each hitting the per-turn ceiling escalates to the
+// ordinary session halt, with a reason that says that is what happened.
+//
+// Either way the trip emits a `guardrail-trip` event (#891) carrying
+// the reason, and records it on costCeilingReason for /stats and
+// similar surfaces. Ceilings are a "get human attention" signal, not a
+// throttle: nothing clears a halt automatically.
+//
+// Enforcement runs at three points — the post-turn hook (same place as
+// compactor and checkpointer), the top of the next Run once the prior
+// turn has settled (#362), and Run's event tap while the turn is still
+// spending (#720).
 //
 // Limitations:
 //
-//   - Post-turn timing means a single runaway turn CAN overshoot the
-//     per-turn budget before the check fires (all model calls in the
-//     turn must complete first). Future enhancement: mid-turn detection
-//     via SetOnAppend callback. For v1, post-turn is enough to bound
-//     damage to one turn's worth of cost.
+//   - The bound is a floor, not a cap. Even the in-turn tap only fires
+//     between events, so a turn overshoots its ceiling by whatever the
+//     model call in flight goes on to cost; the boundary passes
+//     overshoot by a whole turn when the tap cannot see the spend (a
+//     harness that appends the main-model cost after the stream drains).
 //   - Subtask costs (Mechanism-B agentic_* wrappers) are included in
 //     the totals via usage.Tracker — they share the same accumulator.
 
@@ -58,19 +74,24 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
-// CostCeiling configures the per-turn / per-session spend caps the
-// post-turn hook enforces. Zero or negative values disable that
+// CostCeiling configures the per-turn / per-session spend caps
+// enforcement checks against. Zero or negative values disable that
 // specific ceiling — both fields default to disabled when constructed
 // via the zero value.
 type CostCeiling struct {
 	// MaxTurnUSD is the cap on a single conversation turn's spend
 	// (cumulative cost of every model call between one operator
-	// inject and the next agent-done state). Tripped → next Run
-	// refuses with an ErrCostCeilingExceeded error.
+	// inject and the next agent-done state). Tripped → the turn is
+	// cut and a `guardrail-trip` event reports why. The session is
+	// NOT halted and the next turn runs (#1049) — until
+	// maxConsecutiveTurnCeilingTrips turns in a row trip it, which
+	// escalates to the session halt below.
 	MaxTurnUSD float64
 
 	// MaxSessionUSD is the cap on the session's cumulative spend
-	// across all turns (parent + subtask).
+	// across all turns (parent + subtask). Tripped → every subsequent
+	// Run refuses with an ErrCostCeilingExceeded error until the
+	// operator resets it, and the halt is durable across a restart.
 	MaxSessionUSD float64
 }
 
@@ -148,11 +169,17 @@ func WithCostCeiling(c CostCeiling) Option {
 // ceiling tripped. Safe to call even if no ceiling is configured
 // or no flag was set — no-op in that case.
 //
-// A bare reset is enough for a per-TURN trip: the next turn starts
-// from a fresh baseline. It is NOT enough for a per-SESSION trip —
-// the accumulator is already at or past the ceiling, so the very next
-// turn re-trips. Pair it with AddSessionCostBudget (see
-// WouldRetripCostCeiling) to hand the session real runway.
+// A bare reset is enough for a per-TURN escalation: the streak is
+// cleared here and the next turn starts from a fresh baseline. It is
+// NOT enough for a per-SESSION trip — the accumulator is already at or
+// past the ceiling, so the very next turn re-trips. Pair it with
+// AddSessionCostBudget (see WouldRetripCostCeiling) to hand the session
+// real runway.
+//
+// Clearing the streak is the point of the reset on that arm: leaving it
+// at the escalation threshold would re-halt the session on the very
+// next per-turn trip, one turn after an operator looked at it and said
+// carry on (#1049).
 func (a *Agent) ResetCostCeiling() {
 	if a == nil {
 		return
@@ -160,6 +187,8 @@ func (a *Agent) ResetCostCeiling() {
 	a.mu.Lock()
 	a.costCeilingExceeded = false
 	a.costCeilingReason = ""
+	a.turnCeilingStreak = 0
+	a.turnCeilingTripped = false
 	a.mu.Unlock()
 	// Release any wake the halt swallowed (#1040). No-op when the
 	// watchdog is also tripped. Note this fires even when the reset
@@ -249,6 +278,12 @@ func (a *Agent) WouldRetripCostCeiling() (retrip bool, spent, ceiling float64) {
 // has an obvious answer.
 //
 // Returns (true, reason) when blocked; (false, "") otherwise.
+//
+// It answers "is the session halted", which since #1049 is a narrower
+// question than "did a cost ceiling trip". A per-turn trip ends its
+// turn and leaves this false; only the per-session bound and a
+// maxConsecutiveTurnCeilingTrips escalation set it. Callers that want
+// every trip want the `guardrail-trip` event, not this.
 func (a *Agent) CostCeilingTripped() (bool, string) {
 	if a == nil {
 		return false, ""
@@ -259,10 +294,13 @@ func (a *Agent) CostCeilingTripped() (bool, string) {
 }
 
 // maybeEnforceCostCeiling checks the configured ceilings against the
-// current tracker totals + the snapshot taken at turn start. Sets the
-// costCeilingExceeded flag and emits a turn-error event when either
-// ceiling trips. Idempotent — if already tripped, the check is a no-op
-// so we don't re-emit on every subsequent call.
+// current tracker totals + the snapshot taken at turn start, and emits
+// a `guardrail-trip` when either is met or exceeded. What else it does
+// depends on which one tripped — see the two-bounds note below.
+//
+// Idempotent within a halt and within a turn: a session already halted
+// short-circuits at the top, and a turn already over its per-turn bound
+// is latched by turnCeilingTripped, so neither re-emits.
 //
 // Called from two spots, both against the same turnStartCost baseline:
 //
@@ -290,30 +328,53 @@ func (a *Agent) CostCeilingTripped() (bool, string) {
 // of where Run clears its cancel func, and hanging an operator-visible
 // field off that is the kind of coupling that breaks silently when the
 // cleanup order is rearranged. The call sites know the answer.
-func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) {
+//
+// Returns true when this pass tripped something, so the in-turn tap
+// knows to cut the turn. That used to be read back off
+// CostCeilingTripped, which stopped being the same question once a
+// per-turn trip stopped setting the session flag (#1049).
+//
+// THE TWO BOUNDS ARE NOT THE SAME KIND OF EVENT (#1049). A per-SESSION
+// trip halts the session: the accumulator it measures does not reset,
+// so the next turn would trip it again, and the halt is written durably
+// because a pod roll must not hand a runaway a fresh budget. A per-TURN
+// trip ends its turn and nothing more — the bound is named for a turn,
+// the next turn starts from a fresh baseline, and one expensive turn in
+// an eight-hour unattended run should not end the run. It sets no flag
+// and writes no durable row; a client learns about it from the
+// `guardrail-trip` event, which is exactly what that event is for.
+//
+// What stops a driver from re-driving into the ceiling forever is
+// maxConsecutiveTurnCeilingTrips, not the per-turn halt that used to be
+// there. See its doc comment for why the streak and not the bound.
+func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) bool {
 	if a == nil || a.tracker == nil {
-		return
+		return false
 	}
 	// Snapshot the ceilings under the lock: AddSessionCostBudget can
 	// raise MaxSessionUSD at any time from an operator reset (#666).
 	a.mu.Lock()
 	if a.costCeilingExceeded {
-		// Already tripped — no need to re-check or re-emit.
+		// Already halted — no need to re-check or re-emit.
 		a.mu.Unlock()
-		return
+		return false
 	}
 	ceiling := a.costCeiling
 	turnStart := a.turnStartCost
 	turnStartSet := a.turnStartCostSet
+	turnTripped := a.turnCeilingTripped
 	a.mu.Unlock()
 	if !ceiling.active() {
-		return
+		return false
 	}
 
 	sessionCost := a.tracker.Totals().CostUSD
 	turnCost := sessionCost - turnStart
 
 	var reason string
+	// halt says whether this trip takes the session down with the turn.
+	// Only a per-session trip and a per-turn escalation do.
+	halt := true
 	switch {
 	// The per-turn check needs a baseline from a turn this process
 	// actually ran (#643). On a resumed session the tracker is rebuilt
@@ -323,10 +384,24 @@ func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) {
 	// cost a cent. The per-SESSION check below is unaffected: it reads
 	// the accumulator directly, which is exactly what should carry
 	// across a restart.
-	case turnStartSet && ceiling.MaxTurnUSD > 0 && turnCost >= ceiling.MaxTurnUSD:
+	//
+	// turnTripped is this turn's once-only latch. costCeilingExceeded
+	// used to serve, because a per-turn trip set it; now that one does
+	// not, the tap would otherwise re-trip on every remaining event of
+	// a turn whose cost is already over the bound.
+	case !turnTripped && turnStartSet && ceiling.MaxTurnUSD > 0 && turnCost >= ceiling.MaxTurnUSD:
+		streak := a.recordTurnCeilingTrip()
+		if streak >= maxConsecutiveTurnCeilingTrips {
+			reason = fmt.Sprintf(
+				"per-turn cost ceiling halted the session: %d turns in a row each hit the $%.4f per-turn ceiling (the last cost $%.4f). Every one was inside its own bound, so no per-session ceiling caught the pattern. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
+				streak, ceiling.MaxTurnUSD, turnCost,
+			)
+			break
+		}
+		halt = false
 		reason = fmt.Sprintf(
-			"per-turn cost ceiling exceeded: this turn cost $%.4f, ceiling is $%.4f. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
-			turnCost, ceiling.MaxTurnUSD,
+			"per-turn cost ceiling exceeded: this turn cost $%.4f, ceiling is $%.4f. The turn was stopped; the session is NOT halted and the next turn starts from a fresh per-turn budget. %d in a row now — at %d the session halts and needs an operator reset.",
+			turnCost, ceiling.MaxTurnUSD, streak, maxConsecutiveTurnCeilingTrips,
 		)
 	case ceiling.MaxSessionUSD > 0 && sessionCost >= ceiling.MaxSessionUSD:
 		reason = fmt.Sprintf(
@@ -334,19 +409,57 @@ func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) {
 			sessionCost, ceiling.MaxSessionUSD,
 		)
 	default:
-		return
+		return false
 	}
 
-	a.mu.Lock()
-	a.costCeilingExceeded = true
-	a.costCeilingReason = reason
-	a.mu.Unlock()
+	if halt {
+		a.mu.Lock()
+		a.costCeilingExceeded = true
+		a.costCeilingReason = reason
+		a.mu.Unlock()
 
-	// Durable halt (#643): the trip outlives this process, so a crash
-	// or pod roll can't hand the runaway a fresh budget.
-	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, reason))
+		// Durable halt (#643): the trip outlives this process, so a
+		// crash or pod roll can't hand the runaway a fresh budget. Only
+		// a halt is written. A per-turn trip that ends its own turn has
+		// nothing to restore — re-arming it on the next process would
+		// mean one turn's spend halting a session it never halted.
+		a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, reason))
+	}
 
 	a.emitGuardrailTrip(attach.GuardrailCostCeiling, reason, haltedTurn)
+	return true
+}
+
+// maxConsecutiveTurnCeilingTrips is how many turns may end in a per-turn
+// ceiling trip, back to back, before the session halts (#1049).
+//
+// The streak exists because "a per-turn bound bounds a turn" is only
+// half an answer. Take it literally and an agent whose driver re-drives
+// — a wake loop, auto-continue — spends up to the ceiling per turn,
+// forever, and a hard stop has become an unbounded spend loop. That is
+// worse than the halt being removed here, and it is the exact shape
+// --max-turn-cost-usd was added to bound (#144's read-file loop).
+//
+// So the bound stays a turn-level bound and the RUNAWAY is what gets a
+// session-level answer. Three is deliberately small: one trip is an
+// expensive turn, two is a coincidence, three is a pattern nobody is
+// watching. A turn that finishes inside its bound clears the count, so
+// an agent that occasionally runs hot never reaches it.
+//
+// MaxSessionUSD remains the primary session bound and is untouched by
+// any of this; the streak is what protects an operator who configured
+// only a per-turn cap.
+const maxConsecutiveTurnCeilingTrips = 3
+
+// recordTurnCeilingTrip latches this turn as tripped and returns the
+// resulting consecutive-trip count. Called exactly once per turn, from
+// the per-turn arm above, under the latch that arm checks first.
+func (a *Agent) recordTurnCeilingTrip() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.turnCeilingTripped = true
+	a.turnCeilingStreak++
+	return a.turnCeilingStreak
 }
 
 // enforceCostCeilingInTurn is the in-turn arm of the cost ceiling
@@ -389,8 +502,11 @@ func (a *Agent) enforceCostCeilingInTurn() {
 	if !armed {
 		return
 	}
-	a.maybeEnforceCostCeiling(true)
-	if exceeded, _ := a.CostCeilingTripped(); exceeded {
+	// Cut the turn on what this pass decided, not on the session flag.
+	// A per-turn trip no longer sets that flag (#1049), and the whole
+	// point of a per-turn bound is that it stops the turn — reading the
+	// session flag back here would have left the runaway turn running.
+	if a.maybeEnforceCostCeiling(true) {
 		// Mark before cutting so the turn's metric point is labelled
 		// with the guardrail rather than the bare `canceled` the
 		// Interrupt produces (#818 part 2; see guardrail_halt.go). The
@@ -407,6 +523,15 @@ func (a *Agent) enforceCostCeilingInTurn() {
 // Agent.Run at turn start, before the model is invoked. No-op when
 // no ceiling is configured (avoid touching the tracker's mutex when
 // we'd ignore the value anyway).
+//
+// It also rolls the per-turn ceiling bookkeeping over to the new turn
+// (#1049), and the placement is load-bearing. Run calls this AFTER the
+// settle-time enforcement pass, which is where a harness-driven
+// deployment's previous turn is finally judged (#362) — so by the time
+// this runs, turnCeilingTripped is the finished turn's verdict, not a
+// half-formed one. A turn that ended inside its bound clears the
+// streak; a turn that tripped leaves it standing for this turn to add
+// to.
 func (a *Agent) snapshotTurnStartCost() {
 	if a == nil || a.tracker == nil || !a.CostCeilingLimits().active() {
 		return
@@ -415,6 +540,10 @@ func (a *Agent) snapshotTurnStartCost() {
 	a.mu.Lock()
 	a.turnStartCost = cost
 	a.turnStartCostSet = true
+	if !a.turnCeilingTripped {
+		a.turnCeilingStreak = 0
+	}
+	a.turnCeilingTripped = false
 	a.mu.Unlock()
 }
 

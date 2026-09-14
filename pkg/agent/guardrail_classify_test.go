@@ -104,10 +104,15 @@ func assertRefusalMatchesTrip(t *testing.T, trip attach.GuardrailTrip, refusal a
 // classified as `unknown` and gen_ai.agent.invocation.duration recorded
 // `error.type: unknown` for exactly the turns a spend dashboard exists
 // to show.
+//
+// Driven through the per-SESSION bound since #1049: a refusal is what
+// this test is about, and after #1049 the per-turn bound does not
+// produce one. That a per-turn trip refuses nothing is asserted over in
+// cost_ceiling_test.go, where it is the claim rather than the setup.
 func TestClassifyRefusal_CostCeiling(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
-	a := &Agent{tracker: tr, costCeiling: CostCeiling{MaxTurnUSD: 0.10}}
+	a := &Agent{tracker: tr, costCeiling: CostCeiling{MaxSessionUSD: 0.10}}
 	emitted := captureGuardrailTrips(a)
 
 	a.snapshotTurnStartCost()

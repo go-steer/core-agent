@@ -23,6 +23,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -265,6 +267,23 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 // them, the path where that is detectable is still guarded. Counting
 // ID-less parts positionally also matches how history_pairing.go
 // handles the identical empty-ID Gemini shape (#367).
+// observeTurnStartForWatchdog tells the watchdog a turn is beginning,
+// for the signals that scope their evidence to one (#655). Called from
+// Run once the preflights have passed, so a refused turn is not a
+// boundary. A watchdog that does not implement watchdog.TurnObserver —
+// including every one written before this existed — is left alone.
+func (a *Agent) observeTurnStartForWatchdog() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	w := a.watchdog
+	a.mu.Unlock()
+	if to, ok := w.(watchdog.TurnObserver); ok {
+		to.ObserveTurnStart()
+	}
+}
+
 func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string]struct{}) bool {
 	if ev == nil || ev.Content == nil {
 		return false
@@ -288,9 +307,10 @@ func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string
 		}
 		observed = true
 		obs.ObserveToolResult(watchdog.ToolResult{
-			Name:  p.FunctionResponse.Name,
-			Error: errText,
-			NoOp:  toolResponseNoOp(p.FunctionResponse.Response),
+			Name:   p.FunctionResponse.Name,
+			Error:  errText,
+			NoOp:   toolResponseNoOp(p.FunctionResponse.Response),
+			Digest: toolResponseDigest(p.FunctionResponse.Response),
 		})
 	}
 	return observed
@@ -351,6 +371,44 @@ func toolResponseNoOp(resp map[string]any) bool {
 	default:
 		return false
 	}
+}
+
+// toolResponseDigest fingerprints what a tool call actually returned,
+// for watchdog.NoNewStateSignal (#655). Two calls that ask the same
+// question differently come back with the same payload, and that is the
+// only thing the digest has to capture.
+//
+// Returns "" when there is nothing to fingerprint or the payload will
+// not encode. Empty is read downstream as "unknown", never as
+// "unchanged" — the signal resets on it — so every failure here costs
+// recall and none of it costs precision. That direction is chosen
+// rather than inherited: a digest the tap guessed at would let an
+// encoding quirk manufacture a stall alert out of two unrelated calls.
+//
+// The name is deliberately NOT part of the digest. Two different tools
+// returning the identical payload is the interesting case, not a
+// collision to be defended against: it is what a model rewording its
+// way around one tool into another looks like, and keying on the name
+// would blind the signal to exactly that.
+//
+// encoding/json sorts map keys, so a map that round-tripped through a
+// different iteration order still hashes the same. Any value json
+// cannot encode (a channel, a func, a cycle) yields "" via the error
+// path rather than a partial hash.
+func toolResponseDigest(resp map[string]any) string {
+	if len(resp) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	// Half the hash. A stall needs the last few dozen digests to be
+	// distinguishable from each other, not to be collision-proof
+	// against an adversary, and 128 bits is already far past what that
+	// asks for.
+	return hex.EncodeToString(sum[:16])
 }
 
 // drainWatchdogAlerts is the post-turn hook entry point. Pulls any

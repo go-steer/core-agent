@@ -1539,6 +1539,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			yield(nil, err)
 		}
 	}
+	// Turn boundary (#655). Signals whose evidence is scoped to a single
+	// turn clear it here. Deliberately after the two preflights: a
+	// refused turn never ran, so it is not a boundary, and letting it
+	// clear state would hand an auto-continue re-drive a way to launder
+	// a stall one refusal at a time.
+	a.observeTurnStartForWatchdog()
 	// Tail repair (#537): heal a history whose previous turn died
 	// between a persisted functionCall and its functionResponse —
 	// crash mid-tool, or any mid-tool cancellation (the runner

@@ -21,6 +21,16 @@
 #                         → dev/smoke/02-vertex-basic.sh
 #   Anthropic via Vertex — ANTHROPIC_VERTEX_PROJECT_ID set
 #                         → dev/smoke/09-vertex-anthropic-toolloop.sh
+#   Behavioural eval     — ANTHROPIC_VERTEX_PROJECT_ID set
+#                         → dev/smoke/11-evals-cluster-fact.sh
+#
+# The third leg is a different kind of question from the first two.
+# Those ask whether a request shape is still accepted; the eval asks
+# whether the agent found a defect nobody told it the location of, and
+# grades that off the fixture's own kubectl log rather than off the
+# transcript. It rides here rather than in unit CI because it needs a
+# real model to mean anything — a scripted provider would be grading
+# the script.
 #
 # No credentials at all → prints SKIP and exits 0, so this is safe to
 # wire as an always-on presubmit/CI step: it degrades to a no-op on
@@ -58,6 +68,12 @@ if [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]]; then
   run_leg "vertex-anthropic" dev/smoke/09-vertex-anthropic-toolloop.sh
 else
   echo "e2e-real-provider: vertex-anthropic: skipped (ANTHROPIC_VERTEX_PROJECT_ID unset)"
+fi
+
+if [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]]; then
+  run_leg "evals-cluster-fact" dev/smoke/11-evals-cluster-fact.sh
+else
+  echo "e2e-real-provider: evals-cluster-fact: skipped (ANTHROPIC_VERTEX_PROJECT_ID unset)"
 fi
 
 if [[ "${failed}" -gt 0 ]]; then

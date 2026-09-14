@@ -1,0 +1,248 @@
+{
+  "planted": {
+    "namespace": "payments-prod",
+    "workload": "ledger-writer",
+    "image_tag": "v1.9.3-rc2",
+    "registry_error": "manifest unknown"
+  },
+  "cluster": {
+    "context": "eval-fixture-payments",
+    "default_namespace": "default",
+    "nodes": ["gke-eval-pool-9f21", "gke-eval-pool-c70a"],
+    "namespaces": {
+      "default": {
+        "age": "94d",
+        "deployments": []
+      },
+      "kube-system": {
+        "age": "94d",
+        "deployments": [
+          {
+            "name": "konnectivity-agent",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "94d",
+            "container": "konnectivity-agent",
+            "image": "gke.gcr.io/proxy-agent:v0.1.6-gke.0",
+            "pods": [
+              {
+                "name": "konnectivity-agent-6d4b7f9c88-lm4zq",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "12d",
+                "node": "gke-eval-pool-9f21",
+                "labels": {"k8s-app": "konnectivity-agent"},
+                "logs": "I0914 06:02:11 connect.go:120] connected to control plane",
+                "events": []
+              }
+            ]
+          }
+        ]
+      },
+      "checkout-stage": {
+        "age": "41d",
+        "deployments": [
+          {
+            "name": "cart-web",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "41d",
+            "container": "cart-web",
+            "image": "ghcr.io/acme/cart-web:v4.2.0",
+            "conditions": [
+              {"type": "Available", "status": "True", "message": "Deployment has minimum availability."}
+            ],
+            "pods": [
+              {
+                "name": "cart-web-7f5c8d9b64-8kp2n",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 1,
+                "age": "6d",
+                "node": "gke-eval-pool-c70a",
+                "labels": {"app": "cart-web"},
+                "logs": "listening on :8080",
+                "events": []
+              },
+              {
+                "name": "cart-web-7f5c8d9b64-x2rml",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "6d",
+                "node": "gke-eval-pool-9f21",
+                "labels": {"app": "cart-web"},
+                "logs": "listening on :8080",
+                "events": []
+              }
+            ]
+          }
+        ]
+      },
+      "payments-prod": {
+        "age": "88d",
+        "deployments": [
+          {
+            "name": "settlement-api",
+            "ready": "3/3",
+            "replicas": 3,
+            "up_to_date": 3,
+            "available": 3,
+            "age": "88d",
+            "container": "settlement-api",
+            "image": "ghcr.io/acme/settlement-api:v7.1.4",
+            "conditions": [
+              {"type": "Available", "status": "True", "message": "Deployment has minimum availability."},
+              {"type": "Progressing", "status": "True", "message": "ReplicaSet \"settlement-api-84c6f7d955\" has successfully progressed."}
+            ],
+            "pods": [
+              {
+                "name": "settlement-api-84c6f7d955-4qhzt",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "19d",
+                "node": "gke-eval-pool-9f21",
+                "labels": {"app": "settlement-api"},
+                "logs": "settled 41 batches in the last hour",
+                "events": []
+              },
+              {
+                "name": "settlement-api-84c6f7d955-nb8ws",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "19d",
+                "node": "gke-eval-pool-c70a",
+                "labels": {"app": "settlement-api"},
+                "logs": "settled 38 batches in the last hour",
+                "events": []
+              },
+              {
+                "name": "settlement-api-84c6f7d955-tj6vd",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 2,
+                "age": "19d",
+                "node": "gke-eval-pool-c70a",
+                "labels": {"app": "settlement-api"},
+                "logs": "settled 40 batches in the last hour",
+                "events": []
+              }
+            ]
+          },
+          {
+            "name": "fraud-scorer",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "63d",
+            "container": "fraud-scorer",
+            "image": "ghcr.io/acme/fraud-scorer:v2.0.9",
+            "conditions": [
+              {"type": "Available", "status": "True", "message": "Deployment has minimum availability."}
+            ],
+            "pods": [
+              {
+                "name": "fraud-scorer-5b7d94c6f8-9wgkr",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 3,
+                "age": "2d",
+                "node": "gke-eval-pool-9f21",
+                "labels": {"app": "fraud-scorer"},
+                "logs": "model v2 loaded; scoring",
+                "events": []
+              },
+              {
+                "name": "fraud-scorer-5b7d94c6f8-qc2bl",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "2d",
+                "node": "gke-eval-pool-c70a",
+                "labels": {"app": "fraud-scorer"},
+                "logs": "model v2 loaded; scoring",
+                "events": []
+              }
+            ]
+          },
+          {
+            "name": "ledger-writer",
+            "ready": "0/3",
+            "replicas": 3,
+            "up_to_date": 3,
+            "available": 0,
+            "age": "88d",
+            "container": "ledger-writer",
+            "image": "ghcr.io/acme/ledger-writer:v1.9.3-rc2",
+            "conditions": [
+              {"type": "Available", "status": "False", "message": "Deployment does not have minimum availability."},
+              {"type": "Progressing", "status": "False", "message": "ReplicaSet \"ledger-writer-6c8f4b7d59\" has timed out progressing."}
+            ],
+            "pods": [
+              {
+                "name": "ledger-writer-6c8f4b7d59-2xqvz",
+                "ready": "0/1",
+                "status": "ImagePullBackOff",
+                "phase": "Pending",
+                "restarts": 0,
+                "age": "5h14m",
+                "node": "gke-eval-pool-9f21",
+                "labels": {"app": "ledger-writer"},
+                "events": [
+                  {"type": "Normal", "reason": "Scheduled", "age": "5h14m", "message": "Successfully assigned payments-prod/ledger-writer-6c8f4b7d59-2xqvz to gke-eval-pool-9f21"},
+                  {"type": "Warning", "reason": "Failed", "age": "5h12m", "message": "Failed to pull image \"ghcr.io/acme/ledger-writer:v1.9.3-rc2\": rpc error: code = NotFound desc = failed to pull and unpack image: manifest for ghcr.io/acme/ledger-writer:v1.9.3-rc2 not found: manifest unknown"},
+                  {"type": "Warning", "reason": "ImagePullBackOff", "age": "44s", "message": "Back-off pulling image \"ghcr.io/acme/ledger-writer:v1.9.3-rc2\""}
+                ]
+              },
+              {
+                "name": "ledger-writer-6c8f4b7d59-hd7pc",
+                "ready": "0/1",
+                "status": "ImagePullBackOff",
+                "phase": "Pending",
+                "restarts": 0,
+                "age": "5h14m",
+                "node": "gke-eval-pool-c70a",
+                "labels": {"app": "ledger-writer"},
+                "events": [
+                  {"type": "Normal", "reason": "Scheduled", "age": "5h14m", "message": "Successfully assigned payments-prod/ledger-writer-6c8f4b7d59-hd7pc to gke-eval-pool-c70a"},
+                  {"type": "Warning", "reason": "Failed", "age": "5h11m", "message": "Failed to pull image \"ghcr.io/acme/ledger-writer:v1.9.3-rc2\": rpc error: code = NotFound desc = failed to pull and unpack image: manifest for ghcr.io/acme/ledger-writer:v1.9.3-rc2 not found: manifest unknown"},
+                  {"type": "Warning", "reason": "ImagePullBackOff", "age": "51s", "message": "Back-off pulling image \"ghcr.io/acme/ledger-writer:v1.9.3-rc2\""}
+                ]
+              },
+              {
+                "name": "ledger-writer-6c8f4b7d59-w4nkq",
+                "ready": "0/1",
+                "status": "ErrImagePull",
+                "phase": "Pending",
+                "restarts": 0,
+                "age": "5h14m",
+                "node": "gke-eval-pool-9f21",
+                "labels": {"app": "ledger-writer"},
+                "events": [
+                  {"type": "Normal", "reason": "Scheduled", "age": "5h14m", "message": "Successfully assigned payments-prod/ledger-writer-6c8f4b7d59-w4nkq to gke-eval-pool-9f21"},
+                  {"type": "Warning", "reason": "Failed", "age": "12s", "message": "Failed to pull image \"ghcr.io/acme/ledger-writer:v1.9.3-rc2\": rpc error: code = NotFound desc = failed to pull and unpack image: manifest for ghcr.io/acme/ledger-writer:v1.9.3-rc2 not found: manifest unknown"}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

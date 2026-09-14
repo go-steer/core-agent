@@ -228,6 +228,15 @@ var GatedFeatures = []GatedFeature{
 		Why:  "plan_mode selects whether `record_plan` is registered at all; an older daemon ignores the setting",
 	},
 	{
+		Path: "permissions.approval_timeout",
+		Min:  "2.10.0-dev.1",
+		Why: "the bound on how long one gated call waits for an answer (#647). " +
+			"An older daemon drops it and goes back to waiting forever, so a recipe that " +
+			"declared a ten-minute ceiling runs with none — and the failure it was declared " +
+			"against is a turn that blocks indefinitely while the session still reports " +
+			"`working`, which is the one degradation an operator cannot see in the logs",
+	},
+	{
 		Path: "checkpoint.mode",
 		Min:  "2.9.0-dev.5",
 		Why: "which parties may declare a task boundary (#905). `operator` withholds the " +

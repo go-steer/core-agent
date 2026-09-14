@@ -47,6 +47,11 @@ type PromptBroker struct {
 	pending map[string]*pendingPrompt
 	subs    []*subscription
 	closed  bool
+
+	// expired is a bounded tombstone ring of prompts that timed out
+	// under the gate's approval timeout, so a late answer gets an
+	// accurate reason instead of "not found". See rememberExpired.
+	expired []expiredPrompt
 }
 
 // pendingPrompt is one in-flight AskApproval call. response is
@@ -149,9 +154,58 @@ func (b *PromptBroker) AskApprovalAttributed(ctx context.Context, req permission
 	case <-ctx.Done():
 		b.mu.Lock()
 		delete(b.pending, id)
+		// An expiry is remembered; an ordinary cancellation is not.
+		// The gate marks the timeout it imposed as the context's cause
+		// (see permissions.ErrPromptExpired), which is the only way the
+		// difference reaches here — from inside a blocked AskApproval,
+		// a stopped turn and an unanswered prompt are the same closed
+		// channel. It matters because out-of-band approval means SLOW
+		// humans: somebody reads the notification, thinks about it, and
+		// posts an approval at minute eleven of a ten-minute window.
+		// Answering that with "unknown request id" tells them nothing
+		// about whether the write happened, and the honest answer —
+		// it expired, and the action was not taken — is a fact only the
+		// broker still holds.
+		if errors.Is(context.Cause(ctx), permissions.ErrPromptExpired) {
+			b.rememberExpired(id)
+		}
 		b.mu.Unlock()
 		return permissions.Approval{Decision: permissions.DecisionDeny}, ctx.Err()
 	}
+}
+
+// expiredPrompt is the tombstone left behind by a prompt that timed
+// out, so a late RespondAs can be answered accurately.
+type expiredPrompt struct {
+	id string
+	at time.Time
+}
+
+// maxExpiredRemembered caps the tombstone ring. A bound rather than a
+// TTL sweep because the memory is a courtesy to a late operator, not a
+// record: the eventlog and the approval log are where an expiry is
+// durably accounted for. Sized so a daemon prompting on a cycle keeps
+// roughly a shift's worth of them without anything to sweep it.
+//
+// Callers hold b.mu.
+const maxExpiredRemembered = 64
+
+func (b *PromptBroker) rememberExpired(id string) {
+	b.expired = append(b.expired, expiredPrompt{id: id, at: time.Now().UTC()})
+	if len(b.expired) > maxExpiredRemembered {
+		b.expired = append(b.expired[:0], b.expired[len(b.expired)-maxExpiredRemembered:]...)
+	}
+}
+
+// wasExpired reports whether id belongs to a prompt this broker let
+// expire. Callers hold b.mu.
+func (b *PromptBroker) wasExpired(id string) bool {
+	for _, e := range b.expired {
+		if e.id == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Subscribe registers a /perms/stream listener. Returns a channel of
@@ -224,7 +278,11 @@ func (b *PromptBroker) Respond(id string, decision permissions.Decision) error {
 func (b *PromptBroker) RespondAs(id string, decision permissions.Decision, by string) error {
 	b.mu.Lock()
 	pending, ok := b.pending[id]
+	expired := !ok && b.wasExpired(id)
 	b.mu.Unlock()
+	if expired {
+		return ErrPromptExpired
+	}
 	if !ok {
 		return ErrPromptNotFound
 	}
@@ -281,6 +339,16 @@ func (b *PromptBroker) Close() {
 // ErrPromptNotFound is returned by Respond when the id doesn't match
 // a live pending prompt.
 var ErrPromptNotFound = errors.New("attach: prompt id not found (already responded, cancelled, or never issued)")
+
+// ErrPromptExpired is returned by Respond when the id names a prompt
+// that this broker let time out under the gate's approval timeout.
+//
+// Separate from ErrPromptNotFound because the two answer different
+// questions for the human who just clicked approve. "Not found" leaves
+// them unable to tell whether the write went through under somebody
+// else's answer; this one says plainly that it did not happen, and that
+// the reason was the clock rather than a decision.
+var ErrPromptExpired = errors.New("attach: approval arrived after the prompt expired; the action was not taken")
 
 // PromptBrokerProvider is the optional capability for routes under
 // /sessions/<sid>/perms/stream + /perms/respond. Agents that opted

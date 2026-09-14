@@ -16,6 +16,7 @@ package permissions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -160,6 +161,14 @@ type Gate struct {
 	// is inherited as-is by DeriveForSession sub-gates. See
 	// searchgate.go and #158.
 	bashSearchGate string
+
+	// approvalTimeout bounds one prompt. Zero means wait forever. Set
+	// from Options.ApprovalTimeout, immutable after New, and inherited
+	// by DeriveForSession — a daemon that dropped it would leave every
+	// session it created unbounded, which is exactly the population the
+	// bound exists for.
+	approvalTimeout time.Duration
+
 	// nativeSearchTools, when non-nil, is the set of native tool names
 	// the host actually registered ("grep", "glob"). The search gate's
 	// whole value is that its refusal names a replacement, so a build
@@ -299,6 +308,26 @@ type Options struct {
 	// lets the caller surface a notice, "allow" disables the check.
 	// Empty == "enforce". See searchgate.go and #158.
 	BashSearchGate string
+
+	// ApprovalTimeout bounds how long a single gated call waits for an
+	// answer before giving up with ErrPromptExpired. Zero (the default)
+	// means wait forever, which is the right answer for a human at a
+	// terminal and the wrong one everywhere else.
+	//
+	// It exists because an unanswered prompt is not a slow prompt, it
+	// is a stopped agent. The gate serializes prompts, and an ordinary
+	// (non-autonomous) turn carries no deadline of its own, so one
+	// gated write with nobody attached to /perms/stream blocks the turn
+	// indefinitely — and the session goes on reporting `working` while
+	// it does. From outside the process that is indistinguishable from
+	// work in progress, which is precisely the wedge shape v3.0 box A1
+	// watches for.
+	//
+	// Default off on purpose. Timing out an operator who is reading the
+	// diff before approving it would be a regression of the case the
+	// gate was built for; the deployments that need a bound are the
+	// ones that opted into running unattended, and they say so.
+	ApprovalTimeout time.Duration
 }
 
 // New builds a Gate from the supplied options. The Mode defaults to
@@ -327,6 +356,7 @@ func New(opts Options) *Gate {
 		sessionAllowVerbs:   make(map[string]struct{}),
 		requirePlanArtifact: opts.RequirePlanArtifact,
 		bashSearchGate:      opts.BashSearchGate,
+		approvalTimeout:     opts.ApprovalTimeout,
 	}
 }
 
@@ -374,6 +404,14 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	if mode == "" {
 		mode = ModeAsk
 	}
+	// Parsed here rather than trusted: config validation already
+	// rejects a malformed duration, and a second error return from a
+	// constructor beats a silent zero, which would read as "no bound"
+	// — the exact posture the operator wrote the field to leave.
+	approvalTimeout, err := cfg.Permissions.ResolvedApprovalTimeout()
+	if err != nil {
+		return nil, fmt.Errorf("permissions: %w", err)
+	}
 	return New(Options{
 		Mode:     mode,
 		Policy:   policy,
@@ -384,6 +422,7 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		// never deny a mutating call on plan state.
 		RequirePlanArtifact: cfg.Permissions.PlanGateArmed(),
 		BashSearchGate:      cfg.Safety.BashSearchGate,
+		ApprovalTimeout:     approvalTimeout,
 	}), nil
 }
 
@@ -459,7 +498,14 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		// Inherited, not defaulted: a sub-gate that dropped this would
 		// leave the search gate off for every daemon-created session
 		// while --print-config still reported it on.
-		bashSearchGate:    template.bashSearchGate,
+		bashSearchGate: template.bashSearchGate,
+		// Inherited for the same reason, and it matters more here:
+		// DeriveForSession is how the DAEMON makes gates, and the daemon
+		// is the deployment that has nobody at a terminal. A sub-gate
+		// that defaulted this back to zero would leave the unbounded
+		// wait in place for exactly the sessions it was configured to
+		// bound.
+		approvalTimeout:   template.approvalTimeout,
 		nativeSearchTools: template.nativeSearchTools,
 		registeredTools:   template.registeredTools,
 		// Also inherited: the catalog is daemon-wide, so a sub-gate
@@ -1133,11 +1179,55 @@ func opLabel(a Access) string {
 	}
 }
 
+// askWithTimeout runs one prompt under the gate's approval timeout, if
+// it has one, and translates a timeout into ErrPromptExpired.
+//
+// Two things here are load-bearing and each has a test that fails
+// without them.
+//
+// The cause is attached to the derived context rather than only
+// inspected after the fact. A Prompter blocked inside AskApproval sees
+// nothing but ctx.Done(), and the difference between "the operator
+// pressed stop" and "nobody answered" is invisible from there — yet a
+// broker holding the request needs it, because an operator who approves
+// at minute eleven of a ten-minute window must be told their answer was
+// too late rather than that their request id does not exist. Passing it
+// as context.Cause hands that fact to every prompter without widening
+// the Prompter interface.
+//
+// And a parent that was ALREADY cancelled wins over the expiry. Both
+// deadlines fire on the same Done channel, so the naive check reports
+// an expiry for a turn the operator stopped themselves — telling them
+// their approval channel is unwatched when in fact they are watching it
+// closely enough to have pressed stop. The parent is checked first for
+// that reason, not for tidiness.
+func (g *Gate) askWithTimeout(ctx context.Context, req PromptRequest) (Approval, error) {
+	if g.approvalTimeout <= 0 {
+		return askApproval(ctx, g.prompter, req)
+	}
+	pctx, cancel := context.WithTimeoutCause(ctx, g.approvalTimeout, ErrPromptExpired)
+	defer cancel()
+
+	approval, err := askApproval(pctx, g.prompter, req)
+	if err == nil {
+		return approval, nil
+	}
+	if ctx.Err() != nil {
+		return approval, err
+	}
+	if errors.Is(context.Cause(pctx), ErrPromptExpired) {
+		return Approval{Decision: DecisionDeny}, fmt.Errorf(
+			"%w after %s (tool=%s detail=%q); nobody answered on the approval channel — attach a client to /perms/stream, or set permissions.mode=\"allow\" with an explicit allowlist if this deployment should not be asking",
+			ErrPromptExpired, g.approvalTimeout, req.ToolName, req.Detail)
+	}
+	return approval, err
+}
+
 func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 	if g.prompter == nil {
 		return fmt.Errorf("%w (tool=%s detail=%q); run with --yolo to bypass the gate, set permissions.mode=\"allow\" with an explicit allowlist for headless use, or attach an interactive stdin", ErrNoPrompter, req.ToolName, req.Detail)
 	}
-	approval, err := askApproval(ctx, g.prompter, req)
+	approval, err := g.askWithTimeout(ctx, req)
 	if err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}

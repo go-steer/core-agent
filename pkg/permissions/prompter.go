@@ -207,6 +207,26 @@ func askApproval(ctx context.Context, p Prompter, req PromptRequest) (Approval, 
 // is configured (e.g. headless mode without an explicit allowlist).
 var ErrNoPrompter = errors.New("permissions: interactive approval required but no prompter is configured")
 
+// ErrPromptExpired is returned when a prompt went unanswered for longer
+// than the gate's configured approval timeout. The action was NOT
+// taken.
+//
+// It is deliberately a different sentinel from context.DeadlineExceeded
+// and from context.Canceled, because for an operator the three are
+// three different events and only one of them is about them: the turn
+// was cancelled (somebody pressed stop), the turn hit an unrelated
+// deadline, or *nobody answered in time*. Only the last one means "your
+// approval channel is not being watched", which is the fault an
+// unattended deployment needs to hear about.
+//
+// It is also what the gate passes as the context cause on the derived
+// prompt context, so a Prompter that wants to distinguish an expiry
+// from a cancellation can read context.Cause without the gate having to
+// grow a second interface. attach.PromptBroker does exactly that, so
+// that an operator who answers too late is told their answer arrived
+// after the deadline rather than that their request id does not exist.
+var ErrPromptExpired = errors.New("permissions: approval request expired with no answer; the action was not taken")
+
 // ErrControlPlaneWrite wraps denials of writes to privilege-bearing
 // control-plane files (.agents/config.json, .agents/mcp.json) when no
 // interactive prompter is available to elevate. Exposed as a sentinel

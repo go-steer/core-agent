@@ -259,6 +259,7 @@ Configures the permission gate that consults every tool call. See [Permissions](
 | `builtin_allow_extras` | string[] | `[]` | Names of additional built-in bundles to fold into the effective allowlist (e.g. `["testing", "linting"]`). See `permissions.Bundles` in the Go source for the current catalog; also configurable interactively via the `/allow-bundle` slash. |
 | `plan_mode` | string | `off` | One of `off`, `advisory`, `required`. Whether `record_plan` is registered, and whether mutating tools are gated on it. See [Plan mode](#plan-mode-v29--plan_mode). CLI: `--plan-mode`. |
 | `require_plan_artifact` | bool | `false` | **Deprecated** (v2.9) — the two-state spelling of `plan_mode`; `true` == `plan_mode: "required"`. Cannot express `advisory`. Removed in the next major. |
+| `approval_timeout` | string | `""` (wait forever) | Go duration bounding how long one gated call waits for an answer before failing with `ErrPromptExpired`. See [Approval timeout](#approval-timeout-v30--approval_timeout). |
 
 Example:
 
@@ -297,6 +298,29 @@ The prompter is auto-wired when stdin is a TTY. Non-TTY callers (piped stdin, CI
 ### `--yolo` (CLI flag)
 
 `--yolo` forces the gate into `yolo` mode regardless of `config.permissions.mode`. Equivalent to setting `permissions.mode: "yolo"` in config; takes precedence at the call site so you don't have to edit config to unblock a one-off scripted run. Library callers achieve the same with `permissions.Options{Mode: permissions.ModeYolo}`.
+
+### Approval timeout (v3.0+) — `approval_timeout`
+
+An unanswered prompt is not a slow prompt, it is a stopped agent.
+
+The gate serializes prompts, and an ordinary turn carries no deadline of its own. So a single gated call with nobody attached to `/perms/stream` blocks that turn indefinitely — and the session goes on reporting `working` the whole time, which from outside the process is indistinguishable from work in progress. On a desktop that is fine: somebody is looking at the prompt. On an unattended daemon it is the failure mode that looks most like health.
+
+`permissions.approval_timeout` bounds it:
+
+```json
+{
+  "permissions": {
+    "mode": "ask",
+    "approval_timeout": "10m"
+  }
+}
+```
+
+Empty or absent means wait forever, which stays the default — timing out an operator who is reading a diff before approving it would be a regression of the case the gate exists for. Pick the value from **how long your approval channel takes a human to reach**, not from how long the tool call takes to run: the clock is measuring the operator, not the cluster.
+
+When it fires, the call fails with `permissions.ErrPromptExpired` and the action is **not** taken. That is a distinct sentinel from a cancelled turn on purpose — "somebody pressed stop" and "nobody answered" are different events, and only the second one means the approval channel is not being watched. A turn the operator cancelled themselves is still reported as a cancellation even if the timeout was about to fire.
+
+One consequence shows up at the API. An operator answering `POST /perms/respond` **after** the deadline gets **410 Gone**, not 404, with a body saying the action was not taken. Out-of-band approval means slow humans — somebody reads a notification, thinks about it, and approves at minute eleven of a ten-minute window — and `404 not found` would leave them unable to tell whether the write had gone ahead on somebody else's answer. The daemon remembers a bounded number of recently-expired request ids to be able to say this.
 
 ### Plan mode (v2.9+) — `plan_mode`
 

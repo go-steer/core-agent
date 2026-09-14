@@ -125,6 +125,17 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		return
 	}
 	if err := broker.RespondAs(req.ID, decision, approver); err != nil {
+		// 410, not 404. The prompt DID exist and this caller is
+		// answering the right question — they are just late, and the
+		// distinction is the whole point of the status: 404 leaves an
+		// out-of-band approver unable to tell whether the action went
+		// ahead on somebody else's answer, while Gone says the resource
+		// was here, is not any more, and is not coming back. The body
+		// says the action was not taken.
+		if errors.Is(err, ErrPromptExpired) {
+			http.Error(w, err.Error(), http.StatusGone)
+			return
+		}
 		if errors.Is(err, ErrPromptNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return

@@ -17,6 +17,7 @@ package attach
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -132,6 +133,111 @@ func TestPromptBroker_RespondUnknownID(t *testing.T) {
 	err := b.Respond("nope", permissions.DecisionAllowOnce)
 	if !errors.Is(err, ErrPromptNotFound) {
 		t.Errorf("Respond unknown id: err = %v, want ErrPromptNotFound", err)
+	}
+}
+
+// Out-of-band approval means slow humans. Somebody reads a
+// notification, thinks about it, and approves at minute eleven of a
+// ten-minute window — and "unknown request id" leaves them unable to
+// tell whether the write went ahead on somebody else's answer. The
+// broker remembers the expiry so it can say what actually happened.
+func TestPromptBroker_LateAnswerToExpiredPrompt(t *testing.T) {
+	t.Parallel()
+
+	b := NewPromptBroker()
+	defer b.Close()
+
+	// The gate marks its own timeout as the context cause; that is the
+	// only signal distinguishing an expiry from a cancelled turn once
+	// the wait is over.
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"})
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	pending := b.Pending()
+	if len(pending) != 1 {
+		t.Fatalf("Pending() = %d, want 1", len(pending))
+	}
+	id := pending[0].ID
+
+	cancel(permissions.ErrPromptExpired)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskApproval did not return after the prompt expired")
+	}
+
+	err := b.Respond(id, permissions.DecisionAllowOnce)
+	if !errors.Is(err, ErrPromptExpired) {
+		t.Fatalf("late answer to an expired prompt: err = %v, want ErrPromptExpired", err)
+	}
+	if errors.Is(err, ErrPromptNotFound) {
+		t.Fatal("an expired prompt must not read as never having existed")
+	}
+}
+
+// A cancelled turn leaves no tombstone. Only an expiry does — a turn
+// somebody stopped on purpose has an answer already, and remembering it
+// would tell a later caller the clock ran out when it did not.
+func TestPromptBroker_CancelledPromptIsNotRememberedAsExpired(t *testing.T) {
+	t.Parallel()
+
+	b := NewPromptBroker()
+	defer b.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"})
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	pending := b.Pending()
+	if len(pending) != 1 {
+		t.Fatalf("Pending() = %d, want 1", len(pending))
+	}
+	id := pending[0].ID
+
+	cancel()
+	<-done
+
+	err := b.Respond(id, permissions.DecisionAllowOnce)
+	if !errors.Is(err, ErrPromptNotFound) {
+		t.Fatalf("answer to a cancelled prompt: err = %v, want ErrPromptNotFound", err)
+	}
+}
+
+// The tombstone ring is a courtesy, not a record, so it must not grow
+// without bound on a daemon that prompts on a cycle all night.
+func TestPromptBroker_ExpiredTombstonesAreBounded(t *testing.T) {
+	t.Parallel()
+
+	b := NewPromptBroker()
+	defer b.Close()
+
+	for i := 0; i < maxExpiredRemembered+10; i++ {
+		b.mu.Lock()
+		b.rememberExpired(fmt.Sprintf("id-%d", i))
+		b.mu.Unlock()
+	}
+
+	b.mu.Lock()
+	got := len(b.expired)
+	oldestKept := b.expired[0].id
+	b.mu.Unlock()
+
+	if got != maxExpiredRemembered {
+		t.Fatalf("expired ring holds %d, want %d", got, maxExpiredRemembered)
+	}
+	// It keeps the NEWEST ones: a late approver is answering a prompt
+	// from minutes ago, not from the start of the shift.
+	if oldestKept != "id-10" {
+		t.Fatalf("oldest kept tombstone = %q, want id-10 (ring dropped the wrong end)", oldestKept)
 	}
 }
 

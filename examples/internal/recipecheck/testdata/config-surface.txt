@@ -105,6 +105,7 @@ path_scope.allow
 path_scope.allow_paths[].access
 path_scope.allow_paths[].path
 permissions.allow
+permissions.approval_timeout
 permissions.builtin_allow_extras
 permissions.deny
 permissions.mode

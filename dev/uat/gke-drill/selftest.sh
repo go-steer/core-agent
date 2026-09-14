@@ -80,7 +80,7 @@ refute() {
 }
 
 head_ "Shell syntax"
-for f in lib.sh drill.sh selftest.sh scenarios/*.sh; do
+for f in lib.sh drill.sh soak.sh selftest.sh scenarios/*.sh; do
     if bash -n "${f}" 2>/dev/null; then
         ok "${f}"
     else
@@ -101,7 +101,7 @@ done
 rm -rf __pycache__
 
 head_ "Executable bits"
-for f in drill.sh selftest.sh sse2jsonl.py score.py; do
+for f in drill.sh soak.sh selftest.sh sse2jsonl.py score.py; do
     [[ -x "${f}" ]] && ok "${f}" || bad "${f} is not executable"
 done
 
@@ -574,6 +574,66 @@ if grep -q 'will not survive a reboot' drill.sh; then
     bad "drill.sh still says the run will not survive a reboot"
 else
     ok "the closing summary does not say the run will not survive a reboot"
+fi
+
+head_ "Soak invariants"
+# Each of these is a defect a rehearsal actually produced, and every one
+# of them is silent: the run keeps going and the artifact is wrong. That
+# is the whole argument for checking them offline — an eight-hour run
+# costs a night, and none of these announce themselves.
+#
+# Every check reads soak.sh with its comments stripped. soak.sh explains
+# each of these traps at the line that avoids it, and the first version
+# of the distroless check was failed by the comment warning against the
+# very thing it forbids.
+SOAK_CODE=$(grep -v '^[[:space:]]*#' soak.sh)
+
+# `bc` is absent from a stock Cloud Shell and from slim containers. The
+# first rehearsal used it for the fractional-hours arithmetic, got an
+# empty string, computed a deadline of zero, and "ran" for 3 seconds.
+if printf '%s\n' "${SOAK_CODE}" | grep -qE '(^|[^[:alnum:]_])bc[[:space:]]'; then
+    bad "soak.sh calls bc, which is not installed everywhere; use awk"
+else
+    ok "soak.sh does not depend on bc"
+fi
+
+# The published daemon image is distroless. `kubectl exec … sh -c` fails
+# with "executable file not found" and the sampler recorded an empty
+# memory column for the whole run without comment.
+if printf '%s\n' "${SOAK_CODE}" | grep -q 'exec .*sh -c'; then
+    bad "soak.sh execs a shell in the daemon container; the image is distroless"
+else
+    ok "soak.sh does not assume a shell inside the daemon container"
+fi
+
+# A port-forward whose stream has died keeps the port bound, so every
+# later hub reading is empty and the timeline is indistinguishable from
+# a daemon that stopped working. A harness that can fabricate the
+# finding it is looking for is worse than no harness.
+if printf '%s\n' "${SOAK_CODE}" | grep -q 'soak_ensure_tunnel$'; then
+    ok "soak.sh re-probes the tunnel before sampling"
+else
+    bad "soak.sh no longer verifies the tunnel; a dead forward reads as a dead daemon"
+fi
+
+# In jq, `false // "?"` is "?". The guardrail columns are the one place
+# where false is the answer rather than the absence of one, so the
+# alternative operator must not be what renders them.
+if printf '%s\n' "${SOAK_CODE}" | grep -qE '\.(halted|watchdog_tripped|ceiling_tripped) // '; then
+    bad "soak.sh renders a guardrail boolean with jq's //, which turns false into the fallback"
+else
+    ok "soak.sh does not render a guardrail boolean through jq's //"
+fi
+
+# The sampler treats a failed `kubectl top` as an empty cell so that one
+# unlucky scrape cannot end an eight-hour run — which means a cluster
+# with no metrics-server records an empty memory column all night and
+# never says so. "Does anything leak" is one of the four questions the
+# run exists to answer, so the capability is asserted once up front.
+if printf '%s\n' "${SOAK_CODE}" | grep -q 'soak_require_metrics$'; then
+    ok "soak.sh preflights kubectl top before spending a night on it"
+else
+    bad "soak.sh no longer preflights kubectl top; an absent metrics-server reads as a flat memory line"
 fi
 
 head_ "Result"

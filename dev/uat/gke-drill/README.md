@@ -285,6 +285,7 @@ mostly failing is the instrument working.
 | `testdata/*-run/` | transcripts `selftest.sh` scores: clean, dirty, errored, denied, recovered, fidelity, provenance, orphan-delegation |
 | `testdata/fakebin/` | the fake `kubectl`, `curl` and `gcloud` `dryrun.sh` uses |
 | `runs/` | committed scorecards (the artifacts live in `~/.gke-drill/runs/`) |
+| `soak.sh` | the overnight run — hours of incidents with nobody watching (box A1) |
 
 ## Reading a run as a trajectory
 
@@ -340,6 +341,78 @@ asserted on both sides of a check makes the check untestable.
 
 `TestDelegationMatchesTheArchive` pins all four numbers per run,
 including the six runs that must report nothing.
+
+## The overnight run
+
+`drill.sh` answers "is one answer any good". It cannot answer the question v3.0
+box A1 asks, which is whether the agent is still alive and still sane after
+eight hours with nobody watching. Those are different instruments and this is
+the second one:
+
+```sh
+source ~/.gke-platform-agent.env
+dev/uat/gke-drill/soak.sh
+```
+
+Eight hours by default, an incident every thirty minutes rotating A → B → C,
+held broken for ten, sampled every two. Everything is a knob: `SOAK_HOURS`,
+`SOAK_CYCLE_SECS`, `SOAK_HOLD_SECS`, `SOAK_PROBE_SECS`, `SOAK_SCENARIOS`,
+`SOAK_PORT` (7780, so it does not collide with `drill.sh` on 7779 or
+`attach.sh` on 7778).
+
+It never talks to the agent. It breaks the cluster and lets the watcher wake
+the daemon, which is the whole point — an unattended run that is driven by the
+harness is not unattended. Artifacts land in
+`~/.gke-drill/soak/<stamp>-<cluster>/`:
+
+| | |
+|---|---|
+| `timeline.jsonl` | one JSON object per sample, incident, restore and tunnel event |
+| `daemon.log` | `kubectl logs -f --timestamps`, supervised across pod restarts |
+| `console.log` | the scenario scripts' own output |
+| `summary.md` | the tables, the quoted log lines, and the four questions |
+
+**It scores nothing, deliberately.** `summary.md` ends with box A1's four
+clauses and what to read for each; a person writes the verdict into
+`dev/uat/gke-drill/runs/`, the same division of labour `SCORECARD.md` has.
+
+Two columns in the sessions table are worth knowing about before you read one.
+`window` is the last turn's input-token count — the actual context occupancy —
+and it is the one that answers "did compaction quietly stop happening": a
+compaction is a *cliff* in `window`. `cum_in` next to it is the session total
+over every turn, which only ever rises and in which a compaction is invisible.
+A successful compaction writes nothing to the daemon log, so on the healthy
+path the cliff is the only witness there is.
+
+Rehearse it before you spend a night on it. The first four rehearsals found
+`bc` missing from the environment (the deadline computed to zero and the "run"
+ended after three seconds), a pod selector that matched nothing, a `kubectl
+exec` that cannot work against a distroless image, a `logs -f` that would have
+gone silent at the exact moment a pod restarted, and a port-forward that —
+lib.sh says this itself — keeps its port bound after its stream dies, so every
+hub reading for the rest of the night would have been empty and the timeline
+would have looked exactly like a daemon that had stopped doing anything. That
+last one is the one to be frightened of: a harness that fabricates the finding
+it is looking for. The tunnel is now probed with a real request before each
+sample and rebuilt when it stops answering, and the rebuild is recorded so a
+gap is attributable.
+
+A sixth came out of review rather than rehearsal and is the same shape. The
+sampler treats a failed `kubectl top` as an empty cell, deliberately, so that
+one unlucky scrape cannot end an eight-hour run — which means a cluster with no
+metrics-server records an empty memory column all night and never says why, and
+"does anything leak" is one of the four questions the run exists to answer. So
+the capability is asserted once at startup, where the answer costs a second
+instead of a day. Note the asymmetry it has to handle: a missing metrics-server
+exits non-zero, but a label matching no pod exits **zero** and writes "No
+resources found" to stderr — so the probe keeps stderr out of the value it
+tests, because folding it in with `2>&1` makes the no-pod case look like a
+healthy reading.
+
+```sh
+SOAK_HOURS=0.2 SOAK_CYCLE_SECS=300 SOAK_HOLD_SECS=180 \
+  SOAK_PROBE_SECS=60 SOAK_SCENARIOS=b dev/uat/gke-drill/soak.sh
+```
 
 ## Before you spend a cluster day
 

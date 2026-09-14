@@ -1459,156 +1459,46 @@ func (a *Agent) Model() adkmodel.LLM {
 // When a BackgroundAgentManager is wired via WithBackgroundManager,
 // any alerts background subagents have emitted since the last turn
 // are drained (non-blocking) and prepended to the prompt so the
-// parent's model sees them before deciding what to do next.
+// parent's model sees them before deciding what to do next. Inbox
+// messages queued via Agent.Inject from external callers (harness,
+// orchestrator, HTTP handler) are also drained and prepended, sibling
+// to the alerts block.
 //
-// Inbox messages queued via Agent.Inject from external callers
-// (harness, orchestrator, HTTP handler) are also drained and
-// prepended, sibling to the alerts block. Ordering: alerts go
-// first (internal state changes); inbox goes second (external
-// input, closer to the prompt logically); then the original prompt.
+// Those two prepends, the guardrail restores, the two preflights that
+// can refuse the turn outright and everything else that happens before
+// the runner sees a request are the pre-turn pipeline: an ordered slice
+// of steps in preturn.go, each naming the constraint its position
+// encodes. Read that file for the ordering; it is the contract, and
+// preturn_test.go permutes it to keep it one (#659).
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
-	// Pause gate, first thing (see pause.go). A parked agent starts no
-	// turn — and, just as importantly, drains no inbox: the steer an
-	// operator typed while parked has to survive until the turn that
-	// resume starts. Blocking here rather than in each driver is what
-	// makes one gate cover the wake loop, the autonomous loop, and the
-	// REPL at once; attach handlers never call Run, so /resume,
-	// /inject, /status, /btw and the SSE stream stay responsive while
-	// parked. Returns only when the gate opens or ctx dies.
-	if err := a.awaitResume(ctx); err != nil {
+	// Everything between here and the runner call is the pre-turn
+	// pipeline (#659): an ordered list of small steps whose sequence is
+	// the design, expressed as data in preturn.go and held by the
+	// permutation tests in preturn_test.go rather than by the comments
+	// that used to be the only record of it. Each step names the
+	// constraint its position encodes — the bug trail that accumulated
+	// here (#362, #145, #144, #623, #537, #655) now lives next to the
+	// tests that enforce it.
+	//
+	// A step returning an error refuses the turn: the pause gate does it
+	// when ctx dies while parked, and the two preflights do it when a
+	// prior turn tripped a cap or a Critical watchdog signal. All three
+	// land on one refusal path, which still records the invocation
+	// (#338) — the histogram must not go dark exactly during a spend-cap
+	// or runaway incident, and a duration of 0 is accurate because no
+	// work happened.
+	// rawPrompt is deliberately NOT seeded here: capture-raw-prompt is a
+	// step, and pre-seeding it would mask a pipeline that captured too
+	// late.
+	tp := &turnPrep{ctx: ctx, prompt: prompt}
+	if err := a.runPreTurn(tp, preTurnSteps); err != nil {
 		return func(yield func(*session.Event, error) bool) {
 			a.recordInvocation(0, err)
 			yield(nil, err)
 		}
 	}
-	// Durable guardrail restore (#643), before anything can refuse or
-	// permit this turn. A halt that a restart clears is not a halt:
-	// without this, a runaway that trips the watchdog and then kills
-	// the pod comes back to a disarmed backstop and loops again. Runs
-	// at most once per agent; no-op without an eventlog.
-	a.ensureGuardrailsRestored(ctx)
-	// Settle-time cost-ceiling enforcement (#362). The prior turn's
-	// post-turn hook already ran maybeEnforceCostCeiling, but in
-	// harness-driven deployments the harness calls tracker.Append for
-	// that turn's main-model cost AFTER the cleanup hook (see the
-	// tapped/UsageMetadata comment below and the turn-complete emit
-	// path) — so the post-turn delta saw only in-turn internal appends
-	// (subtasks, summarizer) and missed the main-model spend entirely.
-	// A single runaway turn (the #144 read-file-loop) could therefore
-	// never trip the per-turn cap. Re-run enforcement here, at the top
-	// of the next Run, now that the prior turn is fully settled in the
-	// tracker: a.turnStartCost still holds the prior turn's baseline
-	// (snapshotTurnStartCost below hasn't reset it yet), so the delta is
-	// the prior turn's true cost. Idempotent + a no-op when no ceiling
-	// is configured, so this is cheap on the common path.
-	a.maybeEnforceCostCeiling(false)
-	// Flush any guardrail row the pass above just queued (#643). No
-	// turn is in flight yet, so this is a safe write window — and it
-	// must happen before the pre-flights below, which return early and
-	// would otherwise leave the trip unrecorded until some later turn
-	// that pre-flight will never allow to start.
-	a.drainOutOfBandEvents()
-	// Cost-ceiling pre-flight (#145). If a prior turn tripped the
-	// configured per-turn / per-session spend cap, refuse this turn
-	// at the very top — before any tracker writes, model calls, or
-	// pending-cleanup work. Operator must call ResetCostCeiling to
-	// resume. Returning the error via the iterator (rather than
-	// panicking or silently no-op'ing) lets the host surface a clear
-	// failure mode that matches the structured turn-error event we
-	// emitted when the ceiling first tripped.
-	if err := a.preflightCostCeiling(); err != nil {
-		return func(yield func(*session.Event, error) bool) {
-			// Still a refused turn the caller observes — record it
-			// (#338), or the invocation histogram goes dark exactly
-			// during a spend-cap incident, with no error.type series
-			// to alert on. Duration ~0 is accurate: the turn was
-			// refused before any work.
-			a.recordInvocation(0, err)
-			yield(nil, err)
-		}
-	}
-	// Watchdog pre-flight (#623). If a prior turn tripped a Critical
-	// runaway signal under --watchdog=enforce, refuse this turn at the
-	// top — same structural refusal as the cost ceiling. This is what
-	// actually breaks a tool-call loop: an auto-continue re-drive of the
-	// interrupted turn calls Run again and is refused here instead of
-	// re-issuing the looping call. Operator resumes via ResetWatchdog.
-	if err := a.preflightWatchdog(); err != nil {
-		return func(yield func(*session.Event, error) bool) {
-			a.recordInvocation(0, err)
-			yield(nil, err)
-		}
-	}
-	// Turn boundary (#655). Signals whose evidence is scoped to a single
-	// turn clear it here. Deliberately after the two preflights: a
-	// refused turn never ran, so it is not a boundary, and letting it
-	// clear state would hand an auto-continue re-drive a way to launder
-	// a stall one refusal at a time.
-	a.observeTurnStartForWatchdog()
-	// Tail repair (#537): heal a history whose previous turn died
-	// between a persisted functionCall and its functionResponse —
-	// crash mid-tool, or any mid-tool cancellation (the runner
-	// appends the tool's error response with the already-cancelled
-	// turn ctx, so the write fails and the call is orphaned durably).
-	// Providers reject an unanswered call, so without this the
-	// session is poisoned for every subsequent turn. Must run before
-	// the checkpoint/compaction drains below: both invoke the
-	// summarizer over this same history and would trip on the
-	// dangling tail themselves. See tail_repair.go.
-	a.repairDanglingToolCalls(ctx)
-	// Pre-turn: drain any pending cleanups from the prior turn's
-	// post-hook so the runner builds its request against a slimmed
-	// history. Checkpoint runs before compaction — a checkpoint
-	// subsumes the slicing baseline, making any pending compaction
-	// redundant for the same span. Errors are swallowed inside
-	// (the operator can /done or /compact manually if it
-	// persistently fails); pending flags are always cleared to
-	// prevent retry loops.
-	a.runPendingCheckpoint(ctx)
-	a.runPendingCompaction(ctx)
-	// Snapshot the session's cumulative cost so the post-turn hook
-	// can compute the per-turn delta. No-op when no ceiling is
-	// configured.
-	a.snapshotTurnStartCost()
-	// Capture the operator's own text before the prepends below bury it
-	// under alerts, inbox framing, and watchdog feedback. That raw text
-	// is what the session gets named after (session_title.go) — naming a
-	// session after a watchdog observation would be worse than not
-	// naming it at all.
-	rawPrompt := prompt
-	if a.bgMgr != nil {
-		prompt = a.bgMgr.PrependPendingAlerts(prompt)
-	}
-	// drainInboxFull emits `inbox`/dequeued events for each message
-	// (same side effect as the public DrainInbox) and surfaces the
-	// turn originator from the drained batch. Routing through this
-	// helper keeps the SSE event stream consistent with what /inject
-	// produced on the way in AND lets us thread the caller identity
-	// into the turn context below. It also hands back the OTel span
-	// links for the injects in this batch, which the turn span picks
-	// up further down.
-	drained := a.drainInboxFull()
-	// rawPrompt, not prompt: the alert prepend above may already have
-	// filled prompt in, and a wake-driven turn that happens to carry a
-	// subagent report still has no operator asking anything. Whether
-	// the operator typed something is what picks the inbox framing
-	// (#697) — see prependInboxMessages.
-	prompt = prependInboxMessages(prompt, drained.texts, drained.senders, strings.TrimSpace(rawPrompt) == "")
-	// Name the session off whichever of the two carried the operator's
-	// actual request. A daemon-driven turn arrives as Run("") with the
-	// text in the inbox, so keying only on the prompt argument would
-	// leave every attach-mode session — the ones with a picker to show
-	// them in — permanently unnamed. Fires at most once per session and
-	// runs off this goroutine.
-	if src := titleSource(rawPrompt, drained.texts); src != "" {
-		a.maybeTitleSession(ctx, src)
-	}
-	// Watchdog feedback (#159) goes on last, so it reads first: it is an
-	// observation about the model's own immediately-preceding turn, and
-	// a correction buried under a page of inbox traffic is a correction
-	// the model can skim past. No-op unless feedback/enforce mode queued
-	// something.
-	prompt = a.prependWatchdogFeedback(prompt)
+	prompt = tp.prompt
+	drained := tp.drained
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 
 	// Per-turn correlation handle: fresh prompt_id assigned at turn

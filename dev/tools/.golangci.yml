@@ -137,19 +137,24 @@ linters:
     # fail is a function worse than anything we already have. Length is
     # not itself a defect; unbounded growth is.
     #
-    # Measured 2026-08-13 at commit 4ac5efb, excluding cmd/core-agent's
+    # Re-measured 2026-09-14 at commit 4abc8e7, excluding cmd/core-agent's
     # `run` (see the exclusion rule above):
     #
-    #   funlen lines       254   dev/uat/scheduled-monitor `run`,
-    #                            pkg/agent/autonomous/resume.go `Resume`
-    #   funlen statements  145   pkg/agent/autonomous/resume.go `Resume`
+    #   funlen lines       254   dev/uat/scheduled-monitor `run`
+    #   funlen statements  144   pkg/agent/autonomous/autonomous.go `Run`
     #   gocognit           110   internal/coretuiremote `(*Adapter).Events`
     #
-    # Ratchet DOWN as hotspots get refactored — never up. #659 lands
-    # the next notch (it decomposes Agent.Run's pre-turn pipeline and
-    # its acceptance criteria include lowering these). #685 removes
-    # the `run` exemption, which should take these to roughly
-    # 155 / 95 / 96.
+    # Ratchet DOWN as hotspots get refactored — never up. #659 turned
+    # the statements notch (145 → 144) and took pkg/agent's Agent.Run
+    # from 129/57 to 102/40 by extracting its pre-turn pipeline, but
+    # Agent.Run was never the binding function on any of the three
+    # metrics, so that is all the movement it earns. The three named
+    # above are what hold each line now; each one refactored is the
+    # next notch. #685 removes the `run` exemption, which should take
+    # these to roughly 155 / 95 / 96.
+    #
+    # Previously (measured 2026-08-13 at 4ac5efb): 254 / 145 / 110,
+    # with `Resume` holding both funlen metrics.
     #
     # To re-measure: set lines/statements/min-complexity to 1, run
     # `dev/tools/lint-go`, and take the max reported value per metric.
@@ -163,7 +168,7 @@ linters:
     #     false while measuring.
     funlen:
       lines: 254
-      statements: 145
+      statements: 144
       # Comment lines don't count toward the limit: this is a fence
       # against logic accreting, and documenting a function should
       # never push it over.

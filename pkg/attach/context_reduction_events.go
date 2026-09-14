@@ -167,6 +167,17 @@ const (
 	// by mechanical truncation because the summarizer was unavailable.
 	// The detail says how much was dropped.
 	ContextReductionMechanical = "mechanical-compaction"
+	// ContextReductionTurnCut marks a turn stopped in flight because a
+	// tool result took the estimated context past the point where the
+	// next request would fit (#975). Compaction is pending when this is
+	// written, so the session heals on its next turn; the detail carries
+	// the estimate, the window, and how much of the estimate was
+	// unmeasured bytes.
+	//
+	// Deliberately a degraded row rather than a guardrail trip: nothing
+	// latches and there is nothing for an operator to reset, so the
+	// guardrail vocabulary would render the wrong affordance.
+	ContextReductionTurnCut = "turn-cut"
 )
 
 // ctxReductionMetaDetail carries the degraded row's human-readable

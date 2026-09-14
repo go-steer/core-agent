@@ -28,6 +28,19 @@ A fourth — `/context` (alias `/boundaries`) — is an observation surface, not
 - **Automatic:** post-turn hook checks utilization against the configured per-tier threshold; when over, the next `Run` drains a `compactionPending` flag by writing the summary before its actual work. The operator-visible turn boundary stays clean — no surprise latency cliff after the assistant finishes.
 - **Manual:** `/compact [focus]` runs the same summarizer immediately. The optional `focus` argument biases the summary toward a particular thread when you want to preserve specific context.
 
+### Growth inside a turn (since v2.10)
+
+The post-turn hook above used to be the *only* place context was ever evaluated, and the thing that overflows a window does not wait for a turn boundary ([#975](https://github.com/go-steer/core-agent/issues/975)). Inside one agentic turn the sequence is: a model call completes and commits its usage, a tool runs and returns a payload, the next model call is built with that payload in it. Nothing looked at context between the second and third steps, so a single large tool result — a full pod log, a wide `kubectl get -o json`, an MCP response over a big cluster — went into the next request while the utilization figure both compaction and `/context` read still described the comfortable state before it arrived. On a Kubernetes session large read results are the normal case rather than an edge case.
+
+Utilization is now the last measured input-token count **plus an estimate of everything appended since it**. Tool results are measured in bytes as they land and converted at three bytes per token — deliberately below the usual four-byte prose rule of thumb, because what is being estimated is JSON, YAML and log output, which tokenize worse, and because the error directions are not symmetric: under-counting means the threshold never fires and the overflow happens anyway, while over-counting means one compaction runs early, which you can see and price. The estimate covers only the unmeasured tail and is discarded the moment the next model call reports a real number. Model text is not counted this way — the provider's own usage record for the call that produced it is a better number than anything measured locally.
+
+Two things act on that estimate, both inside the turn:
+
+- **Compaction is marked pending as soon as the threshold is crossed**, rather than at the end of an agentic turn that may still have a dozen tool calls to run. The threshold itself is unchanged; only the moment it is read.
+- **Past 95% of the window the turn is cut** (`agent.ContextBudgetHardCeiling`). Compaction is already pending when this happens, so the next turn reduces context and carries on — the session heals itself and there is nothing to reset. The alternative is not a turn that succeeds: it is the provider rejecting an oversized request with an error that classifies badly and points nowhere near compaction. The cut is announced as a `context-reduction-degraded` row with `operation: turn-cut`, carrying the estimate, the window, and how many of the bytes were unmeasured.
+
+`ContextWindowUsedEstimated()` on the embedded agent returns both the number and whether any of it is an estimate, so an embedding surface can say which of the two it is rendering. The bundled TUI's context segment does not draw that distinction yet.
+
 ### Per-tier thresholds (since v2.5)
 
 A single 0.85 threshold worked for frontier-tier models (Opus, Pro) but fired far too late for small-tier models (Flash, Haiku) — reasoning quality on those tiers degrades well before they reach 85% context utilization. The per-tier defaults trigger earlier on smaller models so the session stays inside its effective working range:

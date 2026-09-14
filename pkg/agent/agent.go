@@ -350,8 +350,13 @@ type Agent struct {
 	// Degraded-mode latches (#974). Each condition announces itself
 	// once per process: both describe a state rather than an attempt,
 	// and a state re-announced every turn is one operators filter out.
-	warnedUnknownWindow   bool   // the assumed-context-window notice has been emitted
-	warnedMechanical      bool   // the mechanical-compaction notice has been emitted
+	warnedUnknownWindow bool // the assumed-context-window notice has been emitted
+	warnedMechanical    bool // the mechanical-compaction notice has been emitted
+	// contextBudgetCut latches the in-turn context backstop (#975) for
+	// the duration of one turn. Per turn, not per process: a cut is an
+	// attempt, and a session cutting one every turn is a different
+	// report from a session that cut one once.
+	contextBudgetCut      bool
 	checkpointRequested   bool   // flipped by mark_task_done tool handler during a turn
 	checkpointPending     bool   // promoted from checkpointRequested by post-turn hook
 	pendingCheckpointNote string // detail from the mark_task_done call (or /done arg)
@@ -1610,6 +1615,10 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// cut the PREVIOUS turn says nothing about this one, and a stale
 	// flag would swallow this turn's legitimate `canceled`.
 	a.clearGuardrailHalt()
+	// Same belt-and-braces for the in-turn context backstop (#975): a
+	// turn that never reached its cleanup must not leave the next one
+	// unable to cut itself.
+	a.clearContextBudgetCut()
 
 	// Announce the turn entering the streaming state. Only fields
 	// that change since the last emission need to be present
@@ -1727,6 +1736,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			// trackers (see tool_savings_observer.go's file
 			// docstring for the full rationale).
 			a.observeToolSavings(ev)
+			// Context growth inside the turn (#975). Tool results enter
+			// history between two usage measurements, so nothing else in
+			// this loop sees them arrive; this is the only point at which
+			// an oversized result can be noticed before the next request
+			// is built around it.
+			a.observeContextGrowth(ev)
 			// Event-hook observation (WithEventHook). Fires alongside
 			// watchdog observation so both observers see the same
 			// event stream in the same order. Callback is expected

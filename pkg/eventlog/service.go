@@ -99,15 +99,43 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 	return s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
 }
 
-// AppendEvent writes the event through ADK first (so the events row
-// exists), then mirrors it into the overlay so it picks up a
-// monotonic seq. Errors from either layer surface to the caller.
+// AppendEvent writes the event through ADK and mirrors it into the
+// overlay, where it picks up a monotonic seq. Errors from either layer
+// surface to the caller.
+//
+// The two rows go in one transaction where they can (#976): the stashed
+// record below is picked up by a GORM after-create callback running
+// inside ADK's own transaction, so a crash between the writes can no
+// longer leave an event that the overlay — the index every Since and
+// Watch consumer reads — does not have. See atomic.go.
+//
+// Two paths still write after ADK rather than inside it, and both are
+// deliberate. When the callback could not be registered, the fallback
+// is exactly the behaviour that shipped before this: not atomic, but no
+// worse than it was. And when ADK writes nothing at all, neither do we.
 func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *session.Event) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	stampFinishReason(ev)
+
+	var pending *overlayPending
+	if s.stream != nil && s.stream.overlayInTx && sess != nil && ev != nil {
+		pending = &overlayPending{sess: sess, ev: ev}
+		ctx = withOverlayPending(ctx, pending)
+	}
 	if err := s.inner.AppendEvent(ctx, sess, ev); err != nil {
 		return err
+	}
+	if pending != nil && pending.done {
+		return nil
+	}
+	// ADK drops partial events without writing a row (runner.go filters
+	// them too, so this is a direct-caller path). An overlay row for an
+	// event ADK never persisted is the orphan shape deleteSession calls
+	// poison: its seq is real, so every unfiltered Watch re-queries it
+	// and re-fails to hydrate it, forever.
+	if ev != nil && ev.Partial {
+		return nil
 	}
 	if _, err := s.stream.Append(ctx, sess, ev); err != nil {
 		return fmt.Errorf("eventlog: overlay write after ADK AppendEvent: %w", err)

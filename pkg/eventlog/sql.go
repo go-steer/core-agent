@@ -166,8 +166,18 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		watchInterval:     o.watchInterval,
 		metadataExtractor: o.metadataExtractor,
 	}
+
+	// 5) Make the event row and its overlay row one transaction (#976).
+	// Registered on ADK's own *gorm.DB, because that is the connection
+	// its AppendEvent transaction runs on; see atomic.go. Best-effort by
+	// design — if the reflection that reaches ADK's handle ever stops
+	// working, AppendEvent keeps the two-write path rather than Open
+	// failing over a durability improvement.
+	adkDB := adkGormDB(adkSvc)
+	stream.overlayInTx = stream.registerOverlayCallback(adkDB)
+
 	svc := &service{inner: adkSvc, stream: stream}
-	return &Handle{Stream: stream, Service: svc, db: db, DB: db, adkDB: adkGormDB(adkSvc)}, nil
+	return &Handle{Stream: stream, Service: svc, db: db, DB: db, adkDB: adkDB}, nil
 }
 
 // adkGormDB reaches the *gorm.DB that adkdatabase.NewSessionService
@@ -307,6 +317,12 @@ type gormStream struct {
 	watchInterval     time.Duration
 	metadataExtractor MetadataExtractor
 
+	// overlayInTx reports that the after-create callback is registered
+	// on ADK's connection, so AppendEvent's overlay row is written
+	// inside ADK's own transaction rather than after it (#976). Set once
+	// in Open and never written again, so it needs no synchronization.
+	overlayInTx bool
+
 	closed atomic.Bool
 }
 
@@ -326,6 +342,23 @@ func (s *gormStream) Append(ctx context.Context, sess session.Session, ev *sessi
 	if ev == nil {
 		return 0, errors.New("eventlog: Append: event is required")
 	}
+	row, err := s.buildOverlayRow(ctx, sess, ev)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.db.WithContext(ctx).Create(row).Error; err != nil {
+		return 0, fmt.Errorf("eventlog: insert overlay row: %w", err)
+	}
+	return row.Seq, nil
+}
+
+// buildOverlayRow maps a session + event to the overlay row, including
+// the caller's extracted metadata. Shared by Append and by the
+// in-transaction write in atomic.go, which must produce a byte-identical
+// row — the two paths differ only in which connection inserts it, and a
+// divergence there would make a row's contents depend on whether the
+// process crashed.
+func (s *gormStream) buildOverlayRow(ctx context.Context, sess session.Session, ev *session.Event) (*agentEventRow, error) {
 	row := &agentEventRow{
 		AppName:      sess.AppName(),
 		UserID:       sess.UserID(),
@@ -343,15 +376,12 @@ func (s *gormStream) Append(ctx context.Context, sess session.Session, ev *sessi
 		if md := s.metadataExtractor(ctx); len(md) > 0 {
 			encoded, mdErr := encodeMetadata(md)
 			if mdErr != nil {
-				return 0, fmt.Errorf("eventlog: encode metadata: %w", mdErr)
+				return nil, fmt.Errorf("eventlog: encode metadata: %w", mdErr)
 			}
 			row.Metadata = encoded
 		}
 	}
-	if err := s.db.WithContext(ctx).Create(row).Error; err != nil {
-		return 0, fmt.Errorf("eventlog: insert overlay row: %w", err)
-	}
-	return row.Seq, nil
+	return row, nil
 }
 
 // deleteSession removes every overlay row for a session. The service

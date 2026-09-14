@@ -15,13 +15,14 @@ This page is the flag / env / exit-code lookup. For **what the TUI does** — ob
 core-agent-tui [FLAGS] [URL]
 ```
 
-`URL` is optional — omit it and the TUI prompts on stdin for a connection URL. Flags may appear in any position (before, after, or interleaved with `URL`); the standard `flag` package's stop-at-first-positional behavior is worked around internally so `core-agent-tui http://... --token=T` and `core-agent-tui --token=T http://...` both parse identically.
+`URL` is optional — omit it and the TUI prompts on stdin for a connection URL. Flags may appear in any position (before, after, or interleaved with `URL`); the standard `flag` package's stop-at-first-positional behavior is worked around internally so `core-agent-tui http://... --token-env=T` and `core-agent-tui --token-env=T http://...` both parse identically.
 
 ## Flags
 
 | Flag | Type | Default | Purpose |
 |---|---|---|---|
-| `--token=<ENVVAR>` | string | `""` | Name of the env var holding the bearer token (e.g. `--token=ATTACH_TOKEN`). The secret never appears on the command line — the TUI reads `os.Getenv(<ENVVAR>)` at startup. Empty env value is legal (Posture B; see [attach-tui: gateway postures](/reference/attach-tui/#client-side---authgoogle-oauth-alternative-not-recommended-for-cloud-run-iam)). |
+| `--token-env=<ENVVAR>` | string | `""` | Name of the env var holding the bearer token (e.g. `--token-env=ATTACH_TOKEN`). The secret never appears on the command line — the TUI reads `os.Getenv(<ENVVAR>)` at startup. Empty env value is legal (Posture B; see [attach-tui: gateway postures](/reference/attach-tui/#client-side---authgoogle-oauth-alternative-not-recommended-for-cloud-run-iam)). |
+| `--token` | string | `""` | **Deprecated (v3.0+)** alias for `--token-env`, with identical meaning — it always took the env var's *name*, never the token. Renamed because the old name read as an instruction to hand over the secret, and the failure mode for that misreading was a bare 401 with nothing pointing at the flag. Still works; warns on use. |
 | `--auth=<strategy>` | string | `bearer` | Auth strategy for outbound attach requests. Values: `bearer` \| `google-id-token` \| `google-oauth`. See [attach-tui: behind an identity gateway](/reference/attach-tui/#behind-an-identity-gateway-cloud-run-iam-iap-cloudflare-access-) for full behavior and failure-mode table. |
 | `--theme=<t>` | string | `""` (auto) | Force a glamour rendering theme. Values: `dark` \| `light` \| `""`. Empty auto-detects the terminal's background via OSC 11. Switchable at runtime via `/theme dark\|light`. |
 | `--alias=<label>` | string | `""` (session ID) | Display label for the agent identity in the status bar. Convenient when running multiple TUIs against different daemons in tmux panes — `--alias=prod`, `--alias=staging`. |
@@ -68,7 +69,7 @@ Keys: `↑`/`↓` (or `k`/`j`) navigate, `Enter` attaches, `r` refreshes, `q` qu
 
 | Name | Consumed by | Purpose |
 |---|---|---|
-| `<whatever>` (via `--token=<ENVVAR>`) | `core-agent-tui` | Bearer token for `bearer` auth. Convention: name it `ATTACH_TOKEN` to match `--attach-token=ATTACH_TOKEN` on the daemon side (the same env-var-name indirection). |
+| `<whatever>` (via `--token-env=<ENVVAR>`) | `core-agent-tui` | Bearer token for `bearer` auth. Convention: name it `ATTACH_TOKEN` to match `--attach-token=ATTACH_TOKEN` on the daemon side (the same env-var-name indirection). |
 | `CORE_AGENT_TUI_DEBUG` | `core-agent-tui` | Path to append verbose adapter / bridge / SSE logs. Silent when unset. Pairs with `CORE_AGENT_DEBUG=<path>` on the daemon for a two-file view of the whole attach session. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | google.golang.org/api | Path to a service-account key JSON. Only consulted when `--auth=google-id-token` or `--auth=google-oauth`. Overrides Application Default Credentials discovery. |
 | `NO_COLOR` | glamour / lipgloss | Standard — disables ANSI color output when set to any value. Useful for CI-piped `core-agent-tui < prompt.txt`-shape invocations, though the TUI's Bubble Tea render loop expects a real terminal for full interactivity. |
@@ -92,13 +93,13 @@ ATTACH_TOKEN=$(openssl rand -hex 32) \
   core-agent --no-repl --attach-listen=:7777 \
   --attach-token=ATTACH_TOKEN &
 
-core-agent-tui http://localhost:7777 --token=ATTACH_TOKEN
+core-agent-tui http://localhost:7777 --token-env=ATTACH_TOKEN
 ```
 
 Fresh session on a multi-session daemon:
 
 ```bash
-core-agent-tui --new-session --token=ATTACH_TOKEN https://agent.example.com
+core-agent-tui --new-session --token-env=ATTACH_TOKEN https://agent.example.com
 ```
 
 Cloud Run IAM (identity gateway):
@@ -109,7 +110,7 @@ gcloud auth application-default login \
 
 core-agent-tui \
   --auth=google-id-token \
-  --token=ATTACH_TOKEN \
+  --token-env=ATTACH_TOKEN \
   https://my-agent-abc123-uc.a.run.app
 ```
 
@@ -120,7 +121,7 @@ Multiple daemons, one TUI per pane, distinguishable aliases:
 core-agent-tui --alias=local          http://localhost:7777
 # pane B — same operator, remote daemon
 core-agent-tui --alias=prod-us-c1 --auth=google-id-token \
-  --token=ATTACH_TOKEN https://agent.prod-us-central1.example.com
+  --token-env=ATTACH_TOKEN https://agent.prod-us-central1.example.com
 ```
 
 Or jump between them in a single pane via [`/switch` and `/attach`](/reference/attach-tui/#operator-surface-slash-parity-with-the-in-process-tui) — the multi-daemon workflow.
@@ -129,7 +130,7 @@ Debug a connection issue:
 
 ```bash
 CORE_AGENT_TUI_DEBUG=/tmp/tui.log \
-  core-agent-tui http://localhost:7777 --token=ATTACH_TOKEN &
+  core-agent-tui http://localhost:7777 --token-env=ATTACH_TOKEN &
 tail -f /tmp/tui.log
 ```
 

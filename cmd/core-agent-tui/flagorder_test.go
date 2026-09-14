@@ -171,6 +171,33 @@ func TestPermuteFlags_UnknownFlagPassesThrough(t *testing.T) {
 	}
 }
 
+// The same command with the flag's real name (#947). The permuter asks
+// the flag set whether an argument consumes the next one, so a renamed
+// flag that never reached registerFlags would be read as a bool here and
+// swallow its own value — silently, into the same 401 the permuter was
+// written to stop.
+func TestPermuteFlags_TokenEnvIsPermutedToo(t *testing.T) {
+	t.Parallel()
+	fs := buildTestFlagSet()
+	flags, positionals := permuteFlags(fs, []string{
+		"http://127.0.0.1:7777", "--token-env", "ALICE_TOKEN", "--new-session",
+	})
+
+	if err := fs.Parse(flags); err != nil {
+		t.Fatalf("fs.Parse(flags=%v): %v", flags, err)
+	}
+	if got := fs.Lookup("token-env").Value.String(); got != "ALICE_TOKEN" {
+		t.Errorf("--token-env: got %q, want ALICE_TOKEN", got)
+	}
+	if got := fs.Lookup("new-session").Value.String(); got != "true" {
+		t.Errorf("--new-session: got %q, want true", got)
+	}
+	wantPositionals := []string{"http://127.0.0.1:7777"}
+	if !reflect.DeepEqual(positionals, wantPositionals) {
+		t.Errorf("positionals: got %v, want %v", positionals, wantPositionals)
+	}
+}
+
 func TestPermuteFlags_RealWorldBugCase(t *testing.T) {
 	t.Parallel()
 	// The exact command from the bug report:

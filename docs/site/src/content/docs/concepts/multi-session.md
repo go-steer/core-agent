@@ -247,7 +247,7 @@ In single-user deployments, the metadata column is empty for every row — no be
 Three phases for an operator moving from single-user to multi-user:
 
 1. **Stay single-user** — no change. `multi_session.enabled: false` (the default).
-2. **Enable with a static user table** — generate tokens (e.g. via `dev/tools/gen-users-json`), populate `users.json` at mode `0600`, hand them to operators. Each operator loads their token into an env var and runs `core-agent-tui --token ALICE_TOKEN <attach-url>` (the `--token` flag takes an env-var **name**, not the value itself). The flag order doesn't matter — both `--token NAME http://host` and `http://host --token NAME` work. Sessions they create are owned by them; they can only see their own.
+2. **Enable with a static user table** — generate tokens (e.g. via `dev/tools/gen-users-json`), populate `users.json` at mode `0600`, hand them to operators. Each operator loads their token into an env var and runs `core-agent-tui --token-env ALICE_TOKEN <attach-url>` (the `--token-env` flag takes an env-var **name**, not the value itself). The flag order doesn't matter — both `--token-env NAME http://host` and `http://host --token-env NAME` work. Sessions they create are owned by them; they can only see their own.
 3. **Switch to OIDC / mTLS / K8s SA** (when shipped, v2.5+) — change `auth.kind` to the new value; tokens come from the IDP. Users / sessions unchanged.
 
 A `core-agent users migrate` CLI is **out of scope for v2.4** — operators with existing single-user data either keep using single-user mode or accept that legacy sessions become "unowned" (admin-only-accessible) when they enable multi-session.
@@ -352,7 +352,7 @@ The v2.6 landing was scoped to sessions on **one** daemon — the daemon the TUI
 
 v2.7 (adapter wired via `coretuiremote.NewWithClientFactory` in `cmd/core-agent-tui/main.go`) closes that gap:
 
-- **`/switch` picker now includes peer sessions.** Local sessions come first (unchanged); peer sessions follow, each row tagged `[peer:<name>]` in the Display and with the peer's endpoint URL in the Description. Enter attaches in place — chat wipes and reopens against the peer's session. The adapter's `clientFactory` closure captures the operator's startup `--auth` mode + `--token`, so peer clients authenticate the same way the startup client did (audience-bound per endpoint for `--auth=google-id-token`).
+- **`/switch` picker now includes peer sessions.** Local sessions come first (unchanged); peer sessions follow, each row tagged `[peer:<name>]` in the Display and with the peer's endpoint URL in the Description. Enter attaches in place — chat wipes and reopens against the peer's session. The adapter's `clientFactory` closure captures the operator's startup `--auth` mode + `--token-env`, so peer clients authenticate the same way the startup client did (audience-bound per endpoint for `--auth=google-id-token`).
 - **`/attach <url>`** — escape hatch when `GET /peers` is empty on the current daemon, or the operator wants to reach an unregistered daemon. Two forms:
   - `/attach <daemon-url>` — enumerates that daemon's sessions into a system message; operator picks a sid and reissues.
   - `/attach <daemon-url> <sid>` — direct-jump in place.

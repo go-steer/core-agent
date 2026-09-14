@@ -589,6 +589,16 @@ func terminalAlertText(status Status, result autonomous.RunResult, runErr error)
 	// a JSON field costs nothing and machine readers shouldn't infer.
 	if class := stopClass(status, result.Reason, runErr, result.Returned); class != StopNatural {
 		text += "\n\nstop_reason: " + string(class)
+		// And the disclosure requirement, for the classes that leave
+		// the parent holding nothing (#1036). The async path needs this
+		// more than the sync one, not less: an alert carries no
+		// `guidance` field at all, so a fire-and-continue delegation
+		// that died would otherwise reach the parent as an error string
+		// and an enum — which is exactly the shape #710 established
+		// does not change a model's behaviour.
+		if requiresAbsorbDisclosure(class) {
+			text += "\n" + AbsorbDisclosure
+		}
 	}
 	return kind, text
 }

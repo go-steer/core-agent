@@ -1,0 +1,502 @@
+#!/usr/bin/env python3
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""A kubectl that answers from a world file, and records what it was asked.
+
+This is the eval corpus's shared shim (#652). It belongs to the harness,
+not to any one case: a case supplies a world file and nothing else, which
+is what makes "adding a second case requires no new Go" also mean no new
+shell.
+
+Two jobs, and the second is the one that matters.
+
+It renders a cluster from $EVAL_WORLD so a real model can do real
+diagnosis against a deterministic world. And it appends every invocation
+to $EVAL_WITNESS_CLUSTER_READS, which is the run's witness.
+
+The witness is written by the *world*, not by the agent and not by the
+daemon. That asymmetry is the whole reason to grade on it. An eventlog we
+produced is the system reporting on itself; it also cannot see a subagent
+that fanned out in-process, and our own delegation is in-process by
+design. Whoever ran this command, ran it — the shim neither knows nor
+cares which turn or which agent it came from, and that indifference is
+exactly the property a verifier needs.
+
+Mutating verbs are recorded and then REFUSED, with the error a real
+cluster gives a principal without the verb. Recording the attempt is the
+point: a read-only case can then assert that nothing tried to act,
+against evidence rather than against the model's account of its own
+restraint.
+
+An invocation this shim does not understand is a loud, kubectl-shaped
+error on stderr with a non-zero exit — never a plausible empty result. A
+fake that shrugs teaches the model that the resource does not exist,
+which would make the eval measure the shim's coverage instead of the
+agent's diagnosis.
+"""
+
+import datetime
+import json
+import os
+import sys
+
+READ_VERBS = {
+    "get", "describe", "logs", "top", "explain", "api-resources",
+    "api-versions", "version", "cluster-info", "config", "auth", "events",
+}
+MUTATING_VERBS = {
+    "apply", "create", "delete", "patch", "replace", "edit", "scale",
+    "rollout", "annotate", "label", "cordon", "drain", "uncordon",
+    "taint", "set", "exec", "cp", "port-forward", "attach", "run",
+}
+
+# Resource aliases, keyed on the raw token. Keyed rather than
+# algorithmically singularised because "ns" is not "n" with an s on the
+# end, and a stripper that thinks it is answers `get ns` with "the
+# server doesn't have a resource type", which teaches the agent the
+# cluster has no namespaces.
+KIND_ALIASES = {
+    "po": "pod", "pod": "pod", "pods": "pod",
+    "deploy": "deployment", "deployment": "deployment",
+    "deployments": "deployment", "deployment.apps": "deployment",
+    "deployments.apps": "deployment",
+    "ns": "namespace", "namespace": "namespace", "namespaces": "namespace",
+    "no": "node", "node": "node", "nodes": "node",
+    "ev": "event", "event": "event", "events": "event",
+    "svc": "service", "service": "service", "services": "service",
+    "rs": "replicaset", "replicaset": "replicaset",
+    "replicasets": "replicaset",
+    "all": "all",
+}
+
+# Kinds this world models but never populates. Answering them with the
+# empty-result note rather than an unknown-type error matters: an agent
+# told a Service type does not exist concludes it is not talking to
+# Kubernetes and stops, which would make the case measure the shim's
+# resource coverage instead of the agent's diagnosis.
+EMPTY_KINDS = {"service", "replicaset", "all"}
+
+
+class Empty(str):
+    """A message that goes to stderr with exit status ZERO.
+
+    kubectl's empty-result path is one of the sharpest edges it has, and
+    getting it wrong here would put the trap inside the measuring
+    instrument. `kubectl get pods -n nowhere` writes "No resources found
+    in nowhere namespace." to *stderr* and exits 0; it is a missing
+    metrics-server or an unknown resource type that exits non-zero. A
+    shim that returned failure for "nothing here" would teach the agent
+    that a healthy namespace is a broken one, and a harness that folded
+    the two together with 2>&1 would read an empty sweep as a finding.
+    """
+
+
+def die(msg, code=1):
+    sys.stderr.write("error: %s\n" % msg)
+    sys.exit(code)
+
+
+def require_env(name):
+    val = os.environ.get(name)
+    if not val:
+        die("fixture shim: %s is not set; this kubectl only works inside an "
+            "eval world" % name, 64)
+    return val
+
+
+def record(argv, verb):
+    """Append one invocation to the witness.
+
+    The line carries the resolved verb as its own `verb=` field as well
+    as the raw argv, and a check that cares which verb was used must
+    match on that field rather than on the argv text. kubectl accepts
+    global flags before the verb, so `kubectl -n prod delete pod x` is
+    a delete that the substring "kubectl delete" does not appear in —
+    and the check most in need of being right about that is the one
+    asserting the agent changed nothing.
+    """
+    path = require_env("EVAL_WITNESS_CLUSTER_READS")
+    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(
+        timespec="seconds")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("%s\tverb=%s\tkubectl %s\n"
+                 % (stamp, verb or "?", " ".join(argv)))
+
+
+def load_world():
+    path = require_env("EVAL_WORLD")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except OSError as err:
+        die("fixture shim: cannot read world %s: %s" % (path, err), 64)
+    except ValueError as err:
+        die("fixture shim: world %s is not valid JSON: %s" % (path, err), 64)
+
+
+class Args:
+    """The slice of kubectl's flag grammar the shim honours."""
+
+    def __init__(self, argv):
+        self.namespace = None
+        self.all_namespaces = False
+        self.output = ""
+        self.selector = None
+        self.help = False
+        self.positional = []
+        i = 0
+        while i < len(argv):
+            a = argv[i]
+            if a in ("-n", "--namespace"):
+                i += 1
+                self.namespace = argv[i] if i < len(argv) else None
+            elif a.startswith("--namespace="):
+                self.namespace = a.split("=", 1)[1]
+            elif a in ("-A", "--all-namespaces"):
+                self.all_namespaces = True
+            elif a in ("-o", "--output"):
+                i += 1
+                self.output = argv[i] if i < len(argv) else ""
+            elif a.startswith("-o=") or a.startswith("--output="):
+                self.output = a.split("=", 1)[1]
+            elif a in ("-l", "--selector"):
+                i += 1
+                self.selector = argv[i] if i < len(argv) else None
+            elif a.startswith("--selector="):
+                self.selector = a.split("=", 1)[1]
+            elif a in ("-h", "--help"):
+                self.help = True
+            elif a.startswith("-"):
+                pass  # --context, --no-headers, --sort-by= and friends
+            else:
+                self.positional.append(a)
+            i += 1
+
+
+def namespaces(world):
+    return world.get("cluster", {}).get("namespaces", {})
+
+
+def resolve_ns(world, args):
+    if args.all_namespaces:
+        return list(namespaces(world).keys())
+    ns = args.namespace or world.get("cluster", {}).get(
+        "default_namespace", "default")
+    if ns not in namespaces(world):
+        # A real cluster returns an empty list for an unknown namespace
+        # on `get`, and this shim does the same rather than erroring:
+        # "nothing here" is a true answer about a namespace that does
+        # not exist, and the agent's job is to go look somewhere else.
+        return []
+    return [ns]
+
+
+def table(rows, headers):
+    if not rows:
+        return ""
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+    out = ["   ".join(h.ljust(widths[i]) for i, h in enumerate(headers)).rstrip()]
+    for row in rows:
+        out.append("   ".join(
+            str(c).ljust(widths[i]) for i, c in enumerate(row)).rstrip())
+    return "\n".join(out)
+
+
+def matches_selector(labels, selector):
+    if not selector:
+        return True
+    for clause in selector.split(","):
+        if "=" not in clause:
+            return False
+        key, want = clause.split("=", 1)
+        if labels.get(key.strip()) != want.strip():
+            return False
+    return True
+
+
+def all_pods(world, ns_list, selector):
+    out = []
+    for ns in ns_list:
+        for dep in namespaces(world)[ns].get("deployments", []):
+            for pod in dep.get("pods", []):
+                if matches_selector(pod.get("labels", {}), selector):
+                    out.append((ns, dep, pod))
+    return out
+
+
+def no_resources(args, what="resources"):
+    if args.all_namespaces:
+        return Empty("No %s found." % what)
+    return Empty("No %s found in %s namespace." % (
+        what, args.namespace or "default"))
+
+
+def get_pods(world, args, multi_ns):
+    found = all_pods(world, resolve_ns(world, args), args.selector)
+    if not found:
+        return "", no_resources(args)
+    headers = ["NAME", "READY", "STATUS", "RESTARTS", "AGE"]
+    if multi_ns:
+        headers = ["NAMESPACE"] + headers
+    rows = []
+    for ns, _dep, pod in found:
+        row = [pod["name"], pod.get("ready", "0/1"), pod.get("status", "Running"),
+               pod.get("restarts", 0), pod.get("age", "1h")]
+        rows.append(([ns] + row) if multi_ns else row)
+    return table(rows, headers), None
+
+
+def get_deployments(world, args, multi_ns):
+    ns_list = resolve_ns(world, args)
+    rows = []
+    for ns in ns_list:
+        for dep in namespaces(world)[ns].get("deployments", []):
+            row = [dep["name"], dep.get("ready", "0/1"),
+                   dep.get("up_to_date", 0), dep.get("available", 0),
+                   dep.get("age", "1h")]
+            if args.output == "wide":
+                row += [dep.get("container", dep["name"]), dep.get("image", "")]
+            rows.append(([ns] + row) if multi_ns else row)
+    if not rows:
+        return "", no_resources(args)
+    headers = ["NAME", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"]
+    if args.output == "wide":
+        headers += ["CONTAINERS", "IMAGES"]
+    if multi_ns:
+        headers = ["NAMESPACE"] + headers
+    return table(rows, headers), None
+
+
+def get_namespaces(world, args):
+    rows = [[ns, "Active", namespaces(world)[ns].get("age", "30d")]
+            for ns in namespaces(world)]
+    if args.output in ("name",):
+        return "\n".join("namespace/" + r[0] for r in rows), None
+    return table(rows, ["NAME", "STATUS", "AGE"]), None
+
+
+def get_events(world, args, multi_ns):
+    ns_list = resolve_ns(world, args)
+    rows = []
+    for ns in ns_list:
+        for dep in namespaces(world)[ns].get("deployments", []):
+            for pod in dep.get("pods", []):
+                for ev in pod.get("events", []):
+                    row = [ev.get("age", "1m"), ev.get("type", "Normal"),
+                           ev.get("reason", ""), "pod/" + pod["name"],
+                           ev.get("message", "")]
+                    rows.append(([ns] + row) if multi_ns else row)
+    if not rows:
+        return "", no_resources(args, "events")
+    headers = ["LAST SEEN", "TYPE", "REASON", "OBJECT", "MESSAGE"]
+    if multi_ns:
+        headers = ["NAMESPACE"] + headers
+    return table(rows, headers), None
+
+
+def describe_pod(world, args, name):
+    for ns in resolve_ns(world, args):
+        for dep in namespaces(world)[ns].get("deployments", []):
+            for pod in dep.get("pods", []):
+                if pod["name"] != name:
+                    continue
+                lines = [
+                    "Name:             %s" % pod["name"],
+                    "Namespace:        %s" % ns,
+                    "Node:             %s" % pod.get("node", "node-1"),
+                    "Status:           %s" % pod.get("phase", "Pending"),
+                    "Controlled By:    ReplicaSet/%s" % dep["name"],
+                    "Containers:",
+                    "  %s:" % dep.get("container", dep["name"]),
+                    "    Image:          %s" % dep.get("image", ""),
+                    "    State:          Waiting",
+                    "      Reason:       %s" % pod.get("status", "Pending"),
+                    "    Ready:          False",
+                    "    Restart Count:  %s" % pod.get("restarts", 0),
+                    "Events:",
+                    "  Type     Reason     Age    Message",
+                    "  ----     ------     ----   -------",
+                ]
+                for ev in pod.get("events", []):
+                    lines.append("  %-8s %-10s %-6s %s" % (
+                        ev.get("type", "Normal"), ev.get("reason", ""),
+                        ev.get("age", "1m"), ev.get("message", "")))
+                return "\n".join(lines), None
+    return "", 'pods "%s" not found' % name
+
+
+def describe_deployment(world, args, name):
+    for ns in resolve_ns(world, args):
+        for dep in namespaces(world)[ns].get("deployments", []):
+            if dep["name"] != name:
+                continue
+            lines = [
+                "Name:               %s" % dep["name"],
+                "Namespace:          %s" % ns,
+                "Replicas:           %s desired | %s updated | %s available" % (
+                    dep.get("replicas", 1), dep.get("up_to_date", 0),
+                    dep.get("available", 0)),
+                "Pod Template:",
+                "  Containers:",
+                "   %s:" % dep.get("container", dep["name"]),
+                "    Image:  %s" % dep.get("image", ""),
+                "Conditions:",
+            ]
+            for cond in dep.get("conditions", []):
+                lines.append("  %-18s %-8s %s" % (
+                    cond.get("type", ""), cond.get("status", ""),
+                    cond.get("message", "")))
+            return "\n".join(lines), None
+    return "", 'deployments.apps "%s" not found' % name
+
+
+def pod_logs(world, args, name):
+    for ns in resolve_ns(world, args):
+        for dep in namespaces(world)[ns].get("deployments", []):
+            for pod in dep.get("pods", []):
+                if pod["name"] == name:
+                    logs = pod.get("logs")
+                    if logs is None:
+                        return "", ('Error from server (BadRequest): container '
+                                    '"%s" in pod "%s" is waiting to start: '
+                                    'trying and failing to pull image'
+                                    % (dep.get("container", dep["name"]), name))
+                    return logs, None
+    return "", 'pods "%s" not found' % name
+
+
+USAGE = """kubectl controls the Kubernetes cluster manager.
+
+ Basic Commands:
+  get             Display one or many resources
+  describe        Show details of a specific resource
+  logs            Print the logs for a container in a pod
+  config          Modify kubeconfig files
+
+Use "kubectl <command> --help" for more information about a command."""
+
+
+def parse(argv):
+    """Split argv into (verb, args), honouring pre-verb global flags.
+
+    Real kubectl takes `--context`, `-n` and friends on either side of
+    the verb, so the verb is the first POSITIONAL argument rather than
+    argv[0]. Reading argv[0] makes `kubectl -n prod get pods` an unknown
+    command, which teaches the agent that kubectl is broken; the shim is
+    a measuring instrument, and an instrument that rejects a valid
+    invocation is measuring itself.
+    """
+    args = Args(argv)
+    verb = args.positional[0] if args.positional else ""
+    args.positional = args.positional[1:]
+    return verb, args
+
+
+def dispatch(world, verb, args):
+    """Return (stdout, error). error non-None means exit 1."""
+    if not verb and not args.help:
+        return USAGE, None
+    if args.help:
+        return USAGE, None
+
+    if verb in MUTATING_VERBS:
+        return "", ('Error from server (Forbidden): %s is not permitted for '
+                    'this principal on this cluster' % verb)
+    if verb not in READ_VERBS:
+        return "", ('unknown command "%s" for "kubectl"' % verb)
+
+    if verb == "version":
+        return "Client Version: v1.31.0\nServer Version: v1.31.4-gke.1183000", None
+    if verb == "cluster-info":
+        return ("Kubernetes control plane is running at https://%s.example"
+                % world.get("cluster", {}).get("context", "eval")), None
+    if verb == "config":
+        sub = args.positional[0] if args.positional else ""
+        if sub in ("current-context", "get-contexts", "view"):
+            return world.get("cluster", {}).get("context", "eval-fixture"), None
+        return "", 'unknown command "%s" for "kubectl config"' % sub
+    if verb == "auth":
+        return "yes", None
+    if verb == "top":
+        return "", ('Error from server (ServiceUnavailable): the server is '
+                    'currently unable to handle the request')
+
+    kinds_multi = args.all_namespaces
+    if verb == "events":
+        return get_events(world, args, kinds_multi)
+    if verb == "logs":
+        if not args.positional:
+            return "", "error: expected 'logs POD'"
+        return pod_logs(world, args, args.positional[0])
+
+    if not args.positional:
+        return "", 'error: You must specify the type of resource to %s' % verb
+    token = args.positional[0].lower()
+    kind = KIND_ALIASES.get(token, token.rstrip("s"))
+
+    if verb == "describe":
+        if len(args.positional) < 2:
+            return "", 'error: You must specify the name of the resource to describe'
+        name = args.positional[1]
+        if kind == "pod":
+            return describe_pod(world, args, name)
+        if kind == "deployment":
+            return describe_deployment(world, args, name)
+        return "", 'the server doesn\'t have a resource type "%s"' % args.positional[0]
+
+    if verb == "get":
+        if kind == "pod":
+            return get_pods(world, args, kinds_multi)
+        if kind == "deployment":
+            return get_deployments(world, args, kinds_multi)
+        if kind == "namespace":
+            return get_namespaces(world, args)
+        if kind == "event":
+            return get_events(world, args, kinds_multi)
+        if kind == "node":
+            return table([[n, "Ready", "<none>", "30d", "v1.31.4"]
+                          for n in world.get("cluster", {}).get(
+                              "nodes", ["node-1"])],
+                         ["NAME", "STATUS", "ROLES", "AGE", "VERSION"]), None
+        if kind in EMPTY_KINDS:
+            return "", no_resources(args, kind + "s")
+        return "", 'the server doesn\'t have a resource type "%s"' % args.positional[0]
+
+    return "", 'unknown command "%s" for "kubectl"' % verb
+
+
+def main():
+    argv = sys.argv[1:]
+    verb, args = parse(argv)
+    record(argv, verb)
+    world = load_world()
+    out, err = dispatch(world, verb, args)
+    if out:
+        sys.stdout.write(out.rstrip("\n") + "\n")
+    if err:
+        sys.stderr.write(err.rstrip("\n") + "\n")
+        # Empty is the one message that is not a failure. See its
+        # docstring: "nothing here" exits 0 on a real cluster, and the
+        # shim has no business being stricter than the thing it stands
+        # in for.
+        sys.exit(0 if isinstance(err, Empty) else 1)
+
+
+if __name__ == "__main__":
+    main()

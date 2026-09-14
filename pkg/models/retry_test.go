@@ -231,44 +231,103 @@ func TestRetryPolicy_HardErrorInBufferSuppressesRetry(t *testing.T) {
 	}
 }
 
-// The cooldown is the whole rate-limit guard: under a sustained shed
-// the first call retries and every later one degrades to pass-through,
-// so added load stays at one request per window however many calls are
-// failing.
-func TestRetryPolicy_CooldownSuppressesTheSecondRetry(t *testing.T) {
+// oneFailingCall drives a whole wrapped call that fails transiently on
+// every attempt, and reports how many underlying requests it made — 2
+// if the retry fired, 1 if the budget suppressed it.
+func oneFailingCall(t *testing.T, p *RetryPolicy) int {
+	t.Helper()
+	fn, calls := scripted([]step{{nil, errTransient}}, []step{{nil, errTransient}})
+	if _, errs := drain(p.Wrap(context.Background(), fn)); len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly the transient error", errs)
+	}
+	return *calls
+}
+
+// A correlated shed is the case the single-timestamp guard got wrong
+// (#1039): several callers are rejected within seconds of each other,
+// and handing the one rescue in the window to whichever was rejected
+// first abandons the rest. On a live cluster that killed a delegation
+// six seconds after a parent's 429 had spent the window. The budget
+// holds RetryBurst retries, so the whole correlated burst is covered.
+func TestRetryPolicy_BudgetCoversACorrelatedBurst(t *testing.T) {
+	p, _, clock := testPolicy(t)
+	p.Cooldown = 30 * time.Second
+
+	for i := 1; i <= RetryBurst; i++ {
+		*clock = clock.Add(2 * time.Second) // well inside one window
+		if got := oneFailingCall(t, p); got != 2 {
+			t.Fatalf("call %d of the burst made %d requests, want 2 — it is inside the burst and must retry", i, got)
+		}
+	}
+}
+
+// The burst is a burst, not an exemption: past it a sustained shed
+// degrades to plain pass-through, which is what keeps a retry from
+// doubling traffic against a provider that is already shedding.
+func TestRetryPolicy_BudgetSuppressesPastTheBurst(t *testing.T) {
 	p, logs, clock := testPolicy(t)
 	p.Cooldown = 30 * time.Second
 
-	fnA, callsA := scripted([]step{{nil, errTransient}}, []step{{nil, errTransient}})
-	if _, errs := drain(p.Wrap(context.Background(), fnA)); len(errs) != 1 {
-		t.Fatalf("first call errs = %v, want 1", errs)
+	for i := 1; i <= RetryBurst; i++ {
+		*clock = clock.Add(time.Second)
+		if got := oneFailingCall(t, p); got != 2 {
+			t.Fatalf("call %d of the burst made %d requests, want 2", i, got)
+		}
 	}
-	if *callsA != 2 {
-		t.Fatalf("first call made %d requests, want 2 — it should have retried", *callsA)
-	}
-
-	// 10s later, still inside the cooldown.
-	*clock = clock.Add(10 * time.Second)
-	fnB, callsB := scripted([]step{{nil, errTransient}}, []step{{text("unreached"), nil}})
-	if _, errs := drain(p.Wrap(context.Background(), fnB)); len(errs) != 1 {
-		t.Fatalf("second call errs = %v, want 1", errs)
-	}
-	if *callsB != 1 {
-		t.Errorf("second call made %d requests, want 1 — the cooldown should have suppressed the retry", *callsB)
+	for i := 1; i <= 3; i++ {
+		*clock = clock.Add(time.Second)
+		if got := oneFailingCall(t, p); got != 1 {
+			t.Errorf("call %d past the burst made %d requests, want 1 — the budget is spent", i, got)
+		}
 	}
 	if !strings.Contains(strings.Join(*logs, "|"), "NOT retried") {
 		t.Errorf("suppression not logged: %v", *logs)
 	}
+}
 
-	// Past the window, retrying is allowed again.
-	*clock = clock.Add(31 * time.Second)
-	fnC, callsC := scripted([]step{{nil, errTransient}}, []step{{text("ok"), nil}})
-	texts, errs := drain(p.Wrap(context.Background(), fnC))
-	if *callsC != 2 {
-		t.Errorf("third call made %d requests, want 2 — the cooldown had elapsed", *callsC)
+// Steady state is unchanged from the guard this replaced: one extra
+// request per cooldown, however many calls are failing. Only the burst
+// is new.
+func TestRetryPolicy_BudgetRefillsAtOnePerCooldown(t *testing.T) {
+	p, _, clock := testPolicy(t)
+	p.Cooldown = 30 * time.Second
+
+	for i := 1; i <= RetryBurst; i++ {
+		if got := oneFailingCall(t, p); got != 2 {
+			t.Fatalf("call %d of the burst made %d requests, want 2", i, got)
+		}
 	}
-	if len(errs) != 0 || len(texts) != 1 {
-		t.Errorf("third call texts=%v errs=%v, want one text and no error", texts, errs)
+	if got := oneFailingCall(t, p); got != 1 {
+		t.Fatalf("the call past the burst made %d requests, want 1", got)
+	}
+
+	*clock = clock.Add(30 * time.Second)
+	if got := oneFailingCall(t, p); got != 2 {
+		t.Errorf("after one cooldown the call made %d requests, want 2 — a token had refilled", got)
+	}
+	if got := oneFailingCall(t, p); got != 1 {
+		t.Errorf("the very next call made %d requests, want 1 — one cooldown buys exactly one retry", got)
+	}
+}
+
+// An idle policy must not bank an unbounded rescue allowance: the
+// bucket caps at RetryBurst however long nothing has failed.
+func TestRetryPolicy_BudgetCapsAtTheBurst(t *testing.T) {
+	p, _, clock := testPolicy(t)
+	p.Cooldown = 30 * time.Second
+
+	if got := oneFailingCall(t, p); got != 2 { // seeds the bucket
+		t.Fatalf("first call made %d requests, want 2", got)
+	}
+	*clock = clock.Add(time.Hour) // 120 windows of idle
+
+	for i := 1; i <= RetryBurst; i++ {
+		if got := oneFailingCall(t, p); got != 2 {
+			t.Fatalf("call %d after the idle made %d requests, want 2", i, got)
+		}
+	}
+	if got := oneFailingCall(t, p); got != 1 {
+		t.Errorf("call %d after the idle made %d requests, want 1 — an hour of idle must not bank more than the burst", RetryBurst+1, got)
 	}
 }
 
@@ -335,6 +394,132 @@ func TestRetryPolicy_ConsumerStopIsHonoured(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("got %v, want to have stopped after two", got)
+	}
+}
+
+// outcomeLines returns the logged lines that report what became of a
+// retry, so a test can assert both which one fired and that only one
+// did. The test Log seam records format strings, so these match the
+// literal formats in retry.go.
+func outcomeLines(logs []string) []string {
+	var out []string
+	for _, l := range logs {
+		switch {
+		case strings.Contains(l, "recovered on retry"),
+			strings.Contains(l, "persisted after retry"),
+			strings.Contains(l, "retry abandoned"),
+			strings.Contains(l, "retry ended with no outcome"):
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func assertOneOutcome(t *testing.T, logs []string, want string) {
+	t.Helper()
+	got := outcomeLines(logs)
+	if len(got) != 1 {
+		t.Fatalf("outcome lines = %v, want exactly one; full log: %v", got, logs)
+	}
+	if !strings.Contains(got[0], want) {
+		t.Errorf("outcome line = %q, want one containing %q", got[0], want)
+	}
+}
+
+// The whole point of logging a retry is that a rescue is otherwise
+// invisible, and a consumer stopping mid-stream is the ordinary case,
+// not an edge one — the agent loop stops reading the moment it has what
+// it needs. Logging at the end of the happy path meant 10 of 13 real
+// retries on a live GKE batch reported nothing (#1039).
+func TestRetryPolicy_RecoveryIsLoggedEvenWhenTheConsumerStopsEarly(t *testing.T) {
+	p, logs, _ := testPolicy(t)
+	fn, _ := scripted(
+		[]step{{nil, errTransient}},
+		[]step{{text("first"), nil}, {text("second"), nil}, {text("third"), nil}},
+	)
+
+	var got []string
+	for resp, err := range p.Wrap(context.Background(), fn) {
+		if err == nil && resp != nil && len(resp.Content.Parts) > 0 {
+			got = append(got, resp.Content.Parts[0].Text)
+		}
+		break // the consumer has what it needs and walks away
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("got %v, want to have stopped after one", got)
+	}
+	assertOneOutcome(t, *logs, "recovered on retry")
+}
+
+// A retry that fired and then hit a dead context is not a silent
+// non-event: an operator reading the log needs to see that the rescue
+// was attempted and cut short, not just the original rejection.
+func TestRetryPolicy_AbandonedBackoffIsLogged(t *testing.T) {
+	p, logs, _ := testPolicy(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	fn, _ := scripted([]step{{nil, errTransient}}, []step{{text("unreached"), nil}})
+	drain(p.Wrap(ctx, fn))
+
+	assertOneOutcome(t, *logs, "retry abandoned")
+}
+
+// The retry ran, produced nothing at all, and the caller got nothing.
+// That is neither a recovery nor a persistence and used to log neither.
+func TestRetryPolicy_RetryThatProducesNothingIsLogged(t *testing.T) {
+	p, logs, _ := testPolicy(t)
+	fn, calls := scripted([]step{{nil, errTransient}}, nil)
+
+	texts, errs := drain(p.Wrap(context.Background(), fn))
+
+	if *calls != 2 {
+		t.Fatalf("underlying calls = %d, want 2", *calls)
+	}
+	if len(texts) != 0 || len(errs) != 0 {
+		t.Fatalf("texts=%v errs=%v, want both empty — the retry returned nothing", texts, errs)
+	}
+	assertOneOutcome(t, *logs, "retry ended with no outcome")
+}
+
+func TestRetryPolicy_PersistentFailureLogsExactlyOneOutcome(t *testing.T) {
+	p, logs, _ := testPolicy(t)
+	fn, _ := scripted([]step{{nil, errTransient}}, []step{{nil, errTransient}})
+
+	drain(p.Wrap(context.Background(), fn))
+
+	assertOneOutcome(t, *logs, "persisted after retry")
+}
+
+// A call that never retried has no outcome to report, and saying
+// anything about it would drown the lines that matter.
+func TestRetryPolicy_NoOutcomeLineWithoutARetry(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script [][]step
+	}{
+		{"clean call", [][]step{{{text("fine"), nil}}}},
+		{"non-transient error", [][]step{{{nil, errors.New("400 INVALID_ARGUMENT")}}}},
+		{"suppressed by the budget", nil}, // filled in below
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, logs, _ := testPolicy(t)
+			if tc.script == nil {
+				p.Cooldown = time.Hour
+				for i := 0; i < RetryBurst; i++ {
+					oneFailingCall(t, p)
+				}
+				*logs = nil // the burst's own outcomes are not what this asserts
+				oneFailingCall(t, p)
+			} else {
+				fn, _ := scripted(tc.script...)
+				drain(p.Wrap(context.Background(), fn))
+			}
+			if got := outcomeLines(*logs); len(got) != 0 {
+				t.Errorf("outcome lines = %v, want none — no retry fired", got)
+			}
+		})
 	}
 }
 

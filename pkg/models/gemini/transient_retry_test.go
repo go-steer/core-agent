@@ -149,35 +149,43 @@ func TestGenerateContent_PersistentRateLimitSurfaces(t *testing.T) {
 	}
 }
 
-// The cooldown has to hold across GenerateContent calls on different
-// builtinsLLM instances — a daemon's parent and its subagents each get
-// their own wrapper from Model(), and quota is per project. If the
-// policy were a per-instance field this would make four requests.
-func TestTransientRetryCooldownIsProcessWide(t *testing.T) {
+// The retry budget has to hold across GenerateContent calls on
+// different builtinsLLM instances — a daemon's parent and its subagents
+// each get their own wrapper from Model(), and quota is per project. If
+// the policy were a per-instance field, every wrapper below would find
+// a full budget and retry.
+//
+// Since #1039 the budget is a burst of models.RetryBurst rather than a
+// single timestamp, so sharing is proved by spending the whole budget
+// through separate wrappers and then watching a fresh one find it
+// already gone.
+func TestTransientRetryBudgetIsProcessWide(t *testing.T) {
 	prev := transientRetry
 	transientRetry = &models.RetryPolicy{
 		IsTransient: IsTransient,
 		Backoff:     time.Millisecond,
-		Cooldown:    time.Hour,
+		Cooldown:    time.Hour, // nothing refills inside this test
 	}
 	t.Cleanup(func() { transientRetry = prev })
 
-	first := &scriptedLLM{script: [][]fakeEvent{
-		{{nil, errors.New(archived429)}},
-		{{nil, errors.New(archived429)}},
-	}}
-	drainLLM(t, &builtinsLLM{inner: first})
-	if first.calls != 2 {
-		t.Fatalf("first wrapper made %d calls, want 2", first.calls)
+	for i := 1; i <= models.RetryBurst; i++ {
+		spender := &scriptedLLM{script: [][]fakeEvent{
+			{{nil, errors.New(archived429)}},
+			{{nil, errors.New(archived429)}},
+		}}
+		drainLLM(t, &builtinsLLM{inner: spender})
+		if spender.calls != 2 {
+			t.Fatalf("wrapper %d made %d calls, want 2 — it is inside the burst", i, spender.calls)
+		}
 	}
 
-	second := &scriptedLLM{script: [][]fakeEvent{
+	last := &scriptedLLM{script: [][]fakeEvent{
 		{{nil, errors.New(archived429)}},
 		{{modelText("unreached"), nil}},
 	}}
-	drainLLM(t, &builtinsLLM{inner: second})
-	if second.calls != 1 {
-		t.Errorf("second wrapper made %d calls, want 1 — the cooldown is not shared", second.calls)
+	drainLLM(t, &builtinsLLM{inner: last})
+	if last.calls != 1 {
+		t.Errorf("the wrapper past the burst made %d calls, want 1 — the budget is not shared", last.calls)
 	}
 }
 

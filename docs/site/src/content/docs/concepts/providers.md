@@ -250,7 +250,7 @@ GOOGLE_GENAI_USE_VERTEXAI=true \
 A 429 or 503 that delivers **no usable content** is now retried once, after a short backoff. Two bounds keep that from making a bad moment worse:
 
 - **One retry, never two.** A rejection that survives the retry surfaces to the caller.
-- **A process-wide cooldown** (30s). The retry budget is shared by every model handle in the daemon — parent and subagents alike — because Vertex quota is enforced per project and region, not per model. Under a sustained shed the first call retries and every later one passes straight through, so the extra load is one request per window no matter how many calls are failing.
+- **A process-wide retry budget** — a bucket of 3, refilling one per 30s. The budget is shared by every model handle in the daemon — parent and subagents alike — because Vertex quota is enforced per project and region, not per model. The burst exists because 429s arrive correlated: a provider shedding load rejects several concurrent callers within seconds of each other, and a budget of one-per-window would give that rescue to whichever was rejected first and abandon the rest. Past the burst a sustained shed degrades to plain pass-through, so the steady-state extra load is one request per window however many calls are failing.
 
 Once any content has reached the caller the stream is pass-through: a later error surfaces unchanged rather than replaying a turn you have already partly seen.
 
@@ -263,13 +263,22 @@ core-agent: gemini: transient provider error (Error 429, …, Status: RESOURCE_E
 core-agent: gemini: transient provider error recovered on retry (attempt 2/2)
 ```
 
-and so is a retry the cooldown suppressed:
+and so is a retry the budget suppressed:
 
 ```
-core-agent: gemini: transient provider error (…) NOT retried: another retry fired within the 30s cooldown
+core-agent: gemini: transient provider error (…) NOT retried: the shared retry budget is spent (burst 3, one refill per 30s)
 ```
 
-**The `retrying once` line is the reliable one; the outcome line often does not appear.** In a 90-minute drill batch that logged 13 retries, only 3 logged an outcome — when the consumer stops reading mid-stream after taking the recovered content, the policy returns without reaching the line. Read a `retrying once` with no following outcome as "probably recovered", not as "still running". Tracked in [#1039](https://github.com/go-steer/core-agent/issues/1039), along with the cooldown's behaviour in a burst: because 429s arrive correlated, the single shared rescue per window goes to whichever caller is rejected first, and a second caller rejected seconds later is not retried.
+**Every retry that fires logs exactly one outcome line.** There are four, and one of them always appears:
+
+| Outcome line | What happened |
+|---|---|
+| `recovered on retry (attempt 2/2)` | The retry produced usable content. |
+| `persisted after retry — surfacing to caller` | The retry was rejected too; the caller got the error. |
+| `retry abandoned: context ended during the 2s backoff` | The turn was cancelled or timed out mid-backoff; the original provider error surfaced. |
+| `retry ended with no outcome` | The consumer stopped reading, or the retry returned nothing usable. |
+
+So a `retrying once` line with no outcome after it means the process died between the two, and nothing else. Before v2.10.0 this was not true — the outcome was logged only where the stream happened to finish tidily, and in a 90-minute drill batch that logged 13 retries only 3 reported what came of them ([#1039](https://github.com/go-steer/core-agent/issues/1039)).
 
 ### Context caching
 

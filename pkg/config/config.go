@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-steer/core-agent/v2/pkg/hooks"
 )
@@ -658,6 +659,44 @@ type PermissionsConfig struct {
 	// the tool is there and the artifact lands.
 	// See docs/plan-first-design.md.
 	PlanMode string `json:"plan_mode,omitempty"`
+
+	// ApprovalTimeout bounds how long one gated call waits for an
+	// answer before failing with permissions.ErrPromptExpired. A Go
+	// duration string ("10m", "30s"); empty or "0" means wait forever,
+	// which is the default and the right answer for a human at a
+	// terminal.
+	//
+	// Set it when the deployment is unattended. An unanswered prompt
+	// there is not a slow prompt, it is a stopped agent: the gate
+	// serializes prompts and an ordinary turn carries no deadline, so
+	// one gated write with nobody attached to /perms/stream blocks the
+	// turn indefinitely while the session goes on reporting `working`.
+	// From outside the process that is indistinguishable from progress.
+	//
+	// Pick it from how long the approval channel takes a human to
+	// reach, not from how long the tool call takes to run — the clock
+	// is measuring the operator, not the cluster.
+	ApprovalTimeout string `json:"approval_timeout,omitempty"`
+}
+
+// ResolvedApprovalTimeout parses ApprovalTimeout. Empty is zero (wait
+// forever) rather than an error, so an omitted field keeps the
+// pre-existing behaviour; a negative duration is an error rather than
+// silently clamped, because "-10m" is a typo for "10m" often enough
+// that treating it as "no bound" would hand an operator the opposite of
+// what they asked for on a deployment they cannot watch.
+func (p PermissionsConfig) ResolvedApprovalTimeout() (time.Duration, error) {
+	if p.ApprovalTimeout == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(p.ApprovalTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("permissions.approval_timeout %q: %w (want a Go duration like \"10m\")", p.ApprovalTimeout, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("permissions.approval_timeout %q is negative; use a positive duration, or omit the field to wait indefinitely", p.ApprovalTimeout)
+	}
+	return d, nil
 }
 
 // ResolvedPlanMode reports the effective plan mode, folding the
@@ -1511,6 +1550,12 @@ func (c *Config) Validate() error {
 		// ok
 	default:
 		return fmt.Errorf("config: unknown permissions.mode %q", c.Permissions.Mode)
+	}
+	// Validated at load rather than at first prompt. A duration typo
+	// that surfaced lazily would surface on the first gated write of an
+	// unattended run — hours in, with nobody reading the log.
+	if _, err := c.Permissions.ResolvedApprovalTimeout(); err != nil {
+		return fmt.Errorf("config: %w", err)
 	}
 	for i, e := range c.PathScope.AllowPaths {
 		if e.Path == "" {

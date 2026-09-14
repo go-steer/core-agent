@@ -195,6 +195,61 @@ func TestIntegration_PromptRespond_404OnUnknownID(t *testing.T) {
 	}
 }
 
+// 410, not 404. The prompt existed and this caller is answering the
+// right question — they are just late. 404 would leave an out-of-band
+// approver unable to tell whether the action went ahead under somebody
+// else's answer; Gone says it was here, it is not now, and the body
+// says the action was not taken.
+func TestIntegration_PromptRespond_410OnExpiredPrompt(t *testing.T) {
+	t.Parallel()
+	broker := NewPromptBroker()
+	defer broker.Close()
+	reg := NewSessionRegistry()
+	ag := &promptRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		broker:         broker,
+	}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	base, cleanup := startTestServer(t, reg)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	asked := make(chan struct{})
+	go func() {
+		defer close(asked)
+		_, _ = broker.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"})
+	}()
+	var id string
+	for i := 0; i < 100 && id == ""; i++ {
+		if p := broker.Pending(); len(p) == 1 {
+			id = p[0].ID
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("prompt never became pending")
+	}
+	cancel(permissions.ErrPromptExpired)
+	<-asked
+
+	body, _ := json.Marshal(PromptResponse{ID: id, Decision: "allow-once"})
+	resp, err := http.Post(base+"/sessions/core-agent/s1/perms/respond", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST respond: %v", err)
+	}
+	payload, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusGone {
+		t.Errorf("POST respond to an expired prompt: status = %d, want 410", resp.StatusCode)
+	}
+	if !strings.Contains(string(payload), "not taken") {
+		t.Errorf("410 body does not say the action was not taken: %q", payload)
+	}
+}
+
 func TestIntegration_PromptRespond_400OnBadDecision(t *testing.T) {
 	t.Parallel()
 	broker := NewPromptBroker()

@@ -2274,7 +2274,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// compose.SessionFactoryDeps.
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
-		var autoContinueBootScan func()
+		var autoContinueBootScan, autoContinueRetryScan func()
 		if cfg.Attach.MultiSession.Enabled {
 			// Wake loops query the eventlog handle, and `defer
 			// handle.Close()` was registered ~200 lines above this
@@ -2358,6 +2358,10 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 					maxPerBoot = ac.MaxPerBoot
 				}
 				autoContinueBootScan = func() { compose.AutoContinueBootScan(factoryDeps, maxPerBoot) }
+				// Same pass, different attribution in the operator
+				// log: the retry driver below fires on a daemon that
+				// has been up the whole time (#1066).
+				autoContinueRetryScan = func() { compose.AutoContinueRetryScan(factoryDeps, maxPerBoot) }
 			}
 		}
 		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
@@ -2508,7 +2512,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 				autoContinueWG.Add(1)
 				go func() {
 					defer autoContinueWG.Done()
-					compose.AutoContinueRetryLoop(autoContinueDriverCtx, autoContinueRetryInterval, autoContinueBootScan)
+					compose.AutoContinueRetryLoop(autoContinueDriverCtx, autoContinueRetryInterval, autoContinueRetryScan)
 				}()
 			}
 		}
@@ -2625,7 +2629,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 				go func() {
 					defer autoContinueWG.Done()
 					compose.AutoContinueRetryLoop(autoContinueDriverCtx, autoContinueRetryInterval, func() {
-						compose.AutoContinueStartupSession(autoContinueDriverCtx, eventlogHandle, startupAgent, autoContinueFreshness)
+						compose.AutoContinueStartupRetry(autoContinueDriverCtx, eventlogHandle, startupAgent, autoContinueFreshness)
 					})
 				}()
 			}

@@ -177,15 +177,6 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 		return Result{}, fmt.Errorf("alert: rate-limited on target %q (wait for the window to refill or fire a different target)", in.Target)
 	}
 
-	out, err := renderTemplate(tgt, in, renderEnv{session: sessionOf(ctx), getenv: h.getenv})
-	if err != nil {
-		return Result{}, fmt.Errorf("alert: render template %q: %w", tgt.Template, err)
-	}
-	dest, err := resolveURL(tgt, h.getenv)
-	if err != nil {
-		return Result{}, err
-	}
-
 	// Parent the request on the inbound tool ctx (not context.Background)
 	// so a turn-level cancel — /interrupt, daemon shutdown — aborts an
 	// in-flight alert. tool.Context is an interface; some tests pass nil.
@@ -193,7 +184,30 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	req, err := http.NewRequestWithContext(parent, http.MethodPost, dest, bytes.NewReader(out.body))
+	return post(parent, h.client, h.getenv, tgt, in, sessionOf(ctx))
+}
+
+// post renders in for tgt and delivers it. This is everything after the
+// permission gate and the rate limiter, factored out because Sender
+// needs the same delivery and must not reimplement it: a second copy
+// would be a second place to get the header precedence, the
+// omitAuthHeader rule, or the bounded error snippet wrong, and the copy
+// that got it wrong would be the one carrying the gate's own
+// notifications.
+//
+// session is the session label the templates interpolate; "" when the
+// caller has none to offer.
+func post(ctx context.Context, client *http.Client, getenv func(string) string, tgt config.AlertTarget, in Args, session string) (Result, error) {
+	out, err := renderTemplate(tgt, in, renderEnv{session: session, getenv: getenv})
+	if err != nil {
+		return Result{}, fmt.Errorf("alert: render template %q: %w", tgt.Template, err)
+	}
+	dest, err := resolveURL(tgt, getenv)
+	if err != nil {
+		return Result{}, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dest, bytes.NewReader(out.body))
 	if err != nil {
 		return Result{}, fmt.Errorf("alert: build request: %w", err)
 	}
@@ -212,12 +226,12 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 		// second time under a header the destination does not read.
 		auth = nil
 	}
-	if err := applyAuth(req, auth, h.getenv); err != nil {
+	if err := applyAuth(req, auth, getenv); err != nil {
 		return Result{}, err
 	}
 
 	start := time.Now()
-	resp, err := h.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return Result{}, fmt.Errorf("alert: post to %q: %w", in.Target, err)
 	}

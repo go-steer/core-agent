@@ -41,6 +41,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/internal/approvalnotify"
 	"github.com/go-steer/core-agent/v2/internal/version"
 	"github.com/go-steer/core-agent/v2/internal/webui"
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -2188,6 +2189,22 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		adapterOpts = append(adapterOpts, attachadapter.WithPromptBroker(promptBroker))
 		gate.SetPrompter(promptBroker)
 
+		// Out-of-band escalation for prompts nobody is attached to see
+		// (#647). Fatal on error, never a warning: the operator who set
+		// permissions.approval_notify is the one who told us they are
+		// not reading this console, so degrading to "start anyway and
+		// mention it here" delivers the failure to the one place they
+		// said they would not look.
+		approvalNotifier, err := approvalnotify.New(cfg, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+			return runner.ExitConfigError
+		}
+		approvalNotifier.Attach(promptBroker, agentRef.SessionID())
+		if t := approvalNotifier.Target(); t != "" {
+			fmt.Fprintf(os.Stderr, "core-agent: unanswered permission prompts will be announced on alert target %q\n", t)
+		}
+
 		token := ""
 		if attachCfg.TokenEnv != "" {
 			token = os.Getenv(attachCfg.TokenEnv)
@@ -2307,6 +2324,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 				AutoContinueEnabled:   autoContinueEnabled,
 				AutoContinueFreshness: autoContinueFreshness,
 				SessionBackground:     bgRecipe.factory(),
+				// Nil-safe: approvalNotifier is nil unless the operator
+				// set permissions.approval_notify, and a nil *Notifier's
+				// Attach is a no-op, so every session gets the same
+				// wiring whether or not there is anywhere to escalate.
+				AttachApprovalNotifier: approvalNotifier.Attach,
 			}
 			sessionFactory = compose.BuildSessionFactory(factoryDeps)
 			// Session resume: reconstructs sessions persisted in

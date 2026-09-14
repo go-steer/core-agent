@@ -281,6 +281,22 @@ type SessionFactoryDeps struct {
 	// session-created agents); the daemon leaves it nil when
 	// --no-background-agents is set.
 	SessionBackground SessionBackgroundFactory
+
+	// AttachApprovalNotifier, when non-nil, is called once per session
+	// with that session's fresh prompt broker and id, so the daemon can
+	// install out-of-band escalation for permission prompts that open
+	// with nobody attached (#647).
+	//
+	// A func rather than the notifier itself so this package does not
+	// have to know what a notification is: brokers are per session,
+	// notifiers are per daemon, and this is the only seam where the two
+	// meet. It also keeps the "can we deliver at all" question at
+	// daemon startup, where it can still refuse to boot — resolving an
+	// alert target per session would move that discovery to whichever
+	// session happened to be created first.
+	//
+	// Leave nil for no escalation, which is the default.
+	AttachApprovalNotifier func(broker *attach.PromptBroker, sessionID string)
 }
 
 // SessionBackgroundFactory is SessionFactoryDeps.SessionBackground — it
@@ -434,6 +450,12 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// own broker so prompts route to the right per-session
 	// /perms/stream subscriber.
 	broker := attach.NewPromptBroker()
+
+	// Before the gate is derived, so the first prompt this session can
+	// possibly raise already has somewhere to escalate to (#647).
+	if deps.AttachApprovalNotifier != nil {
+		deps.AttachApprovalNotifier(broker, sid)
+	}
 
 	// Per-session sub-gate isolates sessionAllow / planRecorded
 	// / mode / approvals from sibling sessions. Shares Policy /

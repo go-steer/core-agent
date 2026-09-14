@@ -677,6 +677,32 @@ type PermissionsConfig struct {
 	// reach, not from how long the tool call takes to run — the clock
 	// is measuring the operator, not the cluster.
 	ApprovalTimeout string `json:"approval_timeout,omitempty"`
+
+	// ApprovalNotify names a target in the alerts registry to notify
+	// when a gated call opens a prompt and nobody is there to see it.
+	// Empty (the default) means no out-of-band escalation.
+	//
+	// The bound ApprovalTimeout sets stops an unwatched prompt from
+	// hanging forever; it does not tell anyone the prompt happened.
+	// Those are two halves of the same gap and only together do they
+	// make a gated daemon operable: without the bound the agent stops,
+	// and without the notification it gives up on an approval nobody
+	// was ever asked for. An operator running unattended and gated
+	// wants both.
+	//
+	// Deliberately a target NAME rather than a URL. The alerts registry
+	// already owns destinations, their auth and their templates, and it
+	// is what makes SSRF impossible by construction here as well:
+	// nothing in this path can be pointed at an address an operator did
+	// not pre-register.
+	//
+	// Validated eagerly. An unknown name is a config error, and a name
+	// whose target this process cannot deliver to (its webhook env is
+	// unset) is a startup error where it is wired. Both fail loudly
+	// because the failure mode of accepting them is the one the field
+	// exists to fix: a deployment that believes it has an approval
+	// channel and finds out otherwise from a stalled agent.
+	ApprovalNotify string `json:"approval_notify,omitempty"`
 }
 
 // ResolvedApprovalTimeout parses ApprovalTimeout. Empty is zero (wait
@@ -1556,6 +1582,25 @@ func (c *Config) Validate() error {
 	// unattended run — hours in, with nobody reading the log.
 	if _, err := c.Permissions.ResolvedApprovalTimeout(); err != nil {
 		return fmt.Errorf("config: %w", err)
+	}
+	// Same reasoning, one field over: a misspelled target name would
+	// otherwise be discovered by the first prompt nobody answers, which
+	// is precisely the event it was supposed to report.
+	if n := c.Permissions.ApprovalNotify; n != "" {
+		known := make([]string, 0, len(c.Alerts.Targets))
+		found := false
+		for _, t := range c.Alerts.Targets {
+			known = append(known, t.Name)
+			if t.Name == n {
+				found = true
+			}
+		}
+		if !found {
+			if len(known) == 0 {
+				return fmt.Errorf("config: permissions.approval_notify=%q names an alert target but alerts.targets is empty; register the target before pointing the approval channel at it", n)
+			}
+			return fmt.Errorf("config: permissions.approval_notify=%q is not a configured alert target (have: %s)", n, strings.Join(known, ", "))
+		}
 	}
 	for i, e := range c.PathScope.AllowPaths {
 		if e.Path == "" {

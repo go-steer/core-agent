@@ -377,7 +377,7 @@ core-tui answers a wake with a toast **and** a permanent `system` row. Through v
 
 ### Guardrail trips (protocol 1.13.0)
 
-A **guardrail trip** is the watchdog or the cost ceiling deciding the session must stop. From that moment the agent refuses every turn until an operator resets it, so it is the single most important thing an attached client can be told, and since 1.13.0 it arrives as its own non-terminal frame ([#891](https://github.com/go-steer/core-agent/issues/891)):
+A **guardrail trip** is the watchdog or the cost ceiling deciding something must stop — usually the session, sometimes only a turn. It is the single most important thing an attached client can be told, and since 1.13.0 it arrives as its own non-terminal frame ([#891](https://github.com/go-steer/core-agent/issues/891)):
 
 ```
 event: guardrail-trip
@@ -392,6 +392,8 @@ data: {"guardrail":"watchdog","reason":"watchdog halted the agent (repeated-tool
 - **`false` — the turn was not cut.** Either the trip came from the post-turn hook, in which case the turn finished and produced an answer and its `turn-complete` follows; or no turn was running at all, in which case nothing follows. Both are the same to a consumer: render the halt, change nothing about the turn.
 
 The field is always present, including when false. Do not read its absence as `false` — that is a pre-1.13.0 producer, which sends no `guardrail-trip` at all.
+
+**A trip does not always mean the session is halted.** Since v2.10.0-dev ([#1049](https://github.com/go-steer/core-agent/issues/1049)) a `cost_ceiling` trip against the **per-turn** bound ends its turn and nothing else: no flag is set, no reset is needed, and the next turn runs. The frame still goes out — the spend is worth reporting — but a client that renders a persistent "session halted, operator reset required" banner off any trip will now be wrong about those. There is deliberately no `halted_session` field: `reason` states it in words, and `GET /guardrails` (`halted`) is the authoritative answer for a client that needs to branch. Three consecutive per-turn trips *do* halt the session, and that trip's `reason` says so in its own wording rather than reading like the two before it.
 
 **Why it is not a `turn-error`.** Through 1.12.0 it was one, and the mismatch showed up as a protocol violation. A trip is not a turn's outcome: at the boundary the turn *succeeded*, and a session sitting halted with no turn in flight has no outcome to report. Emitting a `turn-error` anyway produced two terminal frames for one turn, which breaks the exactly-one rule above, double-counts every halt for a client tallying outcomes, and delivers a frame to a client that already finalized on the first. [#818](https://github.com/go-steer/core-agent/issues/818) bought time by suppressing the *cancel* instead; 1.13.0 fixes the modelling, so the terminal slot goes back to the turn and the halt gets a frame of its own.
 
@@ -663,7 +665,7 @@ A failed turn ends with `event: turn-error` carrying `{kind, code?, message, ret
 | `model_not_found` | false | Model name / location mismatch (404, `NOT_FOUND`). |
 | `rate_limited` | true | Quota or rate limit (429, `RESOURCE_EXHAUSTED`). |
 | `transient_network` | true | Unreachable or timed-out upstream (502/503/504, `UNAVAILABLE`, **and a model call that hit its deadline**). |
-| `cost_ceiling` | false | A configured per-turn or per-session spend bound tripped. The operator must reset it. **Not emitted on the stream by core-agent since 1.13.0** — see below. |
+| `cost_ceiling` | false | A turn was refused because the session is halted on spend — the per-session bound, or three consecutive per-turn trips ([#1049](https://github.com/go-steer/core-agent/issues/1049)). The operator must reset it. A single per-turn trip does *not* produce this. **Not emitted on the stream by core-agent since 1.13.0** — see below. |
 | `watchdog` | false | The behavioral watchdog tripped a Critical runaway signal under `--watchdog=enforce`. The operator must reset it. **Not emitted on the stream by core-agent since 1.13.0** — see below. |
 | `canceled` | false | The turn's context was cancelled — see below (protocol 1.8.0). |
 | `unknown` | false | Anything the classifier couldn't categorize. `message` still carries the upstream text. |

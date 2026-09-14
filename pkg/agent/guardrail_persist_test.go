@@ -601,3 +601,123 @@ func TestRestoreGuardrails_AppliesBudgetOnce(t *testing.T) {
 		t.Errorf("MaxSessionUSD = %v after three restores, want 15", got)
 	}
 }
+
+// TestGuardrailPersist_PerTurnTripDoesNotSurviveARestart is the #1049
+// regression, and it is deliberately the inverse of every other test in
+// this file: the thing under test is that nothing was written.
+//
+// A per-turn trip used to take the same durable path as a session halt,
+// so #643's fold re-armed it on the next process. One expensive turn in
+// an unattended run therefore became a permanent session halt that
+// outlived the pod that spent the money, and no reset short of an
+// operator's cleared it. Asserted through RestoreGuardrails rather than
+// through a row count, because the fold is what a restarted pod runs.
+//
+// Fails on pre-fix code in both halves: the row is written, and the
+// successor refuses the turn.
+func TestGuardrailPersist_PerTurnTripDoesNotSurviveARestart(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	createTestSession(t, h, "core-agent", "u", "s-1049-turn")
+
+	tr := usage.NewTracker()
+	first, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1049-turn"),
+		WithUsageTracker(tr),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	first.snapshotTurnStartCost()
+	tr.Append("test", 1_500_000, 0, usage.Pricing{InputPerMTok: 0.10}) // $0.15 > $0.10
+	if !first.maybeEnforceCostCeiling(false) {
+		t.Fatalf("setup: the per-turn ceiling should have tripped")
+	}
+	if got := countGuardrailRows(t, first, attach.GuardrailTripEventAuthor); got != 0 {
+		t.Errorf("a per-turn trip wrote %d durable guardrail rows, want 0 — "+
+			"one turn's spend must not outlive the pod that spent it", got)
+	}
+
+	// The restart, with the same spend already in the tracker, because
+	// that is what a resumed session looks like: the whole history is
+	// replayed before the first turn.
+	second, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1049-turn"),
+		WithUsageTracker(tr),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New (restart): %v", err)
+	}
+	if err := second.RestoreGuardrails(context.Background()); err != nil {
+		t.Fatalf("RestoreGuardrails: %v", err)
+	}
+	if tripped, reason := second.CostCeilingTripped(); tripped {
+		t.Errorf("the successor process restored a halt the session never had: %q", reason)
+	}
+	if err := second.preflightCostCeiling(); err != nil {
+		t.Errorf("the successor refused a turn after a per-turn trip: %v", err)
+	}
+}
+
+// TestGuardrailPersist_PerTurnStreakEscalationSurvivesARestart is the
+// other side of the same fix: the escalation IS a session halt, so it
+// has to be as durable as any other, or a pod roll hands the runaway
+// that produced it a clean slate — which is precisely what #643 exists
+// to prevent and what makes the streak a real bound rather than a
+// counter the runaway can reset by crashing.
+func TestGuardrailPersist_PerTurnStreakEscalationSurvivesARestart(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	createTestSession(t, h, "core-agent", "u", "s-1049-streak")
+
+	tr := usage.NewTracker()
+	first, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1049-streak"),
+		WithUsageTracker(tr),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	for turn := 0; turn < maxConsecutiveTurnCeilingTrips; turn++ {
+		first.snapshotTurnStartCost()
+		tr.Append("test", 1_500_000, 0, usage.Pricing{InputPerMTok: 0.10})
+		first.maybeEnforceCostCeiling(false)
+	}
+	// Exactly one row for the whole streak: the escalation. The trips
+	// before it ended their own turns and nothing else.
+	if got := countGuardrailRows(t, first, attach.GuardrailTripEventAuthor); got != 1 {
+		t.Errorf("durable trip rows = %d, want exactly 1 (the escalation)", got)
+	}
+
+	second, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1049-streak"),
+		WithUsageTracker(tr),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New (restart): %v", err)
+	}
+	if err := second.RestoreGuardrails(context.Background()); err != nil {
+		t.Fatalf("RestoreGuardrails: %v", err)
+	}
+	tripped, reason := second.CostCeilingTripped()
+	if !tripped {
+		t.Fatal("the escalation did not survive the restart; the runaway got a clean slate")
+	}
+	if !strings.Contains(reason, "halted the session") {
+		t.Errorf("restored reason = %q, want the escalation's own wording — an operator "+
+			"reading it must learn it was the streak and not a single turn", reason)
+	}
+	if err := second.preflightCostCeiling(); err == nil {
+		t.Error("the successor accepted a turn after restoring the escalation halt")
+	}
+}

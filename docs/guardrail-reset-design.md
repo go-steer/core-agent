@@ -23,6 +23,15 @@ core-agent has two runtime halt switches:
 - the **cost ceiling** (`pkg/agent/cost_ceiling.go`), per-turn
   (`max_turn_cost_usd`) and per-session (`max_session_cost_usd`).
 
+> **Implementation note (#1049, v2.10.0-dev).** "Both work the same
+> way" stopped being true of the per-turn bound. A per-turn trip now
+> ends its turn and sets no flag, so there is nothing for an operator
+> to reset — the reset surface this document designs applies to the
+> watchdog, to the per-session bound, and to the session halt that
+> three consecutive per-turn trips escalate to. Everything below about
+> bump-not-wipe, the 409, and the audit row is unchanged; there is
+> simply one fewer thing that reaches it.
+
 Both work the same way: a post-turn hook sets a flag, and the next
 `Run` refuses at pre-flight with a message explaining why. Both were
 resettable in-process — `Agent.ResetWatchdog()`,

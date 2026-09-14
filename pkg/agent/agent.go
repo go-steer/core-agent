@@ -381,6 +381,16 @@ type Agent struct {
 	// for a turn that hasn't cost anything yet.
 	turnStartCostSet bool
 
+	// Per-turn ceiling bookkeeping (#1049). A per-turn trip ends its turn
+	// and nothing else, so it cannot use costCeilingExceeded as its
+	// once-per-trip latch the way a session trip does.
+	// turnCeilingTripped is that latch, cleared at each turn's start;
+	// turnCeilingStreak counts turns that ended in a per-turn trip, back
+	// to back, and is what escalates to a session halt. One turn that
+	// finishes inside its bound clears the streak.
+	turnCeilingTripped bool
+	turnCeilingStreak  int
+
 	// Durable guardrail state (#643). pendingOutOfBandEvents queues
 	// trip/reset rows for a window with no turn in flight;
 	// guardrailRestored latches the eventlog fold so it applies at

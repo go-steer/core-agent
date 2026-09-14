@@ -260,6 +260,7 @@ Configures the permission gate that consults every tool call. See [Permissions](
 | `plan_mode` | string | `off` | One of `off`, `advisory`, `required`. Whether `record_plan` is registered, and whether mutating tools are gated on it. See [Plan mode](#plan-mode-v29--plan_mode). CLI: `--plan-mode`. |
 | `require_plan_artifact` | bool | `false` | **Deprecated** (v2.9) — the two-state spelling of `plan_mode`; `true` == `plan_mode: "required"`. Cannot express `advisory`. Removed in the next major. |
 | `approval_timeout` | string | `""` (wait forever) | Go duration bounding how long one gated call waits for an answer before failing with `ErrPromptExpired`. See [Approval timeout](#approval-timeout-v30--approval_timeout). |
+| `approval_notify` | string | `""` (off) | Name of an [alert target](#alerts) to notify when a gated prompt opens and nobody is attached. See [Out-of-band approval](#out-of-band-approval-v30--approval_notify). |
 
 Example:
 
@@ -321,6 +322,44 @@ Empty or absent means wait forever, which stays the default — timing out an op
 When it fires, the call fails with `permissions.ErrPromptExpired` and the action is **not** taken. That is a distinct sentinel from a cancelled turn on purpose — "somebody pressed stop" and "nobody answered" are different events, and only the second one means the approval channel is not being watched. A turn the operator cancelled themselves is still reported as a cancellation even if the timeout was about to fire.
 
 One consequence shows up at the API. An operator answering `POST /perms/respond` **after** the deadline gets **410 Gone**, not 404, with a body saying the action was not taken. Out-of-band approval means slow humans — somebody reads a notification, thinks about it, and approves at minute eleven of a ten-minute window — and `404 not found` would leave them unable to tell whether the write had gone ahead on somebody else's answer. The daemon remembers a bounded number of recently-expired request ids to be able to say this.
+
+### Out-of-band approval (v3.0+) — `approval_notify`
+
+`approval_timeout` stops an unwatched prompt from hanging forever. It does not tell anybody the prompt happened — so on its own it converts a hung agent into an agent that quietly gives up. Better, but still not something you can leave running.
+
+`permissions.approval_notify` closes the other half. Name a target from your [`alerts`](#alerts) registry, and when a gated call opens a prompt that reaches **nobody**, one notification goes out carrying what is being approved, which session asked, the request id, and when it expires:
+
+```json
+{
+  "permissions": {
+    "mode": "ask",
+    "approval_timeout": "10m",
+    "approval_notify": "oncall"
+  },
+  "alerts": {
+    "targets": [
+      { "name": "oncall", "template": "slack", "url_env": "SLACK_ONCALL_WEBHOOK" }
+    ]
+  }
+}
+```
+
+The recipient answers with the request id the notification carried:
+
+```bash
+curl -X POST "$DAEMON/sessions/core-agent/$SID/perms/respond" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"<request_id>","decision":"allow-once"}'
+```
+
+Four details worth knowing:
+
+- **A target name, never a URL.** The alerts registry already owns destinations, auth and templates, and reusing it keeps this path SSRF-safe by construction — nothing here can be pointed at an address you did not pre-register.
+- **It fires on silence, not on every prompt.** If a `/perms/stream` subscriber received the frame, no notification goes out. Escalating every prompt of an interactive session is noise that trains the recipient to mute the channel. A subscriber that is attached but has stopped draining counts as silence, because from the operator's side it is.
+- **An unusable target fails at startup.** An unknown name is a config error; a name whose webhook env is unset refuses the boot. An operator who set this field has told you they are not reading the console, so a warning printed there would be delivered to the one place they said they would not look.
+- **It has its own rate-limit budget,** separate from the `alert` tool's. Otherwise an agent firing alerts in a loop could exhaust the budget for the channel that governs that same agent.
+
+If delivery fails the prompt is unaffected — it stays answerable, and the failure is logged as `approval notification failed`. The gate never waits on a webhook.
 
 ### Plan mode (v2.9+) — `plan_mode`
 

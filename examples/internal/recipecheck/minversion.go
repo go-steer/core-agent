@@ -237,6 +237,16 @@ var GatedFeatures = []GatedFeature{
 			"`working`, which is the one degradation an operator cannot see in the logs",
 	},
 	{
+		Path: "permissions.approval_notify",
+		Min:  "2.10.0-dev.1",
+		Why: "who gets told that a gated prompt opened with nobody attached (#647). " +
+			"An older daemon drops it and announces nothing, and the recipe's own config is " +
+			"the only place that said an announcement was expected — so the deployment looks " +
+			"like a healthy unattended run right up until somebody asks why the agent stopped. " +
+			"Worse than the usual silent-reversal, because the field's whole premise is that " +
+			"nobody is reading the console where a warning would have gone",
+	},
+	{
 		Path: "checkpoint.mode",
 		Min:  "2.9.0-dev.5",
 		Why: "which parties may declare a task boundary (#905). `operator` withholds the " +

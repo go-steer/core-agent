@@ -52,7 +52,56 @@ type PromptBroker struct {
 	// under the gate's approval timeout, so a late answer gets an
 	// accurate reason instead of "not found". See rememberExpired.
 	expired []expiredPrompt
+
+	// unwatched, when set, is called for a prompt the fan-out reached
+	// nobody with. See SetUnwatchedNotifier.
+	unwatched func(context.Context, UnwatchedPrompt)
 }
+
+// UnwatchedPrompt describes a prompt that opened with nobody listening,
+// handed to the callback SetUnwatchedNotifier installed.
+type UnwatchedPrompt struct {
+	// Frame is the prompt itself, including the request ID a responder
+	// needs to answer it.
+	Frame PromptFrame
+
+	// Deadline is when the prompt expires unanswered, zero when the
+	// gate imposed no approval timeout and it will wait forever.
+	//
+	// Load-bearing for the notification's wording rather than
+	// decorative: "this expires in nine minutes" and "this will block
+	// the agent until somebody answers" ask a human for two different
+	// responses, and the zero case is the one that actually needs
+	// them, because nothing else will ever escalate it.
+	Deadline time.Time
+}
+
+// SetUnwatchedNotifier installs fn as the out-of-band escalation for
+// prompts that open with nobody to see them. Pass nil to remove it. One
+// notifier per broker; the last call wins.
+//
+// fn is invoked on its own goroutine, exactly once per such prompt, with
+// a context that does NOT inherit the prompt's cancellation — only a
+// bound of its own (notifyTimeout). That detachment is the point rather
+// than a convenience: the moment a notification is most worth sending is
+// the moment the prompt is about to expire, and a send parented on the
+// prompt's context would be killed by the very expiry it is reporting.
+//
+// The broker does not wait for fn and does not surface its error; a
+// notifier that wants those seen must log them itself. A prompt must
+// remain answerable while its notification is still in flight, so the
+// gate is never made to depend on a webhook.
+func (b *PromptBroker) SetUnwatchedNotifier(fn func(context.Context, UnwatchedPrompt)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.unwatched = fn
+}
+
+// notifyTimeout bounds one out-of-band notification. Generous next to
+// the alert sender's own 10s HTTP timeout, because this budget also
+// covers DNS and connection setup on a daemon that may not have talked
+// to the destination since it started.
+const notifyTimeout = 30 * time.Second
 
 // pendingPrompt is one in-flight AskApproval call. response is
 // closed (or written to) when Respond delivers the operator's
@@ -127,22 +176,57 @@ func (b *PromptBroker) AskApprovalAttributed(ctx context.Context, req permission
 		return permissions.Approval{Decision: permissions.DecisionDeny}, errors.New("attach: PromptBroker: closed")
 	}
 	b.pending[id] = pending
-	subs := append([]*subscription(nil), b.subs...)
-	b.mu.Unlock()
+	unwatched := b.unwatched
 
-	// Best-effort fan-out. A subscriber that's already disconnected
-	// (frames channel full because no goroutine is draining) is
-	// skipped — the broker doesn't block on slow consumers. A
-	// subscriber that subscribes AFTER this AskApproval call will
-	// see the prompt via the initial-state snapshot Subscribe
-	// returns.
-	for _, s := range subs {
+	// Best-effort fan-out, and it happens UNDER b.mu rather than off a
+	// snapshot taken under it.
+	//
+	// The snapshot version raced with unsubscribe, which closes
+	// sub.frames while holding the same lock the fan-out had already
+	// released — so an operator's SSE handler returning at the moment a
+	// prompt opened could land a send on a closed channel and panic the
+	// daemon. Rare, and rare in the worst way: the two events are an
+	// operator disconnecting and the agent asking for permission, which
+	// on an unattended deployment happen together by construction.
+	//
+	// Holding the lock is cheap here precisely because every send is
+	// non-blocking: a subscriber that's already disconnected (frames
+	// channel full because no goroutine is draining) is skipped rather
+	// than waited on, so the critical section is bounded by the number
+	// of subscribers, not by the slowest one. A subscriber that
+	// subscribes AFTER this call sees the prompt via the initial-state
+	// snapshot Subscribe returns.
+	delivered := 0
+	for _, s := range b.subs {
 		select {
 		case s.frames <- frame:
+			delivered++
 		default:
 			// Slow / disconnected subscriber; the disconnect detector
 			// in serveStream cleans them up.
 		}
+	}
+	b.mu.Unlock()
+
+	// Nobody saw it. Count DELIVERIES, not registered subscribers: a
+	// subscriber whose buffer is full is one whose reader stopped
+	// draining, which from the operator's side is the same silence as
+	// no subscriber at all — and it is the worse case, because
+	// len(b.subs) says somebody is watching. That is the shape this
+	// whole path exists to break: a gate waiting on an audience that
+	// is not there, indistinguishable from one waiting on a human who
+	// is thinking.
+	if delivered == 0 && unwatched != nil {
+		info := UnwatchedPrompt{Frame: frame}
+		if dl, ok := ctx.Deadline(); ok {
+			info.Deadline = dl
+		}
+		// Detached from ctx on purpose — see SetUnwatchedNotifier.
+		nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
+		go func() {
+			defer cancel()
+			unwatched(nctx, info)
+		}()
 	}
 
 	select {

@@ -41,6 +41,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/internal/approvalnotify"
 	"github.com/go-steer/core-agent/v2/internal/version"
 	"github.com/go-steer/core-agent/v2/internal/webui"
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -2188,6 +2189,30 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		adapterOpts = append(adapterOpts, attachadapter.WithPromptBroker(promptBroker))
 		gate.SetPrompter(promptBroker)
 
+		// Out-of-band escalation for prompts nobody is attached to see
+		// (#647). Fatal on error, never a warning: the operator who set
+		// permissions.approval_notify is the one who told us they are
+		// not reading this console, so degrading to "start anyway and
+		// mention it here" delivers the failure to the one place they
+		// said they would not look.
+		approvalNotifier, err := approvalnotify.New(cfg, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+			return runner.ExitConfigError
+		}
+		// Late-bound, the same way the agentic tool wrappers bind
+		// agentRef (Mechanism B above). This runs while the primary
+		// agent is still a list of options — agent.New does not fire
+		// until runner.Run, several hundred lines down — so reading the
+		// session id here reads a nil *Agent. On a multi-session daemon
+		// it is nil forever: there is no primary agent, POST /sessions
+		// builds them on demand, and each one gets its own broker wired
+		// through SessionFactoryDeps below.
+		approvalNotifier.Attach(promptBroker, primarySessionID(&agentRef))
+		if t := approvalNotifier.Target(); t != "" {
+			fmt.Fprintf(os.Stderr, "core-agent: unanswered permission prompts will be announced on alert target %q\n", t)
+		}
+
 		token := ""
 		if attachCfg.TokenEnv != "" {
 			token = os.Getenv(attachCfg.TokenEnv)
@@ -2307,6 +2332,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 				AutoContinueEnabled:   autoContinueEnabled,
 				AutoContinueFreshness: autoContinueFreshness,
 				SessionBackground:     bgRecipe.factory(),
+				// Nil-safe: approvalNotifier is nil unless the operator
+				// set permissions.approval_notify, and a nil *Notifier's
+				// Attach is a no-op, so every session gets the same
+				// wiring whether or not there is anywhere to escalate.
+				AttachApprovalNotifier: approvalNotifier.AttachSession,
 			}
 			sessionFactory = compose.BuildSessionFactory(factoryDeps)
 			// Session resume: reconstructs sessions persisted in
@@ -2886,6 +2916,29 @@ type autoContinueResolution struct {
 	freshness     time.Duration
 	retry         bool
 	retryInterval time.Duration
+}
+
+// primarySessionID returns a getter for the primary agent's session id,
+// safe to call before — and on a multi-session daemon, instead of — the
+// agent ever existing.
+//
+// It takes the address of the late-bound agentRef rather than the agent
+// itself because the only correct time to read a session id is when
+// something needs it. Everything wired around the prompt broker is
+// constructed while the agent is still a list of options: agent.New runs
+// inside runner.Run, and on a multi-session daemon it never runs for a
+// primary at all, because POST /sessions builds each agent on demand.
+// A caller that resolves the id eagerly does not get a blank field, it
+// gets a nil dereference at startup, before the daemon has served
+// anything — which is how the #647 notifier wiring first shipped and why
+// this is a function.
+func primarySessionID(ref **agent.Agent) func() string {
+	return func() string {
+		if ref == nil || *ref == nil {
+			return ""
+		}
+		return (*ref).SessionID()
+	}
 }
 
 // resolveAutoContinue decides whether restart-interrupted turns are

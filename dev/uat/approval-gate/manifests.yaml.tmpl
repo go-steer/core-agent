@@ -1,0 +1,378 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The gated-daemon UAT rig (#647) — a second, short-lived daemon that
+# runs with the permission gate ON, alongside whatever else is in the
+# namespace. `run.sh` substitutes the __PLACEHOLDERS__ and applies this.
+#
+# It deliberately borrows the gke-platform-agent recipe's ServiceAccount
+# and env ConfigMap instead of standing up its own. Those two carry the
+# Workload Identity binding and the Vertex project/location, and
+# re-deriving them here would mean re-doing the IAM dance for a rig that
+# lives for ten minutes. It borrows NOTHING else: its own config, its own
+# session DB, its own Deployment, its own Service — so tearing it down
+# cannot take the recipe with it, and running it cannot change the
+# recipe's behaviour.
+#
+# Nothing here mounts the recipe's content image, so this daemon has no
+# persona, no skills, no subagents and no MCP servers. That is the point.
+# The property under test is the approval channel, and every tool the
+# agent does not have is a way the run cannot accidentally pass. The
+# disable list below is aggressive for the same reason: `alert` should be
+# as close to the only road out of the turn as the config can make it, so
+# "the gate opened" and "the model found something else to do" cannot
+# produce the same observation.
+#
+# It cannot be made the ONLY road, and the gap is worth knowing about.
+# `tools.disable` names built-in tools, and two of the tools this model
+# still has are not built-ins: `ask_user` and the checkpointer's
+# `mark_task_done`, which is registered by the agent rather than the tool
+# registry. Neither is gated (both are read-only), and run 7 of this rig
+# watched the model fall back on `mark_task_done` three times in a row
+# after its alert was refused — inert calls that tripped the watchdog's
+# no-op-streak and halted the session. `--checkpoint=operator` would
+# withhold `mark_task_done`; it is deliberately NOT passed, because that
+# fallback is part of what a gated daemon actually does when it is told
+# no, and hiding it would make this rig quieter than the thing it tests.
+
+---
+# ── The witness ──────────────────────────────────────────────────────
+#
+# See sink.py. This exists so the assertions read what was RECEIVED
+# rather than what the daemon logged about its own sending.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: approval-sink-src
+  namespace: __NS__
+  labels:
+    app.kubernetes.io/name: approval-sink
+    app.kubernetes.io/part-of: approval-gate-uat
+data:
+  sink.py: |
+__SINK_PY__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approval-sink
+  namespace: __NS__
+  labels:
+    app.kubernetes.io/name: approval-sink
+    app.kubernetes.io/part-of: approval-gate-uat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: approval-sink
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: approval-sink
+        app.kubernetes.io/part-of: approval-gate-uat
+    spec:
+      # No ServiceAccount token: the sink talks to nothing and should
+      # not be able to. A witness with cluster credentials is a witness
+      # that can be argued with.
+      automountServiceAccountToken: false
+      containers:
+        - name: sink
+          image: __SINK_IMAGE__
+          command: ["python3", "/src/sink.py", "8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "32Mi"
+            limits:
+              memory: "128Mi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: src
+              mountPath: /src
+              readOnly: true
+      volumes:
+        - name: src
+          configMap:
+            name: approval-sink-src
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: approval-sink
+  namespace: __NS__
+  labels:
+    app.kubernetes.io/name: approval-sink
+    app.kubernetes.io/part-of: approval-gate-uat
+spec:
+  selector:
+    app.kubernetes.io/name: approval-sink
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+# ── The gated daemon ─────────────────────────────────────────────────
+#
+# Two alert targets on purpose. `oncall` is where the GATE's
+# out-of-band notification goes (permissions.approval_notify); `pager`
+# is the target the AGENT is asked to fire, and firing it is the gated
+# action itself. They point at two different paths on the same sink, so
+# "the operator was told" and "the action ran" are two distinguishable
+# lines in one log rather than one ambiguous one.
+#
+# approval_timeout is short (__APPROVAL_TIMEOUT__) because the expiry
+# leg has to actually wait it out. In production this would be minutes
+# to hours; here it is the length of the test.
+#
+# tools.disable is `pkg/tools.BuiltinToolNames()` minus `alert`, spelled
+# out rather than expressed as "all but one" because the config has no
+# such form. Keep it in sync with that list: an unknown name there is
+# fatal at startup (deliberately — a typo'd disable is a tool you think
+# is off and is not), so a rename in builtins.go fails this rig loudly
+# rather than quietly leaving something enabled. Leaving only `alert`
+# is what makes leg 1's "the released call actually ran" unambiguous:
+# there is no other tool the model could have reached for instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: approval-gate-uat-config
+  namespace: __NS__
+  labels:
+    app.kubernetes.io/name: approval-gate-uat
+    app.kubernetes.io/part-of: approval-gate-uat
+data:
+  config.json: |
+    {
+      "version": 1,
+      "model": {
+        "provider": "vertex",
+        "name": "__MODEL__"
+      },
+      "permissions": {
+        "mode": "ask",
+        "approval_timeout": "__APPROVAL_TIMEOUT__",
+        "approval_notify": "oncall"
+      },
+      "tools": {
+        "disable": [
+          "bash",
+          "read_file",
+          "read_many_files",
+          "write_file",
+          "edit_file",
+          "delete_file",
+          "stat",
+          "list_dir",
+          "glob",
+          "grep",
+          "json_query",
+          "fetch_url",
+          "wait_and_verify",
+          "todo",
+          "record_plan",
+          "sciontool_status"
+        ]
+      },
+      "safety": {
+        "watchdog": "enforce"
+      },
+      "agent": {
+        "display_name": "approval-gate-uat",
+        "max_steps": 12,
+        "max_turn_cost_usd": 0.25,
+        "max_session_cost_usd": 1.0
+      },
+      "alerts": {
+        "rate_limit_per_target": "30/min",
+        "targets": [
+          {
+            "name": "oncall",
+            "kind": "webhook",
+            "template": "generic",
+            "url_env": "UAT_APPROVAL_WEBHOOK",
+            "description": "Where the permission gate tells a human that a call is waiting for approval. The agent does not use this target."
+          },
+          {
+            "name": "pager",
+            "kind": "webhook",
+            "template": "generic",
+            "url_env": "UAT_PAGER_WEBHOOK",
+            "description": "Page the on-call engineer. Use this when you are asked to raise an alert."
+          }
+        ]
+      },
+      "attach": {
+        "listen": "0.0.0.0:7777"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approval-gate-uat
+  namespace: __NS__
+  labels:
+    app.kubernetes.io/name: approval-gate-uat
+    app.kubernetes.io/part-of: approval-gate-uat
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate. Two daemons briefly sharing the rig's
+  # Service would answer the UAT's polls from two different session
+  # registries, and the assertion that reads "no prompt is pending"
+  # could be reading the pod that never had one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: approval-gate-uat
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: approval-gate-uat
+        app.kubernetes.io/part-of: approval-gate-uat
+    spec:
+      # Borrowed from the recipe: this is the KSA with the Workload
+      # Identity binding that lets the Vertex client authenticate.
+      serviceAccountName: __KSA__
+      # Copied from the recipe's own Deployment, and numeric on purpose.
+      # The daemon image declares its user by NAME (`nonroot`), and a
+      # kubelet with runAsNonRoot set but no runAsUser cannot verify a
+      # non-numeric user — it refuses the container with
+      # CreateContainerConfigError before anything runs, which looks
+      # exactly like a rejected config from the outside (an empty log
+      # and a Deployment that never goes Available). fsGroup is what
+      # makes the emptyDir session-db writable by that UID.
+      securityContext:
+        fsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: core-agent
+          image: __DAEMON_IMAGE__
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-c"
+            - "/etc/uat/.agents/config.json"
+            - "--no-repl"
+            - "--session-db"
+            - "--session-db-path=/var/lib/core-agent/session.db"
+            # A non-loopback bind refuses to start without auth, which
+            # is the behaviour under test one layer down: a gated daemon
+            # whose approve endpoint is open to the pod network is not
+            # gated.
+            - "--attach-token=UAT_ATTACH_TOKEN"
+            # Off because the agentic wrappers route through
+            # read_file/fetch_url/grep, and all three are disabled here.
+            # That combination is a startup ERROR rather than a warning
+            # (pkg/compose/agentic.go), which is right — a wrapper with
+            # nothing to wrap is a config that means nothing — and it is
+            # the same line internal/evals/run.go carries for the same
+            # reason.
+            - "--agentic-tools=false"
+          envFrom:
+            # GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION, borrowed
+            # from the recipe for the same reason as the KSA.
+            - configMapRef:
+                name: __ENV_CM__
+          env:
+            - name: UAT_ATTACH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: approval-gate-uat-token
+                  key: token
+            # In-cluster Service DNS. The sink is a Service in this same
+            # namespace, so the daemon reaches it without egress and the
+            # UAT does not depend on anything outside the cluster being
+            # up.
+            - name: UAT_APPROVAL_WEBHOOK
+              value: "http://approval-sink.__NS__.svc.cluster.local/approval"
+            - name: UAT_PAGER_WEBHOOK
+              value: "http://approval-sink.__NS__.svc.cluster.local/agent-alert"
+          ports:
+            - name: attach
+              containerPort: 7777
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 7777
+            periodSeconds: 3
+            failureThreshold: 20
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/uat/.agents
+              readOnly: true
+            - name: session-db
+              mountPath: /var/lib/core-agent
+            # readOnlyRootFilesystem makes $HOME unwritable, and the
+            # first thing the daemon does with it is save the pricing
+            # cache. That failure is non-fatal, so without this mount
+            # the rig starts every run by printing a red herring an
+            # operator reading a failed run will chase.
+            - name: home-cache
+              mountPath: /home/nonroot/.core-agent
+      volumes:
+        - name: config
+          configMap:
+            name: approval-gate-uat-config
+        # emptyDir, not a PVC. The rig is torn down at the end of every
+        # run and a surviving session DB would carry a tripped guardrail
+        # (or an already-answered prompt) into the next one, which is
+        # exactly the kind of cross-run state that makes a UAT pass for
+        # the wrong reason.
+        - name: session-db
+          emptyDir: {}
+        - name: home-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: approval-gate-uat
+  namespace: __NS__
+  labels:
+    app.kubernetes.io/name: approval-gate-uat
+    app.kubernetes.io/part-of: approval-gate-uat
+spec:
+  selector:
+    app.kubernetes.io/name: approval-gate-uat
+  ports:
+    - name: attach
+      port: 7777
+      targetPort: 7777

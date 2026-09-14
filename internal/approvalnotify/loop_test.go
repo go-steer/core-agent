@@ -95,7 +95,7 @@ func gatedDaemon(t *testing.T, sink *webhookSink, timeout time.Duration) (*permi
 
 	broker := attach.NewPromptBroker()
 	t.Cleanup(broker.Close)
-	n.Attach(broker, "s1")
+	n.AttachSession(broker, "s1")
 
 	gate := permissions.New(permissions.Options{
 		Mode:            permissions.ModeAsk,

@@ -80,7 +80,7 @@ func TestNewIsOffByDefault(t *testing.T) {
 	}
 	// A nil notifier must be safe to wire unconditionally, or every call
 	// site grows a branch and one of them will forget it.
-	n.Attach(attach.NewPromptBroker(), "sess-1")
+	n.AttachSession(attach.NewPromptBroker(), "sess-1")
 	if got := n.Target(); got != "" {
 		t.Errorf("Target() = %q, want empty", got)
 	}
@@ -110,7 +110,7 @@ func TestNotificationTellsTheRecipientHowToAnswer(t *testing.T) {
 	n := &Notifier{snd: f, log: quiet()}
 	b := attach.NewPromptBroker()
 	defer b.Close()
-	n.Attach(b, "sess-abc")
+	n.AttachSession(b, "sess-abc")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -151,6 +151,68 @@ func TestNotificationTellsTheRecipientHowToAnswer(t *testing.T) {
 	}
 }
 
+// Attach takes a getter, and the getter must be called when the
+// notification is built rather than when the wiring is done. On the
+// daemon path the broker is handed to the gate while the primary agent
+// is still a list of options — agent.New has not run — so an id read at
+// attach time is the id of an agent that does not exist yet.
+func TestTheSessionIsResolvedWhenTheNotificationIsSentNotWhenAttached(t *testing.T) {
+	t.Parallel()
+	f := newFake()
+	n := &Notifier{snd: f, log: quiet()}
+	b := attach.NewPromptBroker()
+	defer b.Close()
+
+	sid := "" // nothing to name yet, exactly as at startup
+	n.Attach(b, func() string { return sid })
+	sid = "sess-materialized-later"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"}) }()
+	f.await(t)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.session != "sess-materialized-later" {
+		t.Errorf("session = %q, want the id resolved at send time", f.session)
+	}
+	if respond, _ := f.details["respond"].(string); !strings.Contains(respond, "sess-materialized-later") {
+		t.Errorf("respond instruction = %q, want the late-resolved session in the route", respond)
+	}
+}
+
+// And when there genuinely is no session — a multi-session daemon's
+// primary broker, which never gets an agent — the route must say which
+// part is missing rather than render /sessions//perms/respond, which
+// reads as a bug in our formatting and is unusable either way.
+func TestNoSessionYieldsAPlaceholderRouteRatherThanAnEmptySegment(t *testing.T) {
+	t.Parallel()
+	f := newFake()
+	n := &Notifier{snd: f, log: quiet()}
+	b := attach.NewPromptBroker()
+	defer b.Close()
+	n.Attach(b, func() string { return "" })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"}) }()
+	f.await(t)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	respond, _ := f.details["respond"].(string)
+	if strings.Contains(respond, "/sessions//") {
+		t.Errorf("respond instruction has an empty path segment: %q", respond)
+	}
+	if !strings.Contains(respond, "{session_id}") {
+		t.Errorf("respond instruction = %q, want it to name the missing part", respond)
+	}
+	if _, ok := f.details["session"]; ok {
+		t.Error("there is no session, so the details must not claim one")
+	}
+}
+
 // The two cases ask a human for different things, so they must not read
 // the same. "Expires in nine minutes" is a deadline; "the agent is
 // blocked until somebody answers" is an outage nothing else will
@@ -163,7 +225,7 @@ func TestNotificationDistinguishesABoundedWaitFromAnUnboundedOne(t *testing.T) {
 		n := &Notifier{snd: f, log: quiet()}
 		b := attach.NewPromptBroker()
 		defer b.Close()
-		n.Attach(b, "s")
+		n.AttachSession(b, "s")
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		go func() { _, _ = b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"}) }()
@@ -188,7 +250,7 @@ func TestNotificationDistinguishesABoundedWaitFromAnUnboundedOne(t *testing.T) {
 		n := &Notifier{snd: f, log: quiet()}
 		b := attach.NewPromptBroker()
 		defer b.Close()
-		n.Attach(b, "s")
+		n.AttachSession(b, "s")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		go func() { _, _ = b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"}) }()
@@ -218,7 +280,7 @@ func TestADeliveryFailureDoesNotBreakThePrompt(t *testing.T) {
 	n := &Notifier{snd: f, log: quiet()}
 	b := attach.NewPromptBroker()
 	defer b.Close()
-	n.Attach(b, "s")
+	n.AttachSession(b, "s")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

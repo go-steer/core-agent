@@ -84,23 +84,49 @@ func (n *Notifier) Target() string {
 	return n.snd.Target()
 }
 
-// Attach installs n on broker for the given session. A nil Notifier is
-// a no-op, so callers can wire unconditionally.
+// Attach installs n on broker for the session the getter names. A nil
+// Notifier is a no-op, so callers can wire unconditionally.
 //
-// session is passed in rather than read off the frame because the broker
-// is per-session and the frame does not carry the id — and the id is the
-// one thing a responder cannot do without, since the respond route is
-// /sessions/<sid>/perms/respond.
-func (n *Notifier) Attach(broker *attach.PromptBroker, session string) {
+// The session id is supplied rather than read off the frame because the
+// broker is per-session and the frame does not carry the id — and the id
+// is the one thing a responder cannot do without, since the respond
+// route is /sessions/<sid>/perms/respond.
+//
+// It is a GETTER rather than a string because of when the wiring
+// happens. On the daemon path the broker is constructed and handed to
+// the gate while the primary agent is still just a list of options —
+// agent.New does not run until the runner starts — so there is no
+// session id to read yet, and on a multi-session daemon there is no
+// primary agent at all and never will be. Taking a string here invites
+// the caller to resolve it eagerly, which is a nil dereference at
+// startup rather than a missing field in one notification.
+func (n *Notifier) Attach(broker *attach.PromptBroker, session func() string) {
 	if n == nil || broker == nil {
 		return
 	}
 	broker.SetUnwatchedNotifier(func(ctx context.Context, p attach.UnwatchedPrompt) {
-		n.notify(ctx, session, p)
+		sid := ""
+		if session != nil {
+			sid = session()
+		}
+		n.notify(ctx, sid, p)
 	})
 }
 
+// AttachSession is Attach for a caller that already holds the id — the
+// per-session factory, where the session exists before its broker does.
+func (n *Notifier) AttachSession(broker *attach.PromptBroker, session string) {
+	n.Attach(broker, func() string { return session })
+}
+
 func (n *Notifier) notify(ctx context.Context, session string, p attach.UnwatchedPrompt) {
+	// A route with an empty segment reads as a typo in our code rather
+	// than as something the recipient has to fill in, and they would be
+	// right either way — so say which part is missing.
+	route := session
+	if route == "" {
+		route = "{session_id}"
+	}
 	details := map[string]any{
 		"request_id": p.Frame.ID,
 		"tool":       p.Frame.ToolName,
@@ -111,7 +137,7 @@ func (n *Notifier) notify(ctx context.Context, session string, p attach.Unwatche
 		// 3am should not have to go find the API reference to answer it.
 		"respond": fmt.Sprintf(
 			"POST /sessions/%s/perms/respond {\"id\":%q,\"decision\":\"allow-once\"} (or \"deny\")",
-			session, p.Frame.ID),
+			route, p.Frame.ID),
 	}
 	if session != "" {
 		details["session"] = session

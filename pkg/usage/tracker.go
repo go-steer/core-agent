@@ -222,6 +222,13 @@ type Tracker struct {
 	// SubagentCostUSD from their own pricing catalog before appending
 	// so pkg/usage doesn't need a pricing import here.
 	digestSavings DigestSavingsTotals
+
+	// pendingContextBytes is the size of content appended to the
+	// conversation since the last AppendUsage — the part of the context
+	// no measured input count covers yet (#975). Folded into
+	// ContextWindowUsed as an estimate and reset by AppendUsage, whose
+	// InputTokens counts it for real. See context_window.go.
+	pendingContextBytes int
 }
 
 // DigestSavingsRecord is one per-call sample of the MCP digest wrap's
@@ -350,6 +357,10 @@ func (t *Tracker) AppendUsage(model string, u TurnUsage, p Pricing) Turn {
 	}
 	t.mu.Lock()
 	t.turns = append(t.turns, turn)
+	// This call's InputTokens is a measurement of the whole conversation
+	// as sent, so whatever was appended since the last one is now counted
+	// for real and the estimate standing in for it is spent (#975).
+	t.pendingContextBytes = 0
 	cb := t.onAppend
 	t.mu.Unlock()
 	if cb != nil {

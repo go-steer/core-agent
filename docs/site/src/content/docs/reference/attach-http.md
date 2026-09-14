@@ -466,12 +466,14 @@ A *manual* `/slash/compact` or `/slash/done` writes no row: the failure is alrea
 | Key | Value |
 |---|---|
 | `source` | `agent` |
-| `operation` | `window-unknown` or `mechanical-compaction` |
-| `detail` | the operator-facing explanation, including the model id and the assumed window size for `window-unknown`, and the failure count that forced the fallback for `mechanical-compaction` |
+| `operation` | `window-unknown`, `mechanical-compaction`, or `turn-cut` |
+| `detail` | the operator-facing explanation, including the model id and the assumed window size for `window-unknown`, the failure count that forced the fallback for `mechanical-compaction`, and the estimate, window and unmeasured byte count for `turn-cut` |
 
 The two rows are distinguished by event name, not by author: `attach.ContextReductionFailure` matches only `context-reduction-failed` and `attach.ContextReductionDegraded` only `context-reduction-degraded`. A reader that matched on the author alone before this change would have read a degraded row as a failure, which is the opposite of what it means.
 
-Each condition announces itself **at most once per process**. Both describe a state rather than an attempt, and a state re-announced every turn is one operators filter out. If compaction later recovers — a summarizer that starts answering again — there is no "recovered" row; the absence of further degraded rows is not evidence either way. See [Context management](/concepts/context-management/) for what each condition means and what to do about it.
+`turn-cut` ([#975](https://github.com/go-steer/core-agent/issues/975), v2.10.0-dev) says a turn was stopped in flight because a tool result took the estimated context past the point where the next request would fit. Compaction is pending when it is written, so the session heals on its next turn. It is deliberately *not* a `guardrail-trip` frame: `cost_ceiling` and `watchdog` latch a session and wait for an operator to reset it, and a client borrowing that vocabulary here would render a "go reset your session" affordance for a condition with nothing to reset. A cut turn's terminal frame is the ordinary `canceled`, as for any interrupted turn.
+
+Announcement frequency differs by what the row describes. `window-unknown` and `mechanical-compaction` announce **at most once per process**: both are states, and a state re-announced every turn is one operators filter out. `turn-cut` announces **at most once per turn**, because a cut is an attempt — a session cutting one every turn is a very different report from a session that cut one once, and collapsing them would hide the worse of the two. If compaction later recovers — a summarizer that starts answering again — there is no "recovered" row; the absence of further degraded rows is not evidence either way. See [Context management](/concepts/context-management/) for what each condition means and what to do about it.
 
 ## UsageMetadata schema
 

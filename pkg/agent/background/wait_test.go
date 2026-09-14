@@ -324,7 +324,9 @@ func TestTerminalAlertText_Rendering(t *testing.T) {
 			result:   autonomous.RunResult{FinalText: "got as far as the Secret"},
 			runErr:   errors.New("provider exploded"),
 			wantKind: "failed",
-			wantText: "provider exploded\n\nfinal_text: got as far as the Secret\n\nstop_reason: error",
+			// The disclosure sentence rides the stop_reason trailer for
+			// a class that left the parent nothing usable (#1036).
+			wantText: "provider exploded\n\nfinal_text: got as far as the Secret\n\nstop_reason: error\n" + AbsorbDisclosure,
 		},
 		{
 			// An explicit parent Stop: the parent asked for this, and

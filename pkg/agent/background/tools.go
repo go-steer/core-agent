@@ -124,11 +124,19 @@ func (m *Manager) registerPlanGated(toolName string) {
 // successful one: the flow traces the call as failed, the watchdog
 // counts it against the failure streak, and both TUIs draw ✗ with the
 // reason instead of rendering a refusal exactly like a launch (#746).
+//
+// It carries AbsorbDisclosure for the #1036 reason, and carries it more
+// urgently than a failed run does: a refusal delivered nothing at all,
+// not even an error from inside the subagent, so silently doing the
+// work is the single most likely thing to happen next. The sentence is
+// conditional, so it stays correct for the refusals whose right answer
+// is to stop a sibling and retry rather than to absorb.
 func refusedSpawn(name string, err error) spawnAgentResult {
 	return spawnAgentResult{
-		Name:   name,
-		Status: "error: " + err.Error(),
-		Error:  err.Error(),
+		Name:     name,
+		Status:   "error: " + err.Error(),
+		Error:    err.Error(),
+		Guidance: AbsorbDisclosure,
 	}
 }
 
@@ -449,6 +457,39 @@ type spawnAgentResult struct {
 	CallsNote string `json:"calls_note,omitempty"`
 }
 
+// AbsorbDisclosure is the sentence attached to every delegation outcome
+// that delivered nothing the parent can use, telling the parent that if
+// it does the work itself it has to say so (#1036).
+//
+// It exists because a delegation can fail, the parent can quietly do
+// the work itself, and the run can score full marks with the operator
+// never told. Four runs in the 38-run GKE drill archive lost a subagent
+// to a Vertex 429; every one of them still scored, because the parent
+// noticed the empty result and did the cluster reads itself. One of the
+// four — `20260912T104607Z-c`, the archive's first
+// `delegation-undisclosed` — never mentioned it. Nothing in the runtime
+// made the other three disclose either; the model just felt like it.
+//
+// The failure mode is not a dead run. A dead run is loud and gets
+// fixed. It is a run that quietly stops being a delegated run: the
+// context isolation the delegation existed to buy is gone, the parent
+// pays full-context price for work it delegated precisely so it would
+// not have to, and the only trace is a step count — 6 steps with 1 in
+// the child, against 11-12 with 9-10 for every sibling run.
+//
+// Note what this does NOT do: it does not tell the parent to refuse the
+// work. Whether absorbing a failed delegation is the right move at all
+// is a policy question with a real case on both sides, and #1036 leaves
+// it open deliberately. What is not open is the operator finding out.
+//
+// Written as a sentence rather than a field for the #710 reason, which
+// this codebase has now learned twice: an enum two levels down does not
+// change a language model's behaviour, and the thing that does is the
+// instruction in language, next to the data, at the moment of the
+// decision.
+const AbsorbDisclosure = "If you do this work yourself instead, say so in your final answer: name the subagent and say what went wrong with it. " +
+	"An operator reading only your answer has no other way to know the delegation did not happen."
+
 // stopGuidance is the parent-facing instruction for a stop class,
 // empty for the finished case.
 //
@@ -460,23 +501,60 @@ type spawnAgentResult struct {
 // subagent cannot. Nor is a non-finished outcome turned into a tool
 // error, because that discards the partial, which is #691's failure
 // (the parent re-derived a diagnosis it had already paid for).
+//
+// AbsorbDisclosure is appended to exactly the classes where the parent
+// is left holding nothing it can use, which is where absorption is the
+// likely next move: see requiresAbsorbDisclosure.
 func stopGuidance(class StopClass) string {
+	var g string
 	switch class {
 	case StopNoReturn:
-		return "the subagent's loop ended without it returning a result, so this is its last message rather than a deliverable. " +
+		g = "the subagent's loop ended without it returning a result, so this is its last message rather than a deliverable. " +
 			"Check that it answers the goal before building on it — if it trails off, or asks a question, nobody is going to answer it. " +
 			"Re-ask with the specifics that are missing, or do the work yourself."
 	case StopMaxSteps, StopBudget:
-		return "this is a partial: the subagent ran out of room before finishing. Re-ask with what is still missing, or raise its budget."
+		g = "this is a partial: the subagent ran out of room before finishing. Re-ask with what is still missing, or raise its budget."
 	case StopDeferred:
-		return "the subagent scheduled its own next turn and is not done. Do not treat this as the answer; its result arrives later."
+		g = "the subagent scheduled its own next turn and is not done. Do not treat this as the answer; its result arrives later."
 	case StopStopped:
-		return "the subagent was stopped mid-thought, so any text here was cut off."
+		g = "the subagent was stopped mid-thought, so any text here was cut off."
 	case StopError:
-		return "the subagent failed. Whatever text is here is incidental, not a result."
+		g = "the subagent failed. Whatever text is here is incidental, not a result."
 	default:
 		return ""
 	}
+	if requiresAbsorbDisclosure(class) {
+		g += " " + AbsorbDisclosure
+	}
+	return g
+}
+
+// requiresAbsorbDisclosure reports whether a stop class leaves the
+// parent with nothing usable from the delegation, and therefore needs
+// AbsorbDisclosure attached.
+//
+// The two that qualify are the two where the delegated work did not
+// happen:
+//
+//   - StopError is the measured case. The subagent died; there is no
+//     deliverable, only an error string.
+//   - StopNoReturn is the same defect visible in the source rather than
+//     in the archive: its own guidance already ends "or do the work
+//     yourself", inviting the absorption without asking for a word
+//     about it.
+//
+// The three that do not:
+//
+//   - StopMaxSteps / StopBudget delivered real work and ran out of
+//     room. A parent finishing a partial is not a run that stopped
+//     being delegated, and a caveat on every partial is a caveat on
+//     none.
+//   - StopDeferred is not over. Absorbing is the wrong move, and the
+//     guidance says so instead.
+//   - StopStopped was the parent's own decision, so the parent already
+//     knows and an operator reading the transcript sees the stop.
+func requiresAbsorbDisclosure(class StopClass) bool {
+	return class == StopError || class == StopNoReturn
 }
 
 // NewSpawnAgentTool returns a tool the parent's model can call to

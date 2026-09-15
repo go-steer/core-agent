@@ -331,6 +331,14 @@ Once the budget is spent the manager gives up for good — a genuinely misconfig
 core-agent-vertexcache: Caches.Create failed 6 times (giving up; agent will run uncached for its lifetime): ...
 ```
 
+**One failure gets no retries at all: a prompt below the model's minimum cacheable size.** Explicit caching has a floor (4096 tokens on `gemini-3.7-flash` at the time of writing, and it is per-model), and what gets cached is the system instruction plus the tool declarations — a property of the agent's configuration that does not grow while the daemon runs. Attempt 6 would carry exactly the tokens attempt 1 did, so the manager says so once and stops ([#1067](https://github.com/go-steer/core-agent/issues/1067)). Small agents land here routinely: a daemon with no persona, no skills and most built-in tools disabled is under the floor by construction.
+
+```
+core-agent-vertexcache: context cache: disabled for model gemini-3.7-flash — this agent's system instruction + tools are below the provider's minimum cacheable size, and retrying cannot change that. Nothing to fix; a larger prompt would qualify: Error 400, Message: The cached content is of 2373 tokens. The minimum token count to start explicit caching is 4096., Status: INVALID_ARGUMENT
+```
+
+That line is the retraction of the startup line above it: `context cache: enabled` is a statement about configuration, and this is the daemon reporting that the provider would not honour it. Nothing needs fixing — the agent runs uncached and every turn still works.
+
 **A cache that dies server-side is dropped, not ridden out.** Vertex reaps a cache on its own schedule — TTL elapses, the resource is deleted out of band, a project moves — and the handle the daemon holds is then dead for the life of the process unless something invalidates it. Two paths now recognise that and both reach the same conclusion. A refresh that comes back not-found stops treating it as a failed RPC and invalidates immediately, which is the earliest the daemon can know and costs no turn at all; a `GenerateContent` that rejects the cache reference invalidates and retries the same turn uncached, so the operator sees a slightly slower answer rather than an error. The next turn creates a replacement cache. Look for:
 
 ```

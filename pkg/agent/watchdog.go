@@ -272,12 +272,24 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 // Run once the preflights have passed, so a refused turn is not a
 // boundary. A watchdog that does not implement watchdog.TurnObserver —
 // including every one written before this existed — is left alone.
+//
+// It also rolls the turn-scoped trip bookkeeping over to the new turn
+// (#1090), the way snapshotTurnStartCost does for the per-turn cost
+// ceiling. Sitting after the preflights is what makes the streak mean
+// what it says: a refused turn never ran, so it neither clears the
+// streak nor is one of the turns counted into it.
 func (a *Agent) observeTurnStartForWatchdog() {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
 	w := a.watchdog
+	// A turn that ended without a cut clears the streak; a turn that was
+	// cut leaves it standing for this turn to add to.
+	if !a.watchdogTurnCut {
+		a.watchdogTurnCutStreak = 0
+	}
+	a.watchdogTurnCut = false
 	a.mu.Unlock()
 	if to, ok := w.(watchdog.TurnObserver); ok {
 		to.ObserveTurnStart()
@@ -420,9 +432,16 @@ func toolResponseDigest(resp map[string]any) string {
 // (#891): true from enforceWatchdogInTurn, which cuts the running turn
 // immediately after, false from the post-turn hook, where the turn has
 // already produced its answer and will emit `turn-complete`.
-func (a *Agent) drainWatchdogAlerts(haltedTurn bool) {
+//
+// Returns true when this drain decided the turn in flight must stop —
+// whether by halting the session or by cutting only the turn (#1090).
+// The in-turn arm acts on the return rather than re-reading
+// WatchdogTripped, because a turn-scoped trip deliberately leaves that
+// flag clear; see maybeEnforceCostCeiling, which reports the same
+// distinction the same way.
+func (a *Agent) drainWatchdogAlerts(haltedTurn bool) bool {
 	if a.watchdog == nil {
-		return
+		return false
 	}
 	alerts := a.watchdog.Check()
 	// Count BEFORE the nil-callback early return (#338): the metric
@@ -457,8 +476,9 @@ func (a *Agent) drainWatchdogAlerts(haltedTurn bool) {
 	// and outside the onWatchdogAlert==nil guard above so enforcement
 	// fires even when no warn-mode callback is wired.
 	if a.watchdogEnforce {
-		a.maybeTripWatchdog(alerts, haltedTurn)
+		return a.maybeTripWatchdog(alerts, haltedTurn)
 	}
+	return false
 }
 
 // enforceWatchdogInTurn is the in-turn arm of enforce mode (#705). It
@@ -509,15 +529,20 @@ func (a *Agent) enforceWatchdogInTurn() {
 	if a == nil || a.watchdog == nil || !a.watchdogEnforce {
 		return
 	}
-	// Already halted: the Interrupt below has fired and the turn is
+	// Already stopped: the Interrupt below has fired and the turn is
 	// unwinding. Re-draining would be harmless but re-interrupting a
 	// turn whose cancel has been cleared is pointless work on every
-	// remaining event in the stream.
-	if tripped, _ := a.WatchdogTripped(); tripped {
+	// remaining event in the stream. Both stops are checked — a
+	// turn-scoped cut (#1090) leaves watchdogTripped clear, and reading
+	// only that flag would re-enter the drain after every cut.
+	if a.watchdogStopped() {
 		return
 	}
-	a.drainWatchdogAlerts(true)
-	if tripped, _ := a.WatchdogTripped(); tripped {
+	// Cut the turn on what this pass decided, not on the session flag.
+	// A turn-scoped trip does not set that flag, and the whole point of
+	// a turn-scoped bound is that it stops the turn — reading the
+	// session flag back here would have left the looping turn running.
+	if a.drainWatchdogAlerts(true) {
 		// Mark before cutting so the turn's metric point is labelled
 		// with the guardrail rather than the bare `canceled` the
 		// Interrupt produces (#818 part 2; see guardrail_halt.go). The
@@ -527,6 +552,15 @@ func (a *Agent) enforceWatchdogInTurn() {
 		a.markGuardrailHalt(attach.TurnErrorWatchdog)
 		a.Interrupt()
 	}
+}
+
+// watchdogStopped reports whether the watchdog has already stopped
+// something this turn — either the session (watchdogTripped) or just
+// this turn (watchdogTurnCut).
+func (a *Agent) watchdogStopped() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.watchdogTripped || a.watchdogTurnCut
 }
 
 // queueWatchdogFeedback appends alerts to the pending-injection queue,
@@ -565,50 +599,138 @@ func (a *Agent) prependWatchdogFeedback(prompt string) string {
 	return block + "\n\n---\n\n" + prompt
 }
 
-// maybeTripWatchdog halts the agent when any alert this turn is
-// Critical. Sets watchdogTripped + watchdogReason and emits a
+// maybeTripWatchdog acts on the Critical alerts from one drain. Emits a
 // non-terminal `guardrail-trip` event, exactly mirroring
 // maybeEnforceCostCeiling — including haltedTurn, which is true only
-// from the in-turn arm that is about to cut the running turn (#891).
-// Idempotent: once tripped, later turns' drains are a no-op so we
-// don't re-emit. Non-Critical alerts never trip.
-func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert, haltedTurn bool) {
+// from the in-turn arm that is about to cut the running turn (#891) —
+// and returns true when the turn in flight must stop. Non-Critical
+// alerts never trip.
+//
+// THE TWO KINDS OF CRITICAL ARE NOT THE SAME EVENT (#1090), the same
+// way the two cost ceilings are not (#1049). A ScopeSession Critical
+// halts the session: sets watchdogTripped + watchdogReason, writes a
+// durable row, and every later turn is refused at preflight until an
+// operator resets. A ScopeTurn Critical ends its turn and nothing more
+// — no flag, no durable row — because the loop it names is inside the
+// turn and does not survive it, and because taking an unattended daemon
+// off the air for the rest of the night is a bigger consequence than
+// the behavior warrants.
+//
+// A session-scoped Critical wins over a turn-scoped one in the same
+// drain: the scan below takes the first ScopeSession Critical if there
+// is one, and only falls back to the first ScopeTurn. Picking whichever
+// came first in the slice would let a signal that asked for the smaller
+// consequence downgrade one that asked for the larger.
+//
+// Idempotent in both directions: once the session is halted later
+// drains are a no-op, and once this turn has been cut a second cut
+// cannot re-count it toward the escalation streak.
+func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert, haltedTurn bool) bool {
 	if len(alerts) == 0 {
-		return
+		return false
 	}
 	a.mu.Lock()
-	if a.watchdogTripped {
-		a.mu.Unlock()
-		return
-	}
+	tripped, cut := a.watchdogTripped, a.watchdogTurnCut
 	a.mu.Unlock()
+	if tripped || cut {
+		return false
+	}
 
 	var trigger *watchdog.Alert
 	for i := range alerts {
-		if alerts[i].Severity == watchdog.SeverityCritical {
+		if alerts[i].Severity != watchdog.SeverityCritical {
+			continue
+		}
+		if alerts[i].Scope == watchdog.ScopeSession {
 			trigger = &alerts[i]
 			break
 		}
+		if trigger == nil {
+			trigger = &alerts[i]
+		}
 	}
 	if trigger == nil {
-		return
+		return false
 	}
 
-	reason := fmt.Sprintf(
-		"watchdog halted the agent (%s): %s Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
-		trigger.Signal, trigger.Reason,
-	)
-	a.mu.Lock()
-	a.watchdogTripped = true
-	a.watchdogReason = reason
-	a.mu.Unlock()
+	// halt says whether this trip takes the session down with the turn.
+	halt := true
+	var reason string
+	if trigger.Scope == watchdog.ScopeTurn {
+		streak := a.recordWatchdogTurnCut()
+		if streak >= maxConsecutiveWatchdogTurnCuts {
+			reason = fmt.Sprintf(
+				"watchdog halted the agent (%s): %d turns in a row were cut for this signal. The last one: %s Ending the turn stopped each of them and the next turn started the same behavior again, which is the pattern a turn-scoped cut cannot answer on its own. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
+				trigger.Signal, streak, trigger.Reason,
+			)
+		} else {
+			halt = false
+			reason = fmt.Sprintf(
+				"watchdog cut the turn (%s): %s The turn was stopped; the session is NOT halted and the next turn starts clean. %d in a row now — at %d the session halts and needs an operator reset.",
+				trigger.Signal, trigger.Reason, streak, maxConsecutiveWatchdogTurnCuts,
+			)
+			// Scrub the signals' accumulated evidence, exactly as the
+			// gate's own cut does (#1086). Two reasons, and the second is
+			// load-bearing. The evidence has been disposed of by other
+			// means — the turn it was about is over — so holding it against
+			// the next turn would cut that one too, on a run of calls the
+			// model can no longer be making. And the signals that latch
+			// "one alert per streak" (NoOpStreakSignal does) would
+			// otherwise never alert again, which would leave the
+			// escalation below permanently stuck at one and the loop it
+			// guards against unbounded.
+			a.resetWatchdogSignals()
+		}
+	} else {
+		reason = fmt.Sprintf(
+			"watchdog halted the agent (%s): %s Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
+			trigger.Signal, trigger.Reason,
+		)
+	}
 
-	// Durable halt (#643). This is the trip that most needs to survive
-	// a restart: a runaway loop that ends in an OOM kill is exactly the
-	// shape that would otherwise resume looping in the next pod.
-	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, reason))
+	if halt {
+		a.mu.Lock()
+		a.watchdogTripped = true
+		a.watchdogReason = reason
+		a.mu.Unlock()
+
+		// Durable halt (#643). This is the trip that most needs to survive
+		// a restart: a runaway loop that ends in an OOM kill is exactly the
+		// shape that would otherwise resume looping in the next pod. Only a
+		// halt is written; a turn-scoped cut has nothing to restore, and
+		// re-arming it in the next process would mean one cut turn refusing
+		// a session it never refused.
+		a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, reason))
+	}
 
 	a.emitGuardrailTrip(attach.GuardrailWatchdog, reason, haltedTurn)
+	return true
+}
+
+// maxConsecutiveWatchdogTurnCuts is how many turns may end in a
+// turn-scoped watchdog cut, back to back, before the session halts
+// (#1090). Three, for the reasons maxConsecutiveTurnCeilingTrips gives
+// at length: one is an incident, two is a coincidence, three is a
+// pattern nobody is watching, and a turn that ends without a cut clears
+// the count so an agent that occasionally trips never reaches it.
+//
+// It is what keeps the narrowed scope safe. A turn-scoped cut stops the
+// loop inside its turn; what it cannot do on its own is stop a driver
+// that re-drives — auto-continue, a wake loop — into the same loop
+// forever, which would turn a hard stop into an unbounded one. The
+// streak is the session-level answer to that, so the per-turn decision
+// can stay proportionate to a per-turn problem.
+const maxConsecutiveWatchdogTurnCuts = 3
+
+// recordWatchdogTurnCut latches this turn as cut and returns the
+// resulting consecutive-cut count. Called exactly once per turn, from
+// the arm above, under the latch that arm checks first.
+func (a *Agent) recordWatchdogTurnCut() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.watchdogTurnCut = true
+	a.watchdogTurnCutStreak++
+	return a.watchdogTurnCutStreak
 }
 
 // preflightWatchdog returns a non-nil watchdogError when a prior turn
@@ -653,6 +775,11 @@ func (a *Agent) preflightWatchdog() error {
 // queued observation is the only thing that stops the first post-reset
 // turn from re-issuing the same call. Clearing it here would make the
 // reset undo the correction along with the halt.
+//
+// It DOES clear the turn-cut streak (#1090), for the reason
+// ResetCostCeiling clears its own: leaving the count at the escalation
+// threshold would re-halt the session on the very next turn-scoped cut,
+// one turn after an operator looked at it and said carry on.
 func (a *Agent) ResetWatchdog() {
 	if a == nil {
 		return
@@ -660,6 +787,8 @@ func (a *Agent) ResetWatchdog() {
 	a.mu.Lock()
 	a.watchdogTripped = false
 	a.watchdogReason = ""
+	a.watchdogTurnCut = false
+	a.watchdogTurnCutStreak = 0
 	w := a.watchdog
 	a.mu.Unlock()
 	if w != nil {

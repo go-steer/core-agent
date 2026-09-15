@@ -157,6 +157,35 @@ func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Fatalf("condition never became true within %s", timeout)
 }
 
+// waitForFailedAttempts waits until doInit has not merely ISSUED its
+// nth Create but finished ACCOUNTING for the failure, and that
+// distinction is the whole point of the helper (#1077).
+//
+// The fake increments createCount inside Caches.Create; doInit only
+// reaches the bookkeeping — initFailures++, retryNotBefore, and
+// clearing initStarted — once the RPC has returned. A test that
+// resumes on the counter alone can call Init in between and be
+// swallowed by the already-initializing guard in Init, which fires no
+// RPC and schedules no retry. Nothing is left to move the counter
+// after that, so the next waitFor spends its full deadline and the
+// package fails with a timeout that looks like slowness and is
+// actually a lost attempt. Same window #499 documented on the
+// transient path; this is the generalization to the retry path.
+//
+// initFailures is the barrier rather than initStarted because it is
+// incremented in the same critical section as the rest of the
+// bookkeeping AND is monotonic per attempt: observing n proves the
+// nth failure is fully recorded, including on the terminal attempt,
+// where the gate deliberately stays shut and the state goes failed.
+func waitForFailedAttempts(t *testing.T, m *Manager, want int) {
+	t.Helper()
+	waitFor(t, testWait, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.initFailures == want
+	})
+}
+
 // TestManager_InitHappyPath is the load-bearing state-machine test:
 // Init fires the Create RPC on a goroutine, Name() returns "" until
 // it lands, then the resolved cache name. Covers the async-init
@@ -206,7 +235,14 @@ func TestManager_InitError(t *testing.T) {
 	m := NewManager(fake, "gemini-2.5-flash", Options{Logger: discardLogger()})
 
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
-	waitFor(t, testWait, func() bool { return fake.createCount.Load() == 1 })
+	// Wait for the failure to be recorded, not just for the RPC to have
+	// been issued: otherwise the re-Init below can be swallowed by the
+	// already-initializing guard and the assertion that follows would
+	// credit the backoff for a silence it did not cause (#1077).
+	waitForFailedAttempts(t, m, 1)
+	if got := fake.createCount.Load(); got != 1 {
+		t.Fatalf("createCount = %d after one recorded failure, want 1", got)
+	}
 
 	if got := m.Name(context.Background()); got != "" {
 		t.Errorf("Name after failed Init = %q, want empty (degrade to uncached)", got)
@@ -633,7 +669,10 @@ func TestInit_PermissionDeniedRecoversOnRetry(t *testing.T) {
 	sys := &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}
 
 	m.Init(context.Background(), sys, nil)
-	waitFor(t, testWait, func() bool { return f.createCount.Load() == 1 })
+	waitForFailedAttempts(t, m, 1)
+	if got := f.createCount.Load(); got != 1 {
+		t.Fatalf("createCount = %d after one recorded failure, want 1", got)
+	}
 	if snap := m.Snapshot(); snap.Failed {
 		t.Fatal("Snapshot().Failed = true after one 403; want a pending retry, not a lifetime sentence")
 	}
@@ -676,8 +715,13 @@ func TestInit_RealErrorGivesUpAfterRetryBudget(t *testing.T) {
 	for i, wait := range []time.Duration{0, 16 * time.Second, 31 * time.Second} {
 		clk.advance(wait)
 		m.Init(context.Background(), sys, nil)
-		want := int32(i + 1)
-		waitFor(t, testWait, func() bool { return f.createCount.Load() == want })
+		// The next iteration's Init must not race this attempt's
+		// bookkeeping — an Init that lands while initStarted is still
+		// set fires nothing and leaves nobody to retry (#1077).
+		waitForFailedAttempts(t, m, i+1)
+		if got, want := f.createCount.Load(), int32(i+1); got != want {
+			t.Fatalf("createCount = %d after %d recorded failures, want %d", got, i+1, want)
+		}
 	}
 	waitFor(t, testWait, func() bool { return m.Snapshot().Failed })
 

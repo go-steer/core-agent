@@ -122,7 +122,17 @@ run_case() {
     printf 'export PLATFORM_TOKEN=dryrun-fake-token\n' > "${RIG_STATE_DIR}/demo-tokens.env"
     : > "${DRILL_FAKE_DIR}/calls.log"
 
-    jsonl_to_sse < "${FAKE_TRANSCRIPT}" > "${DRILL_FAKE_DIR}/events.sse"
+    # The recorded transcript is scenario C's and names C's namespace
+    # and probe pod. A case that drills a different workload needs a
+    # first frame that names THAT one, or the drill is right to refuse
+    # it as somebody else's incident (#1093) and every such case would
+    # then be testing the refusal instead of what it was written for.
+    if [[ "${FAKE_EMPTY_EVENTS:-}" == "1" ]]; then
+        : > "${DRILL_FAKE_DIR}/events.sse"
+    else
+        sed -e "s/drill-target/${TARGET_NS}/g" -e "s/drill-rbac-probe/${WORKLOAD}/g" \
+            "${FAKE_TRANSCRIPT}" | jsonl_to_sse > "${DRILL_FAKE_DIR}/events.sse"
+    fi
     jq -c '{events: (.cluster // []), truncated: false}' "${CLEAN}/subagents.json" \
         > "${DRILL_FAKE_DIR}/subagent-cluster.json"
     if [[ "${FAKE_FAT_SUBAGENT:-}" == "1" ]]; then
@@ -139,9 +149,30 @@ run_case() {
     fi
     jq -nc '{sessions: [{sessionID: "sess-preexisting", last_touched_at: "2026-01-01T00:00:00Z"}]}' \
         > "${DRILL_FAKE_DIR}/sessions-before.json"
-    jq -nc --arg sid "${FAKE_SESSION_ID}" \
-        '{sessions: [{sessionID: "sess-preexisting", last_touched_at: "2026-01-01T00:00:00Z"},
-                     {sessionID: $sid, last_touched_at: "2026-09-06T10:15:00Z"}]}' \
+
+    # What the hub shows once the cluster is broken. The drill's own
+    # incident, unless a case suppressed it, plus — for the cases about
+    # #1093 — a STRANGER whose last_touched_at is deliberately newer
+    # than ours. Newer is the whole point: "take the most recently
+    # touched" was the old rule, so a fixture where the stranger is
+    # older would pass against the bug.
+    local rows='[{"sessionID":"sess-preexisting","last_touched_at":"2026-01-01T00:00:00Z"}]'
+    if [[ "${FAKE_ONLY_STRANGER:-}" != "1" ]]; then
+        rows=$(jq -c --arg sid "${FAKE_SESSION_ID}" \
+            '. + [{sessionID: $sid, last_touched_at: "2026-09-06T10:15:00Z"}]' <<<"${rows}")
+    fi
+    if [[ "${FAKE_STRANGER:-}" == "1" || "${FAKE_ONLY_STRANGER:-}" == "1" ]]; then
+        rows=$(jq -c --arg sid "${FAKE_STRANGER_SID}" \
+            '. + [{sessionID: $sid, last_touched_at: "2026-09-06T10:16:00Z"}]' <<<"${rows}")
+        # A real one, near enough: the kube-system Node
+        # Auto-Provisioning incident that was scored by mistake on
+        # 2026-09-15 and cost a seed of the scenario-B sitting.
+        jq -nc '{sse: "agent", data: {seq: 1, event: {Author: "user",
+                 Timestamp: "2026-09-06T10:14:58Z", Content: {role: "user", parts: [{text:
+                 "[Inbox]\n- from platform-oncall@example.com: {\"kind\":\"k8s-event\",\"reason\":\"NetworkNotReady\",\"namespace\":\"kube-system\",\"kind_of_object\":\"Pod\",\"name\":\"node-local-dns-4wf2p\",\"message\":\"network is not ready: cni plugin not initialized\"}"}]}}}}' \
+            | jsonl_to_sse > "${DRILL_FAKE_DIR}/events-${FAKE_STRANGER_SID}.sse"
+    fi
+    jq -nc --argjson rows "${rows}" '{sessions: $rows}' \
         > "${DRILL_FAKE_DIR}/sessions-after.json"
 
     OUT="${CASE_DIR}/drill.out"
@@ -180,6 +211,7 @@ reset_env() {
     export DRILL_POLL_SECS=1
     export DRILL_IDLE_SECS=2
     export DRILL_SESSION_TIMEOUT=20
+    export DRILL_PEEK_SECS=1
     export DRILL_MAX_SECS=60
     export DRILL_INJECT_AFTER=1
     export DRILL_ARM_SECS=3
@@ -187,6 +219,7 @@ reset_env() {
 
     # Fixture answers.
     export FAKE_SESSION_ID=sess-fixture-clean
+    export FAKE_STRANGER_SID=sess-fixture-stranger
     export FAKE_DAEMON_IMAGE=ghcr.io/go-steer/core-agent:v2.9.0-dev.5
     export FAKE_CONTENT_IMAGE=us-docker.pkg.dev/fixture/content:v13
     export FAKE_GENERATION=3
@@ -670,6 +703,94 @@ if want 14; then
         bad "meta.json is empty or malformed — score.py cannot read it"
     fi
     have "the sheet still rendered" "${RUN_DIR}/evidence.md"
+fi
+
+# ── 15-16. Somebody else's incident ──────────────────────────────────
+#
+# Observed live on 2026-09-15 (#1093): a Node Auto-Provisioning
+# scale-up raised a kube-system incident seconds before the drill's own
+# OOM landed, the drill took the first new session it saw, and the
+# sheet came back with all three grounded terms missing — a G1 fail
+# recorded against an agent that was never asked the question.
+#
+# In both cases the stranger is the MOST RECENTLY TOUCHED session,
+# which is what the old rule selected on.
+
+if want 15; then
+    head_ "15. a stranger's incident lands first; ours is still taken"
+    reset_env
+    export TARGET_NS=online-boutique
+    export WORKLOAD=emailservice
+    export FAKE_FP_WORKLOADS='Deployment/emailservice:gen4'
+    export FAKE_FP_OBJECTS='ServiceAccount/default:rv120'
+    export FAKE_STRANGER=1
+    run_case a
+
+    eq "exits 0" "${RC}" "0"
+    eq "scored OUR session" \
+        "$(jq -r .session_id "${RUN_DIR}/meta.json")" "sess-fixture-clean"
+    grep_ "says why it passed the other one over" "${OUT}" \
+        'sess-fixture-stranger is not this drill.s incident'
+    grep_ "names the incident it did take" "${OUT}" 'payload: .*emailservice'
+    grep_ "wrote the rejection down" "${RUN_DIR}/rejected-sessions.txt" \
+        'sess-fixture-stranger.*NetworkNotReady'
+    have "kept the stranger's payload to read" \
+        "${RUN_DIR}/peek-sess-fixture-stranger.sse"
+    # The follow-up must land in the session the drill actually scored.
+    # Injecting G6 into a stranger's incident is the part of this bug
+    # that touches somebody else's work rather than just our own sheet.
+    grep_ "injected into our session" "${CALLS}" \
+        'sessions/core-agent/sess-fixture-clean/inject'
+fi
+
+if want 16; then
+    head_ "16. the only incidents are other people's"
+    reset_env
+    export TARGET_NS=online-boutique
+    export WORKLOAD=emailservice
+    export FAKE_FP_WORKLOADS='Deployment/emailservice:gen4'
+    export FAKE_FP_OBJECTS='ServiceAccount/default:rv120'
+    export FAKE_ONLY_STRANGER=1
+    export DRILL_SESSION_TIMEOUT=8
+    run_case a
+
+    [[ "${RC}" -ne 0 ]] && ok "exits non-zero (${RC})" || bad "scored a stranger's incident"
+    # "Nothing fired" and "something fired, none of it yours" are
+    # different diagnoses and the second one used not to exist.
+    grep_ "distinguishes it from a dead watcher" "${OUT}" \
+        'none of\s*$|incident session\(s\) appeared'
+    grep_ "names what it was looking for" "${OUT}" 'online-boutique emailservice'
+    ungrep "does not claim nothing appeared" "${OUT}" 'no new session appeared'
+    grep_ "points at the payloads it rejected" "${OUT}" 'rejected-sessions.txt'
+    grep_ "restores on the way out" "${OUT}" 'restoring the cluster on the way out'
+    grep_ "the restore really ran" "${CALLS}" '^kubectl .*rollout undo deployment/emailservice'
+    if [[ -f "${RUN_DIR}/evidence.md" ]]; then
+        bad "scored a run that captured nothing"
+    else
+        ok "no evidence sheet for a run that captured nothing"
+    fi
+fi
+
+if want 17; then
+    head_ "17. the session is there but its first frame never is"
+    reset_env
+    export TARGET_NS=online-boutique
+    export WORKLOAD=emailservice
+    export FAKE_FP_WORKLOADS='Deployment/emailservice:gen4'
+    export FAKE_FP_OBJECTS='ServiceAccount/default:rv120'
+    export FAKE_EMPTY_EVENTS=1
+    export DRILL_SESSION_TIMEOUT=8
+    run_case a
+
+    # Waiting for a payload that is never coming must not come out as
+    # "the incident never landed": one sends you to the watcher's log,
+    # the other to the daemon's.
+    [[ "${RC}" -ne 0 ]] && ok "exits non-zero (${RC})" || bad "scored a session it could not read"
+    grep_ "says it could not read them"   "${OUT}" 'never\s*$|showed a first frame'
+    grep_ "names the 412 it would be"     "${OUT}" '412'
+    grep_ "offers the escape hatch"       "${OUT}" 'DRILL_MATCH_INCIDENT=0'
+    ungrep "does not blame the watcher"   "${OUT}" 'no new session appeared'
+    grep_ "restores on the way out"       "${OUT}" 'restoring the cluster on the way out'
 fi
 
 head_ "Result"

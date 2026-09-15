@@ -54,6 +54,8 @@ Environment (all optional):
   DRILL_MAX_SECS=1200        hard cap on one capture
   DRILL_SETTLE_SECS=10       settle time after the break and the restore
   DRILL_POLL_SECS=5          how often the capture and session polls tick
+  DRILL_PEEK_SECS=5          how long to read a candidate session before judging it
+  DRILL_MATCH_INCIDENT=0     score the first new session without checking it is ours
   DRILL_PORT=7779            local port for the hub tunnel
   FORCE=1                    score even with a foreign watcher racing
   WORKLOAD / TARGET_NS / …   inherited from the recipe's scripts/prereqs.sh
@@ -96,6 +98,16 @@ source "${DRILL_SELF_DIR}/scenarios/${SCENARIO_FILE}"
 drill_banner "GKE drill — scenario ${SCENARIO_ID}: ${SCENARIO_NAME}"
 drill_log "run dir: ${DRILL_RUN_DIR}"
 
+# A scenario with no match key would take whatever incident the hub
+# raised first, which is the bug #1093 was filed for. Say so here,
+# before anything is broken, rather than at the point where the drill
+# is holding a session it cannot vouch for.
+if [[ "${DRILL_MATCH_INCIDENT}" == "1" && -z "${SCENARIO_INCIDENT_MATCH[*]:-}" ]]; then
+    drill_die "scenario ${SCENARIO_ID} defines no SCENARIO_INCIDENT_MATCH — the drill
+  could not tell its own incident from anyone else's. Give the scenario
+  a match key, or accept the risk with DRILL_MATCH_INCIDENT=0."
+fi
+
 # meta.json — everything score.py needs that is not in the transcript.
 #
 # This is called from TWO places: the happy path, where every value is
@@ -136,6 +148,8 @@ drill_write_meta() {
         --arg daemon_image "${DAEMON_IMAGE:-}" \
         --arg content_image "${CONTENT_IMAGE_DEPLOYED:-}" \
         --arg session_id "${SESSION_ID:-}" \
+        --arg incident_match "${SCENARIO_INCIDENT_MATCH[*]:-}" \
+        --arg incident_payload "$(cat "${DRILL_RUN_DIR}/incident-summary.txt" 2>/dev/null || true)" \
         --arg followup "${FOLLOWUP_SENT:-}" \
         --arg generation_before "${GENERATION_BEFORE:-}" \
         --arg generation_after "${GENERATION_AFTER:-}" \
@@ -288,14 +302,52 @@ FINGERPRINT_BEFORE=$(drill_target_fingerprint)
 drill_banner "3/7  waiting for the watcher to raise an incident"
 drill_log "up to ${DRILL_SESSION_TIMEOUT}s; follow along with:"
 drill_log "  kubectl --context ${KUBE_CONTEXT} -n ${DEMO_NS} logs deploy/lookout-watch -f"
+if [[ "${DRILL_MATCH_INCIDENT}" == "1" ]]; then
+    drill_log "taking the first new session whose payload names: ${SCENARIO_INCIDENT_MATCH[*]}"
+else
+    drill_warn "DRILL_MATCH_INCIDENT=0 — taking the first new session unchecked. Note it on the scorecard."
+fi
 
-SESSION_ID=$(drill_wait_new_session "${SESSIONS_BEFORE}") || drill_die \
-    "no new session appeared within ${DRILL_SESSION_TIMEOUT}s.
+# Three ways this ends badly, and they send you to three different
+# logs, so they get three different messages. "Nothing fired" is the
+# watcher; "three fired and none was yours" is a cluster with traffic
+# of its own; "they fired and none of them would say what it was
+# about" is the daemon. The sessions are on disk either way (#1093).
+if ! SESSION_ID=$(drill_wait_new_session "${SESSIONS_BEFORE}"); then
+    if [[ -s "${DRILL_RUN_DIR}/rejected-sessions.txt" ]]; then
+        drill_die \
+"$(wc -l < "${DRILL_RUN_DIR}/rejected-sessions.txt" | tr -d ' ') incident session(s) appeared within ${DRILL_SESSION_TIMEOUT}s and none of
+  them was this drill's: no payload named ${SCENARIO_INCIDENT_MATCH[*]}.
+  The break landed, the watcher is working, and it was busy with
+  something else. What it raised instead, and the payloads themselves:
+    ${DRILL_RUN_DIR}/rejected-sessions.txt
+    ${DRILL_RUN_DIR}/peek-*.sse
+  Re-run; a cluster this noisy may also want a longer
+  DRILL_SESSION_TIMEOUT than ${DRILL_SESSION_TIMEOUT}s."
+    fi
+    if [[ -s "${DRILL_RUN_DIR}/unread-sessions.txt" ]]; then
+        drill_die \
+"$(wc -l < "${DRILL_RUN_DIR}/unread-sessions.txt" | tr -d ' ') new session(s) appeared within ${DRILL_SESSION_TIMEOUT}s and none of them ever
+  showed a first frame, so the drill could not tell whose incident they
+  are. A session with no event log answers /events with 412, and a turn
+  that never started has nothing to replay yet. The ids, and what the
+  peek did get back:
+    ${DRILL_RUN_DIR}/unread-sessions.txt
+    ${DRILL_RUN_DIR}/peek-*.sse
+  Check the daemon's log, and DRILL_MATCH_INCIDENT=0 will take the
+  session unchecked if you need the run more than the check."
+    fi
+    drill_die \
+"no new session appeared within ${DRILL_SESSION_TIMEOUT}s.
   The break landed but the incident never did. Check, in order:
     kubectl --context ${KUBE_CONTEXT} -n ${TARGET_NS} get events --sort-by=.lastTimestamp | tail
     kubectl --context ${KUBE_CONTEXT} -n ${DEMO_NS} logs deploy/lookout-watch --tail=50
     kubectl --context ${KUBE_CONTEXT} -n ${DEMO_NS} logs deploy/core-agent --tail=50"
+fi
 drill_ok "incident session: ${SESSION_ID}"
+if [[ -s "${DRILL_RUN_DIR}/incident-summary.txt" ]]; then
+    drill_ok "  payload: $(cat "${DRILL_RUN_DIR}/incident-summary.txt")"
+fi
 
 # ── 4. Follow-up, scheduled to land mid-run ──────────────────────────
 

@@ -82,9 +82,11 @@ a finding.
 2. **Arm the scenario.** A and B patch the target workload through the recipe's
    own `break-workload.sh`; C applies a fixture. Baselines for G4 are taken
    *after* the break settles, so the drill's own damage is inside the baseline.
-3. **Wait for the incident.** `lookout-watch` turns the cluster events into an
-   inject, which opens a new session on the hub. The drill watches `/sessions`
-   for one that was not there before.
+3. **Wait for the incident** — *ours*. `lookout-watch` turns the cluster events
+   into an inject, which opens a new session on the hub. The drill watches
+   `/sessions` for one that was not there before, reads its first frame, and
+   takes it only if the payload names what the scenario broke. See
+   [The incident that was not ours](#the-incident-that-was-not-ours).
 4. **Capture.** Streams the parent session's SSE from seq 0, and pulls each
    subagent's turns afterwards. Both are necessary: the `cluster` subagent owns
    the `gke` MCP, so nearly all the tool evidence is on a branch the parent
@@ -96,9 +98,8 @@ a finding.
    the exit code — otherwise the next run measures nothing.
 7. **Score.** `score.py` writes `evidence.md` into the run directory.
 
-Artifacts land in `${TMPDIR}/gke-drill/<stamp>-<scenario>/` — under TMPDIR
-because a capture holds a live transcript and it does not belong in `$HOME` or
-in the checkout. Nothing there survives a reboot; copy what a finding cites.
+Artifacts land in `~/.gke-drill/runs/<stamp>-<scenario>/`, and
+[they survive a reboot on purpose](#where-a-run-lands).
 
 **`evidence.md` is the file you read.** Not `transcript.jsonl`, which is raw SSE
 frames. The evidence sheet quotes the final answer, tabulates every tool call
@@ -133,6 +134,55 @@ child's reads because prose cannot be cited — was found by hand in a raw
 transcript afterwards. The section reports a clean delegation exactly as
 loudly as a repeated one, because a section that only speaks up when it has a
 complaint teaches you to read its silence as a pass.
+
+## The incident that was not ours
+
+The drill used to take the first session that appeared on the hub after the
+break. On a cluster with event traffic of its own that is a coin toss, and on
+2026-09-15 it came up tails: a Node Auto-Provisioning scale-up put a
+`NetworkNotReady` incident on `node-local-dns` in `kube-system` seconds ahead of
+the `cartservice` OOM the drill had just caused. The drill scored the stranger,
+injected the G6 follow-up into it, restored the cluster, and wrote a sheet whose
+three grounded terms were all missing — a G1 fail recorded against an agent that
+had never been asked the question. The agent, for its part, diagnosed the NAP
+event correctly. It cost a seed and a re-run ([#1093](https://github.com/go-steer/core-agent/issues/1093)).
+
+This is *not* the foreign-watcher hazard in step 1. There was no foreign
+watcher; our own watcher was working perfectly, on a real incident that was
+none of our business.
+
+So a candidate session is now read before it is taken. Each scenario supplies a
+match key — `SCENARIO_INCIDENT_MATCH`, the namespace and the object the
+scenario expects to be named — and the drill peeks at the session's first
+frame, which is the watcher's inject payload, before accepting it:
+
+```
+⚠ session s-8f21 is not this drill's incident — [Inbox]  - from platform-oncall@…: {"kind":"k8s-event","reason":"NetworkNotReady","namespace":"kube-system",…
+⚠   (no online-boutique cartservice in its payload; still waiting for ours)
+✓ incident session: s-8f44
+✓   payload: [Inbox]  - from platform-oncall@…: {"kind":"degradation.capacity","namespace":"online-boutique","name":"cartservice",…
+```
+
+A mismatch does not end the wait — ours is usually a few seconds behind — and
+the timeout now has three messages where it had one: *"the break landed but no
+incident did"*, which sends you to the watcher's log; *"incidents landed and
+none of them was yours"*, which is a busy cluster; and *"sessions appeared and
+none ever showed a first frame"*, which sends you to the daemon's, since a
+session with no event log answers `/events` with a 412 and one whose turn never
+started has nothing to replay. Each leaves what it saw in the run directory:
+`rejected-sessions.txt` or `unread-sessions.txt`, one line per session passed
+over, and the raw `peek-<id>.sse` behind each. The accepted payload is kept too,
+in `incident-payload.txt`.
+
+The match is over the payload **text**, not over its `namespace` and `name`
+fields, because a `storm` payload has neither: it names an ancestor namespace
+and carries the workloads inside attached representative incidents. Both real
+shapes from the 2026-09-15 sitting match; the NAP one does not.
+
+`DRILL_MATCH_INCIDENT=0` turns the check off and restores the old
+take-the-first-one behaviour. It exists for a payload shape the matcher does not
+understand — a run it rescues is a run whose session you must eyeball yourself,
+and the console says so.
 
 ## The six boxes
 
@@ -442,14 +492,18 @@ contained, and the box they were silently wrong about was one of the two
 `score.py` decides on its own.
 
 `dryrun.sh` checks the **whole**. It puts a fake `kubectl`, `curl` and `gcloud`
-on `PATH` and runs `drill.sh` end to end against them, thirteen times, in about
-a minute: both non-trivial scenarios all the way through, plus the paths that
+on `PATH` and runs `drill.sh` end to end against them, seventeen times, in a few
+minutes: both non-trivial scenarios all the way through, plus the paths that
 only ever run when something has gone wrong — a restore that exits 0 without
-restoring, an incident that never arrives, a preflight that must refuse
-*before* anything is broken, a foreign watcher, a follow-up that fires too
-late, an empty subagent roster, a paged subagent capture, and the three ways
-scenario C can fail to arm (a probe that never starts, one that comes up
-healthy, one whose own image is wrong). The failure paths are the point: every
+restoring, an incident that never arrives, [a stranger's incident that arrives
+first](#the-incident-that-was-not-ours), another where the stranger's is the
+only one, a session whose first frame never arrives at all, a preflight that must refuse *before* anything is broken, a foreign
+watcher, a follow-up that fires too late, an empty subagent roster, a paged
+subagent capture, and the three ways scenario C can fail to arm (a probe that
+never starts, one that comes up healthy, one whose own image is wrong). In the
+two stranger cases the stranger is the most recently *touched* session, because
+that is the one the old rule selected: a fixture where it was not would pass
+against the bug. The failure paths are the point: every
 one of them happens at the moment a workload is already broken, which is the
 worst moment to discover an unset variable.
 

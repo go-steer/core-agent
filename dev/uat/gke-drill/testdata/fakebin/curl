@@ -31,12 +31,13 @@ case "${1:-}" in
         exit 0 ;;
 esac
 
-url="" method="GET" body=""
+url="" method="GET" body="" maxtime=""
 while (( $# )); do
     case "$1" in
         http://*|https://*) url="$1" ;;
         -X)                 method="$2"; shift ;;
         --data|-d)          body="$2"; shift ;;
+        --max-time)         maxtime="$2"; shift ;;
     esac
     shift
 done
@@ -120,8 +121,22 @@ fi
 # branch, which is the one a live run takes. Letting curl exit here
 # would exercise the "server hung up" branch instead and quietly stop
 # testing the timer that actually ends every real capture.
+#
+# Per-session fixtures, so a case can put a session on the hub that is
+# about somebody else's incident. Falls back to the one transcript.
 if [[ "${path}" == */events* ]]; then
-    cat "${FAKE}/events.sse"
+    sid="${path%/events*}"; sid="${sid##*/}"
+    src="${FAKE}/events-${sid}.sse"
+    [[ -f "${src}" ]] || src="${FAKE}/events.sse"
+    cat "${src}"
+    # The drill's PEEK sets --max-time and depends on curl giving up at
+    # it; the capture leaves it off and waits for quiescence. Holding
+    # the peek open here would hang the drill, which is precisely the
+    # failure the real curl's deadline exists to prevent.
+    if [[ -n "${maxtime}" ]]; then
+        sleep "${maxtime}"
+        exit 28
+    fi
     exec sleep 3600
 fi
 

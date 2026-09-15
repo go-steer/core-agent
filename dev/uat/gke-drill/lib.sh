@@ -116,6 +116,22 @@ DRILL_ARM_SECS="${DRILL_ARM_SECS:-240}"
 # whole scenario in seconds; live runs should leave them alone.
 DRILL_POLL_SECS="${DRILL_POLL_SECS:-5}"
 
+# How long to hold a candidate session's event stream open while
+# working out WHICH incident it is about. There is no JSON read path
+# for a parent session's events — /events is SSE, and only the subagent
+# endpoint is paged — so the peek is a bounded subscription: everything
+# persisted replays at once and the deadline is the only thing that
+# ends it. One poll's worth of patience per candidate.
+DRILL_PEEK_SECS="${DRILL_PEEK_SECS:-5}"
+
+# Set to 0 to take the first new session the way the drill used to,
+# without checking which incident it is about. It is an escape hatch
+# for a cluster whose payloads the matcher cannot recognise, not a
+# thing to leave off: what it buys back is the freedom to score a
+# stranger's incident. See "the incident that was not ours" in the
+# README.
+DRILL_MATCH_INCIDENT="${DRILL_MATCH_INCIDENT:-1}"
+
 # Artifacts. Under $HOME, deliberately, and this is worth explaining
 # because two obvious alternatives are both wrong.
 #
@@ -328,30 +344,146 @@ drill_session_ids() {
     hub_get "/sessions" | jq -r '.sessions[]?.sessionID' | sort
 }
 
-# Block until a session id appears that was not in $1 (a sorted list
-# captured before the break). Prints the new id.
+# The ids that are on the hub now and were not in $1 (a sorted list
+# captured before the break), oldest-touched first.
+drill_new_session_ids() {
+    local before="$1" new count
+    new=$(comm -13 <(printf '%s\n' "${before}") <(drill_session_ids) || true)
+    count=$(printf '%s' "${new}" | grep -c . || true)
+    (( count >= 1 )) || return 0
+    hub_get "/sessions" \
+        | jq -r --argjson ids "$(printf '%s\n' "${new}" | jq -R . | jq -s .)" \
+            '[.sessions[] | select(.sessionID as $s | $ids | index($s))]
+             | sort_by(.last_touched_at) | .[].sessionID'
+}
+
+# The text of a session's FIRST frame. For an incident session that is
+# the watcher's inject payload, which names the namespace and the
+# object the incident is about. Empty output means the first turn has
+# not landed yet, which is a legitimate answer and not an error.
 #
-# If more than one appears, take the newest by last_touched_at and say
-# so: a cluster that produced two incidents at once is scoreable, but
-# the operator needs to know the transcript is one of several.
+# The peek is kept: an incident the drill declined to score is exactly
+# the thing an operator will want to read afterwards.
+drill_session_prompt() {
+    local sid="$1" raw="${DRILL_RUN_DIR}/peek-${sid//[^A-Za-z0-9._-]/_}.sse"
+    curl -sS -N --no-buffer --max-time "${DRILL_PEEK_SECS}" \
+        -K "${DRILL_CURL_CFG}" \
+        "${DRILL_BASE_URL}/sessions/${DRILL_APP}/${sid}/events?since=0" \
+        >"${raw}" 2>/dev/null || true
+    [[ -s "${raw}" ]] || return 0
+    # -c, not -r, for the selection: an inject payload is one text with
+    # newlines in it, and `jq -r` would spread it over as many lines as
+    # it has — from which "the first one" is `[Inbox]` and nothing
+    # else. Pick the first frame's text as a JSON string, then decode.
+    python3 "${DRILL_DIR}/sse2jsonl.py" < "${raw}" 2>/dev/null \
+        | jq -c 'try (.data.event.Content.parts[]? | .text // empty) catch empty' 2>/dev/null \
+        | grep -m1 . \
+        | jq -r . 2>/dev/null || true
+}
+
+# Is this the incident the drill caused? The terms come from the
+# scenario, not from ${WORKLOAD}: scenario C breaks nothing and names a
+# probe pod the drill never patches, so a workload comparison in here
+# would be wrong for a third of the runs.
+drill_incident_matches() {
+    local prompt="$1" term
+    for term in "${SCENARIO_INCIDENT_MATCH[@]:-}"; do
+        [[ -n "${term}" ]] || continue
+        grep -qiF -- "${term}" <<<"${prompt}" || return 1
+    done
+    return 0
+}
+
+# One console-width line of a payload, for saying which incident is in
+# hand without printing a kilobyte of enrichment bundle.
+drill_prompt_summary() {
+    printf '%s' "$1" | tr '\n\t' '  ' | cut -c1-140
+}
+
+# Block until a session appears that was not in $1 (a sorted list
+# captured before the break) AND whose payload names what the scenario
+# broke. Prints the id.
+#
+# Taking the first new session was the old behaviour and it is wrong on
+# any cluster with event traffic of its own. On 2026-09-15 a Node
+# Auto-Provisioning scale-up put a NetworkNotReady incident on the hub
+# seconds before the drill's own OOM landed; the drill scored it,
+# injected the follow-up into it, and produced a sheet with all three
+# grounded terms missing — a G1 fail against an agent that had never
+# been asked the question (#1093).
+#
+# So each candidate is read before it is taken, and a stranger does not
+# end the wait: the drill's own incident is usually a few seconds
+# behind it. If more than one candidate matches, the newest by
+# last_touched_at wins and the operator is told — a cluster that raised
+# two of our incidents at once is scoreable, but the transcript is one
+# of several.
 drill_wait_new_session() {
     local before="$1" deadline=$(( SECONDS + DRILL_SESSION_TIMEOUT ))
-    local new count
+    local ids sid prompt match matches seen="" quiet="" summary
+    local rejects="${DRILL_RUN_DIR}/rejected-sessions.txt"
+    local unread="${DRILL_RUN_DIR}/unread-sessions.txt"
+
     while (( SECONDS < deadline )); do
-        new=$(comm -13 <(printf '%s\n' "${before}") <(drill_session_ids) || true)
-        count=$(printf '%s' "${new}" | grep -c . || true)
-        if (( count >= 1 )); then
-            if (( count > 1 )); then
-                drill_warn "${count} new sessions appeared; scoring the most recently touched. Note it on the scorecard."
+        ids=$(drill_new_session_ids "${before}")
+        match=""
+        matches=0
+        while IFS= read -r sid; do
+            [[ -n "${sid}" ]] || continue
+            case "${seen}" in *"|${sid}|"*) continue ;; esac
+
+            if [[ "${DRILL_MATCH_INCIDENT}" != "1" ]]; then
+                seen="${seen}|${sid}|"
+                match="${sid}"
+                matches=$(( matches + 1 ))
+                continue
             fi
-            hub_get "/sessions" \
-                | jq -r --argjson ids "$(printf '%s\n' "${new}" | jq -R . | jq -s .)" \
-                    '[.sessions[] | select(.sessionID as $s | $ids | index($s))]
-                     | sort_by(.last_touched_at) | last | .sessionID'
+
+            prompt=$(drill_session_prompt "${sid}")
+            # No first frame yet: not a stranger, just early. Leave it
+            # out of `seen` so the next sweep asks again — but remember
+            # that it was here, or a session that NEVER shows a frame
+            # (no event log, a turn that never started) times out as
+            # "no incident appeared", which is a different bug to go
+            # looking for.
+            if [[ -z "${prompt}" ]]; then
+                case "${quiet}" in *"|${sid}|"*) : ;; *) quiet="${quiet}|${sid}|" ;; esac
+                continue
+            fi
+            seen="${seen}|${sid}|"
+            summary=$(drill_prompt_summary "${prompt}")
+            if drill_incident_matches "${prompt}"; then
+                match="${sid}"
+                matches=$(( matches + 1 ))
+                printf '%s\n' "${prompt}" > "${DRILL_RUN_DIR}/incident-payload.txt"
+                printf '%s\n' "${summary}" > "${DRILL_RUN_DIR}/incident-summary.txt"
+            else
+                drill_warn "session ${sid} is not this drill's incident — ${summary}"
+                drill_warn "  (no ${SCENARIO_INCIDENT_MATCH[*]:-} in its payload; still waiting for ours)"
+                printf '%s\t%s\n' "${sid}" "${summary}" >> "${rejects}"
+            fi
+        done <<<"${ids}"
+
+        if (( matches >= 1 )); then
+            if (( matches > 1 )); then
+                if [[ "${DRILL_MATCH_INCIDENT}" == "1" ]]; then
+                    drill_warn "${matches} new sessions name what the drill broke; scoring the most recently touched. Note it on the scorecard."
+                else
+                    drill_warn "${matches} new sessions appeared and none was checked; scoring the most recently touched. Note it on the scorecard."
+                fi
+            fi
+            printf '%s\n' "${match}"
             return 0
         fi
         sleep "${DRILL_POLL_SECS}"
     done
+
+    # A candidate that never showed a first frame is neither ours nor a
+    # stranger — the drill could not tell. Leave the list for the
+    # message at the other end.
+    if [[ -n "${quiet}" ]]; then
+        printf '%s\n' "${quiet//|/$'\n'}" | grep . > "${unread}" || true
+    fi
     return 1
 }
 

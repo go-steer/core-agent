@@ -64,6 +64,22 @@ regresses quietly. It does not make the prompt count three: a sentence
 is guidance, not a gate, and the count is still the honest measure of
 whether the model took it.
 
+Run 10 is what that distinction cost, and it is the reason this rig
+exists. Against `main-46f0f43` — the first image carrying the #1068
+sentences — all seventeen assertions passed, *including* the two that
+read the daemon's event stream and prove the model was handed the
+"do not re-issue it" wording. The run still opened **eight** prompts
+against a floor of three: leg 2 denied four, and the watchdog escalated
+exactly as it had in pre-fix run 7, four calls into the loop, quoting
+the new guidance back as its `Last error`. The fix shipped, was
+delivered, was read, and did not change the behaviour. Nothing in a
+unit test could have said that; the assertions were green the whole
+time. The second layer — a denied call that cannot re-open the same
+prompt for the rest of the turn — is
+[#1074](https://github.com/go-steer/core-agent/issues/1074), and its
+acceptance criterion is mechanical for the same reason: leg 2 opens one
+prompt, and leg 3 finds no watchdog to clear.
+
 ## Why there is a sink
 
 Because the daemon's own log is not evidence.
@@ -237,7 +253,11 @@ begins and says so (`legN-guardrail-reset.json`, and a warning naming
 what it cleared); the behaviour that caused it is
 [#1068](https://github.com/go-steer/core-agent/issues/1068). A run that
 prints that warning is telling you something real about the daemon under
-test, not about the rig.
+test, not about the rig — and run 10 printed it on an image carrying the
+#1068 fix, which is how we learned the per-leg reset is not scaffolding
+to be removed once the model is told. Until
+[#1074](https://github.com/go-steer/core-agent/issues/1074) lands, it is
+load-bearing.
 
 **One correlation that is not causation.** `core-agent-vertexcache:
 Caches.Create failed` appears in `daemon.log` a second or two before

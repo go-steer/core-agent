@@ -86,11 +86,45 @@ func turnRefusalKey(toolName, detail string) string {
 
 // turnRefusal reports whether an identical request has already been
 // refused in this turn, and how.
+//
+// It also counts. Every caller that gets ok==true returns the repeat
+// refusal on the next line and never reaches a prompt, so this is the
+// one chokepoint through which a suppressed call passes, and counting
+// anywhere else would be two places that have to agree. The count is
+// what the agent reads to decide a turn is over (#1081).
 func (g *Gate) turnRefusal(toolName, detail string) (refusalKind, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	k, ok := g.turnRefusals[turnRefusalKey(toolName, detail)]
+	if ok {
+		g.turnRefusalRepeats++
+	}
 	return k, ok
+}
+
+// TurnRefusalRepeats reports how many calls this turn the gate refused
+// without asking anybody, because an identical request had already been
+// refused in it.
+//
+// Counted across keys, not per key. A model alternating between two
+// requests the operator has already refused is in the same state as one
+// repeating a single request, and every event counted is a call whose
+// answer was on record before it was made — so there is no reading of
+// the total that is ambiguous, which is what lets the threshold above it
+// be low.
+//
+// Resolves the per-session sub-gate off ctx for the same reason every
+// other method does: in a multi-session daemon the refusals belong to
+// the session's gate, not to the template the tool wrappers were built
+// against. Nil-safe.
+func (g *Gate) TurnRefusalRepeats(ctx context.Context) int {
+	if g == nil {
+		return 0
+	}
+	g = g.resolveSessionGate(ctx)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.turnRefusalRepeats
 }
 
 // rememberTurnRefusal arms the memory for this exact request. Called on
@@ -124,6 +158,7 @@ func (g *Gate) ObserveTurnStart(ctx context.Context) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	clear(g.turnRefusals)
+	g.turnRefusalRepeats = 0
 }
 
 // repeatRefusalError is the tool result a suppressed request gets.

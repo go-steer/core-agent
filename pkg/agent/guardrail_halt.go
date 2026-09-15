@@ -72,9 +72,15 @@ func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn bool) {
 // currently in flight, so Run's cleanup can label the turn's metric point
 // with the guardrail instead of the bare cancellation it sees. Called
 // immediately before Interrupt by the in-turn enforcement arms; kind is
-// the guardrail's turn-error kind (attach.TurnErrorCostCeiling or
-// attach.TurnErrorWatchdog), which is the vocabulary `error.type` on
-// gen_ai.agent.invocation.duration already speaks.
+// the guardrail's turn-error kind (attach.TurnErrorCostCeiling,
+// attach.TurnErrorWatchdog or attach.TurnErrorRefusalStorm), which is
+// the vocabulary `error.type` on gen_ai.agent.invocation.duration
+// already speaks.
+//
+// Marking is not tripping. The name says "halt" because that is what
+// the first two callers were doing anyway; the refusal-storm arm (#1081)
+// calls it while tripping nothing at all, and is entitled to, because
+// all this function does is decide a metric label.
 func (a *Agent) markGuardrailHalt(kind string) {
 	if a == nil {
 		return

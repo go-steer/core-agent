@@ -100,11 +100,20 @@ the acceptance criterion above asked for, because the two halves measure
 two different actors. "Leg 2 opens one prompt" is a statement about the
 **gate**, and the gate now holds. "Leg 3 finds no watchdog to clear" is
 a statement about the **model**, and nothing in #1074 addresses the
-model — the watchdog trips on repetition, not on prompts, so no gate-side
-fix could ever have satisfied it. Writing both into one criterion was
+model — the watchdog trips on repetition, not on prompts, so *suppressing*
+a prompt could not satisfy it. Writing both into one criterion was
 the mistake, and reading a green three-prompt verdict as proof the loop
 is fixed is the mistake it invites. The successor is
 [#1081](https://github.com/go-steer/core-agent/issues/1081).
+
+That successor's own first finding is a correction to this paragraph as
+it was first written, which said no gate-side fix could ever have
+satisfied the model half. Not so: the gate is the one component holding
+unambiguous evidence — it knows it has already refused this exact
+request in this turn — and the run-11 daemon log shows the watchdog
+cutting each looping turn within a millisecond of its critical, so the
+missing piece was never turn termination. It was that the only thing
+reaching for the lever was a session-scoped guardrail counting to five.
 
 So the verdict now prints two numbers, prompts and gated calls, and
 restates any guardrail the rig had to clear. On run 11's artifacts those

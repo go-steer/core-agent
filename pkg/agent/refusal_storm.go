@@ -149,6 +149,24 @@ func (a *Agent) enforceRefusalStormInTurn(ctx context.Context) {
 	// stop from an operator interrupt. This is NOT a guardrail trip —
 	// markGuardrailHalt only relabels, it does not trip anything.
 	a.markGuardrailHalt(attach.TurnErrorRefusalStorm)
+	// Take the repetition off the watchdog's books on the way out
+	// (#1086). The calls being cut here are the watchdog's evidence too —
+	// it is watching the same stream — and its run length is not
+	// turn-scoped, so without this the next turn's first identical call
+	// is counted as the fifth in a row and halts the SESSION. That is
+	// the defect #1081 set out to fix, relocated one turn later, and the
+	// approval-gate drill found it exactly there: leg 2 stopped halting
+	// and leg 3 started.
+	//
+	// Safe because this arm is strictly tighter than the one it is
+	// clearing. Three suppressed repeats cut the turn before
+	// repeated-tool-call's five can be reached, so a model that keeps
+	// looping through the gate is stopped sooner every time, not later.
+	// A loop on a tool the gate never sees never gets here, and nothing
+	// is reset. The tripped flag is untouched: this arm never sets it,
+	// and a watchdog that genuinely halted earlier in the turn stays
+	// halted and still needs the operator's reset.
+	a.resetWatchdogSignals()
 	a.Interrupt()
 }
 

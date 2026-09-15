@@ -672,6 +672,30 @@ func (a *Agent) ResetWatchdog() {
 	a.releaseFencedWake()
 }
 
+// resetWatchdogSignals clears the watchdog's accumulated evidence
+// without clearing a halt. ResetWatchdog above is the operator's lever
+// and does three things: un-halt, scrub the signals, release the wake
+// the halt swallowed. This is only the middle one, for a caller that
+// has disposed of a run of tool calls by other means and must not leave
+// the watchdog holding them against the next turn (#1086).
+//
+// Separate from ResetWatchdog rather than a flag on it because the two
+// have opposite safety properties. Un-halting on the agent's own
+// initiative would let the agent overrule the operator; scrubbing
+// signal state on its own cannot, because the state is evidence for a
+// conclusion the agent has already reached by a tighter route.
+func (a *Agent) resetWatchdogSignals() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	w := a.watchdog
+	a.mu.Unlock()
+	if w != nil {
+		w.Reset()
+	}
+}
+
 // WatchdogTripped reports whether the agent is currently blocking new
 // turns because the enforce-mode watchdog fired. Exposed for /stats and
 // similar surfaces so "why is the agent refusing my prompts?" has an

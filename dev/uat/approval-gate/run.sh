@@ -764,7 +764,19 @@ curl -sS --max-time 20 -H "Authorization: Bearer ${TOKEN}" \
     > "${RUN_DIR}/final-events.txt" 2>&1 || true
 # -o, not -c: two refusals can share one SSE `data:` line, and a line
 # count would report that pair as one.
-SUPPRESSED="$(grep -o 'not attempted: an identical request' "${RUN_DIR}/final-events.txt" 2>/dev/null | grep -c . || true)"
+#
+# Author-filtered, and run 12 is why. The refusal text is not confined to
+# the function responses that carry it: when the watchdog injects its
+# observation into the model's NEXT turn it quotes the last tool error
+# verbatim, so a single `tool-failure-streak` warn put a fourth copy of
+# this string into the transcript as an `Author:"user"` event. The run
+# reported "gated calls the model made: 6" off five real calls. Role is
+# no help — a function response is `role:"user"` too, because that is
+# how the provider models a tool result — so the discriminator is the
+# author: the gate's refusals are written by `core_agent`, and anything
+# the daemon injects on the operator's side of the conversation is not a
+# call the model made.
+SUPPRESSED="$(grep '"Author":"core_agent"' "${RUN_DIR}/final-events.txt" 2>/dev/null | grep -o 'not attempted: an identical request' | grep -c . || true)"
 [[ "${SUPPRESSED}" =~ ^[0-9]+$ ]] || SUPPRESSED=0
 log "prompts opened across the run:  ${PROMPTS} (one per leg is the floor; more means a refused call re-opened the gate)"
 log "gated calls the model made:     $(( PROMPTS + SUPPRESSED )) (${SUPPRESSED} refused without a prompt — #1074)"

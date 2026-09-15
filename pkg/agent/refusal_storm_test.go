@@ -33,6 +33,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
 // #1081. Run 11 of dev/uat/approval-gate/ put an operator's "no" in
@@ -484,4 +485,125 @@ func TestClearRefusalStorm(t *testing.T) {
 	if got := a.pendingRefusalStorm.Load(); got != 0 {
 		t.Errorf("pendingRefusalStorm = %d after clearRefusalStorm, want 0", got)
 	}
+}
+
+// --- #1086: the evidence the cut consumes ---
+
+// TestRun_RefusalStorm_1086_TheCutTakesTheRepetitionOffTheWatchdogsBooks
+// is runs 12 and 13 of dev/uat/approval-gate/ reduced to two turns.
+//
+// #1081 stopped leg 2 halting the session and leg 3 started halting it
+// instead. The watchdog is reading the same tool stream, its run length
+// is not turn-scoped, and nothing was clearing it — so the four calls
+// the gate had already disposed of were still on the books, leg 3's
+// first identical call was the fifth in a row, and repeated-tool-call
+// halted the session. The same defect #1081 was filed for, one turn
+// later.
+//
+// The drill only found it because the rig's own workaround had been
+// hiding it. Before #1081 leg 2 always tripped a watchdog, so the rig
+// always called the reset endpoint before leg 3, and that reset was
+// scrubbing the signal state as a side effect of clearing the halt.
+// Every leg 3 that started behind a reset passed (runs 10, 11, 14);
+// both that started without one broke (runs 12, 13).
+//
+// A real DefaultWatchdog rather than the fake, because the thing under
+// test is the arithmetic of a signal that outlives a turn boundary, and
+// a fake counting Reset calls would pass a fix that reset the wrong
+// thing. The default thresholds are the point too: repeated-tool-call
+// trips at five and the gate cuts at four, so the margin this depends on
+// is one call wide, and a test that invented its own numbers would not
+// be standing where the cluster stood.
+func TestRun_RefusalStorm_1086_TheCutTakesTheRepetitionOffTheWatchdogsBooks(t *testing.T) {
+	t.Parallel()
+
+	a, llm, _ := refusalStormRig(t, "s-1086",
+		WithWatchdog(watchdog.NewDefaultWatchdog(), nil), WithWatchdogEnforce())
+	var rec terminalRecorder
+	rec.attachTo(a)
+
+	// Turn one is leg 2: unbounded re-issues, cut by the gate at three
+	// suppressed repeats. Four identical calls, one short of five.
+	drainTurn(t, a, "clean up the cluster")
+	if tripped, reason := a.WatchdogTripped(); tripped {
+		t.Fatalf("the watchdog halted the session during the FIRST turn: %q — the gate is "+
+			"supposed to get there first, and if it did not then nothing below is "+
+			"testing what happens on the turn after a gate cut", reason)
+	}
+
+	// Turn two is leg 3: one more call, byte-identical to the four
+	// before it, in a turn that has done nothing wrong.
+	llm.setBudget(1)
+	drainTurn(t, a, "raise the alert")
+
+	if tripped, reason := a.WatchdogTripped(); tripped {
+		t.Errorf("the session was halted on the turn AFTER the gate cut one: %q — four of "+
+			"the five calls behind that count belong to a turn the gate already "+
+			"ended, and counting them again relocates #1081's defect rather than "+
+			"fixing it", reason)
+	}
+	if got, want := rec.frames(), []string{
+		"turn-error:" + attach.TurnErrorCanceled, "turn-complete",
+	}; !slices.Equal(got, want) {
+		t.Errorf("terminal frames = %v, want %v — the gate cut the first turn and the "+
+			"second one ran", got, want)
+	}
+}
+
+// resetWatchdogSignals is deliberately not ResetWatchdog: an arm that
+// could un-halt would let the agent overrule the operator, so the one
+// property worth pinning separately from the behaviour above is the one
+// the two-turn test cannot see — that a watchdog which genuinely halted
+// stays halted across a call the agent makes on its own initiative.
+func TestResetWatchdogSignals(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil agent", func(t *testing.T) {
+		t.Parallel()
+		var a *Agent
+		a.resetWatchdogSignals()
+	})
+
+	t.Run("no watchdog wired", func(t *testing.T) {
+		t.Parallel()
+		a, err := New(oneShotLLM{}, WithSession("u-1086-none", "s-1086-none"))
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		a.resetWatchdogSignals()
+	})
+
+	t.Run("the signals are scrubbed", func(t *testing.T) {
+		t.Parallel()
+		w := &fakeWatchdog{}
+		a, err := New(oneShotLLM{}, WithSession("u-1086-sig", "s-1086-sig"),
+			WithWatchdog(w, nil))
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		a.resetWatchdogSignals()
+		if w.resets != 1 {
+			t.Errorf("watchdog Reset called %d times, want 1", w.resets)
+		}
+	})
+
+	t.Run("a halt survives it", func(t *testing.T) {
+		t.Parallel()
+		a, err := New(oneShotLLM{}, WithSession("u-1086-halt", "s-1086-halt"),
+			WithWatchdog(&fakeWatchdog{}, nil), WithWatchdogEnforce())
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		a.mu.Lock()
+		a.watchdogTripped = true
+		a.watchdogReason = "repeated-tool-call"
+		a.mu.Unlock()
+
+		a.resetWatchdogSignals()
+
+		if tripped, _ := a.WatchdogTripped(); !tripped {
+			t.Error("the halt was cleared — only the operator's reset may do that, or an " +
+				"agent that keeps looping can clear its own guardrail")
+		}
+	})
 }

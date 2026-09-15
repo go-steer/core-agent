@@ -137,12 +137,11 @@ type broadcaster struct {
 	stream eventlog.Stream
 	query  []eventlog.QueryOption // ForSession(...) for this entry
 
-	mu        sync.Mutex
-	subs      map[*subscriber]struct{}
-	closed    bool               // set by Close under mu; Subscribe refuses to register after
-	cancel    context.CancelFunc // cancels the pump goroutine
-	pumpGen   uint64             // bumped per pump start; lets a dying pump's sweep recognize a successor (#485)
-	startedAt int64              // seq the pump's Watch was started from (a cursor, NOT a delivery watermark)
+	mu      sync.Mutex
+	subs    map[*subscriber]struct{}
+	closed  bool               // set by Close under mu; Subscribe refuses to register after
+	cancel  context.CancelFunc // cancels the pump goroutine
+	pumpGen uint64             // bumped per pump start; lets a dying pump's sweep recognize a successor (#485)
 
 	// drops points at the owning pool's cumulative dropped-subscriber
 	// counter (#338 metrics); nil on broadcasters constructed outside
@@ -334,12 +333,14 @@ func (b *broadcaster) register(sub *subscriber, since int64) (registered, firstS
 	if firstSub {
 		pumpCtx, cancel := context.WithCancel(context.Background())
 		b.cancel = cancel
-		// startedAt is set to the lowest "since" we've ever seen so
-		// the pump pulls from far enough back to satisfy this
-		// subscriber. Subsequent subscribers either find their
-		// since >= startedAt (already in flight) or get a fresh
-		// scan via the replay loop in Subscribe.
-		b.startedAt = since
+		// The pump starts from this subscriber's "since" so it pulls
+		// from far enough back to satisfy it. Subsequent subscribers
+		// either find their since at or after that cursor (already in
+		// flight) or get a fresh scan via the replay loop in
+		// Subscribe. The cursor belongs to the pump, not to the
+		// broadcaster, so it is handed to the goroutine rather than
+		// parked on a field a successor register would overwrite
+		// (#1075).
 		// Generation stamp: the pump's deferred death-sweep must only
 		// tear down state that still belongs to THIS pump. Without
 		// it, a stale pump whose sweep runs late (goroutine
@@ -353,7 +354,7 @@ func (b *broadcaster) register(sub *subscriber, since int64) (registered, firstS
 		b.wg.Add(1)
 		go func() {
 			defer b.wg.Done()
-			b.pump(pumpCtx, gen)
+			b.pump(pumpCtx, gen, since)
 		}()
 	}
 	// The caller's replayThenTail slot.
@@ -719,8 +720,17 @@ func (b *broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since
 // eventlog.Stream.Watch and fans out to every subscriber that's
 // attached at the time of the broadcast. Exits when no subscribers
 // remain (set by detach).
-func (b *broadcaster) pump(ctx context.Context, gen uint64) {
-	debugf("broadcaster pump START %s/%s startedAt=%d gen=%d", b.entry.AppName, b.entry.SessionID, b.startedAt, gen)
+// startedAt is passed rather than read off b, and that is a data race
+// fix rather than a style choice (#1075). b.startedAt is written under
+// b.mu by the register that starts a pump, but a pump reads it once at
+// the top — and between the `go` statement and that read, every
+// subscriber can detach, the pump generation can turn over, and the
+// next register can write the field for its own successor pump. The
+// race detector caught exactly that interleaving in CI. The value this
+// pump was started with is immutable for this pump, so it travels as an
+// argument alongside gen, which exists for the same family of reason.
+func (b *broadcaster) pump(ctx context.Context, gen uint64, startedAt int64) {
+	debugf("broadcaster pump START %s/%s startedAt=%d gen=%d", b.entry.AppName, b.entry.SessionID, startedAt, gen)
 	defer debugf("broadcaster pump END %s/%s gen=%d", b.entry.AppName, b.entry.SessionID, gen)
 	// A dying pump must never strand the broadcaster (#485). The
 	// error exit used to just return: subscribers kept their open-
@@ -756,7 +766,7 @@ func (b *broadcaster) pump(ctx context.Context, gen uint64) {
 		}
 		b.mu.Unlock()
 	}()
-	for entry, err := range b.stream.Watch(ctx, b.startedAt, b.query...) {
+	for entry, err := range b.stream.Watch(ctx, startedAt, b.query...) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				log.Printf("attach: broadcaster %s/%s pump error: %v", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry, not request-scoped user input

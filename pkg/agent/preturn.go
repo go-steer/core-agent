@@ -152,8 +152,15 @@ var preTurnSteps = []preTurnStep{
 		enforces: "#655: signals whose evidence is scoped to one turn clear it here. " +
 			"Deliberately AFTER both preflights — a refused turn never ran, so it is not " +
 			"a boundary, and letting it clear state would hand an auto-continue re-drive " +
-			"a way to launder a stall one refusal at a time.",
-		run: func(a *Agent, tp *turnPrep) error { a.observeTurnStartForWatchdog(); return nil },
+			"a way to launder a stall one refusal at a time. #1074 puts the gate's " +
+			"turn-scoped refusal memory on the same boundary for the same reason: an " +
+			"auto-continue re-drive of a turn the watchdog already refused must not be " +
+			"able to clear a denial and re-open the prompt the operator just closed.",
+		run: func(a *Agent, tp *turnPrep) error {
+			a.observeTurnStartForWatchdog()
+			a.observeTurnStartForGate(tp.ctx)
+			return nil
+		},
 	},
 	{
 		name: "repair-dangling-tool-calls",
@@ -250,6 +257,20 @@ var preTurnSteps = []preTurnStep{
 			return nil
 		},
 	},
+}
+
+// observeTurnStartForGate clears the permission gate's turn-scoped
+// refusal memory (#1074), the gate's half of the same boundary the
+// watchdog observes above it.
+//
+// a.gate is the session gate — Run stamps it as one on every turn's
+// context — so this is the gate whose prompts the turn will open, and
+// the one holding the refusals. Read through Gate() because the field
+// is written once at construction and never again, so unlike the
+// watchdog it needs no lock; both the nil agent and the nil gate are
+// no-ops, which hand-constructed Agent values in tests rely on.
+func (a *Agent) observeTurnStartForGate(ctx context.Context) {
+	a.Gate().ObserveTurnStart(ctx)
 }
 
 // runPreTurn executes steps in order against tp, stopping at the first

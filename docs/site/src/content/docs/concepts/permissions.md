@@ -211,6 +211,8 @@ When `ask` mode prompts the user, the `Prompter` returns one of:
 
 `DecisionAllowSessionTool` suppresses the mode prompt for **in-scope** operations, but it does **not** drop the path boundary: an out-of-scope read or write still escalates via the path-scope prompt every time, even for a session-trusted file tool. Trusting `read_file` for the session silences repeat prompts for files inside your scope; it does not grant the tool the whole filesystem.
 
+`DecisionDeny` has a scope of its own, and it is the **turn**. A denial — and an unanswered prompt that hit [`approval_timeout`](/reference/configuration/#approval-timeout-v30--approval_timeout) — is remembered for the rest of the turn against that exact `(tool, key)` pair, so an agent that re-issues the same call is refused without a second prompt reaching anybody, with a message saying it is a repeat. Nothing else arms it: an approval is not remembered this way, and a different request still prompts. It clears at the next turn boundary. This is the second half of the fix for a live-cluster failure where one denial became five identical calls and a halted session ([#1074](https://github.com/go-steer/core-agent/issues/1074)).
+
 ---
 
 ## Background subagents and the gate (v1.2.0+)

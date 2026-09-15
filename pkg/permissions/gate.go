@@ -144,6 +144,14 @@ type Gate struct {
 	// before the gate request).
 	sessionAllowVerbs map[string]struct{}
 
+	// In-turn refusal set keyed by tool|key, the same identity
+	// sessionAllow uses. Populated by a deny or an expiry and cleared
+	// at each turn boundary by ObserveTurnStart, so a refused call
+	// cannot re-open its own prompt for the rest of the turn. See
+	// turnrefusal.go for why this is scoped to the turn and why only a
+	// refusal arms it (#1074).
+	turnRefusals map[string]refusalKind
+
 	// Chronological log of every non-deny interactive approval.
 	approvals []ApprovalLog
 
@@ -374,6 +382,7 @@ func New(opts Options) *Gate {
 		sessionAllow:        make(map[string]struct{}),
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
+		turnRefusals:        make(map[string]refusalKind),
 		requirePlanArtifact: opts.RequirePlanArtifact,
 		bashSearchGate:      opts.BashSearchGate,
 		approvalTimeout:     opts.ApprovalTimeout,
@@ -514,6 +523,7 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		sessionAllow:        make(map[string]struct{}),
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
+		turnRefusals:        make(map[string]refusalKind),
 		requirePlanArtifact: template.requirePlanArtifact,
 		// Inherited, not defaulted: a sub-gate that dropped this would
 		// leave the search gate off for every daemon-created session
@@ -1036,10 +1046,22 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	if g.prompter == nil {
 		return fmt.Errorf("%s denied: %q is a privilege-bearing control-plane file (%w); it can only be modified with an explicit interactive approval, which is unavailable in this session. Edit it directly outside the agent if the change is intended", toolName, path, ErrControlPlaneWrite)
 	}
+	detail := fmt.Sprintf("modify control-plane file %s", path)
+	// The elevated path bypasses Gate.prompt, so it carries its own
+	// copy of the turn-scoped refusal check (#1074). It is the path
+	// that needs it most: a re-issued control-plane write pages the
+	// operator, repeatedly, about the file that controls the agent's
+	// own permissions. Remembering a *refusal* here does not weaken
+	// the "nothing is remembered" rule above it — that rule exists so
+	// an approval cannot install a standing bypass, and this is the
+	// opposite direction.
+	if kind, refused := g.turnRefusal(toolName, detail); refused {
+		return repeatRefusalError(kind, toolName, detail)
+	}
 	approval, err := askApproval(ctx, g.prompter, PromptRequest{
 		Kind:        PromptKindControlPlaneWrite,
 		ToolName:    toolName,
-		Detail:      fmt.Sprintf("modify control-plane file %s", path),
+		Detail:      detail,
 		PersistTool: toolName,
 		PersistKey:  path,
 		Source:      SubagentSourceFromContext(ctx),
@@ -1049,6 +1071,7 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 		return fmt.Errorf("permissions: %w", err)
 	}
 	if approval.Decision == DecisionDeny {
+		g.rememberTurnRefusal(toolName, detail, refusedByDeny)
 		return fmt.Errorf("%s denied by user: control-plane write to %s. %s", toolName, path, denyGuidance)
 	}
 	// Any non-deny decision authorizes exactly this write. We record
@@ -1244,6 +1267,19 @@ func (g *Gate) askWithTimeout(ctx context.Context, req PromptRequest) (Approval,
 }
 
 func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
+	// Turn-scoped refusal memory (#1074). This is the single choke
+	// point every interactive path funnels through, so the check and
+	// the arming both live here and no caller can route around them.
+	// It sits ahead of the prompter-nil check only for readability —
+	// a gate with no prompter never armed anything.
+	//
+	// Note what this is *after*: gateRequest consults sessionAllow,
+	// sessionAllowTools and the verb grants before it calls prompt, so
+	// a request the operator approved earlier short-circuits above and
+	// a refusal cannot shadow a standing grant.
+	if kind, refused := g.turnRefusal(req.ToolName, req.Detail); refused {
+		return repeatRefusalError(kind, req.ToolName, req.Detail)
+	}
 	if g.prompter == nil {
 		return fmt.Errorf("%w (tool=%s detail=%q); run with --yolo to bypass the gate, set permissions.mode=\"allow\" with an explicit allowlist for headless use, or attach an interactive stdin", ErrNoPrompter, req.ToolName, req.Detail)
 	}
@@ -1255,6 +1291,14 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		// doubled "permissions: permissions: approval request
 		// expired…" the watchdog quoted back on the #647 UAT (#1068).
 		if errors.Is(err, ErrPromptExpired) {
+			// An expiry arms the memory for the same reason a deny
+			// does, and with more force: the timeout already cost the
+			// turn g.approvalTimeout of wall clock waiting for an
+			// operator who is not there, and a retry buys another one.
+			// Only this sentinel arms — a prompter that failed for its
+			// own reasons (a closed broker, a cancelled turn) is not
+			// evidence about the request and must stay askable.
+			g.rememberTurnRefusal(req.ToolName, req.Detail, refusedByExpiry)
 			return err
 		}
 		return fmt.Errorf("permissions: %w", err)
@@ -1359,6 +1403,9 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		g.recordApproval(req.ToolName, req.Detail, d, approval.By)
 		return nil
 	default:
+		// The operator said no to this exact request. Nobody is asked
+		// about it again this turn.
+		g.rememberTurnRefusal(req.ToolName, req.Detail, refusedByDeny)
 		return fmt.Errorf("%s denied by user: %s. %s", req.ToolName, req.Detail, denyGuidance)
 	}
 }

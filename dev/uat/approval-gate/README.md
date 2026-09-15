@@ -55,6 +55,15 @@ prints how many prompts it opened for exactly this reason; three is one
 per leg, more is the model arguing. See
 [#1068](https://github.com/go-steer/core-agent/issues/1068).
 
+Both refusals now also carry a sentence telling the model the answer
+will not change — *"do not re-issue it"* on a denial, *"nobody is
+attached to answer a retry either"* on an expiry — and legs 2 and 3 each
+assert that the agent received it, because #1068 was a defect in what
+the model was told and a fix nobody checks on a cluster is a fix that
+regresses quietly. It does not make the prompt count three: a sentence
+is guidance, not a gate, and the count is still the honest measure of
+whether the model took it.
+
 ## Why there is a sink
 
 Because the daemon's own log is not evidence.
@@ -132,7 +141,8 @@ nothing fired late.
 Artifacts land in `~/.gke-drill/approval-gate/<runid>/`: the rendered
 manifests, each leg's captured notification, a `legN-status.jsonl`
 timeline sampled from the daemon's own `/status` while that leg waited,
-the `legN-guardrail-reset.json` the leg's pre-flight got back, and — captured *before* teardown, because on a failed run they are the
+the `legN-guardrail-reset.json` the leg's pre-flight got back, the
+`legN-events.txt` dumps legs 2 and 3 read the refusal text out of, and — captured *before* teardown, because on a failed run they are the
 only evidence — the full sink and daemon logs plus
 `daemon-pod.describe`, which is the only witness for a pod that never
 got far enough to log anything.

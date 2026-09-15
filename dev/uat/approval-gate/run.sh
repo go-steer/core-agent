@@ -640,6 +640,13 @@ if [[ -n "${NOTIF2}" ]]; then
         > "${RUN_DIR}/leg2-events.txt" 2>&1 || true
     assert "the agent was told it was refused (not left hanging)" \
         grep -qi "denied by user" "${RUN_DIR}/leg2-events.txt"
+    # #1068: being told "no" is not the same as being told the answer
+    # will not change. Run 7 watched one denial turn into five identical
+    # alert calls and a watchdog halt, so the sentence that makes the
+    # refusal terminal is part of the contract now, and this is where it
+    # is observable end to end rather than in a unit test.
+    assert "…and told not to re-issue the call (#1068)" \
+        grep -qi "do not re-issue" "${RUN_DIR}/leg2-events.txt"
 fi
 
 # ── Leg 3: expire ────────────────────────────────────────────────────
@@ -694,6 +701,16 @@ if [[ -n "${NOTIF3}" ]]; then
         assert "…and the body says the prompt expired and the action was not taken" \
             grep -qi 'expired' "${RUN_DIR}/leg3-late-respond.body"
     fi
+
+    # The expiry has the same #1068 shape as the denial and is the worse
+    # half of it: nothing about "nobody answered" suggests that nobody
+    # will answer the retry either, and on an unattended daemon each
+    # retry pages the operator again.
+    curl -sS --max-time 20 -H "Authorization: Bearer ${TOKEN}" \
+        "http://127.0.0.1:${PORT}${SPATH}/events" \
+        > "${RUN_DIR}/leg3-events.txt" 2>&1 || true
+    assert "the agent was told the prompt expired and not to re-issue it (#1068)" \
+        grep -qi "do not re-issue" "${RUN_DIR}/leg3-events.txt"
 fi
 
 RESTARTS_AFTER="$(kubectl --context "${KUBE_CONTEXT}" -n "${NS}" get pods \

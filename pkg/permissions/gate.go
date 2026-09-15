@@ -71,6 +71,26 @@ const (
 	ModeAcceptEdits Mode = "acceptEdits"
 )
 
+// Refusal guidance. The errors below are read by a model as a tool
+// result, and a refusal that describes an event without saying what
+// follows from it reads to a model with an instruction as an obstacle
+// to route around — the obvious route being to make the same call
+// again. Observed on the cluster during the #647 gated-daemon UAT
+// (#1068): one out-of-band denial produced five identical `alert`
+// calls, a `repeated-tool-call` critical, three inert
+// `mark_task_done`s, and a session the watchdog halted, after which
+// every turn was refused until an operator POSTed guardrails/reset.
+// On an unattended gated daemon that is a wedge reached from a single
+// human "no". Neither sentence tells the model anything the runtime
+// does not know for certain: a decision is scoped to the call it
+// answered, and an expiry means the channel is unwatched, which a
+// second prompt does not change.
+const (
+	denyGuidance = "This decision is final for this call — do not re-issue it. Choose a different approach, or end the turn and report the refusal."
+
+	expiryGuidance = "Nobody is attached to answer a retry either — do not re-issue this call. End the turn and report that the action is still pending approval."
+)
+
 // Gate is the central permission chokepoint consulted before each tool
 // call. It holds the configured policy, the path scope, the bash
 // denylist (built-in), and an optional Prompter for interactive use.
@@ -1029,7 +1049,7 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 		return fmt.Errorf("permissions: %w", err)
 	}
 	if approval.Decision == DecisionDeny {
-		return fmt.Errorf("%s denied by user: control-plane write to %s", toolName, path)
+		return fmt.Errorf("%s denied by user: control-plane write to %s. %s", toolName, path, denyGuidance)
 	}
 	// Any non-deny decision authorizes exactly this write. We record
 	// the approval for the audit log but intentionally do NOT remember
@@ -1217,8 +1237,8 @@ func (g *Gate) askWithTimeout(ctx context.Context, req PromptRequest) (Approval,
 	}
 	if errors.Is(context.Cause(pctx), ErrPromptExpired) {
 		return Approval{Decision: DecisionDeny}, fmt.Errorf(
-			"%w after %s (tool=%s detail=%q); nobody answered on the approval channel — attach a client to /perms/stream, or set permissions.mode=\"allow\" with an explicit allowlist if this deployment should not be asking",
-			ErrPromptExpired, g.approvalTimeout, req.ToolName, req.Detail)
+			"%w after %s (tool=%s detail=%q); nobody answered on the approval channel. %s Operator: attach a client to /perms/stream, or set permissions.mode=\"allow\" with an explicit allowlist if this deployment should not be asking",
+			ErrPromptExpired, g.approvalTimeout, req.ToolName, req.Detail, expiryGuidance)
 	}
 	return approval, err
 }
@@ -1229,6 +1249,14 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 	}
 	approval, err := g.askWithTimeout(ctx, req)
 	if err != nil {
+		// ErrPromptExpired names the package itself: it is a sentinel
+		// callers match on and it travels as a context cause, where no
+		// wrap of ours reaches it. Wrapping it again produced the
+		// doubled "permissions: permissions: approval request
+		// expired…" the watchdog quoted back on the #647 UAT (#1068).
+		if errors.Is(err, ErrPromptExpired) {
+			return err
+		}
 		return fmt.Errorf("permissions: %w", err)
 	}
 	d := approval.Decision
@@ -1331,7 +1359,7 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		g.recordApproval(req.ToolName, req.Detail, d, approval.By)
 		return nil
 	default:
-		return fmt.Errorf("%s denied by user: %s", req.ToolName, req.Detail)
+		return fmt.Errorf("%s denied by user: %s. %s", req.ToolName, req.Detail, denyGuidance)
 	}
 }
 

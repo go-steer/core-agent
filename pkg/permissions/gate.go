@@ -152,6 +152,11 @@ type Gate struct {
 	// refusal arms it (#1074).
 	turnRefusals map[string]refusalKind
 
+	// How many calls this turn have been suppressed by the set above.
+	// Counted across keys rather than per key, and read by the agent to
+	// decide the turn is over (#1081). Cleared with turnRefusals.
+	turnRefusalRepeats int
+
 	// Chronological log of every non-deny interactive approval.
 	approvals []ApprovalLog
 

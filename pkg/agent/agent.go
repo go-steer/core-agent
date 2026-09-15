@@ -277,6 +277,13 @@ type Agent struct {
 	// racing the audit write (#565). Atomic: set from the /interrupt
 	// handler goroutine, read/cleared from the turn goroutine.
 	pendingInterruptAudit atomic.Bool
+	// pendingRefusalStorm carries the suppressed-repeat count that cut
+	// this turn (#1081); zero means no cut. Set by the in-turn arm and
+	// drained in the post-turn cleanup for the same reason the interrupt
+	// audit is — the write needs the window with no live runner handle.
+	// It doubles as the once-per-turn guard: the arm runs on every tool
+	// observation and a turn is only cut once.
+	pendingRefusalStorm atomic.Int64
 	// watchdogAlertCounter is the sync core_agent.watchdog.alerts
 	// instrument; counted in drainWatchdogAlerts.
 	watchdogAlertCounter metric.Int64Counter
@@ -1515,6 +1522,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// turn that never reached its cleanup must not leave the next one
 	// unable to cut itself.
 	a.clearContextBudgetCut()
+	// And for the gate's arm (#1081), which is armed by a count the
+	// gate itself clears at the same boundary.
+	a.clearRefusalStorm()
 
 	// Announce the turn entering the streaming state. Only fields
 	// that change since the last emission need to be present
@@ -1623,6 +1633,19 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 					a.enforceWatchdogInTurn()
 				}
 			}
+			// The gate's own in-turn arm (#1081), on the same kind of
+			// trigger as the watchdog's and for the same reason — its
+			// count cannot move without a tool result — but on a
+			// condition of its own rather than on `observed` above,
+			// because that is scoped by `a.watchdog != nil` and the
+			// gate's protection must not depend on whether an operator
+			// wired a watchdog. Deliberately after the watchdog arm, so
+			// that on a turn where both would fire the watchdog's
+			// operator log line still goes out first and says the more
+			// general thing.
+			if hasToolResult(ev) {
+				a.enforceRefusalStormInTurn(runCtx)
+			}
 			// Digest-savings observation. Walk FunctionResponse
 			// parts for the `savings` sidecar the MCP digest wrap
 			// stamps on every wrapped tool response, and append to
@@ -1683,6 +1706,10 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// race the runner's in-flight session handle. No-op when nothing
 		// is pending.
 		a.drainInterruptAudit()
+		// Same window and the same #565 reasoning as the audit above:
+		// the row explaining a refusal-storm cut (#1081) is written
+		// once the runner's session handle is released.
+		a.drainRefusalStormAudit()
 		// Durable guardrail rows (#643) for anything the two hooks
 		// above just tripped. Same window and same reasoning as the
 		// interrupt audit: the stream has drained and runCtx is

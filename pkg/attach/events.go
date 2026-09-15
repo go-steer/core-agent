@@ -699,6 +699,21 @@ const (
 	// re-drive would just re-trip the same loop). Also refusal-only
 	// since v1.13.0; see the note on TurnErrorCostCeiling.
 	TurnErrorWatchdog = "watchdog"
+	// TurnErrorRefusalStorm fires when the permission gate ends a turn
+	// because the model kept re-issuing a call the operator had already
+	// refused in it (#1081). Unlike the two kinds above it is **not** a
+	// guardrail: nothing is tripped, nothing needs resetting, and the
+	// next turn runs normally — a model that will not take no for an
+	// answer has had a bad turn, not a broken session.
+	//
+	// Like them, core-agent never puts this on the SSE wire. The cut goes
+	// through Interrupt, so the turn's one terminal frame is `canceled`,
+	// and this kind exists so `error.type` on the invocation metric can
+	// say which kind of deliberate stop it was — the #818 part 2 problem,
+	// where a metrics backend cannot tell a halt from an operator
+	// pressing stop. The durable account of the cut is an audit row in
+	// the eventlog (see pkg/agent/refusal_storm.go), not a frame.
+	TurnErrorRefusalStorm = "refusal_storm"
 	// TurnErrorCanceled fires when the turn's context was cancelled
 	// (#816): an operator interrupt (POST /interrupt, the TUI's ESC),
 	// a parent-context cancel at shutdown, or a guardrail halting the

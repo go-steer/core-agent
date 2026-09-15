@@ -97,6 +97,8 @@ One invocation point per agent turn, **including subagent turns**. Async and bac
 
 For turns it is the [`turn-error` kind](/reference/attach-http/#turn-error-kinds), so a dashboard and an attached client describe the same turn the same way. Turns a guardrail halted are labelled `cost_ceiling` / `watchdog` rather than `canceled` ([#818](https://github.com/go-steer/core-agent/issues/818)) — the cancel is *how* the halt was carried out, and labelling by it left the two series that exist for spend-cap and runaway incidents dark during exactly those incidents. This is now the one place those two values survive for a halted turn: on the wire the halt moved to a [`guardrail-trip`](/reference/attach-http/#guardrail-trips-protocol-1130) and the turn itself reports `canceled` ([#891](https://github.com/go-steer/core-agent/issues/891)). The label deliberately does not follow, because a metrics backend has no trip series to correlate against — only this attribute.
 
+That leaves one value here that is not a `turn-error` kind at all. `refusal_storm` (v3.0, [#1081](https://github.com/go-steer/core-agent/issues/1081)) labels a turn the **permission gate** cut short because the agent re-issued calls the operator had already refused in it. There is no frame to be consistent with — the cut trips nothing, needs no reset, and reports the ordinary `canceled` on the wire — so this attribute is the only place a backend can tell it from an operator pressing stop. Alert on it the way you would on `watchdog`: it is a model ignoring a human, and the rate is the interesting quantity rather than any single occurrence.
+
 Tool buckets run `0.01s … 300s` (the SDK default tops out at 10s and would flatten exactly the long tail this histogram exists to show).
 
 ### Subsystems

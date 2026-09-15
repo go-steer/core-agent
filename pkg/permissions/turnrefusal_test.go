@@ -235,6 +235,177 @@ func TestTurnRefusal_IsolatedPerSession(t *testing.T) {
 	}
 }
 
+// --- #1081: the count the agent reads to end a turn ------------------
+
+// The count is of SUPPRESSED calls, not of refusals. A first denial is
+// the operator answering; it is the call after it — made with the
+// answer already in the model's history — that is evidence of a model
+// not taking no for an answer, and only those may arm anything.
+func TestTurnRefusalRepeats_CountsOnlySuppressedCalls(t *testing.T) {
+	t.Parallel()
+	p := &fakePrompter{decision: DecisionDeny}
+	g := New(Options{Mode: ModeAsk, Prompter: p})
+	ctx := context.Background()
+
+	if got := g.TurnRefusalRepeats(ctx); got != 0 {
+		t.Fatalf("repeats before any call = %d, want 0", got)
+	}
+	if err := g.CheckBash(ctx, "kubectl delete ns prod"); err == nil {
+		t.Fatal("expected the first call to be denied")
+	}
+	if got := g.TurnRefusalRepeats(ctx); got != 0 {
+		t.Errorf("repeats after the operator's own denial = %d, want 0 — "+
+			"the human answering is not the agent ignoring them", got)
+	}
+	for i := range 2 {
+		if err := g.CheckBash(ctx, "kubectl delete ns prod"); err == nil {
+			t.Fatalf("repeat %d: expected the call to be refused", i+1)
+		}
+	}
+	if got := g.TurnRefusalRepeats(ctx); got != 2 {
+		t.Errorf("repeats after two suppressed calls = %d, want 2", got)
+	}
+}
+
+// Nothing that reaches a prompter counts, whatever the prompter says.
+// An approved repeat and a denied NEW request are both the gate doing
+// its ordinary job, and folding either into the count would arm the
+// agent's cut on an operator who is present and answering.
+func TestTurnRefusalRepeats_OnlySuppressionCounts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an approved repeat", func(t *testing.T) {
+		t.Parallel()
+		p := &fakePrompter{decision: DecisionAllowOnce}
+		g := New(Options{Mode: ModeAsk, Prompter: p})
+		ctx := context.Background()
+		for i := range 4 {
+			if err := g.CheckBash(ctx, "kubectl apply -f patch.yaml"); err != nil {
+				t.Fatalf("call %d: approved call refused: %v", i+1, err)
+			}
+		}
+		if got := g.TurnRefusalRepeats(ctx); got != 0 {
+			t.Errorf("repeats after four approved calls = %d, want 0", got)
+		}
+	})
+
+	t.Run("four distinct denied requests", func(t *testing.T) {
+		t.Parallel()
+		p := &fakePrompter{decision: DecisionDeny}
+		g := New(Options{Mode: ModeAsk, Prompter: p})
+		ctx := context.Background()
+		for _, ns := range []string{"prod", "staging", "dev", "test"} {
+			if err := g.CheckBash(ctx, "kubectl delete ns "+ns); err == nil {
+				t.Fatalf("expected %q to be denied", ns)
+			}
+		}
+		if got := g.TurnRefusalRepeats(ctx); got != 0 {
+			t.Errorf("repeats after four distinct denials = %d, want 0 — an agent "+
+				"asking about four different things is being told no four times, "+
+				"not re-issuing one refused call", got)
+		}
+		if len(p.calls) != 4 {
+			t.Errorf("prompts = %d, want 4", len(p.calls))
+		}
+	})
+}
+
+// Counted across keys. A model alternating between two requests the
+// operator has already refused is in the same state as one repeating a
+// single request, and per-key counting would let it stay just under any
+// threshold by alternating.
+func TestTurnRefusalRepeats_CountsAcrossRequests(t *testing.T) {
+	t.Parallel()
+	p := &fakePrompter{decision: DecisionDeny}
+	g := New(Options{Mode: ModeAsk, Prompter: p})
+	ctx := context.Background()
+
+	for _, ns := range []string{"prod", "staging"} {
+		if err := g.CheckBash(ctx, "kubectl delete ns "+ns); err == nil {
+			t.Fatalf("expected %q to be denied", ns)
+		}
+	}
+	for _, ns := range []string{"prod", "staging", "prod"} {
+		if err := g.CheckBash(ctx, "kubectl delete ns "+ns); err == nil {
+			t.Fatalf("expected the repeat of %q to be refused", ns)
+		}
+	}
+	if got := g.TurnRefusalRepeats(ctx); got != 3 {
+		t.Errorf("repeats across two alternating requests = %d, want 3", got)
+	}
+}
+
+// The count is turn-scoped for the same reason the map it counts is.
+// It has to clear at the SAME boundary, or a turn opens already part of
+// the way to a cut it did nothing to earn.
+func TestTurnRefusalRepeats_ClearedAtTheTurnBoundary(t *testing.T) {
+	t.Parallel()
+	p := &fakePrompter{decision: DecisionDeny}
+	g := New(Options{Mode: ModeAsk, Prompter: p})
+	ctx := context.Background()
+
+	if err := g.CheckBash(ctx, "kubectl delete ns prod"); err == nil {
+		t.Fatal("expected the first call to be denied")
+	}
+	for range 3 {
+		if err := g.CheckBash(ctx, "kubectl delete ns prod"); err == nil {
+			t.Fatal("expected the repeat to be refused")
+		}
+	}
+	if got := g.TurnRefusalRepeats(ctx); got != 3 {
+		t.Fatalf("in-turn repeats = %d, want 3", got)
+	}
+
+	g.ObserveTurnStart(ctx)
+
+	if got := g.TurnRefusalRepeats(ctx); got != 0 {
+		t.Errorf("repeats after the turn boundary = %d, want 0", got)
+	}
+}
+
+// Both the reader and the counter have to land on the same gate. The
+// suppressions happen on the session's sub-gate, so a reader that
+// answered from the template would report 0 forever and the agent's arm
+// would never fire in the deployment it exists for — a multi-session
+// daemon, which is every gated deployment that is not a terminal.
+func TestTurnRefusalRepeats_FollowsTheSessionGate(t *testing.T) {
+	t.Parallel()
+	template := New(Options{Mode: ModeAsk, Prompter: &fakePrompter{decision: DecisionDeny}})
+	p := &fakePrompter{decision: DecisionDeny}
+	sub := template.DeriveForSession("sess-1", p)
+	ctx := WithSessionGate(context.Background(), sub)
+
+	if err := sub.CheckBash(ctx, "kubectl delete ns prod"); err == nil {
+		t.Fatal("expected the first call to be denied")
+	}
+	for range 2 {
+		if err := sub.CheckBash(ctx, "kubectl delete ns prod"); err == nil {
+			t.Fatal("expected the repeat to be refused")
+		}
+	}
+	// The agent holds the template — WithGate is wired once at startup —
+	// and has to reach through ctx to the session that did the refusing.
+	if got := template.TurnRefusalRepeats(ctx); got != 2 {
+		t.Errorf("template.TurnRefusalRepeats through the session ctx = %d, want 2", got)
+	}
+	// And the count belongs to that session alone.
+	other := template.DeriveForSession("sess-2", &fakePrompter{decision: DecisionDeny})
+	if got := other.TurnRefusalRepeats(context.Background()); got != 0 {
+		t.Errorf("a second session sees %d repeats, want 0", got)
+	}
+}
+
+// Nil-safe for the same reason ObserveTurnStart is: a host may hold a
+// gate it never wired an agent to, and the agent's arm reads this on
+// every tool result.
+func TestTurnRefusalRepeats_NilSafe(t *testing.T) {
+	t.Parallel()
+	var g *Gate
+	if got := g.TurnRefusalRepeats(context.Background()); got != 0 {
+		t.Errorf("nil gate reported %d repeats, want 0", got)
+	}
+}
+
 // The elevated control-plane path bypasses Gate.prompt, so it carries
 // its own check. It is also the path where a re-issue costs the most:
 // the operator is being paged, repeatedly, about the file that controls

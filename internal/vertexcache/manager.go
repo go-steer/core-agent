@@ -261,6 +261,20 @@ func (m *Manager) doInit(ctx context.Context, systemInstruction *genai.Content, 
 			m.mu.Unlock()
 			return
 		}
+		// One failure is neither transient nor worth retrying: the
+		// content is below the model's minimum cacheable size. That is
+		// a property of this agent's configuration, and it does not
+		// grow while the daemon runs — attempt 6 would carry the same
+		// tokens attempt 1 did. Say so once, in terms that retract the
+		// startup line's "context cache: enabled" claim, and stop
+		// (#1067).
+		if IsBelowCacheMinimum(err) {
+			m.mu.Lock()
+			m.state = stateFailed
+			m.mu.Unlock()
+			m.opts.logger().Printf("core-agent-vertexcache: context cache: disabled for model %s — this agent's system instruction + tools are below the provider's minimum cacheable size, and retrying cannot change that. Nothing to fix; a larger prompt would qualify: %v", m.model, err)
+			return
+		}
 		// Everything else gets a bounded retry (#707). The old code
 		// treated this whole class as permanent, so an IAM-propagation
 		// 403 — the config was right, the binding just hadn't landed

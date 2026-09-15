@@ -202,6 +202,17 @@ never breaks the session:
   whole life is the wrong answer to it. The bound preserves the
   original intent: a genuinely misconfigured project still stops
   retrying and still gets a loud log line.
+- **`caches.Create` fails because the content is below the model's
+  minimum cacheable size**: no retries at all, since #1067. The retry
+  budget above is for a failure time can fix; this one is a property of
+  the agent's own configuration — the cached content is the system
+  instruction plus the tool declarations, and it does not grow while the
+  process runs, so attempt 6 carries exactly what attempt 1 did. The
+  manager goes permanently uncached on the first answer and logs one
+  line that retracts the startup `context cache: enabled` claim in the
+  same words, rather than six that read like an incident. The predicate
+  keys on the provider's stated reason, never on the number: the minimum
+  is per-model and Google has moved it before.
 - **`caches.Get`/`Update` returns NotFound mid-session** (backend
   reaped early or another process deleted): logged, cache handle
   cleared, agent runs uncached for remaining turns.

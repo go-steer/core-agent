@@ -23,6 +23,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
@@ -392,6 +393,99 @@ func TestPreTurn_655_ARefusedTurnIsNotATurnBoundary(t *testing.T) {
 			t.Fatal("no turn-start observed under the transposed pipeline; this subtest exists to prove the one above can fail")
 		}
 	})
+}
+
+// --- #1074: the gate's refusals clear on the same boundary -----------
+
+// denyingPrompter refuses everything and counts how many times it was
+// asked. The count is the whole assertion: #1074 is about how many
+// times an operator is paged for one request.
+type denyingPrompter struct{ asked int }
+
+func (p *denyingPrompter) AskApproval(context.Context, permissions.PromptRequest) (permissions.Decision, error) {
+	p.asked++
+	return permissions.DecisionDeny, nil
+}
+
+// TestPreTurn_1074_ARefusedTurnDoesNotClearTheGatesRefusals is the
+// #655 argument applied to the gate's turn-scoped refusal memory, and
+// it is the reason that memory hangs off this step rather than off Run
+// directly. The memory exists so a denied call cannot re-open its own
+// prompt for the rest of the turn; if a refused turn counted as a
+// boundary, an auto-continue re-drive would clear the denial and put
+// the operator back in front of the prompt they just closed — once per
+// re-drive, which is the loop #1074 exists to stop.
+func TestPreTurn_1074_ARefusedTurnDoesNotClearTheGatesRefusals(t *testing.T) {
+	t.Parallel()
+
+	halted := func(t *testing.T) (*Agent, *permissions.Gate, *denyingPrompter) {
+		t.Helper()
+		p := &denyingPrompter{}
+		g := permissions.New(permissions.Options{Mode: permissions.ModeAsk, Prompter: p})
+		a := preTurnAgent(t, WithGate(g), WithWatchdog(&fakeWatchdog{}, nil), WithWatchdogEnforce())
+		a.watchdogTripped = true
+		a.watchdogReason = "watchdog halted the agent (no-progress)"
+		// The turn that got denied, before the re-drive.
+		if err := g.CheckBash(context.Background(), "kubectl delete ns prod"); err == nil {
+			t.Fatal("expected the prompter's denial to fail the call")
+		}
+		if p.asked != 1 {
+			t.Fatalf("setup: prompts = %d, want 1", p.asked)
+		}
+		return a, g, p
+	}
+
+	t.Run("in order: the refusal stands", func(t *testing.T) {
+		a, g, p := halted(t)
+		if _, err := runPrep(t, a, preTurnSteps, ""); !IsWatchdogTripped(err) {
+			t.Fatalf("err = %v, want a watchdog refusal", err)
+		}
+		if err := g.CheckBash(context.Background(), "kubectl delete ns prod"); err == nil {
+			t.Fatal("expected the repeat to be refused")
+		}
+		if p.asked != 1 {
+			t.Errorf("prompts = %d, want 1 — the refused turn cleared the gate's refusal memory", p.asked)
+		}
+	})
+
+	t.Run("transposed: the re-drive re-opens the prompt", func(t *testing.T) {
+		a, g, p := halted(t)
+		steps := transpose(t, preTurnSteps, "turn-boundary", "preflight-watchdog")
+		if _, err := runPrep(t, a, steps, ""); !IsWatchdogTripped(err) {
+			t.Fatalf("err = %v, want a watchdog refusal", err)
+		}
+		if err := g.CheckBash(context.Background(), "kubectl delete ns prod"); err == nil {
+			t.Fatal("expected the repeat to be denied by the prompter")
+		}
+		if p.asked == 1 {
+			t.Fatal("the refusal survived the transposed pipeline; this subtest exists to prove the one above can fail")
+		}
+	})
+}
+
+// A turn that actually starts IS a boundary: the model now has a tool
+// result in its history saying it was refused, and the operator's
+// circumstances may have changed. Without this half, the memory is
+// session-scoped by accident and one misclick disables a tool for the
+// rest of the session.
+func TestPreTurn_1074_ATurnThatRunsClearsTheGatesRefusals(t *testing.T) {
+	t.Parallel()
+	p := &denyingPrompter{}
+	g := permissions.New(permissions.Options{Mode: permissions.ModeAsk, Prompter: p})
+	a := preTurnAgent(t, WithGate(g))
+
+	if err := g.CheckBash(context.Background(), "kubectl delete ns prod"); err == nil {
+		t.Fatal("expected the prompter's denial to fail the call")
+	}
+	if _, err := runPrep(t, a, preTurnSteps, "carry on"); err != nil {
+		t.Fatalf("pre-turn pipeline: %v", err)
+	}
+	if err := g.CheckBash(context.Background(), "kubectl delete ns prod"); err == nil {
+		t.Fatal("expected the new turn's call to be denied by the prompter")
+	}
+	if p.asked != 2 {
+		t.Errorf("prompts = %d, want 2 — the turn boundary did not clear the gate's refusal memory", p.asked)
+	}
 }
 
 // --- #537: heal the history before anything reads it -----------------

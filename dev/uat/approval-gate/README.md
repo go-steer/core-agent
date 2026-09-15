@@ -80,6 +80,16 @@ prompt for the rest of the turn — is
 acceptance criterion is mechanical for the same reason: leg 2 opens one
 prompt, and leg 3 finds no watchdog to clear.
 
+#1074 has since landed — after a denial or an expiry the gate refuses an
+identical request for the rest of the turn without opening a prompt —
+but it is *unconfirmed here* until a run says so, which is the whole
+posture of this rig. Its unit tests assert the gate's behaviour; only a
+cluster run can say what the model does when it meets it. **The next
+run's prompt count is the verdict.** Three means the second layer holds
+on a live daemon. Anything above three means the model is reaching the
+gate by a route the refusal memory does not key on, and the count is
+again the finding rather than a rig defect.
+
 ## Why there is a sink
 
 Because the daemon's own log is not evidence.
@@ -255,9 +265,12 @@ what it cleared); the behaviour that caused it is
 prints that warning is telling you something real about the daemon under
 test, not about the rig — and run 10 printed it on an image carrying the
 #1068 fix, which is how we learned the per-leg reset is not scaffolding
-to be removed once the model is told. Until
-[#1074](https://github.com/go-steer/core-agent/issues/1074) lands, it is
-load-bearing.
+to be removed once the model is told. Keep it.
+[#1074](https://github.com/go-steer/core-agent/issues/1074) has landed
+and is supposed to make it redundant, but "supposed to" is what run 10
+already disproved once: the reset stays until a run on a #1074 image
+passes without printing the warning, and its disappearance from the
+output is the evidence, not this paragraph.
 
 **One correlation that is not causation.** `core-agent-vertexcache:
 Caches.Create failed` appears in `daemon.log` a second or two before

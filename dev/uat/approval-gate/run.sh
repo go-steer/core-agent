@@ -455,6 +455,14 @@ settled_approvals() {
 # more than it should and deserves to fail the run, not be waved
 # through. What the rig must not do is let the aftermath of leg 2
 # decide leg 3's verdict.
+#
+# What was cleared is also accumulated for the verdict. Run 11 is why:
+# the warning scrolled past a hundred lines before the verdict printed
+# "prompts opened across the run: 3", and three is the floor, so the
+# last thing on screen read like a clean pass on a run whose middle leg
+# had tripped the watchdog. A guardrail this rig had to clear belongs in
+# the summary, next to the number it contradicts.
+GUARDRAILS_CLEARED=()
 prepare_leg() {
     local tag="$1" out cleared
     wait_idle "${IDLE_WAIT}" \
@@ -462,8 +470,10 @@ prepare_leg() {
     out="$(api_post "${SPATH}/guardrails/reset" '{"guardrail":"watchdog"}' 2>/dev/null || printf '{}')"
     printf '%s\n' "${out}" > "${RUN_DIR}/${tag}-guardrail-reset.json"
     cleared="$(printf '%s' "${out}" | jq -r '(.reset // []) | join(", ")' 2>/dev/null || true)"
-    [[ -z "${cleared}" ]] \
-        || warn "${tag}: cleared a guardrail the previous leg tripped (${cleared}) — see ${tag}-guardrail-reset.json"
+    if [[ -n "${cleared}" ]]; then
+        GUARDRAILS_CLEARED+=("${tag}: ${cleared}")
+        warn "${tag}: cleared a guardrail the previous leg tripped (${cleared}) — see ${tag}-guardrail-reset.json"
+    fi
 }
 
 # Deny every prompt a leg opens, not just the first one.
@@ -724,13 +734,46 @@ assert "the daemon is still ready and serving" still_serving
 # ── Verdict ──────────────────────────────────────────────────────────
 
 banner "verdict"
-# Three legs, three prompts — when the model behaves. It does not always:
-# a refused or expired call gets re-issued, and every re-issue is another
-# prompt the gate opened and another notification an operator received.
-# Not an assertion, because it is the model's judgement rather than the
-# gate's contract, but a number the run should not hide.
+# Two numbers, because run 11 proved one is not enough.
+#
+# The prompt count is what an operator experiences: every re-issue of a
+# refused call used to be another prompt and another page. Until #1074
+# it was also a fair proxy for what the MODEL did, because the two moved
+# together. #1074 broke the tie — it stops the gate asking twice, and it
+# does nothing whatsoever to the model — so run 11 came in at three
+# prompts, the floor, off a leg in which the model had issued the same
+# `alert` five times and tripped `repeated-tool-call`. The headline read
+# clean and the loop was untouched.
+#
+# So the run reports both sides: prompts an operator saw, and gated
+# calls the model made. The second is the first plus the repeats #1074
+# refused without opening anything, which the model is told about in
+# words no other code path produces. On an image predating #1074 the
+# suppressed count is zero and the two numbers agree, which is the
+# honest reading of that image.
+#
+# Neither is an assertion. Both are the model's judgement rather than
+# the gate's contract, and a rig that fails on model behaviour becomes a
+# rig nobody runs. They are numbers it must not hide.
 PROMPTS="$(sink_count '.path == "/approval"')"
-log "prompts opened across the run: ${PROMPTS} (one per leg is 3; more means a refused call was re-issued)"
+# Captured here rather than reused from a leg: the leg dumps are written
+# inside `if` blocks that an early failure skips, and a failing run is
+# when the model's side of the story is worth the most.
+curl -sS --max-time 20 -H "Authorization: Bearer ${TOKEN}" \
+    "http://127.0.0.1:${PORT}${SPATH}/events" \
+    > "${RUN_DIR}/final-events.txt" 2>&1 || true
+# -o, not -c: two refusals can share one SSE `data:` line, and a line
+# count would report that pair as one.
+SUPPRESSED="$(grep -o 'not attempted: an identical request' "${RUN_DIR}/final-events.txt" 2>/dev/null | grep -c . || true)"
+[[ "${SUPPRESSED}" =~ ^[0-9]+$ ]] || SUPPRESSED=0
+log "prompts opened across the run:  ${PROMPTS} (one per leg is the floor; more means a refused call re-opened the gate)"
+log "gated calls the model made:     $(( PROMPTS + SUPPRESSED )) (${SUPPRESSED} refused without a prompt — #1074)"
+# A guardrail the rig had to clear is a finding, and it is the half of
+# #1074's acceptance criterion the prompt count cannot speak to: the
+# watchdog trips on the model's repetition, not on the gate's prompts.
+if (( ${#GUARDRAILS_CLEARED[@]} > 0 )); then
+    warn "guardrails this run had to clear: ${GUARDRAILS_CLEARED[*]} — the model looped even where the gate held"
+fi
 if (( ${#FAILED[@]} == 0 )); then
     ok "gated end-to-end: notified, approved, denied, expired — all witnessed by the receiver"
     printf '\n  This is #647'"'"'s last acceptance criterion, met against a live cluster.\n'

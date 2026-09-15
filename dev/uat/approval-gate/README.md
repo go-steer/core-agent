@@ -51,8 +51,10 @@ does not stay refused in the model's head: it re-issues it, and each
 re-issue is a new prompt. Denying only the first is both unrealistic —
 an operator who said no would say no again — and a way for a retry to
 slip through the gate while the assertion reads the original. The run
-prints how many prompts it opened for exactly this reason; three is one
-per leg, more is the model arguing. See
+prints how many prompts it opened for exactly this reason, and — since
+run 11 — how many gated calls the model made, which is no longer the
+same number. Three prompts is one per leg; more of either is the model
+arguing. See
 [#1068](https://github.com/go-steer/core-agent/issues/1068).
 
 Both refusals now also carry a sentence telling the model the answer
@@ -80,15 +82,35 @@ prompt for the rest of the turn — is
 acceptance criterion is mechanical for the same reason: leg 2 opens one
 prompt, and leg 3 finds no watchdog to clear.
 
-#1074 has since landed — after a denial or an expiry the gate refuses an
-identical request for the rest of the turn without opening a prompt —
-but it is *unconfirmed here* until a run says so, which is the whole
-posture of this rig. Its unit tests assert the gate's behaviour; only a
-cluster run can say what the model does when it meets it. **The next
-run's prompt count is the verdict.** Three means the second layer holds
-on a live daemon. Anything above three means the model is reaching the
-gate by a route the refusal memory does not key on, and the count is
-again the finding rather than a rig defect.
+Run 11 was that verdict, and it came back split — which is a finding
+about this rig as much as about #1074. Against `main-f93d675`, the first
+image carrying the refusal memory, the run opened **three** prompts. The
+floor, down from eight, and every assertion green. It also printed
+`⚠ leg3: cleared a guardrail the previous leg tripped (watchdog)`, and
+the daemon log holds the reason: `repeated-tool-call: agent has called
+alert with identical args 5 times in a row` — the same critical, on the
+same tool, at the same count as run 10. The model's behaviour did not
+change by a single call. What changed is that four of those five calls
+were refused in microseconds by the gate instead of opening a prompt and
+paging somebody, and that leg 3's three retries did not each burn
+another 90-second `approval_timeout`.
+
+That is exactly what #1074 was built to do, and it is only half of what
+the acceptance criterion above asked for, because the two halves measure
+two different actors. "Leg 2 opens one prompt" is a statement about the
+**gate**, and the gate now holds. "Leg 3 finds no watchdog to clear" is
+a statement about the **model**, and nothing in #1074 addresses the
+model — the watchdog trips on repetition, not on prompts, so no gate-side
+fix could ever have satisfied it. Writing both into one criterion was
+the mistake, and reading a green three-prompt verdict as proof the loop
+is fixed is the mistake it invites. The successor is
+[#1081](https://github.com/go-steer/core-agent/issues/1081).
+
+So the verdict now prints two numbers, prompts and gated calls, and
+restates any guardrail the rig had to clear. On run 11's artifacts those
+read three, ten, and `leg3: watchdog`. One line says the gate held;
+the next two say the model looped anyway. A rig that reported only the
+first would have called this a pass.
 
 ## Why there is a sink
 
@@ -168,8 +190,11 @@ Artifacts land in `~/.gke-drill/approval-gate/<runid>/`: the rendered
 manifests, each leg's captured notification, a `legN-status.jsonl`
 timeline sampled from the daemon's own `/status` while that leg waited,
 the `legN-guardrail-reset.json` the leg's pre-flight got back, the
-`legN-events.txt` dumps legs 2 and 3 read the refusal text out of, and — captured *before* teardown, because on a failed run they are the
-only evidence — the full sink and daemon logs plus
+`legN-events.txt` dumps legs 2 and 3 read the refusal text out of, the
+`final-events.txt` the verdict counts suppressed repeats from — taken
+unconditionally, since the `legN` dumps live inside `if` blocks an early
+failure skips — and — captured *before* teardown, because on a failed
+run they are the only evidence — the full sink and daemon logs plus
 `daemon-pod.describe`, which is the only witness for a pod that never
 got far enough to log anything.
 
@@ -266,11 +291,14 @@ prints that warning is telling you something real about the daemon under
 test, not about the rig — and run 10 printed it on an image carrying the
 #1068 fix, which is how we learned the per-leg reset is not scaffolding
 to be removed once the model is told. Keep it.
-[#1074](https://github.com/go-steer/core-agent/issues/1074) has landed
-and is supposed to make it redundant, but "supposed to" is what run 10
-already disproved once: the reset stays until a run on a #1074 image
-passes without printing the warning, and its disappearance from the
-output is the evidence, not this paragraph.
+[#1074](https://github.com/go-steer/core-agent/issues/1074) was supposed
+to make it redundant. Run 11 settled that: on a #1074 image, with the
+prompt count at its floor of three, leg 3 printed the warning anyway and
+cleared a watchdog leg 2 had tripped with five identical `alert` calls.
+The reset is permanent scaffolding, not a stopgap — it protects leg 3
+from the previous leg's aftermath, and #1074 removed the prompts that
+aftermath generated without removing the aftermath. See
+[#1081](https://github.com/go-steer/core-agent/issues/1081).
 
 **One correlation that is not causation.** `core-agent-vertexcache:
 Caches.Create failed` appears in `daemon.log` a second or two before

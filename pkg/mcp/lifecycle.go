@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -62,8 +63,14 @@ type Server struct {
 	Tools     []string   // tool names exposed; populated lazily by Toolset
 	ToolInfos []ToolInfo // name + description pairs, parallel to Tools
 	Err       error      // non-nil when Status == StatusError
-	toolset   tool.Toolset
-	cmd       *exec.Cmd // stdio child; nil for http transports
+	// Warnings are things wrong with this server's config that are not
+	// bad enough to take its tools away. Distinct from Err for exactly
+	// that reason: Status stays StatusOK and the toolset is live, so a
+	// consumer that only checks Err would miss these — which is why
+	// every renderer of a server list prints them (#1016).
+	Warnings []string
+	toolset  tool.Toolset
+	cmd      *exec.Cmd // stdio child; nil for http transports
 }
 
 // ToolInfo is a name + description pair for one exposed MCP tool.
@@ -212,12 +219,17 @@ func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(strin
 //   - the permission gate, so MCP calls take the same ask/allow/yolo
 //     path as built-ins. Patterns use the "mcp" namespace, e.g.
 //     "mcp:filesystem_read_file".
+//
+// ServerSpec.ToolNotes rides the namespace layer rather than a wrapper
+// of its own, because that is already the layer that clones the
+// declaration to rewrite the name — one clone, one place the
+// model-visible declaration is assembled.
 func wrapServerToolset(ts tool.Toolset, name string, spec ServerSpec, digestOpts *DigestOptions, gate *permissions.Gate) tool.Toolset {
 	optsForServer := digestOpts
 	if optsForServer != nil && spec.AgenticNever {
 		optsForServer = nil
 	}
-	wrapped := withNamespaceAndDigest(ts, name, name, optsForServer, spec.ReadOnly)
+	wrapped := withNamespaceAndDigest(ts, name, name, optsForServer, spec.ReadOnly, spec.ToolNotes)
 	if gate != nil {
 		wrapped = coretools.GateToolset(wrapped, gate, "mcp")
 	}
@@ -273,8 +285,73 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 		}
 		srv.Tools = names
 		srv.ToolInfos = infos
+		srv.Warnings = unmatchedToolNotes(spec.ToolNotes, sanitizePrefix(name), names)
 	}
 	return srv
+}
+
+// Warnings collects every server's non-fatal config warnings, each
+// prefixed with the server it belongs to, ready for one line apiece on
+// stderr.
+//
+// Exported because the hosts are the only place a warning can actually
+// reach a person, and there are two of them — the parent's mcp.Build
+// in main.go and a rooted subagent's in subagents.go. The subagent one
+// is not the afterthought: a content root is where a per-tool note is
+// most likely to live, since that is the scope that owns the tools it
+// is describing.
+func Warnings(servers []*Server) []string {
+	var out []string
+	for _, s := range servers {
+		if s == nil {
+			continue
+		}
+		for _, w := range s.Warnings {
+			out = append(out, s.Name+": "+w)
+		}
+	}
+	return out
+}
+
+// unmatchedToolNotes reports ToolNotes keys that named no tool this
+// server actually exposed.
+//
+// The whole point of #1016 is that a fact the model needs went
+// missing without anything saying so, and a note keyed on a typo or on
+// a tool the server has since renamed fails exactly that way: the
+// config reads correct, the agent behaves as though the feature were
+// never configured, and the only symptom is behaviour nobody thinks to
+// connect back to a spelling. So the mismatch is named, with the
+// names that WERE available, because "no such tool" without the list
+// is half an error message.
+//
+// A warning and not an error: the server is working, its other tools
+// are fine, and refusing a cluster's whole read surface over a
+// misspelled note would be a worse outcome than the one being
+// prevented. Keys are matched against the prefixed names because that
+// is what the toolset reports; the caller writes the unprefixed form
+// and this rejoins them.
+func unmatchedToolNotes(notes map[string]string, prefix string, exposed []string) []string {
+	if len(notes) == 0 {
+		return nil
+	}
+	have := make(map[string]bool, len(exposed))
+	for _, n := range exposed {
+		have[n] = true
+	}
+	var missing []string
+	for toolName := range notes {
+		if !have[prefix+"_"+toolName] {
+			missing = append(missing, toolName)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return []string{fmt.Sprintf(
+		"tool_notes names %d tool(s) this server does not expose: %s. Exposed: %s",
+		len(missing), strings.Join(missing, ", "), strings.Join(exposed, ", "))}
 }
 
 // transportFor builds the appropriate mcp.Transport for the spec.

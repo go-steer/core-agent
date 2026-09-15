@@ -12,6 +12,9 @@
             "https://www.googleapis.com/auth/cloud-platform.read-only"
           ]
         }
+      },
+      "tool_notes": {
+        "get_k8s_resource": "outputFormat selects FIDELITY, not rendering. TABLE, WIDE, NAME and CUSTOM_COLUMNS return columns only — names, counts, ages, status — and carry NOTHING under spec: no resource limits, no probes, no image tags, no annotations. Only YAML and JSON return the whole object. Pick the format from the question before you call: \"which objects exist\" is a table read, \"how is this configured\" is a YAML one. A table read aimed at a field returns nothing you asked for, so it is not a cheaper opening move — it is a call you have to make twice. Going back to an object you already listed because you now need a field off its spec is a different read, not a repeated one."
       }
     }
   }

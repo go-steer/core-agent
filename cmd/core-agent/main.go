@@ -1104,6 +1104,14 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
+	// Server-scoped warnings: the config is wrong in a way that did
+	// not stop the server coming up, so nothing else will ever
+	// mention it. A tool_notes key that matches no tool is the case
+	// this exists for (#1016) — it fails by doing nothing, which is
+	// the failure the note was written to prevent.
+	for _, w := range mcp.Warnings(mcpServers) {
+		fmt.Fprintf(os.Stderr, "core-agent: mcp: %s\n", w)
+	}
 	// Terminate stdio MCP children on the way out (#538): SIGTERM,
 	// 3s grace, SIGKILL — concurrently across servers. Without this,
 	// children were orphaned at exit and died only via stdio pipe

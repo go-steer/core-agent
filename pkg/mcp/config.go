@@ -36,6 +36,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-steer/core-agent/v2/pkg/agentenv"
 )
@@ -135,6 +136,36 @@ type ServerSpec struct {
 	// allowed to relax plan-first gating: it carries the same
 	// authority as the config that turned plan-first on.
 	ReadOnly bool `json:"read_only,omitempty"`
+
+	// ToolNotes appends operator-authored text to the description the
+	// MODEL reads for a tool, keyed by the name the SERVER exposes —
+	// no namespace prefix, because the prefix is this server's own key
+	// and repeating it in every entry would be noise that can drift.
+	//
+	// This exists because a tool's description is written by whoever
+	// wrote the server, for nobody in particular, and the thing an
+	// agent needs to know at the call site is often a property of how
+	// THIS deployment uses it. The GKE MCP server's
+	// `get_k8s_resource` is the case that forced it (#1016): its
+	// `outputFormat` presents as a rendering preference with
+	// interchangeable values, and half of them return an object with
+	// no `spec` at all, so a read aimed at a field comes back empty
+	// and nothing in the tool surface says why. Two rounds of persona
+	// prose were spent telling the model to escalate and neither
+	// reached the behaviour, because a rule read at boot is not in
+	// front of the model when it is choosing an enum value.
+	//
+	// Like ReadOnly, this is an OPERATOR assertion rather than
+	// something the server said about itself, and it carries the same
+	// authority — it is written in the same file, by the same person,
+	// as the decision to mount the server at all. Unlike ReadOnly it
+	// cannot change what a call is allowed to do: the text reaches the
+	// declaration and nothing else.
+	//
+	// A key that matches no tool the server exposes is reported as a
+	// startup warning rather than silently doing nothing, which is the
+	// failure mode this whole feature is a response to.
+	ToolNotes map[string]string `json:"tool_notes,omitempty"`
 }
 
 // AuthSpec selects an authentication strategy for an HTTP MCP server.
@@ -223,6 +254,20 @@ func (s ServerSpec) Validate(name string) error {
 		return fmt.Errorf("mcp: server %q: transport is required (\"stdio\" or \"http\")", name)
 	default:
 		return fmt.Errorf("mcp: server %q: unknown transport %q", name, s.Transport)
+	}
+	// An empty key or an empty note is a config the author did not
+	// finish writing, and both fail closed here rather than at
+	// startup: the unmatched-key check can only warn (the server is
+	// otherwise fine and taking its tools away would be worse), so the
+	// mistakes that CAN be caught before a transport is dialled
+	// should be.
+	for toolName, note := range s.ToolNotes {
+		if strings.TrimSpace(toolName) == "" {
+			return fmt.Errorf("mcp: server %q: tool_notes has an empty tool name", name)
+		}
+		if strings.TrimSpace(note) == "" {
+			return fmt.Errorf("mcp: server %q: tool_notes[%q] is empty", name, toolName)
+		}
 	}
 	return nil
 }

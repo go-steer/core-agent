@@ -574,6 +574,13 @@ func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subage
 	if mcpErr != nil {
 		deps.send(fmt.Sprintf("subagent %q: mcp: %v", spec.Name, mcpErr))
 	}
+	// Same reason as the parent's copy in main.go, and more likely to
+	// fire here: a content root owns both the server and the notes
+	// written about its tools, so a rename on either side lands in
+	// this scope first (#1016).
+	for _, w := range mcp.Warnings(servers) {
+		deps.send(fmt.Sprintf("subagent %q: mcp: %s", spec.Name, w))
+	}
 	named := make([]namedToolset, 0, len(servers))
 	for _, s := range servers {
 		if s == nil {

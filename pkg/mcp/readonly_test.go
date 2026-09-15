@@ -102,7 +102,7 @@ func TestServerReadOnly_ClassifiesEveryTool(t *testing.T) {
 	} {
 		t.Run(tc.wrap, func(t *testing.T) {
 			t.Parallel()
-			ro := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", tc.opts, true))["gke_get_pod"]
+			ro := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", tc.opts, true, nil))["gke_get_pod"]
 			if ro == nil {
 				t.Fatal("gke_get_pod missing from wrapped toolset")
 			}
@@ -110,7 +110,7 @@ func TestServerReadOnly_ClassifiesEveryTool(t *testing.T) {
 				t.Errorf("read_only server: gke_get_pod classified mutating")
 			}
 
-			rw := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", tc.opts, false))["gke_get_pod"]
+			rw := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", tc.opts, false, nil))["gke_get_pod"]
 			if coretools.IsReadOnlyTool(rw) {
 				t.Errorf("undeclared server: gke_get_pod classified read-only — the fail-safe default is mutating")
 			}
@@ -138,7 +138,7 @@ func TestServerReadOnly_HinterIsReachableOnTheValue(t *testing.T) {
 	} {
 		t.Run(tc.wrap, func(t *testing.T) {
 			t.Parallel()
-			tl := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", tc.opts, true))["gke_get_pod"]
+			tl := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", tc.opts, true, nil))["gke_get_pod"]
 			if _, ok := tl.(coretools.ReadOnlyHinter); !ok {
 				t.Fatalf("%T does not satisfy ReadOnlyHinter as returned by Tools() — pointer receiver?", tl)
 			}
@@ -158,12 +158,12 @@ func TestServerReadOnly_PerToolHintWins(t *testing.T) {
 		hintingTool{name: "get_pod", hint: true},
 	}}
 
-	onReadOnlyServer := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", &DigestOptions{}, true))
+	onReadOnlyServer := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", &DigestOptions{}, true, nil))
 	if coretools.IsReadOnlyTool(onReadOnlyServer["gke_delete_pod"]) {
 		t.Error("a tool declaring itself mutating was laundered read-only by the server declaration")
 	}
 
-	onPlainServer := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", &DigestOptions{}, false))
+	onPlainServer := toolsOf(t, withNamespaceAndDigest(inner, "gke", "gke", &DigestOptions{}, false, nil))
 	if !coretools.IsReadOnlyTool(onPlainServer["gke_get_pod"]) {
 		t.Error("a tool declaring itself read-only lost that on a server that declared nothing")
 	}

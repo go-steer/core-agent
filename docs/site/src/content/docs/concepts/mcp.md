@@ -61,6 +61,7 @@ Top-level fields:
 | `auth` | optional, http | Selects an authentication strategy that manages tokens for you instead of static headers. See [Authentication](#authentication) below. |
 | `read_only` | optional | Declares that nothing this server exposes can mutate state. See [Read-only servers](#read-only-servers) below. Default `false`. |
 | `agentic_never` | optional | Opts this server out of the [digest wrap](#structural-digest-wrap---no-mcp-digest). Default `false`. |
+| `tool_notes` | optional | Map of tool name → text appended to that tool's description, in front of the model at the call site. See [Tool notes](#tool-notes) below. |
 
 Validation runs at config load time. A server that mixes transports (e.g. both `command` and `url`) is rejected with a clear error before the agent starts.
 
@@ -190,6 +191,41 @@ Two guardrails worth knowing:
 
 - **Per-tool beats per-server.** If a server ever does annotate a tool's own `readOnlyHint`, that answer wins for that tool — a server-level declaration can't launder a tool that says it mutates.
 - **It is an operator assertion, not a server claim.** Nothing verifies it; you are vouching for an endpoint you chose. That is exactly why it carries enough authority to relax plan-first — it comes from the same config that turned plan-first on. Point it at a read/write URL and you have disabled a safety property by hand.
+
+---
+
+## Tool notes
+
+A tool's description is written by whoever wrote the server, for nobody in particular. The thing an agent most needs to know at the call site is often a property of *this* deployment — which of an enum's values are useful here, which argument is expensive against your cluster, what the field you actually want is called. `tool_notes` lets the operator append that to the description the model reads.
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "gke": {
+      "transport": "http",
+      "url":       "https://container.googleapis.com/mcp/read-only",
+      "read_only": true,
+      "tool_notes": {
+        "get_k8s_resource": "outputFormat selects FIDELITY, not rendering. TABLE, WIDE, NAME and CUSTOM_COLUMNS return columns only and carry NOTHING under spec. Only YAML and JSON return the whole object."
+      }
+    }
+  }
+}
+```
+
+The keys are the names the **server** exposes, with no namespace prefix — `get_k8s_resource`, not `gke_get_k8s_resource`. The prefix is the server's own key in this file, so repeating it in every entry would be noise that goes stale the moment you rename the server.
+
+The note is **appended** to the server's description, separated by a blank line, never substituted for it: the server's own text is the only account of what the tool does, and a note is by definition something it left out. It reaches both the declaration the model is sent and the description `/tools` and `/mcp` print, so what you read in a listing is what the model read.
+
+A key that names no tool the server exposes is reported at startup — `core-agent: mcp: <server>: tool_notes names 1 tool(s) this server does not expose: …`, with the exposed names listed so you can spot the typo. Without that, a misspelled key would fail by doing nothing, which is the exact failure mode a note is usually written to prevent.
+
+Two things it deliberately cannot do:
+
+- **It cannot change what a call is allowed to do.** Unlike `read_only`, the text reaches the declaration and nothing else — no dispatch class, no permission decision.
+- **It is not a substitute for a persona or a skill.** Use it for facts that only matter while choosing arguments for one specific tool. Anything broader belongs in `AGENTS.md`, where it isn't repeated in the tool list on every single request.
+
+Like `read_only`, this is an operator assertion rather than something the server said about itself, and it carries the same authority: it is written in the same file, by the same person, as the decision to mount the server at all.
 
 ---
 

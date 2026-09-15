@@ -265,9 +265,15 @@ each leg's notification, because the cache init fires when a turn starts
 its first model request. It is a goroutine (`manager.go`'s `go
 m.doInit`) and it is not on the turn's critical path. On this rig it
 always fails — the daemon's prompt is far below the provider's minimum
-cacheable size — and it is filed as
-[#1067](https://github.com/go-steer/core-agent/issues/1067). Read it as
-a turn-start timestamp, not as a cause.
+cacheable size. Read it as a turn-start timestamp, not as a cause.
+
+Since [#1067](https://github.com/go-steer/core-agent/issues/1067) the
+line is different and there is only one of it: a prompt under the
+model's minimum cacheable size is not a transient failure, so it is no
+longer retried on the five-step backoff, and the daemon says once that
+caching is disabled for the model and that retrying cannot change it.
+A rig run on a pre-#1067 image shows the same message up to six times
+over about eight minutes; that is the old behaviour, not a new fault.
 
 ## A note on curl, because this rig has already been lied to by it
 

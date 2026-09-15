@@ -701,7 +701,7 @@ A failed turn ends with `event: turn-error` carrying `{kind, code?, message, ret
 | `rate_limited` | true | Quota or rate limit (429, `RESOURCE_EXHAUSTED`). |
 | `transient_network` | true | Unreachable or timed-out upstream (502/503/504, `UNAVAILABLE`, **and a model call that hit its deadline**). |
 | `cost_ceiling` | false | A turn was refused because the session is halted on spend — the per-session bound, or three consecutive per-turn trips ([#1049](https://github.com/go-steer/core-agent/issues/1049)). The operator must reset it. A single per-turn trip does *not* produce this. **Not emitted on the stream by core-agent since 1.13.0** — see below. |
-| `watchdog` | false | The behavioral watchdog tripped a Critical runaway signal under `--watchdog=enforce`. The operator must reset it. **Not emitted on the stream by core-agent since 1.13.0** — see below. |
+| `watchdog` | false | The behavioral watchdog halted the session on a Critical runaway signal under `--watchdog=enforce` — a session-scoped signal, or three consecutive turns cut by a turn-scoped one ([#1090](https://github.com/go-steer/core-agent/issues/1090)). The operator must reset it. A single turn-scoped cut does *not* produce this: the turn ends `canceled` and the next one runs. **Not emitted on the stream by core-agent since 1.13.0** — see below. |
 | `canceled` | false | The turn's context was cancelled — see below (protocol 1.8.0). |
 | `unknown` | false | Anything the classifier couldn't categorize. `message` still carries the upstream text. |
 

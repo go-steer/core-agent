@@ -93,17 +93,30 @@ const DefaultNoOpStreak = 3
 // calls accomplished nothing, so under --watchdog=enforce there is
 // nothing being interrupted that was going anywhere.
 //
-// That is a real availability trade and it was taken deliberately.
-// enforce is the unattended default (#642) and mark_task_done is
-// registered by default, so on a headless daemon three redundant
-// checkpoints now cost an operator reset — and a turn cancelled at the
-// third one loses whatever the model was about to say. The reason it
-// is priced this way anyway is that the failure it replaces is
-// unbounded: #905's loop ended when a human hit interrupt, and Warn
-// would not have ended it any sooner. Deployments that would rather
-// absorb the loop have two levers that predate this signal —
-// --watchdog=feedback, which still reaches the only party that can
-// stop calling, and --checkpoint=operator, which withholds the tool.
+// That is a real availability trade, it was taken deliberately, and
+// #1090 repriced one half of it. enforce is the unattended default
+// (#642) and mark_task_done is registered by default, so on a headless
+// daemon three redundant checkpoints used to cost an operator reset —
+// and #907 accepted that because the failure it replaces is unbounded:
+// #905's loop ended when a human hit interrupt, and Warn would not have
+// ended it any sooner. What that reasoning did not have was a
+// measurement. The approval-gate drill supplied one: the reset is not a
+// rare price, it is the modal ending of an ordinary denial, and it lands
+// on a turn where the model had already stopped doing the thing anybody
+// wanted stopped (it was recording the denial, four times, in four
+// wordings).
+//
+// The argument was also comparing against the wrong alternative. Warn is
+// not the only other option: the alert is Scope: ScopeTurn, so enforce
+// cuts the turn instead of the session, and the agent halts the session
+// only when consecutive turns keep ending that way. Nothing #907 bought
+// is given up — the model cannot keep calling a tool inside a turn that
+// has ended, and #905's sixteen calls were one turn — while the agent
+// that says "there is nothing further to record" three times loses a
+// turn rather than its working life. Deployments that would rather
+// absorb the loop still have the two levers that predate this signal —
+// --watchdog=feedback, which reaches the only party that can stop
+// calling, and --checkpoint=operator, which withholds the tool.
 type NoOpStreakSignal struct {
 	Threshold int
 
@@ -159,6 +172,14 @@ func (s *NoOpStreakSignal) ObserveToolResult(tr ToolResult) *Alert {
 	return &Alert{
 		Signal:   s.Name(),
 		Severity: SeverityCritical,
+		// The turn is the scope the evidence actually supports (#1090).
+		// A no-op streak is a loop inside one turn — the streak resets on
+		// any productive result, so the calls it counts are consecutive
+		// and, in practice, from one model turn — and a cut turn ends it
+		// as completely as a session halt would. See AlertScope, and the
+		// availability paragraph in this file's type doc for the trade
+		// this narrowing revisits.
+		Scope: ScopeTurn,
 		Reason: fmt.Sprintf(
 			"%d tool calls in a row (%s) reported that they changed nothing. This is not an inference from repetition — each of those tools said the call was inert, so the agent has spent %d calls making no progress. Whatever it is trying to accomplish, this is not the way to accomplish it.",
 			s.streak, tools, s.streak,

@@ -298,3 +298,51 @@ func TestDefaultWatchdogWiresNoOpStreak(t *testing.T) {
 			watchdog.DefaultNoOpStreak, alerts)
 	}
 }
+
+// TestNoOpStreakSignal_AlertIsTurnScoped: the severity is Critical and
+// the scope is the turn (#1090). Together those say "stop this now" and
+// "stopping the turn is enough", and the agent's enforce path reads the
+// second to decide whether an unattended daemon keeps working afterwards.
+//
+// Asserted on the alert rather than on a constant so the property
+// survives a signal that grows a second alert shape: a Critical that
+// quietly reverted to ScopeSession would take the approval-gate drill's
+// leg 3 back out without failing anything else here.
+func TestNoOpStreakSignal_AlertIsTurnScoped(t *testing.T) {
+	t.Parallel()
+	s := watchdog.NewNoOpStreakSignal(watchdog.DefaultNoOpStreak)
+	var alert *watchdog.Alert
+	for range watchdog.DefaultNoOpStreak {
+		if a := s.ObserveToolResult(noOp("mark_task_done")); a != nil {
+			alert = a
+		}
+	}
+	if alert == nil {
+		t.Fatalf("no alert after %d no-ops", watchdog.DefaultNoOpStreak)
+	}
+	if alert.Severity != watchdog.SeverityCritical {
+		t.Errorf("severity = %q, want %q", alert.Severity, watchdog.SeverityCritical)
+	}
+	if alert.Scope != watchdog.ScopeTurn {
+		t.Errorf("scope = %v, want %v: a loop inside one turn does not need the session "+
+			"halted, and halting it is how one denied alert ended an unattended run (#1090)",
+			alert.Scope, watchdog.ScopeTurn)
+	}
+}
+
+// The zero value must stay ScopeSession: every signal written before
+// scopes existed, and any third-party one, keeps enforce's original
+// contract without having to say so.
+func TestAlertScope_ZeroValueIsSession(t *testing.T) {
+	t.Parallel()
+	var a watchdog.Alert
+	if a.Scope != watchdog.ScopeSession {
+		t.Errorf("zero-value Alert.Scope = %v, want %v", a.Scope, watchdog.ScopeSession)
+	}
+	if got, want := watchdog.ScopeSession.String(), "session"; got != want {
+		t.Errorf("ScopeSession.String() = %q, want %q", got, want)
+	}
+	if got, want := watchdog.ScopeTurn.String(), "turn"; got != want {
+		t.Errorf("ScopeTurn.String() = %q, want %q", got, want)
+	}
+}

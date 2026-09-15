@@ -469,6 +469,17 @@ type Agent struct {
 	watchdogReason   string
 	watchdogPending  []watchdog.Alert
 
+	// Turn-scoped trip bookkeeping (#1090), the watchdog's copy of the
+	// per-turn cost ceiling's (#1049) and cleared on the same kind of
+	// boundary. A Critical alert that declares watchdog.ScopeTurn cuts
+	// its turn without setting watchdogTripped, so it needs its own
+	// once-per-turn latch: watchdogTurnCut, cleared at each turn's start
+	// by observeTurnStartForWatchdog. watchdogTurnCutStreak counts turns
+	// cut that way back to back and is what escalates to a session halt;
+	// one turn that ends without a cut clears it.
+	watchdogTurnCut       bool
+	watchdogTurnCutStreak int
+
 	// Event hook (WithEventHook). Optional callbacks that observe
 	// session events as they stream (onEvent) and once per turn from
 	// the post-turn cleanup (onTurnEnd). Both nil = no-op. The

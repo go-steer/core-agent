@@ -111,6 +111,45 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
+// AlertScope says how much a Critical alert entitles enforce mode to
+// stop: the whole session, or only the turn the evidence came from
+// (#1090).
+//
+// Severity says how sure the signal is that something is wrong; scope
+// says what stopping it costs. They were the same question while every
+// Critical meant the same thing, and the approval-gate drill showed
+// they are not: a no-op streak is a loop inside one turn, and cutting
+// the turn ends it exactly as dead as halting the session does, while
+// the halt additionally takes the daemon off the air until a human
+// arrives. A signal whose evidence spans turns has no such option.
+type AlertScope int
+
+const (
+	// ScopeSession is the zero value, deliberately: a signal written
+	// before this existed — or by a third party — keeps enforce's
+	// original contract, where a Critical refuses every subsequent turn
+	// until the operator resets. Opting DOWN to ScopeTurn is a claim a
+	// signal has to earn.
+	ScopeSession AlertScope = iota
+
+	// ScopeTurn cuts the turn the alert arrived in and nothing further.
+	// Only sound when ending the turn ends the behavior — which, for a
+	// within-turn loop, it does, because the model cannot call a tool
+	// inside a turn that is over. What it gives up is protection against
+	// the model restarting the loop next turn; the agent covers that with
+	// an escalation after consecutive turns end this way (see
+	// maxConsecutiveWatchdogTurnCuts), not by widening the scope.
+	ScopeTurn
+)
+
+// String renders the scope for a log line or a trip reason.
+func (s AlertScope) String() string {
+	if s == ScopeTurn {
+		return "turn"
+	}
+	return "session"
+}
+
 // Alert is what a triggered signal returns. Signal is the stable
 // string ID the rest of the system can dispatch on (future "auto"
 // mode picks behavior per signal).
@@ -135,6 +174,12 @@ type Alert struct {
 	Severity Severity
 	Reason   string
 	Guidance string
+
+	// Scope bounds what a Critical alert is allowed to stop. Zero value
+	// (ScopeSession) is the original contract; see AlertScope. Read only
+	// under --watchdog=enforce, and only for Critical alerts — a Warn
+	// stops nothing either way.
+	Scope AlertScope
 }
 
 // ToolCall is the per-tool-call observation the watchdog needs.

@@ -36,6 +36,18 @@ SCENARIO_EXPECT_TERMS=(
     "ImagePullBackOff"
 )
 
+# How the drill recognises ITS OWN incident among whatever else the
+# cluster is raising. Every term must appear in the session's first
+# frame — the watcher's payload — or the session belongs to someone
+# else and the drill keeps waiting (#1093).
+#
+# The namespace as well as the workload, deliberately: a workload name
+# alone can show up in an unrelated cluster-wide event's enrichment.
+SCENARIO_INCIDENT_MATCH=(
+    "${TARGET_NS}"
+    "${WORKLOAD}"
+)
+
 # The G6 follow-up. Deliberately answerable ONLY from evidence already
 # gathered — "which tag", not "what is wrong" — so an answer that
 # re-reads the cluster from scratch is visible as such in the tool-call

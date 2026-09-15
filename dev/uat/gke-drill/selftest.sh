@@ -112,7 +112,8 @@ head_ "Scenario contract"
 for s in scenarios/*.sh; do
     missing=()
     for sym in SCENARIO_ID SCENARIO_NAME SCENARIO_NEGATIVE SCENARIO_EXPECT_TERMS \
-               SCENARIO_FOLLOWUP scenario_break scenario_restore scenario_verify_restored; do
+               SCENARIO_INCIDENT_MATCH SCENARIO_FOLLOWUP \
+               scenario_break scenario_restore scenario_verify_restored; do
         grep -Eq "^(${sym}=|${sym}\(\)|declare .*${sym})" "${s}" || missing+=("${sym}")
     done
     if [[ ${#missing[@]} -eq 0 ]]; then

@@ -34,6 +34,17 @@ SCENARIO_EXPECT_TERMS=(
     "8Mi"
 )
 
+# See a-bad-image.sh for what this is. The B seeds of 2026-09-15 are
+# why it exists: one of them scored a kube-system NAP incident that
+# landed seconds before the drill's own (#1093). Note that a `storm`
+# payload names the workload inside its attached representative
+# incidents rather than in a top-level `name` field, which is why the
+# match is over the payload TEXT and not over two JSON fields.
+SCENARIO_INCIDENT_MATCH=(
+    "${TARGET_NS}"
+    "${WORKLOAD}"
+)
+
 # Names the number, so the answer has to come from a read of the spec
 # rather than from the incident text.
 SCENARIO_FOLLOWUP="Before you go further: what memory limit is set on that container right now, and what was it before? Cite the read that told you."

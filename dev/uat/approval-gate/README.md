@@ -121,6 +121,34 @@ read three, ten, and `leg3: watchdog`. One line says the gate held;
 the next two say the model looped anyway. A rig that reported only the
 first would have called this a pass.
 
+**Run 17 is the one that closes the sequence.** Against `main-2dc08c8`,
+the first image carrying
+[#1090](https://github.com/go-steer/core-agent/issues/1090): three
+prompts — the floor — nine gated calls with six refused without asking
+anybody, both pre-flights reporting `{"reset":[]}` with
+`"tripped": false`, and leg 3 running. The model still looped exactly as
+it had in runs 12, 14 and 16: the gate cut leg 2's turn on the refusal
+storm, auto-continue re-drove it, and the re-driven turn spent three
+`mark_task_done` calls recording the denial, which is `no-op-streak`'s
+Critical to the call. The difference is the whole of #1090, and it is
+legible in one line of `final-events.txt`:
+
+```
+watchdog cut the turn (no-op-streak): … The turn was stopped; the
+session is NOT halted and the next turn starts clean. 1 in a row now —
+at 3 the session halts and needs an operator reset.
+```
+
+Which is worth saying plainly, because it is the thing five fixes were
+aimed at and none had delivered: **the daemon absorbed an operator's
+"no" and kept working, with no operator reset anywhere in the run.** Note
+what did *not* change — the model's behaviour. It argued, it re-issued,
+it over-recorded; runs 10 through 17 are a story about the runtime
+learning to bound that, not about the model learning not to do it. A
+sixth fix aimed at the model's conduct would be a different kind of
+work, and this rig's numbers (prompts, gated calls) are where it would
+have to show up.
+
 ## Why there is a sink
 
 Because the daemon's own log is not evidence.

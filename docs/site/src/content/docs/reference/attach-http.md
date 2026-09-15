@@ -129,7 +129,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | `POST` | `/resume` | `{"mode"?:"steer"\|"continue"\|"abandon", "steer"?:...}` — **body optional** (absent = `continue`) | `{"resumed":bool, "mode":..., "state":..., "session":...}`; **400** on an unknown mode or `mode=steer` with no text; **501** if no `PauseController`; **503** + `Retry-After` during daemon shutdown |
 | `POST` | `/agents/{name}/stop` | — | `{"agent":..., "stopped":bool, "status"?:..., "session":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-stop-agent-v1.json)); `stopped: false` when the subagent had already finished; **404** only when no subagent by that name was ever registered; **501** if no `AgentStopper` — see [Stopping one subagent](#stopping-one-subagent-protocol-1120) |
 | `POST` | `/perms/allow` / `/perms/deny` | `{"patterns":[...]}` (empty → **400**) | **204**; **501** if no controller |
-| `POST` | `/perms/respond` | `{"id":..., "decision":..., "approver"?:...}` | `{"acknowledged":true, "approver"?:...}`; **404** on unknown id; **400** when `approver` disagrees with the caller the daemon verified, or when it verified nobody to check against. `approver` echoes what was recorded and is omitted when nothing was verified — see [Approval attribution](#approval-attribution-protocol-1100) |
+| `POST` | `/perms/respond` | `{"id":..., "decision":..., "approver"?:...}` | `{"acknowledged":true, "approver"?:...}`; **410** when the prompt is gone — expired, or cut down with its turn (protocol 1.14.0 — see [Answering a prompt that is gone](#answering-a-prompt-that-is-gone-protocol-1140)); **404** on an id already answered or never issued; **400** when `approver` disagrees with the caller the daemon verified, or when it verified nobody to check against. `approver` echoes what was recorded and is omitted when nothing was verified — see [Approval attribution](#approval-attribution-protocol-1100) |
 | `POST` | `/title` | `{"title":"..."}` — the key is **required**; `""` clears | `{"session":..., "title"?:..., "persisted":bool, "detail"?:...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-session-title-v1.json)); **400** on an omitted `title`; **501** if the agent can't set one — see [Renaming a session](#renaming-a-session-protocol-1100) |
 | `POST` | `/pricing/refresh` | — | `{"updated":..., "known_models":..., "last_refresh":..., "detail":...}` |
 | `POST` | `/pricing/set` | `{"model":..., "input_usd_per_mtok":..., "output_usd_per_mtok":...}` | **204** |
@@ -193,6 +193,25 @@ The request body accepts an optional `approver`, and it is **checked, never beli
 The field exists only so a client whose idea of the approver differs from the server's finds out. Accepting and silently ignoring it would let a relay believe it had attributed a decision it hadn't, which is the same invisible failure #830 reports; trusting it would let any caller that can reach `/perms/respond` sign someone else's name to an approval.
 
 Attribution reaches the embedded permission gate too — `permissions.ApprovalLog` gained a `By` field, so the same identity shows up wherever the approval log is read, not only over HTTP. Embedders extend a `permissions.Prompter` to the optional `permissions.AttributingPrompter` to supply it; a host that wires a plain prompter (an interactive terminal, where the answerer is whoever is at the keyboard) records no approver, exactly as before.
+
+### Answering a prompt that is gone (protocol 1.14.0)
+
+Out-of-band approval means slow humans. Somebody reads a notification, thinks about it, and posts the approval some minutes later — by which time the prompt may not be there any more. The only question that approver has is whether the action they just authorized went ahead, and the status code is the answer:
+
+| Status | Meaning | What the operator should do |
+|---|---|---|
+| **200** | The decision was delivered to the waiting call. | Nothing — it is running, or it was refused, per the decision. |
+| **410** | The prompt was here and is gone. **The action was not taken.** | Read the body for which way it ended. |
+| **404** | This daemon cannot place the id: already answered, or never issued. | Check you are posting to the right session. |
+
+The two **410** bodies are different facts and prescribe different fixes:
+
+- `approval arrived after the prompt expired; the action was not taken` — the gate's own [`approval_timeout`](/reference/configuration/#approval-timeout) ran out. Answer faster, or raise the timeout.
+- `the prompt's turn ended before the approval arrived; the action was not taken` — the turn was cut while the prompt was still open: an operator stopped it, a [guardrail](#guardrail-trips-protocol-1130) halted it, or the daemon went down. Answering faster would not have helped; the thing to look at is why the turn ended ([#1088](https://github.com/go-steer/core-agent/issues/1088)).
+
+**A pre-1.14.0 daemon answers the second case with 404** and a body reading "already responded, cancelled, or never issued". A late approver reading that cannot tell a prompt a guardrail took from an id the daemon never had, and "never issued" is the phrase they will act on — so they go looking for a write that no part of the system attempted. The drill that found this ([#1086](https://github.com/go-steer/core-agent/issues/1086)) hit it the way a real operator would: the run before it, whose prompt expired on the clock, got a clean 410 from the same endpoint.
+
+Feature-detect on `protocol_version`. Nothing changes shape, so a client that already renders the 410 body needs no change to benefit; one that special-cases 404 as "unknown request" should narrow that to what it now means.
 
 ### Renaming a session (protocol 1.10.0)
 
@@ -756,7 +775,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | `POST /sessions` | **No** — every call spins a fresh session. |
 | `POST /peers` | Effectively **yes** — name-based upsert extends the lease of an existing peer. |
 | `PATCH /sessions/{sid}/acl` | **Yes** — the listed fields are replaced, not merged, so replaying the same body lands on the same ACL. |
-| `POST /perms/respond` | **No** — second respond for the same prompt → **404** (`ErrPromptNotFound`). |
+| `POST /perms/respond` | **No** — second respond for the same prompt → **404** (`ErrPromptNotFound`); a prompt that expired or was cut down with its turn → **410**, see [Answering a prompt that is gone](#answering-a-prompt-that-is-gone-protocol-1140). |
 | `POST /sessions/{sid}/title` | **Yes** — the title is replaced, so replaying the same body lands on the same name. |
 | `POST /sessions/{sid}/inject` | **No** — every call queues another message. Redelivery after a `503` is the deliberate exception: a duplicate in the inbox beats a silently lost signal. `"wake": false` doesn't change this. |
 | `POST /interrupt` | Idempotent in effect — the loop ends up cancelled and parked either way. Repeat calls while the cancelled turn is still unwinding keep reporting `interrupted: true` (the interrupt did land); once it's idle they set `X-Interrupted: nothing-in-flight`. |

@@ -48,10 +48,12 @@ type PromptBroker struct {
 	subs    []*subscription
 	closed  bool
 
-	// expired is a bounded tombstone ring of prompts that timed out
-	// under the gate's approval timeout, so a late answer gets an
-	// accurate reason instead of "not found". See rememberExpired.
-	expired []expiredPrompt
+	// gone is a bounded tombstone ring of prompts this broker stopped
+	// waiting on, so a late answer gets an accurate reason instead of
+	// "not found". Each entry carries the sentinel RespondAs should
+	// return for it, because "the clock ran out" and "the turn ended
+	// under you" are different facts. See rememberGone.
+	gone []gonePrompt
 
 	// unwatched, when set, is called for a prompt the fan-out reached
 	// nobody with. See SetUnwatchedNotifier.
@@ -238,58 +240,77 @@ func (b *PromptBroker) AskApprovalAttributed(ctx context.Context, req permission
 	case <-ctx.Done():
 		b.mu.Lock()
 		delete(b.pending, id)
-		// An expiry is remembered; an ordinary cancellation is not.
-		// The gate marks the timeout it imposed as the context's cause
-		// (see permissions.ErrPromptExpired), which is the only way the
-		// difference reaches here — from inside a blocked AskApproval,
-		// a stopped turn and an unanswered prompt are the same closed
-		// channel. It matters because out-of-band approval means SLOW
-		// humans: somebody reads the notification, thinks about it, and
-		// posts an approval at minute eleven of a ten-minute window.
-		// Answering that with "unknown request id" tells them nothing
-		// about whether the write happened, and the honest answer —
-		// it expired, and the action was not taken — is a fact only the
-		// broker still holds.
-		if errors.Is(context.Cause(ctx), permissions.ErrPromptExpired) {
-			b.rememberExpired(id)
-		}
+		// Every departure through this branch is remembered, with the
+		// reason (#1088). Out-of-band approval means SLOW humans:
+		// somebody reads the notification, thinks about it, and posts an
+		// approval at minute eleven of a ten-minute window. Answering
+		// that with "unknown request id" tells them nothing about
+		// whether the write happened, and whether it happened is the
+		// only question they have. It did not — not for an expiry and
+		// not for a cancellation — and the broker is the last thing that
+		// still knows the prompt was ever here.
+		//
+		// The reason is not interchangeable, which is why the tombstone
+		// carries it rather than the ring meaning one thing. The gate
+		// marks the timeout it imposed as the context's cause (see
+		// permissions.ErrPromptExpired); anything else that closes this
+		// context ended the turn out from under a prompt nobody had
+		// answered yet, and telling that operator the clock ran out
+		// would be a guess dressed as a fact.
+		b.rememberGone(id, context.Cause(ctx))
 		b.mu.Unlock()
 		return permissions.Approval{Decision: permissions.DecisionDeny}, ctx.Err()
 	}
 }
 
-// expiredPrompt is the tombstone left behind by a prompt that timed
-// out, so a late RespondAs can be answered accurately.
-type expiredPrompt struct {
-	id string
-	at time.Time
+// gonePrompt is the tombstone left behind by a prompt whose wait ended
+// without an answer, so a late RespondAs can be answered accurately.
+// err is the sentinel RespondAs returns for this id.
+type gonePrompt struct {
+	id  string
+	at  time.Time
+	err error
 }
 
-// maxExpiredRemembered caps the tombstone ring. A bound rather than a
+// maxGoneRemembered caps the tombstone ring. A bound rather than a
 // TTL sweep because the memory is a courtesy to a late operator, not a
-// record: the eventlog and the approval log are where an expiry is
-// durably accounted for. Sized so a daemon prompting on a cycle keeps
-// roughly a shift's worth of them without anything to sweep it.
+// record: the eventlog and the approval log are where an unanswered
+// prompt is durably accounted for. Sized so a daemon prompting on a
+// cycle keeps roughly a shift's worth of them without anything to
+// sweep it.
 //
 // Callers hold b.mu.
-const maxExpiredRemembered = 64
+const maxGoneRemembered = 64
 
-func (b *PromptBroker) rememberExpired(id string) {
-	b.expired = append(b.expired, expiredPrompt{id: id, at: time.Now().UTC()})
-	if len(b.expired) > maxExpiredRemembered {
-		b.expired = append(b.expired[:0], b.expired[len(b.expired)-maxExpiredRemembered:]...)
+// goneReason maps the cause that ended a wait to the sentinel a late
+// responder should see. Only the gate's own timeout reads as an expiry;
+// everything else — an operator's stop, a guardrail cutting the turn, a
+// shutting-down request context — is the turn ending under a prompt
+// that was still open.
+func goneReason(cause error) error {
+	if errors.Is(cause, permissions.ErrPromptExpired) {
+		return ErrPromptExpired
+	}
+	return ErrPromptCanceled
+}
+
+// rememberGone records that id is gone and why. Callers hold b.mu.
+func (b *PromptBroker) rememberGone(id string, cause error) {
+	b.gone = append(b.gone, gonePrompt{id: id, at: time.Now().UTC(), err: goneReason(cause)})
+	if len(b.gone) > maxGoneRemembered {
+		b.gone = append(b.gone[:0], b.gone[len(b.gone)-maxGoneRemembered:]...)
 	}
 }
 
-// wasExpired reports whether id belongs to a prompt this broker let
-// expire. Callers hold b.mu.
-func (b *PromptBroker) wasExpired(id string) bool {
-	for _, e := range b.expired {
+// goneErr returns the sentinel for a prompt this broker stopped waiting
+// on, or nil if it is not holding a tombstone for id. Callers hold b.mu.
+func (b *PromptBroker) goneErr(id string) error {
+	for _, e := range b.gone {
 		if e.id == id {
-			return true
+			return e.err
 		}
 	}
-	return false
+	return nil
 }
 
 // Subscribe registers a /perms/stream listener. Returns a channel of
@@ -362,10 +383,13 @@ func (b *PromptBroker) Respond(id string, decision permissions.Decision) error {
 func (b *PromptBroker) RespondAs(id string, decision permissions.Decision, by string) error {
 	b.mu.Lock()
 	pending, ok := b.pending[id]
-	expired := !ok && b.wasExpired(id)
+	var gone error
+	if !ok {
+		gone = b.goneErr(id)
+	}
 	b.mu.Unlock()
-	if expired {
-		return ErrPromptExpired
+	if gone != nil {
+		return gone
 	}
 	if !ok {
 		return ErrPromptNotFound
@@ -433,6 +457,21 @@ var ErrPromptNotFound = errors.New("attach: prompt id not found (already respond
 // else's answer; this one says plainly that it did not happen, and that
 // the reason was the clock rather than a decision.
 var ErrPromptExpired = errors.New("attach: approval arrived after the prompt expired; the action was not taken")
+
+// ErrPromptCanceled is returned by Respond when the id names a prompt
+// that was still open when its turn ended — an operator's stop, a
+// guardrail cutting the turn, a daemon going down under it (#1088).
+//
+// Separate from ErrPromptExpired because the operator's next move is
+// different. An expiry says the window was too short: re-run it and
+// answer faster, or raise approval_timeout. A cancellation says the
+// agent stopped for an unrelated reason and the request went with it,
+// so answering faster would not have helped and the thing to look at is
+// why the turn ended. Separate from ErrPromptNotFound because the
+// prompt WAS here: "never issued" is the one reading that would send a
+// late approver looking for a write that no part of the system ever
+// attempted.
+var ErrPromptCanceled = errors.New("attach: the prompt's turn ended before the approval arrived; the action was not taken")
 
 // PromptBrokerProvider is the optional capability for routes under
 // /sessions/<sid>/perms/stream + /perms/respond. Agents that opted

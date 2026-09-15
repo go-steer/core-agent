@@ -131,8 +131,11 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		// out-of-band approver unable to tell whether the action went
 		// ahead on somebody else's answer, while Gone says the resource
 		// was here, is not any more, and is not coming back. The body
-		// says the action was not taken.
-		if errors.Is(err, ErrPromptExpired) {
+		// says the action was not taken, and which of the two ways it
+		// ended (#1088) — expired on the gate's clock, or cut with its
+		// turn. 404 is left for the ids this broker really cannot place:
+		// one already answered, or one it never issued.
+		if errors.Is(err, ErrPromptExpired) || errors.Is(err, ErrPromptCanceled) {
 			http.Error(w, err.Error(), http.StatusGone)
 			return
 		}

@@ -64,7 +64,7 @@ images:
   newTag: 2.9.0
 - name: ghcr.io/go-steer/lookout
   newName: ghcr.io/go-steer/lookout
-  newTag: v0.23.0
+  newTag: v0.25.0
 # The content image is built + pushed by YOU from
 # deploy/content.Dockerfile (see deploy/README.md); there is no published
 # copy to fall back on, which is why this entry carries a newName that is

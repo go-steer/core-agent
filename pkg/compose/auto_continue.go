@@ -24,6 +24,12 @@
 //     headless --no-repl daemon (the examples/gke-deploy shape) —
 //     #558. Interactive REPL/TUI modes stay excluded: a human is
 //     present there by definition.
+//
+// The last two are each re-fired in-lifetime by AutoContinueRetryLoop
+// (#575 defect B) via AutoContinueRetryScan / AutoContinueStartupRetry:
+// the same pass under the same guards, logged under its own name so an
+// operator does not read a self-heal on a long-lived daemon as a
+// reboot (#1066).
 
 package compose
 
@@ -398,6 +404,33 @@ func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string
 	return agent.ClassifyInterruptedTailVerdict(events)
 }
 
+// autoContinueTrigger names the driver that fired a pass, for the
+// operator log only. Each pass below is shared by two drivers — the
+// boot-time one and the in-lifetime retry loop (#575 defect B) — and
+// the audience for a line it writes is someone reconstructing a night
+// they did not watch. "boot scan" on a daemon with six hours of uptime
+// and zero restarts tells that reader the process rebooted; they then
+// hold two facts that cannot both be true and go looking for a crash
+// that never happened (#1066). The guards and the agent_boot_log row
+// keep their per-boot semantics — this is about what is read, not
+// about what is counted.
+type autoContinueTrigger struct {
+	what  string // fills "core-agent: auto-continue <what>: …"
+	stood string // fills "standing down <stood>" when the breaker trips
+}
+
+var (
+	triggerBoot         = autoContinueTrigger{what: "boot scan", stood: "this boot"}
+	triggerRetry        = autoContinueTrigger{what: "retry", stood: "this pass"}
+	triggerStartup      = autoContinueTrigger{what: "startup", stood: "this boot"}
+	triggerStartupRetry = autoContinueTrigger{what: "startup retry", stood: "this pass"}
+)
+
+// logf writes one operator line attributed to this trigger.
+func (t autoContinueTrigger) logf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "core-agent: auto-continue "+t.what+": "+format+"\n", args...)
+}
+
 // attemptGuards aggregates the boot-log-derived skip rules shared by
 // the boot scan and the startup-session trigger.
 type attemptGuards struct {
@@ -446,9 +479,20 @@ func (g attemptGuards) allow(sid string) bool {
 // core. Call before the wake loop starts; the injected note latches
 // the wake signal.
 func AutoContinueStartupSession(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, freshness time.Duration) {
+	autoContinueStartupPass(ctx, h, ag, freshness, triggerStartup)
+}
+
+// AutoContinueStartupRetry is the same pass fired by the in-lifetime
+// retry loop rather than by boot (#575 defect B). Identical work,
+// different attribution in the log: nothing restarted (#1066).
+func AutoContinueStartupRetry(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, freshness time.Duration) {
+	autoContinueStartupPass(ctx, h, ag, freshness, triggerStartupRetry)
+}
+
+func autoContinueStartupPass(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, freshness time.Duration, trig autoContinueTrigger) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: auto-continue startup: recovered from panic: %v\n", r)
+			trig.logf("recovered from panic: %v", r)
 		}
 	}()
 	if h == nil || h.Service == nil || ag == nil {
@@ -457,12 +501,12 @@ func AutoContinueStartupSession(ctx context.Context, h *eventlog.Handle, ag *age
 	app, user, sid := ag.AppName(), ag.UserID(), ag.SessionID()
 	guards, err := loadAttemptGuards(ctx, h)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue startup: read boot log: %v\n", err)
+		trig.logf("read boot log: %v", err)
 		return
 	}
 	if guards.breakerTripped() {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue BREAKER TRIPPED: %d boots attempted continuations within %s — standing down this boot\n",
-			guards.bootsWithAttempts, breakerWindow)
+		fmt.Fprintf(os.Stderr, "core-agent: auto-continue BREAKER TRIPPED: %d boots attempted continuations within %s — standing down %s\n",
+			guards.bootsWithAttempts, breakerWindow, trig.stood)
 		return
 	}
 	if !guards.allow(sid) {
@@ -484,7 +528,7 @@ func AutoContinueStartupSession(ctx context.Context, h *eventlog.Handle, ag *age
 	}
 	bootID, err := h.RecordBoot(ctx, time.Now(), []string{sid})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue startup: record boot intent: %v — skipping (guards must not be blind)\n", err)
+		trig.logf("record boot intent: %v — skipping (guards must not be blind)", err)
 		return
 	}
 	// Narrow the write-ahead record only if the session skipped for a
@@ -495,7 +539,7 @@ func AutoContinueStartupSession(ctx context.Context, h *eventlog.Handle, ag *age
 	// Non-fatal on error: the pessimistic count stands.
 	if lockClassifyInject(ctx, h, ag, app, user, sid, freshness).refundable() {
 		if err := h.UpdateBootAttempted(ctx, bootID, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: auto-continue startup: narrow boot record: %v (pessimistic count stands)\n", err)
+			trig.logf("narrow boot record: %v (pessimistic count stands)", err)
 		}
 	}
 }
@@ -562,6 +606,18 @@ func AutoContinueRetryLoop(ctx context.Context, interval time.Duration, pass fun
 // attach listener is up. Every failure path logs and returns — a
 // broken scan must never take the daemon down.
 func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
+	autoContinueScanPass(deps, maxPerBoot, triggerBoot)
+}
+
+// AutoContinueRetryScan is the same pass fired by the in-lifetime retry
+// loop rather than by boot (#575 defect B). Identical work, identical
+// guards; it differs only in what the log calls it, because on this
+// path the daemon has been up the whole time (#1066).
+func AutoContinueRetryScan(deps SessionFactoryDeps, maxPerBoot int) {
+	autoContinueScanPass(deps, maxPerBoot, triggerRetry)
+}
+
+func autoContinueScanPass(deps SessionFactoryDeps, maxPerBoot int, trig autoContinueTrigger) {
 	// The scan drives full agent construction (resume) in this
 	// goroutine; on the lazy path the same work runs under net/http's
 	// per-connection recover. A panic on one poisoned session must
@@ -569,7 +625,7 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 	// boot record below.
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: recovered from panic: %v\n", r)
+			trig.logf("recovered from panic: %v", r)
 		}
 	}()
 	h := deps.EventlogHandle
@@ -583,12 +639,12 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 
 	guards, err := loadAttemptGuards(ctx, h)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: read boot log: %v\n", err)
+		trig.logf("read boot log: %v", err)
 		return
 	}
 	if guards.breakerTripped() {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue BREAKER TRIPPED: %d boots attempted continuations within %s — standing down this boot (a continuation turn may be killing the daemon; sessions resume normally on touch)\n",
-			guards.bootsWithAttempts, breakerWindow)
+		fmt.Fprintf(os.Stderr, "core-agent: auto-continue BREAKER TRIPPED: %d boots attempted continuations within %s — standing down %s (a continuation turn may be killing the daemon; sessions resume normally on touch)\n",
+			guards.bootsWithAttempts, breakerWindow, trig.stood)
 		return
 	}
 
@@ -596,7 +652,7 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 	// so any Touch/audit side effects attribute correctly.
 	rows, err := deps.ACLStore.ListVisibleTo(ctx, auth.Caller{Identity: agent.AutoContinueOriginator, Admin: true})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: list sessions: %v\n", err)
+		trig.logf("list sessions: %v", err)
 		return
 	}
 
@@ -625,13 +681,13 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 	}
 	if len(candidates) == 0 {
 		if _, err := h.RecordBoot(ctx, time.Now(), nil); err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: record boot: %v\n", err)
+			trig.logf("record boot: %v", err)
 		}
 		return
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].interruptedAt.Before(candidates[j].interruptedAt) })
 	if len(candidates) > maxPerBoot {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: %d interrupted sessions, continuing the %d oldest (max_per_boot); the rest resume on touch\n",
+		trig.logf("%d interrupted sessions, continuing the %d oldest (max_per_boot); the rest resume on touch",
 			len(candidates), maxPerBoot)
 		candidates = candidates[:maxPerBoot]
 	}
@@ -649,7 +705,7 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 	}
 	bootID, err := h.RecordBoot(ctx, time.Now(), attempted)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: record boot intent: %v — aborting scan (guards must not be blind)\n", err)
+		trig.logf("record boot intent: %v — aborting scan (guards must not be blind)", err)
 		return
 	}
 	// The write-ahead record above charged every candidate
@@ -677,12 +733,12 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 		if err != nil {
 			// Resume failed: leave it charged. A persistent reproduction
 			// failure is a crash loop the per-session cap must bound.
-			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: resume session %s: %v\n", c.sid, err)
+			trig.logf("resume session %s: %v", c.sid, err)
 			continue
 		}
 		ad, ok := entry.Agent.(*attachadapter.Adapter)
 		if !ok {
-			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: session %s: unexpected registrant type %T; skipping inject\n", c.sid, entry.Agent)
+			trig.logf("session %s: unexpected registrant type %T; skipping inject", c.sid, entry.Agent)
 			continue
 		}
 		outcome := lockClassifyInject(ctx, h, ad.Agent(), c.app, c.user, c.sid, deps.AutoContinueFreshness)
@@ -705,10 +761,10 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 			}
 		}
 		if err := h.UpdateBootAttempted(ctx, bootID, kept); err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: narrow boot record: %v (pessimistic count stands)\n", err)
+			trig.logf("narrow boot record: %v (pessimistic count stands)", err)
 		}
 	}
 	if injectedCount > 0 {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: queued continuations for %d session(s)\n", injectedCount)
+		trig.logf("queued continuations for %d session(s)", injectedCount)
 	}
 }

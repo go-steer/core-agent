@@ -46,18 +46,21 @@ type runnable interface {
 type namespacedToolset struct {
 	inner    tool.Toolset
 	prefix   string
-	readOnly bool // ServerSpec.ReadOnly — stamped onto every tool
+	readOnly bool              // ServerSpec.ReadOnly — stamped onto every tool
+	notes    map[string]string // ServerSpec.ToolNotes, keyed by UPSTREAM tool name
 }
 
 // withNamespace prefixes every tool name in inner with prefix + "_".
 // Returns inner unchanged if prefix is empty. readOnly is the server's
 // ServerSpec.ReadOnly declaration, applied to every tool that doesn't
-// declare its own dispatch class.
-func withNamespace(inner tool.Toolset, prefix string, readOnly bool) tool.Toolset {
+// declare its own dispatch class. notes is ServerSpec.ToolNotes, keyed
+// by the name the server exposes rather than the prefixed one, so a
+// note survives a rename of the mcp.json server key.
+func withNamespace(inner tool.Toolset, prefix string, readOnly bool, notes map[string]string) tool.Toolset {
 	if inner == nil || prefix == "" {
 		return inner
 	}
-	return &namespacedToolset{inner: inner, prefix: sanitizePrefix(prefix), readOnly: readOnly}
+	return &namespacedToolset{inner: inner, prefix: sanitizePrefix(prefix), readOnly: readOnly, notes: notes}
 }
 
 func (n *namespacedToolset) Name() string {
@@ -74,7 +77,7 @@ func (n *namespacedToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error
 	}
 	out := make([]tool.Tool, 0, len(upstream))
 	for _, t := range upstream {
-		out = append(out, renamedTool{inner: t, prefix: n.prefix, readOnly: n.readOnly})
+		out = append(out, renamedTool{inner: t, prefix: n.prefix, readOnly: n.readOnly, note: n.notes[t.Name()]})
 	}
 	return out, nil
 }
@@ -83,15 +86,40 @@ type renamedTool struct {
 	inner    tool.Tool
 	prefix   string
 	readOnly bool
+	note     string // ServerSpec.ToolNotes entry for this tool, or ""
 }
 
 func (r renamedTool) Name() string        { return r.prefix + "_" + r.inner.Name() }
-func (r renamedTool) Description() string { return r.inner.Description() }
+func (r renamedTool) Description() string { return withNote(r.inner.Description(), r.note) }
 func (r renamedTool) IsLongRunning() bool { return r.inner.IsLongRunning() }
+
+// withNote appends an operator's tool note to a description. Appended,
+// never substituted: the server's own text is the only account of what
+// the tool does, and a note is by definition something it left out.
+// Blank line between them so the two voices do not read as one
+// paragraph.
+func withNote(desc, note string) string {
+	if note == "" {
+		return desc
+	}
+	if desc == "" {
+		return note
+	}
+	return desc + "\n\n" + note
+}
 
 // Declaration delegates to the underlying tool's runnable declaration
 // (when it has one) but rewrites the function name to the prefixed
-// form. Returns a fresh struct so we don't mutate the upstream copy.
+// form, and appends the operator's tool note to the description.
+// Returns a fresh struct so we don't mutate the upstream copy.
+//
+// The description on the DECLARATION is the one that matters. Tool.
+// Description() feeds `/tools` and the `/mcp` listing — surfaces a
+// human reads — while this is what gets serialized into the request
+// and put in front of the model, and the two are separate methods on
+// separate interfaces. #1016's whole complaint is that the model does
+// not have the fact at the call site, so a note that reached only
+// Description() would have fixed the listing and nothing else.
 func (r renamedTool) Declaration() *genai.FunctionDeclaration {
 	rn, ok := r.inner.(runnable)
 	if !ok {
@@ -103,6 +131,7 @@ func (r renamedTool) Declaration() *genai.FunctionDeclaration {
 	}
 	clone := *d
 	clone.Name = r.Name()
+	clone.Description = withNote(clone.Description, r.note)
 	return &clone
 }
 

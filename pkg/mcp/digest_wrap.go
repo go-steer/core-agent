@@ -175,18 +175,19 @@ type digestingToolset struct {
 	prefix   string
 	server   string // the mcp.json key; used for denylist check
 	opts     *DigestOptions
-	readOnly bool // ServerSpec.ReadOnly — stamped onto every tool
+	readOnly bool              // ServerSpec.ReadOnly — stamped onto every tool
+	notes    map[string]string // ServerSpec.ToolNotes, keyed by UPSTREAM tool name
 }
 
 // withNamespaceAndDigest wraps inner with name-prefixing AND digest
 // routing. Passing nil opts (or an opts pointer with the denylist
 // hit) yields the same behavior as plain withNamespace.
-func withNamespaceAndDigest(inner tool.Toolset, prefix, server string, opts *DigestOptions, readOnly bool) tool.Toolset {
+func withNamespaceAndDigest(inner tool.Toolset, prefix, server string, opts *DigestOptions, readOnly bool, notes map[string]string) tool.Toolset {
 	if inner == nil || prefix == "" {
 		return inner
 	}
 	if opts == nil || opts.NeverServers[server] {
-		return withNamespace(inner, prefix, readOnly)
+		return withNamespace(inner, prefix, readOnly, notes)
 	}
 	return &digestingToolset{
 		inner:    inner,
@@ -194,6 +195,7 @@ func withNamespaceAndDigest(inner tool.Toolset, prefix, server string, opts *Dig
 		server:   server,
 		opts:     opts,
 		readOnly: readOnly,
+		notes:    notes,
 	}
 }
 
@@ -215,7 +217,7 @@ func (d *digestingToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error)
 		// (which the model sees) carries the prefixed name and the
 		// Run wrapper handles digesting after the upstream call.
 		out = append(out, digestingTool{
-			inner: renamedTool{inner: t, prefix: d.prefix, readOnly: d.readOnly},
+			inner: renamedTool{inner: t, prefix: d.prefix, readOnly: d.readOnly, note: d.notes[t.Name()]},
 			opts:  d.opts,
 		})
 	}

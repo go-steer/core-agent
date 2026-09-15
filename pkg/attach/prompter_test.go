@@ -180,10 +180,19 @@ func TestPromptBroker_LateAnswerToExpiredPrompt(t *testing.T) {
 	}
 }
 
-// A cancelled turn leaves no tombstone. Only an expiry does — a turn
-// somebody stopped on purpose has an answer already, and remembering it
-// would tell a later caller the clock ran out when it did not.
-func TestPromptBroker_CancelledPromptIsNotRememberedAsExpired(t *testing.T) {
+// A prompt cut down with its turn gets a receipt too, and it is not the
+// expiry one (#1088). This test used to assert the opposite — that only
+// an expiry leaves a tombstone — on the reasoning that "a turn somebody
+// stopped on purpose has an answer already". Run 13 of
+// dev/uat/approval-gate/ showed what that costs: the gate's refusal-storm
+// arm cut leg 2's turn with a prompt still open, and the late approval
+// the drill posts one leg later came back `404 attach: prompt id not
+// found (already responded, cancelled, or never issued)`. Every branch
+// of that sentence is wrong for this caller except the middle one, and
+// the one they will read first — never issued — sends them looking for a
+// write that no part of the system attempted. The turn had not been
+// "stopped on purpose" by them or by anybody: a guardrail ended it.
+func TestPromptBroker_LateAnswerToACancelledPrompt(t *testing.T) {
 	t.Parallel()
 
 	b := NewPromptBroker()
@@ -207,32 +216,41 @@ func TestPromptBroker_CancelledPromptIsNotRememberedAsExpired(t *testing.T) {
 	<-done
 
 	err := b.Respond(id, permissions.DecisionAllowOnce)
-	if !errors.Is(err, ErrPromptNotFound) {
-		t.Fatalf("answer to a cancelled prompt: err = %v, want ErrPromptNotFound", err)
+	if !errors.Is(err, ErrPromptCanceled) {
+		t.Fatalf("late answer to a cancelled prompt: err = %v, want ErrPromptCanceled", err)
+	}
+	// The two reasons must stay apart in both directions. Reading as an
+	// expiry would tell the operator to answer faster next time, which
+	// would not have helped; reading as not-found is the #1088 defect.
+	if errors.Is(err, ErrPromptExpired) {
+		t.Error("a cancelled prompt must not read as having expired — nothing timed out")
+	}
+	if errors.Is(err, ErrPromptNotFound) {
+		t.Error("a cancelled prompt must not read as never having existed")
 	}
 }
 
 // The tombstone ring is a courtesy, not a record, so it must not grow
 // without bound on a daemon that prompts on a cycle all night.
-func TestPromptBroker_ExpiredTombstonesAreBounded(t *testing.T) {
+func TestPromptBroker_GoneTombstonesAreBounded(t *testing.T) {
 	t.Parallel()
 
 	b := NewPromptBroker()
 	defer b.Close()
 
-	for i := 0; i < maxExpiredRemembered+10; i++ {
+	for i := 0; i < maxGoneRemembered+10; i++ {
 		b.mu.Lock()
-		b.rememberExpired(fmt.Sprintf("id-%d", i))
+		b.rememberGone(fmt.Sprintf("id-%d", i), context.Canceled)
 		b.mu.Unlock()
 	}
 
 	b.mu.Lock()
-	got := len(b.expired)
-	oldestKept := b.expired[0].id
+	got := len(b.gone)
+	oldestKept := b.gone[0].id
 	b.mu.Unlock()
 
-	if got != maxExpiredRemembered {
-		t.Fatalf("expired ring holds %d, want %d", got, maxExpiredRemembered)
+	if got != maxGoneRemembered {
+		t.Fatalf("tombstone ring holds %d, want %d", got, maxGoneRemembered)
 	}
 	// It keeps the NEWEST ones: a late approver is answering a prompt
 	// from minutes ago, not from the start of the shift.

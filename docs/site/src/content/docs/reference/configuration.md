@@ -333,7 +333,9 @@ Nor was *that* enough on its own, and the third run said why ([#1081](https://gi
 
 The privilege-bearing [control-plane write](/concepts/permissions/#control-plane-files-elevated-writes) path follows the same rule, and needs it most — a re-issued write to `.agents/config.json` pages the operator repeatedly about the file that decides what the agent is allowed to do.
 
-One consequence shows up at the API. An operator answering `POST /perms/respond` **after** the deadline gets **410 Gone**, not 404, with a body saying the action was not taken. Out-of-band approval means slow humans — somebody reads a notification, thinks about it, and approves at minute eleven of a ten-minute window — and `404 not found` would leave them unable to tell whether the write had gone ahead on somebody else's answer. The daemon remembers a bounded number of recently-expired request ids to be able to say this.
+One consequence shows up at the API. An operator answering `POST /perms/respond` **after** the deadline gets **410 Gone**, not 404, with a body saying the action was not taken. Out-of-band approval means slow humans — somebody reads a notification, thinks about it, and approves at minute eleven of a ten-minute window — and `404 not found` would leave them unable to tell whether the write had gone ahead on somebody else's answer. The daemon remembers a bounded number of recently-departed request ids to be able to say this.
+
+A prompt the *clock* took is not the only kind that goes away. Since protocol 1.14.0 the same **410** covers a prompt whose turn ended while it was still open — an operator's stop, a guardrail cutting the turn, a daemon going down — with a body that says so rather than blaming the deadline, because the two prescribe different fixes and only one of them is "answer faster" ([#1088](https://github.com/go-steer/core-agent/issues/1088)). **404** narrows to what it can still honestly claim: an id already answered, or one this daemon never issued. See [Answering a prompt that is gone](/reference/attach-http/#answering-a-prompt-that-is-gone-protocol-1140).
 
 ### Out-of-band approval (v3.0+) — `approval_notify`
 

@@ -250,6 +250,70 @@ func TestIntegration_PromptRespond_410OnExpiredPrompt(t *testing.T) {
 	}
 }
 
+// The other way a prompt goes away, and the one the approval-gate drill
+// hit on the cluster (#1088): the turn ended while it was still open, so
+// there is no expiry to report and there never was an answer. Also 410 —
+// what makes the status right is that the prompt was here and the caller
+// is late, not which clock ran out — but the body must not claim it
+// expired, because "expired" tells an operator to answer faster and that
+// would not have helped.
+func TestIntegration_PromptRespond_410OnCancelledPrompt(t *testing.T) {
+	t.Parallel()
+	broker := NewPromptBroker()
+	defer broker.Close()
+	reg := NewSessionRegistry()
+	ag := &promptRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		broker:         broker,
+	}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	base, cleanup := startTestServer(t, reg)
+	defer cleanup()
+
+	// No cause: a guardrail cutting the turn cancels the run context and
+	// nothing labels it, which is exactly why the broker used to lose
+	// track of this prompt.
+	ctx, cancel := context.WithCancel(context.Background())
+	asked := make(chan struct{})
+	go func() {
+		defer close(asked)
+		_, _ = broker.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"})
+	}()
+	var id string
+	for i := 0; i < 100 && id == ""; i++ {
+		if p := broker.Pending(); len(p) == 1 {
+			id = p[0].ID
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("prompt never became pending")
+	}
+	cancel()
+	<-asked
+
+	body, _ := json.Marshal(PromptResponse{ID: id, Decision: "allow-once"})
+	resp, err := http.Post(base+"/sessions/core-agent/s1/perms/respond", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST respond: %v", err)
+	}
+	payload, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusGone {
+		t.Errorf("POST respond to a cancelled prompt: status = %d, want 410 — 404 tells a late "+
+			"approver the request was never issued, which is the one thing that did not happen", resp.StatusCode)
+	}
+	if !strings.Contains(string(payload), "not taken") {
+		t.Errorf("410 body does not say the action was not taken: %q", payload)
+	}
+	if strings.Contains(string(payload), "expired") {
+		t.Errorf("410 body blames the clock for a cancellation: %q", payload)
+	}
+}
+
 func TestIntegration_PromptRespond_400OnBadDecision(t *testing.T) {
 	t.Parallel()
 	broker := NewPromptBroker()

@@ -282,7 +282,24 @@ import "time"
 // `guardrail-trip` eventlog row (#643) predates this and the wire event
 // takes its name, so a trip reads the same off the stream and out of
 // history.
-const protocolVersion = "1.13.0"
+// v1.14.0 (#1088): `POST /perms/respond` answers **410 Gone** for a
+// prompt whose turn ended before the approval arrived, where it used to
+// answer 404. No frame changes shape; this is the same widening 1.12.0
+// was — a status a client already had to handle now covers a second
+// case — and it is a version rather than a silent fix because the two
+// codes are the only thing that tells a late out-of-band approver
+// whether the action they just authorized went ahead. 404's body says
+// "already responded, cancelled, or never issued", and on a pre-1.14.0
+// daemon a guardrail-cut prompt landed in that sentence alongside ids
+// the broker never had. A client cannot tell those apart by reading it,
+// so it could not tell them apart at all.
+//
+// 404 keeps the cases it can still honestly claim: an id already
+// answered, and one this daemon never issued. Expiry is unchanged — it
+// has been 410 since #647 — and the two 410 bodies differ, because
+// "expired" tells an operator to answer faster or raise
+// approval_timeout, and a cancellation says that would not have helped.
+const protocolVersion = "1.14.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

@@ -160,7 +160,7 @@ spec:
           # interesting only if this recipe ever grows the lookout MCP
           # sidecar (core-agent #620); today nothing here speaks MCP to
           # the sentinel.
-          image: ghcr.io/go-steer/lookout:v0.23.0
+          image: ghcr.io/go-steer/lookout:v0.25.0
           imagePullPolicy: IfNotPresent
           args:
             - "--daemon-url=http://core-agent.gke-platform-agent.svc.cluster.local:7777"

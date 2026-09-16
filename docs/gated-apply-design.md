@@ -1,6 +1,7 @@
 # Gated apply: letting the GKE agent fix what it found
 
-Status: design, scope decisions settled 2026-09-16. D1 is
+Status: design, scope decisions settled and the blocking RBAC probe answered
+2026-09-16. D1 is
 [#1042](https://github.com/go-steer/core-agent/issues/1042) box A3, tracked
 by [#647](https://github.com/go-steer/core-agent/issues/647) (this closes its
 open cluster leg). D2 is box **A6**, tracked by
@@ -251,25 +252,44 @@ the unattended agent's only real constraint is the tool allowlist, which is
 a *registration* control we already said is not a security boundary. The
 whole D2 safety story collapses to "we didn't tell it about delete".
 
-### The unresolved question
+### The question, answered
 
 **Can a GKE RoleBinding name a WIF direct-binding principal as a subject?**
+**Yes** — probed 2026-09-16, see §Probe status. Fallback 1 holds: namespaced
+RoleBinding, IAM unchanged, no GSA, no `roles/container.admin`. The
+least-privilege story survives.
 
-The subject would be something like:
+The subject is **not** the `principal://iam.googleapis.com/…` form this
+design originally guessed at. It is GKE's Workload Identity username:
 
 ```
-principal://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/<PROJECT_ID>.svc.id.goog/subject/ns/gke-platform-agent/sa/core-agent-daemon
+serviceAccount:<PROJECT_ID>.svc.id.goog[<namespace>/<ksa>]
 ```
 
-The watcher does not answer this — it holds a plain KSA token and talks to
-the API server directly, so `kind: ServiceAccount` works for it. The daemon
-does not talk to the API server at all; it calls the GKE MCP endpoint, which
-acts against the cluster as the daemon's *Google* principal. That principal
-has no email, because direct binding removed the GSA.
+which for this recipe is
 
-This is load-bearing and it is **not resolved**. It must be probed on the
-cluster before the overlay is written, and it must not be asserted in the
-overlay's README until it has been.
+```
+serviceAccount:gke-demos-345619.svc.id.goog[gke-platform-agent/core-agent-daemon]
+```
+
+The watcher did not answer this — it holds a plain KSA token and talks to the
+API server directly, so `kind: ServiceAccount` works for it. The daemon does
+not talk to the API server that way; it calls the GKE MCP endpoint, which
+reaches the cluster as the daemon's *Google* principal.
+
+GKE says RBAC is an accepted path for that principal in its own denial
+message, which is the strongest available statement short of the binding
+itself:
+
+> `deployments.apps "…" is forbidden: User
+> "serviceAccount:gke-demos-345619.svc.id.goog[gke-platform-agent/core-agent-daemon]"
+> cannot delete resource "deployments" … requires one of
+> ["container.deployments.delete"] permission(s) in Cloud IAM **or a
+> Kubernetes RBAC role with verb "delete" for resource "deployments"**.`
+
+One step is still unconfirmed end to end: creating the Role and RoleBinding
+and watching the same call flip from 403 to 404. That needs cluster write
+and is the first thing #1105 should do.
 
 ### Probe
 
@@ -287,41 +307,71 @@ the Cloud Audit Log entry.
 
 ### Probe status, 2026-09-16
 
-Run against `std-simian-test` in `gke-demos-345619`. Partially completed —
-the decisive step was not reached. What it did establish:
+Run against `std-simian-test` in `gke-demos-345619`, from an ephemeral pod
+carrying `serviceAccountName: core-agent-daemon` (the daemon image is
+distroless — no shell — so `kubectl exec` into the running pod cannot work).
+Token minted from the metadata server, then three requests against a
+deployment name that does not exist:
 
-- **The API server accepts the `principal://…` string as a username.**
-  `kubectl auth can-i --list --as=<principal>` resolved to the default
-  `system:authenticated` rule set instead of erroring, so the subject is not
-  malformed and RBAC's `kind: User` match is plain string equality against
-  it. This does not prove the authenticator *emits* that string for the
-  daemon's requests, which is the part still open — but it rules out the
-  failure where the format itself is rejected.
-- **`--list` carries a warning worth keeping: `webhook authorizer does not
-  support user rule resolution`.** That webhook is GKE's IAM authorizer.
-  Rule enumeration cannot see IAM grants; `can-i` on a specific verb
-  consults both. Do not read an empty `--list` as "has no access".
-- **Data Access audit logs are off on this project** (`auditConfigs` is
-  null). The daemon's ten days of MCP reads were therefore never logged and
-  there is no retroactive answer to be had — the probe must generate a write
-  attempt. Admin Activity for `resource.type="k8s_cluster"` *is* on and
-  populated, so scenario D's audit witness survives: a Deployment patch is a
-  write and always lands there.
-- **The audit witness field is `principalEmail`, not `principalSubject`.**
-  Every Admin Activity entry sampled on this cluster had `principalSubject`
-  empty, with the identity in `principalEmail` (in-cluster service accounts
-  render as `system:serviceaccount:<ns>:<name>`). A grader reading only
-  `principalSubject` would read empty and score a false negative. **Read
-  both.**
-- **The daemon image is distroless — no shell.** `kubectl exec` into it
-  cannot work; in-pod probing needs an ephemeral pod carrying the same
-  service account.
+| Request | Result |
+|---|---|
+| `GET` | **404** — authorized; IAM's read grant reaches the API server |
+| `PATCH` | **403** |
+| `DELETE` | **403**, naming the principal and offering RBAC |
 
-Not reached: minting the daemon's federated token and issuing the write
-attempt, which is what produces the principal string and answers whether the
-MCP endpoint forwards the caller's identity at all.
+So the current posture genuinely denies writes — the boundary today is real,
+not merely undeclared — and **the username is
+`serviceAccount:gke-demos-345619.svc.id.goog[gke-platform-agent/core-agent-daemon]`.**
+
+**Does the MCP endpoint forward the caller's identity to the API server?**
+Yes, and the evidence is an experiment already in the repo rather than a new
+probe. `scripts/grant-iam.sh` records that under plain `roles/container.viewer`
+the daemon's `gke_get_k8s_logs` calls 403'd while every other read succeeded,
+and that adding exactly `container.pods.getLogs` to the **caller's** custom
+role fixed it (observed 2026-09-09, all three scenarios). The node service
+account this cluster runs — `1067056737933-compute@developer.gserviceaccount.com`
+— holds `roles/editor` and `roles/container.developer`, both of which carry
+`container.pods.getLogs`. Had the cluster call been made as the node SA, that
+403 was impossible. The caller's identity is what the API server authorizes.
+
+This also disposes of the worry raised by `roles/iam.serviceAccountUser` on
+the node SA: the MCP server-side chain does impersonate the node SA for
+something, but not for the Kubernetes request's identity.
+
+**Two methods that do NOT work on GKE, recorded so they are not retried:**
+
+- **`kubectl auth can-i --as=<username>` does not reproduce the IAM
+  authorizer's verdict.** It answered `no` to `get deployments` for the very
+  identity whose real token gets a 404. SubjectAccessReview impersonation
+  only exercises the RBAC authorizer; GKE's IAM grants come from a webhook
+  that keys off the authenticated identity, not the impersonated string.
+  Related warning on `--list`: `webhook authorizer does not support user rule
+  resolution`. **Only the real token is a valid probe.**
+- **Retracting an earlier reading.** A previous pass took `can-i --list
+  --as=principal://…` resolving rather than erroring as evidence the subject
+  format was valid. It was not evidence of anything — the API server accepts
+  *any* string as an impersonated username. The guessed `principal://` form
+  was in fact wrong.
+
+**Audit findings.** Data Access logs are off on this project (`auditConfigs`
+is null), so the daemon's MCP reads were never logged and no retroactive
+answer was available. Admin Activity for `resource.type="k8s_cluster"` is on
+and populated, so scenario D's audit witness survives: a Deployment patch is
+a write and always lands there. **The witness field is `principalEmail`, not
+`principalSubject`** — the latter was empty on every entry sampled, so a
+grader keyed to it alone scores a false negative on a passing run. Read both.
+
+**Not reached:** creating the Role and RoleBinding and watching the same
+`PATCH` flip from 403 to 404. That needs cluster write and is step 1 of
+#1105. Everything above is consistent with it succeeding; nothing above
+proves it.
 
 ### Fallbacks, in preference order
+
+**Fallback 1 is the one we get** (probed 2026-09-16). The rest are kept
+because a different cluster — one without Workload Identity, or with a
+different authenticator — can still land on them, and because the reasoning
+for rejecting 3 should outlive the happy path.
 
 1. **RoleBinding names the principal directly.** What we want. Namespace
    scope, one verb, one resource, IAM unchanged.
@@ -462,11 +512,44 @@ by [#1105](https://github.com/go-steer/core-agent/issues/1105).
 
 ## Sequencing
 
-1. Probe the RBAC subject question on the drill cluster (§Probe). **Blocking
-   — nothing below is worth building until the answer is known**, because
-   fallback 3 changes what the design claims.
-2. Write the Role + RoleBinding into the overlay, with the probed subject
-   string and a comment recording how it was obtained.
+1. ~~Probe the RBAC subject question on the drill cluster.~~ **Done
+   2026-09-16 — see §Probe status.** Answer: yes, subject is
+   `serviceAccount:<PROJECT_ID>.svc.id.goog[<ns>/<ksa>]`. One end-to-end
+   confirmation left: create the Role + RoleBinding and watch the same
+   `PATCH` flip from 403 to 404.
+2. Write the Role + RoleBinding into the overlay, with a comment recording
+   how the subject was obtained. It is:
+
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: Role
+   metadata:
+     name: gated-apply
+     namespace: online-boutique     # the TARGET namespace, not the agent's
+   rules:
+     - apiGroups: ["apps"]
+       resources: ["deployments"]
+       verbs: ["patch"]             # patch only — get/list already come from IAM
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: RoleBinding
+   metadata:
+     name: gated-apply-daemon
+     namespace: online-boutique
+   subjects:
+     # GKE Workload Identity username, NOT principal://… — see §Probe status.
+     # Templated by the overlay: serviceAccount:<PROJECT_ID>.svc.id.goog[<ns>/<ksa>]
+     - kind: User
+       apiGroup: rbac.authorization.k8s.io
+       name: serviceAccount:gke-demos-345619.svc.id.goog[gke-platform-agent/core-agent-daemon]
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: Role
+     name: gated-apply
+   ```
+
+   The Role lives in the **target** namespace, which is what makes "cannot
+   cross namespaces" true by construction rather than by instruction.
 3. Build the `gated-apply` overlay: mount swap, `tools` allowlist, the two
    `config.json` variants.
 4. Scenario D + its scorecard sheet.
@@ -476,15 +559,18 @@ by [#1105](https://github.com/go-steer/core-agent/issues/1105).
 
 ## Open questions
 
-- **The RBAC subject.** Still unresolved and still blocking, but narrowed by
-  the 2026-09-16 probe: the string is a valid username, so what remains is
-  whether the authenticator emits it for the daemon's requests.
-- **Does the MCP endpoint forward the caller's principal, or does it act as
-  its own service identity?** If the latter, RBAC on the daemon's principal
-  grants nothing and the entire boundary moves to IAM — which cannot express
-  a namespace. The audit-log witness answers this and the probe produces it,
-  so it resolves with the question above, but it is a *different* failure and
-  worth naming separately.
+- ~~**The RBAC subject.**~~ Answered 2026-09-16: `serviceAccount:<PROJECT_ID>.svc.id.goog[<ns>/<ksa>]`,
+  and GKE's own denial offers RBAC as an accepted path. Fallback 1 holds.
+  One end-to-end confirmation remains (§Probe status) and it is step 1 of
+  [#1105](https://github.com/go-steer/core-agent/issues/1105).
+- ~~**Does the MCP endpoint forward the caller's principal?**~~ Answered
+  2026-09-16: yes. See §Probe status — the `container.pods.getLogs` episode
+  is only possible if the API server authorizes the caller, not the node SA.
+- **The node service account holds `roles/editor` and
+  `roles/container.developer`** on this project. Nothing in this design
+  depends on that and nothing here changes it, but it is the blast radius
+  that would absorb a mistake if the identity story were ever wrong, and it
+  is worth a separate look outside this design.
 - ~~**Does the hold on `SCORECARD.md` admit a new sheet for a new
   scenario?**~~ Settled 2026-09-16: yes, narrowly. See §Costs.
 - ~~**A6 or a second clause on A3?**~~ Settled 2026-09-16: a new box A6,

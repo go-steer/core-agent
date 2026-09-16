@@ -1,10 +1,13 @@
 # Gated apply: letting the GKE agent fix what it found
 
-Status: design. Tracked by [#1042](https://github.com/go-steer/core-agent/issues/1042)
-box A3. Depends on [#1098](https://github.com/go-steer/core-agent/issues/1098)
-and [#1100](https://github.com/go-steer/core-agent/issues/1100), both shipped
-2026-09-16. Closes the open cluster leg of
-[#647](https://github.com/go-steer/core-agent/issues/647).
+Status: design, scope decisions settled 2026-09-16. D1 is
+[#1042](https://github.com/go-steer/core-agent/issues/1042) box A3, tracked
+by [#647](https://github.com/go-steer/core-agent/issues/647) (this closes its
+open cluster leg). D2 is box **A6**, tracked by
+[#1105](https://github.com/go-steer/core-agent/issues/1105). Depends on
+[#1098](https://github.com/go-steer/core-agent/issues/1098) and
+[#1100](https://github.com/go-steer/core-agent/issues/1100), both shipped
+2026-09-16.
 
 ## The question
 
@@ -271,16 +274,52 @@ overlay's README until it has been.
 ### Probe
 
 The cheapest probe exploits the current denial. Before changing any RBAC,
-have the daemon attempt `patch_k8s_resource` against a scratch deployment.
-`gkeAgentClusterViewer` has no write permission, so it fails — and **the 403
-names the principal exactly as the API server sees it.** That string is the
-RoleBinding subject; guessing its format is how this wastes an afternoon.
+have the daemon attempt `patch_k8s_resource` against a deployment name that
+**does not exist**. Authorization is evaluated before existence, so a denied
+request returns 403 and an authorized one returns 404 — nothing is created,
+changed or deleted either way — and **the 403 names the principal exactly as
+the API server sees it.** That string is the RoleBinding subject; guessing
+its format is how this wastes an afternoon.
 
 Then: apply a namespaced Role (`patch` on `apps/deployments`) plus a
-RoleBinding naming that subject, retry the same call, and read the Cloud
-Audit Log entry. Admin Activity logs cover writes by default and record
-`authenticationInfo.principalSubject` — which both proves the call landed
-and proves *who* the cluster thought was calling.
+RoleBinding naming that subject, retry against a real deployment, and read
+the Cloud Audit Log entry.
+
+### Probe status, 2026-09-16
+
+Run against `std-simian-test` in `gke-demos-345619`. Partially completed —
+the decisive step was not reached. What it did establish:
+
+- **The API server accepts the `principal://…` string as a username.**
+  `kubectl auth can-i --list --as=<principal>` resolved to the default
+  `system:authenticated` rule set instead of erroring, so the subject is not
+  malformed and RBAC's `kind: User` match is plain string equality against
+  it. This does not prove the authenticator *emits* that string for the
+  daemon's requests, which is the part still open — but it rules out the
+  failure where the format itself is rejected.
+- **`--list` carries a warning worth keeping: `webhook authorizer does not
+  support user rule resolution`.** That webhook is GKE's IAM authorizer.
+  Rule enumeration cannot see IAM grants; `can-i` on a specific verb
+  consults both. Do not read an empty `--list` as "has no access".
+- **Data Access audit logs are off on this project** (`auditConfigs` is
+  null). The daemon's ten days of MCP reads were therefore never logged and
+  there is no retroactive answer to be had — the probe must generate a write
+  attempt. Admin Activity for `resource.type="k8s_cluster"` *is* on and
+  populated, so scenario D's audit witness survives: a Deployment patch is a
+  write and always lands there.
+- **The audit witness field is `principalEmail`, not `principalSubject`.**
+  Every Admin Activity entry sampled on this cluster had `principalSubject`
+  empty, with the identity in `principalEmail` (in-cluster service accounts
+  render as `system:serviceaccount:<ns>:<name>`). A grader reading only
+  `principalSubject` would read empty and score a false negative. **Read
+  both.**
+- **The daemon image is distroless — no shell.** `kubectl exec` into it
+  cannot work; in-pod probing needs an ephemeral pod carrying the same
+  service account.
+
+Not reached: minting the daemon's federated token and issuing the write
+attempt, which is what produces the principal string and answers whether the
+MCP endpoint forwards the caller's identity at all.
 
 ### Fallbacks, in preference order
 
@@ -332,7 +371,10 @@ grade the world via a witness. Three witnesses:
 2. **The audit principal.** The Admin Activity log entry for the patch names
    the daemon's principal. This is the witness that proves RBAC was the
    boundary — without it, a green run is consistent with somebody having
-   left `yolo` on.
+   left `yolo` on. Read **both** `authenticationInfo.principalEmail` and
+   `authenticationInfo.principalSubject`: on this cluster the latter is
+   empty on every entry sampled, so a grader keyed to it alone scores a
+   false negative. See §Probe status.
 3. **The plan artifact exists and precedes the patch.** `record_plan` fired,
    and what it recorded matches what was patched.
 
@@ -383,22 +425,26 @@ a sheet pushes that condition back. This is a real cost and it should be
 paid deliberately rather than discovered later: A5 is not startable while D
 is in flight.
 
-The mitigation is scope, not speed. D adds a sheet; it does not touch A/B/C's
-sheet. If the hold is read as "no changes to the existing rubric", a new
-sheet for a new scenario is compatible with it. If it is read as "no changes
-to the rubric surface at all", it is not, and that is the user's call.
+**Settled 2026-09-16, the narrow reading.** The hold is on the *existing*
+rubric, not on the rubric surface. A new sheet for a new scenario is
+compatible with it; **A/B/C's sheet is frozen and is not to be touched.**
+
+The broad reading — no change to the rubric surface at all — was rejected
+because it would make A3 and A6 unreachable behind a hold that exists for an
+unrelated reason. **This does not release the hold.** #652, #966, #967, #994
+and box A5 stay blocked on #1033's three gaps, which are about the existing
+sheet and are untouched by this.
 
 ### A3 as written covers only D1
 
 Box A3 describes an approval-gated apply with `mode: yolo` off. That is D1
-exactly. D2 is not in the box. If unattended apply is the real v3.0 target —
-and the `ApprovalTimeout` argument above says it is — then A3 needs a second
-clause or v3.0 needs a new box. Shipping D2 under A3's banner would be
-scope creep dressed as completion.
+exactly. D2 is not in the box. Shipping D2 under A3's banner would be scope
+creep dressed as completion, and closing v3.0 on A3 alone would leave
+"proven autonomy" proven on a run with a human in it.
 
-Recommended: A3 keeps its text and is closed by D1. A new box A6,
-"unattended apply, graded on the cluster", takes D2 and the adversarial
-boundary tests.
+**Settled 2026-09-16.** A3 keeps its text and is closed by D1. New box
+**A6 — "Acts alone"** takes D2 and the adversarial boundary tests, tracked
+by [#1105](https://github.com/go-steer/core-agent/issues/1105).
 
 ## Not in scope
 
@@ -430,13 +476,16 @@ boundary tests.
 
 ## Open questions
 
-- **The RBAC subject.** Unresolved, blocking, probe defined above.
+- **The RBAC subject.** Still unresolved and still blocking, but narrowed by
+  the 2026-09-16 probe: the string is a valid username, so what remains is
+  whether the authenticator emits it for the daemon's requests.
 - **Does the MCP endpoint forward the caller's principal, or does it act as
   its own service identity?** If the latter, RBAC on the daemon's principal
   grants nothing and the entire boundary moves to IAM — which cannot express
   a namespace. The audit-log witness answers this and the probe produces it,
   so it resolves with the question above, but it is a *different* failure and
   worth naming separately.
-- **Does the hold on `SCORECARD.md` admit a new sheet for a new scenario?**
-  Needs a decision before step 4.
-- **A6 or a second clause on A3?** Needs a decision before step 7.
+- ~~**Does the hold on `SCORECARD.md` admit a new sheet for a new
+  scenario?**~~ Settled 2026-09-16: yes, narrowly. See §Costs.
+- ~~**A6 or a second clause on A3?**~~ Settled 2026-09-16: a new box A6,
+  [#1105](https://github.com/go-steer/core-agent/issues/1105).

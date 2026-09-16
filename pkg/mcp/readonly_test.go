@@ -198,7 +198,7 @@ func TestWrapServerToolset_ThreadsTheSpecDeclaration(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ts := wrapServerToolset(inner, "gke", tc.spec, &DigestOptions{}, gate)
+			ts, _ := wrapServerToolset(inner, "gke", tc.spec, &DigestOptions{}, gate)
 			tl := toolsOf(t, ts)["gke_get_pod"]
 			if tl == nil {
 				t.Fatal("gke_get_pod missing from the composed toolset")

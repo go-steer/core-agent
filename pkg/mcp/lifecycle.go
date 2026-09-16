@@ -208,6 +208,11 @@ func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(strin
 //
 // Inner to outer:
 //
+//   - the ServerSpec.Tools allowlist, when the spec sets one. First,
+//     because a tool dropped here is never named, never declared and
+//     never gated — the point is that the model is not told about it
+//     at all (#759), and every layer above this one exists to shape
+//     something the model can see;
 //   - namespace, so an MCP server's `read_file` doesn't collide with
 //     the built-in one, and — when the server declared itself
 //     ReadOnly — the dispatch class every tool from it carries;
@@ -223,16 +228,22 @@ func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(strin
 // of its own, because that is already the layer that clones the
 // declaration to rewrite the name — one clone, one place the
 // model-visible declaration is assembled.
-func wrapServerToolset(ts tool.Toolset, name string, spec ServerSpec, digestOpts *DigestOptions, gate *permissions.Gate) tool.Toolset {
+//
+// The second return value is the allowlist handle, nil unless the spec
+// set one. Only unmatchedToolAllowlist wants it: the warning has to
+// compare the allowlist against what the server exposed before the
+// filter ran, and that list does not survive the composition.
+func wrapServerToolset(ts tool.Toolset, name string, spec ServerSpec, digestOpts *DigestOptions, gate *permissions.Gate) (tool.Toolset, *allowlistToolset) {
 	optsForServer := digestOpts
 	if optsForServer != nil && spec.AgenticNever {
 		optsForServer = nil
 	}
-	wrapped := withNamespaceAndDigest(ts, name, name, optsForServer, spec.ReadOnly, spec.ToolNotes)
+	filtered, allow := withToolAllowlist(ts, spec.Tools)
+	wrapped := withNamespaceAndDigest(filtered, name, name, optsForServer, spec.ReadOnly, spec.ToolNotes)
 	if gate != nil {
 		wrapped = coretools.GateToolset(wrapped, gate, "mcp")
 	}
-	return wrapped
+	return wrapped, allow
 }
 
 // startOne instantiates one server. Errors are stored on the Server
@@ -259,7 +270,7 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 		srv.Err = fmt.Errorf("toolset: %w", err)
 		return srv
 	}
-	wrapped := wrapServerToolset(ts, name, spec, digestOpts, gate)
+	wrapped, allow := wrapServerToolset(ts, name, spec, digestOpts, gate)
 	srv.toolset = wrapped
 	srv.Status = StatusOK
 	if tools, err := wrapped.Tools(asReadonly(ctx)); err == nil {
@@ -281,7 +292,12 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 		}
 		srv.Tools = names
 		srv.ToolInfos = infos
-		srv.Warnings = unmatchedToolNotes(spec.ToolNotes, sanitizePrefix(name), names)
+		// Allowlist warnings come first: a name that admitted nothing
+		// means a tool the operator believes is mounted is absent, and
+		// an unmatched tool_notes key is very often the same typo
+		// showing up twice.
+		srv.Warnings = append(unmatchedToolAllowlist(allow),
+			unmatchedToolNotes(spec.ToolNotes, sanitizePrefix(name), names)...)
 	}
 	return srv
 }

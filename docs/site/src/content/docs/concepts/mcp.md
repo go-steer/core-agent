@@ -59,6 +59,7 @@ Top-level fields:
 | `url` | `transport: http` | Streamable HTTP endpoint. |
 | `headers` | optional, http | Custom headers. Values support `${env:NAME}` interpolation — useful for `Authorization: Bearer ${env:TOKEN}`. |
 | `auth` | optional, http | Selects an authentication strategy that manages tokens for you instead of static headers. See [Authentication](#authentication) below. |
+| `tools` | optional | Allowlist of tool names, as the **server** spells them. When set, only these are registered; the rest of the catalog is dropped before the model ever hears of it. Absent means the whole catalog. See [Mounting part of a server](#mounting-part-of-a-server) below. |
 | `read_only` | optional | Declares that nothing this server exposes can mutate state. Covers the tools the server did not annotate itself. See [Read-only tools and servers](#read-only-tools-and-servers) below. Default `false`. |
 | `agentic_never` | optional | Opts this server out of the [digest wrap](#structural-digest-wrap---no-mcp-digest). Default `false`. |
 | `tool_notes` | optional | Map of tool name → text appended to that tool's description, in front of the model at the call site. See [Tool notes](#tool-notes) below. |
@@ -157,6 +158,38 @@ Audience-scoped ID-token auth (Cloud Run / IAP / custom-OIDC services) is not ye
 - Keeps function names within Gemini's `[A-Za-z0-9_]{1,64}` constraint (a `.` separator wouldn't pass)
 
 Sanitization rule: keep `[A-Za-z0-9_]`, replace everything else with `_`. So `my-server` → `my_server_<tool>`, `file.system` → `file_system_<tool>`.
+
+---
+
+## Mounting part of a server
+
+Mounting a server is otherwise all-or-nothing: every tool it advertises becomes a tool the model can see and call. `tools` narrows that to a list you write.
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "gke": {
+      "transport": "http",
+      "url":   "https://container.googleapis.com/mcp",
+      "tools": ["get_k8s_resource", "list_k8s_events", "get_k8s_logs", "patch_k8s_resource"]
+    }
+  }
+}
+```
+
+That endpoint serves 23 tools. The agent above sees four.
+
+Names are the ones the **server** publishes — no `gke_` prefix, same as `tool_notes`, because the prefix is this server's own key in the enclosing object. Filtering happens before the namespace wrap, so an unlisted tool is never registered, never declared to the model, never gated, and never appears in `/tools` or the startup summary. Absent (or `[]`) means the whole catalog, so nothing changes for a config that doesn't set it.
+
+The reason to reach for this is that **a tool in the catalog is a promise.** If you want the full GKE endpoint for one mutating verb under an approval gate, the alternative is advertising `delete_k8s_resource` and the cluster-lifecycle verbs alongside it and relying on `deny` patterns to refuse them — which spends a turn discovering a boundary the catalog should have described, and splits the decision across two files (`mcp.json` mounts the server, `config.json` denies the tools) either of which can be edited without the other noticing.
+
+Two things it is not:
+
+- **Not a security boundary.** It is a client-side filter on a catalog; the server decides what a call is allowed to do. Scope the credential — IAM roles, RBAC, a read-only endpoint — and use `tools` so the model isn't told a different story from the one the server will enforce.
+- **Not a permission decision.** The gate, `deny` patterns and `ask` mode all still apply to the tools that survive the list. This is about what gets registered, not what gets allowed.
+
+An entry that names no tool the server exposes is reported at startup — `core-agent: mcp: <server>: tools allowlist names 1 tool(s) this server does not expose: …`, with the exposed names listed. The failure mode is otherwise silence: the tool is simply missing, and nothing distinguishes a typo from a server that never had it. Note that a `tool_notes` key for a tool the allowlist excluded will warn too, since the note now describes nothing.
 
 ---
 

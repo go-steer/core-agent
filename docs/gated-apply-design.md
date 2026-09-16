@@ -287,9 +287,9 @@ itself:
 > ["container.deployments.delete"] permission(s) in Cloud IAM **or a
 > Kubernetes RBAC role with verb "delete" for resource "deployments"**.`
 
-One step is still unconfirmed end to end: creating the Role and RoleBinding
-and watching the same call flip from 403 to 404. That needs cluster write
-and is the first thing #1105 should do.
+Confirmed end to end the same day: with the Role and RoleBinding applied, the
+same `PATCH` flipped 403 → 404, and `delete` and the other namespaces stayed
+403. See §Probe status.
 
 ### Probe
 
@@ -361,10 +361,56 @@ a write and always lands there. **The witness field is `principalEmail`, not
 `principalSubject`** — the latter was empty on every entry sampled, so a
 grader keyed to it alone scores a false negative on a passing run. Read both.
 
-**Not reached:** creating the Role and RoleBinding and watching the same
-`PATCH` flip from 403 to 404. That needs cluster write and is step 1 of
-#1105. Everything above is consistent with it succeeding; nothing above
-proves it.
+**Confirmed, second run, same day.** The Role and RoleBinding above were
+applied to `online-boutique` and the probe re-run from the same kind of
+ephemeral pod. Five requests, all against a deployment name that does not
+exist, so the confirmation itself mutated nothing:
+
+| # | Request | Predicted | Observed | What it settles |
+|---|---|---|---|---|
+| 1 | `PATCH` `online-boutique` | 404 | **404** | **the flip** — 403 before the binding, authorized after |
+| 2 | `DELETE` `online-boutique` | 403 | **403** | verb scope: the Role grants `patch`, and only `patch` |
+| 3 | `PATCH` `default` | 403 | **403** | namespace scope holds |
+| 4 | `PATCH` `gke-platform-agent` | 403 | **403** | it cannot patch its **own** namespace either |
+| 5 | `GET` `online-boutique` | 404 | **404** | the IAM read grant is unchanged by any of this |
+
+Rows 3 and 4 are the ones the D2 safety argument actually rests on. "Cannot
+cross namespaces" is now a measurement rather than an assertion, and row 4
+matters more than it looks: the namespace the agent *runs in* is as closed to
+it as any stranger's. A Role in the target namespace gets that for free —
+there is nothing to remember not to grant.
+
+The Role and RoleBinding were deleted afterwards and their absence verified.
+They are not left on the cluster, because they are not yet a tracked artifact
+— see the note below.
+
+**The RBAC must ship as a kustomize component, not a hand-applied manifest.**
+This binding lives in `TARGET_NS`, and `scripts/teardown.sh` deliberately does
+not touch `TARGET_NS` (it says so in its header). A Role/RoleBinding applied
+there by hand therefore survives teardown *and* a full demo rebuild, leaving a
+cluster someone believes is clean while the daemon still holds patch rights.
+That is exactly the orphan-RBAC failure `14-role-watcher-capacity.yaml` and
+`15-rolebinding-watcher-capacity.yaml` were shaped to avoid. So, as part of the
+overlay work:
+
+- ship it as `deploy/components/gated-apply/`, composed only by the
+  gated-apply overlay — **not** in `deploy/base`, which is every deployment's
+  default posture and must not carry deployment-patch rights;
+- name it with the deployment-namespace suffix the watcher RBAC uses
+  (`…-gke-platform-agent`), since `TARGET_NS` is shared and another recipe may
+  bind there too;
+- extend `teardown.sh` to delete it, and amend that header sentence — this is
+  the first object the recipe owns inside `TARGET_NS`;
+- note that the subject string embeds `PROJECT_ID`, so it needs the same
+  coordinate substitution the base's placeholders get. **A wrong subject fails
+  silently** — RBAC simply does not match, with no error anywhere — so the
+  overlay needs a startup or setup-time check that the binding resolves, not
+  just a correctly-shaped YAML file.
+
+`namespace-transformer.yaml` uses `unsetOnly: true`, so an explicit
+`namespace: <TARGET_NS>` on these objects is preserved rather than clobbered
+into `gke-platform-agent`. That is the same mechanism 14/15 rely on to stay in
+`kube-system`.
 
 ### Fallbacks, in preference order
 
@@ -514,11 +560,13 @@ by [#1105](https://github.com/go-steer/core-agent/issues/1105).
 
 1. ~~Probe the RBAC subject question on the drill cluster.~~ **Done
    2026-09-16 — see §Probe status.** Answer: yes, subject is
-   `serviceAccount:<PROJECT_ID>.svc.id.goog[<ns>/<ksa>]`. One end-to-end
-   confirmation left: create the Role + RoleBinding and watch the same
-   `PATCH` flip from 403 to 404.
-2. Write the Role + RoleBinding into the overlay, with a comment recording
-   how the subject was obtained. It is:
+   `serviceAccount:<PROJECT_ID>.svc.id.goog[<ns>/<ksa>]`. Confirmed
+   end-to-end the same day — the binding was applied, the same `PATCH`
+   flipped 403 → 404, and `delete` plus both other namespaces stayed 403.
+2. Ship the Role + RoleBinding as `deploy/components/gated-apply/` (see
+   §Probe status for why a component and not `deploy/base`, and for the
+   `teardown.sh` and subject-substitution work it pulls in), with a comment
+   recording how the subject was obtained. It is:
 
    ```yaml
    apiVersion: rbac.authorization.k8s.io/v1
@@ -561,8 +609,9 @@ by [#1105](https://github.com/go-steer/core-agent/issues/1105).
 
 - ~~**The RBAC subject.**~~ Answered 2026-09-16: `serviceAccount:<PROJECT_ID>.svc.id.goog[<ns>/<ksa>]`,
   and GKE's own denial offers RBAC as an accepted path. Fallback 1 holds.
-  One end-to-end confirmation remains (§Probe status) and it is step 1 of
-  [#1105](https://github.com/go-steer/core-agent/issues/1105).
+  Confirmed end-to-end the same day: the binding was applied and the same
+  `PATCH` flipped 403 → 404, while `delete` and both other namespaces stayed
+  403 (§Probe status). Nothing about the boundary is inferred any more.
 - ~~**Does the MCP endpoint forward the caller's principal?**~~ Answered
   2026-09-16: yes. See §Probe status — the `container.pods.getLogs` episode
   is only possible if the API server authorizes the caller, not the node SA.

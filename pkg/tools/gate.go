@@ -92,8 +92,8 @@ func (gt *gatedTool) IsLongRunning() bool { return gt.inner.IsLongRunning() }
 
 // ReadOnlyHint forwards the wrapped tool's dispatch-class declaration
 // (tools.ReadOnlyHinter, #460). Without this forward, a hint declared
-// by an inner tool (e.g. a future MCP readOnlyHint surfaced through
-// the adapter) would be masked by the gate layer and the tool would
+// by an inner tool (e.g. an MCP readOnlyHint recovered off the wire
+// in pkg/mcp) would be masked by the gate layer and the tool would
 // fail safe to mutating — losing parallelism the server explicitly
 // promised was safe.
 func (gt *gatedTool) ReadOnlyHint() bool {

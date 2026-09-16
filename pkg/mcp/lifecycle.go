@@ -30,7 +30,6 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/mcptoolset"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
@@ -254,10 +253,7 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 		&mcpsdk.Implementation{Name: implementationName, Version: "0.1.0"},
 		&mcpsdk.ClientOptions{ElicitationHandler: handlerFor(name, send, elicitor)},
 	)
-	ts, err := mcptoolset.New(mcptoolset.Config{
-		Client:    client,
-		Transport: transport,
-	})
+	ts, err := mcpToolsetWithHints(client, transport)
 	if err != nil {
 		srv.Status = StatusError
 		srv.Err = fmt.Errorf("toolset: %w", err)

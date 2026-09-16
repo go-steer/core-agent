@@ -206,9 +206,11 @@ var _ context.Context = (tool.Context)(nil)
 // fail-safe default of mutating. Per-tool beats per-server so a
 // server that annotates a subset keeps its own answer for those tools.
 //
-// ADK's mcptoolset does not surface the MCP readOnlyHint annotation
-// today, so in practice the server-level declaration is the only live
-// source; the forward keeps the seam ready for when it does.
+// ADK's mcptoolset drops the MCP readOnlyHint annotation on the way
+// through, so this forward sat dormant from #693 until hintedToolset
+// (see readonlyhint.go) started re-attaching the hint off the wire
+// below this layer. What it finds on r.inner is now the server's own
+// per-tool answer where the server published one.
 //
 // VALUE receiver, deliberately. Tools() yields renamedTool values, so
 // a pointer receiver would leave the method out of the interface's

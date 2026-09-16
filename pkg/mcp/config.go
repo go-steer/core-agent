@@ -127,9 +127,15 @@ type ServerSpec struct {
 	// poll it and what keeps plan-first mode from treating a `list`
 	// call as a mutation.
 	//
-	// A server-declared per-tool `readOnlyHint` still wins where the
-	// upstream adapter surfaces one, so a server that marks a subset
-	// keeps its own answer for those tools.
+	// A server-declared per-tool `readOnlyHint` wins over this, so a
+	// server that annotates its tools keeps its own answer for them
+	// and this setting covers only the ones it said nothing about. A
+	// tool that carries an annotation block at all counts as having
+	// answered: the MCP spec's default for a published block is
+	// `false`, i.e. mutating, so an annotated-but-unhinted tool is
+	// read as mutating rather than inheriting a `read_only: true`.
+	// Wins in both directions on purpose — laundering a tool the
+	// server itself calls mutating is the more expensive mistake.
 	//
 	// This is an OPERATOR assertion about an endpoint they chose, not
 	// a claim the server made about itself. That is the reason it is

@@ -26,9 +26,12 @@ import (
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
-// hintingTool is an upstream tool that declares its OWN dispatch class,
-// standing in for the day ADK's mcptoolset surfaces the server-declared
-// readOnlyHint annotation. Used to pin per-tool-beats-per-server.
+// hintingTool is an upstream tool that declares its OWN dispatch
+// class. It stands in for what hintedToolset now hands this layer
+// once a server-declared readOnlyHint has been recovered off the wire
+// (readonlyhint.go). Used to pin per-tool-beats-per-server at THIS
+// seam; readonlyhint_test.go pins the same thing end to end against a
+// real MCP server.
 type hintingTool struct {
 	name string
 	hint bool
@@ -45,8 +48,9 @@ func (h hintingTool) Run(tool.Context, any) (map[string]any, error) {
 	return map[string]any{"ok": true}, nil
 }
 
-// plainTool declares nothing — the shape every MCP tool has today,
-// because ADK's adapter does not surface readOnlyHint.
+// plainTool declares nothing — the shape a tool from a server that
+// published no annotations arrives in, which is what leaves
+// ServerSpec.ReadOnly as the only source.
 type plainTool struct{ name string }
 
 func (p plainTool) Name() string        { return p.name }

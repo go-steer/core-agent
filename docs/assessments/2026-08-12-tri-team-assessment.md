@@ -178,6 +178,15 @@ conceded all of it. The end-to-end artifact is where it breaks:
 - **The wired MCP is the wrong surface.** `mcp.json` exposes one server at
   `container.googleapis.com/mcp` — GKE cluster-lifecycle — not the pod-level
   `apply_manifest`/`patch_resource`/`rollout_undo` the SKILL names.
+  *(Correction, 2026-09-16: the second half of this is wrong. A live
+  `tools/list` against that endpoint returns 23 tools including
+  `apply_k8s_manifest`, `patch_k8s_resource` and `delete_k8s_resource`
+  alongside the cluster-lifecycle verbs. The finding still holds on its
+  first half and on what actually blocked the SKILL — the mount carried a
+  `container.read-only` OAuth scope over a viewer-only IAM role, so the
+  mutating verbs would have 403'd — but "the endpoint has no pod-level
+  mutation verb" was never true and should not be reused.
+  See [#1098](https://github.com/go-steer/core-agent/issues/1098).)*
 - **No in-turn wait/verify primitive.** The protocol demands fix-and-verify "in ONE
   turn" including "Sleep the verify interval," but `schedule_next_turn` *ends* the
   turn and no `wait_and_verify`/`verify_state` tool exists. Every "RESOLVED"

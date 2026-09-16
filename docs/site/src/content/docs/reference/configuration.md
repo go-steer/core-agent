@@ -825,7 +825,7 @@ A [task class](/concepts/context-management/#tools-and-plan-first-since-v29) can
 | `max_timeout_seconds` | int | `300` | Ceiling on the tool's `timeout_seconds` argument. A larger request is an error, not a silent clamp. |
 | `max_attempts` | int | `60` | Ceiling on the tool's `max_attempts` argument. |
 
-`wait_and_verify` refuses to poll anything the runtime can't classify as read-only, so it can never turn one approved call into sixty mutations. ADK's MCP adapter does not surface the server's `readOnlyHint` annotation, so **every MCP tool classifies as mutating** — `poll_allow` is the operator's explicit, per-tool assertion that a given MCP tool only observes state:
+`wait_and_verify` refuses to poll anything the runtime can't classify as read-only, so it can never turn one approved call into sixty mutations. An MCP tool is classified from its server's `readOnlyHint` annotation where the server publishes one; a server that publishes nothing leaves every tool on the fail-safe *mutating* side, and `poll_allow` is the operator's explicit, per-tool assertion that a given tool only observes state:
 
 ```json
 {
@@ -839,7 +839,7 @@ A [task class](/concepts/context-management/#tools-and-plan-first-since-v29) can
 }
 ```
 
-If the whole server is read-only — a provider's `/mcp/read-only` endpoint, say — declare it once with [`read_only: true`](/concepts/mcp/#read-only-servers) in `mcp.json` instead of listing each tool here. That classifies every tool the server exposes, so `poll_allow` is for the per-tool case: a read-only tool on a server that also mutates.
+Reach for this last. If the server annotates its tools, it has already answered and nothing needs to go here — all 15 tools on GKE's `/mcp/read-only` and all 23 on its full `/mcp` publish a `readOnlyHint`. If it annotates nothing but is read-only in its entirety, declare that once with [`read_only: true`](/concepts/mcp/#read-only-tools-and-servers) in `mcp.json`. `poll_allow` is what neither reaches: a pollable tool on an unannotated server that also mutates.
 
 Polling adds no authority: each attempt dispatches through the same permission gate, path scope, URL scope, plan-first gating and output caps a direct model call would hit.
 

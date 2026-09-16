@@ -23,7 +23,7 @@ via `permissions.plan_mode`:
   a *precondition*. Reads through the built-in file and search tools
   stay exempt so the model can gather what it needs to write a plan
   worth reviewing. MCP reads are exempt too **if** the
-  server is marked [`read_only: true`](/concepts/mcp/#read-only-servers)
+  server is marked [`read_only: true`](/concepts/mcp/#read-only-tools-and-servers)
   — the gate only ever sees the namespace, never the underlying tool,
   so without that declaration it has no way to tell a `list` from a
   `delete` and gates both.

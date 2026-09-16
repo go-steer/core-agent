@@ -181,10 +181,16 @@ func TestMCPSurfaceIsReadOnly(t *testing.T) {
 var mcpToolName = regexp.MustCompile(`\bgke_[a-z0-9_]+`)
 
 // TestPollAllowNamesRealNamespacedTools asserts wait_and_verify's escape
-// hatch is wired correctly. MCP tools never look read-only to the runtime
-// (the adapter drops readOnlyHint), so without poll_allow the convergence
+// hatch is wired correctly: without a pollable read, the convergence
 // check — the only thing that can justify a RESOLVED status — is refused
 // at every call. Names must be the namespaced ones the model sees.
+//
+// The list is no longer the only thing holding this up. Since #1098 the
+// runtime reads the server's own readOnlyHint, and all 15 tools on
+// `/mcp/read-only` publish one, so these five would classify read-only
+// with nothing said. Kept and still pinned because the recipe should
+// survive being pointed at a server that annotates nothing, and because
+// a name here that matches no tool is a silent refusal at call time.
 func TestPollAllowNamesRealNamespacedTools(t *testing.T) {
 	cfg := loadConfig(t)
 	wv := cfg.Tools.WaitAndVerify

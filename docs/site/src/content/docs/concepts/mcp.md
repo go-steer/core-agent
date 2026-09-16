@@ -59,7 +59,7 @@ Top-level fields:
 | `url` | `transport: http` | Streamable HTTP endpoint. |
 | `headers` | optional, http | Custom headers. Values support `${env:NAME}` interpolation — useful for `Authorization: Bearer ${env:TOKEN}`. |
 | `auth` | optional, http | Selects an authentication strategy that manages tokens for you instead of static headers. See [Authentication](#authentication) below. |
-| `read_only` | optional | Declares that nothing this server exposes can mutate state. See [Read-only servers](#read-only-servers) below. Default `false`. |
+| `read_only` | optional | Declares that nothing this server exposes can mutate state. Covers the tools the server did not annotate itself. See [Read-only tools and servers](#read-only-tools-and-servers) below. Default `false`. |
 | `agentic_never` | optional | Opts this server out of the [digest wrap](#structural-digest-wrap---no-mcp-digest). Default `false`. |
 | `tool_notes` | optional | Map of tool name → text appended to that tool's description, in front of the model at the call site. See [Tool notes](#tool-notes) below. |
 
@@ -160,11 +160,19 @@ Sanitization rule: keep `[A-Za-z0-9_]`, replace everything else with `_`. So `my
 
 ---
 
-## Read-only servers
+## Read-only tools and servers
 
-Several providers publish a read-only endpoint alongside the full one — the GKE MCP server's `container.googleapis.com/mcp/read-only`, say. `core-agent` can't tell the difference by looking: the MCP protocol has a per-tool `readOnlyHint` annotation, but ADK's MCP adapter doesn't surface it, so every MCP tool lands on the fail-safe *mutating* side of the runtime's dispatch classifier.
+The runtime sorts every tool into one of two dispatch classes, read-only or mutating, and three behaviours hang off the answer. For MCP tools it comes from two places.
 
-`read_only: true` is how you say what you already know:
+### What the server says
+
+The MCP protocol has a per-tool `readOnlyHint` annotation — "if true, the tool does not modify its environment" — and `core-agent` reads it. A server that annotates its tools needs no configuration: the 14 read tools on `container.googleapis.com/mcp` classify read-only and the mutating ones (`apply_k8s_manifest`, `patch_k8s_resource`, `delete_k8s_resource`, the cluster-lifecycle verbs) classify mutating, per tool, with nothing in `mcp.json` saying so.
+
+A tool that ships an annotation block counts as having answered even if the block omits `readOnlyHint`, because the spec's default for a published block is `false`. A tool with no annotations at all has said nothing, and falls through to the server declaration below.
+
+### What the operator says
+
+Plenty of servers annotate nothing. Several providers also publish a read-only endpoint alongside the full one — the GKE MCP server's `container.googleapis.com/mcp/read-only`, say — which `core-agent` can't tell apart by looking. `read_only: true` is how you say what you already know:
 
 ```json
 {
@@ -179,7 +187,7 @@ Several providers publish a read-only endpoint alongside the full one — the GK
 }
 ```
 
-Every tool from that server then classifies read-only, which changes three things:
+Every *unannotated* tool from that server then classifies read-only, which changes three things:
 
 - **`wait_and_verify` can poll it.** The waiter refuses to poll anything classified mutating, because polling repeats the call up to `max_attempts` times. Before `read_only`, the only way to poll an MCP tool was to name each one in `tools.wait_and_verify.poll_allow`; a whole read-only server no longer needs that list.
 - **Its calls run concurrently.** Mutating tools serialize on a per-agent lock so two edits can't interleave. Reads don't need it, so a batch of `get`/`list` calls in one turn now overlaps.
@@ -189,7 +197,7 @@ What it does **not** change: allow/deny patterns, permission mode, and prompting
 
 Two guardrails worth knowing:
 
-- **Per-tool beats per-server.** If a server ever does annotate a tool's own `readOnlyHint`, that answer wins for that tool — a server-level declaration can't launder a tool that says it mutates.
+- **Per-tool beats per-server.** Where a server annotates a tool's `readOnlyHint`, that answer wins for that tool, in both directions — a server-level declaration can't launder a tool that says it mutates, and it doesn't need to repeat one that says it reads. `read_only: true` on a fully annotated endpoint is therefore inert, not a second opinion.
 - **It is an operator assertion, not a server claim.** Nothing verifies it; you are vouching for an endpoint you chose. That is exactly why it carries enough authority to relax plan-first — it comes from the same config that turned plan-first on. Point it at a read/write URL and you have disabled a safety property by hand.
 
 ---

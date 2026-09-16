@@ -1,0 +1,60 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The gated-apply authorization boundary (docs/gated-apply-design.md).
+#
+# This Role is the ENTIRE security argument for the unattended leg. Once
+# the human approval step is gone, the config file is not a boundary — a
+# prompt injection in a pod log, or simply a wrong decision, routes around
+# an allowlist eventually. What does not route around is what the API
+# server refuses. That is this file.
+#
+# It lives in the TARGET namespace — the one the agent is meant to fix —
+# NOT in the namespace the agent runs in. That placement is doing real
+# work: a Role is namespace-scoped, so "cannot touch any other namespace"
+# is true by construction rather than by a rule someone has to remember.
+# Measured 2026-09-16: with this bound, a PATCH here returns 404 (the
+# object does not exist, i.e. authorized) while the identical PATCH
+# against `default` AND against the agent's own namespace both return 403.
+#
+# `patch` and nothing else:
+#   - get/list are NOT here. They already come from the daemon's IAM
+#     custom role (see deploy/base/10-serviceaccount-daemon.yaml); adding
+#     them would be a second, redundant grant that hides which layer is
+#     actually authorizing a read.
+#   - `update` is NOT here. It replaces the whole object, so it is a write
+#     with no upper bound on what changes; patch names the fields.
+#   - `delete` is NOT here, and is verified to still 403 by
+#     scripts/verify-gated-apply.sh. Nothing in the scenario set needs it
+#     and the failure mode is not recoverable by a retry.
+#   - `create` is NOT here. The agent fixes workloads that exist.
+#
+# NAME SUFFIX. `-gke-platform-agent` is this deployment's namespace, the
+# same convention 14/15-*-watcher-capacity.yaml use for their kube-system
+# objects, and for the same reason: TARGET_NS is shared ground. Another
+# recipe triaging the same namespace must be able to bind there without a
+# name collision, and teardown must be able to delete THIS deployment's
+# objects without touching theirs.
+#
+# PLACEHOLDER: `namespace` below is TARGET_NS and must be substituted
+# before apply. See README.md in this directory.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gated-apply-gke-platform-agent
+  namespace: your-target-namespace
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]

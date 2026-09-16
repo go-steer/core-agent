@@ -1,0 +1,90 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# gated-apply RBAC component — the authorization boundary for the leg of
+# this recipe that lets the agent APPLY the fix it diagnosed, rather than
+# only describe it. Design: docs/gated-apply-design.md.
+#
+# Compose into an overlay via:
+#
+#   components:
+#     - ../../components/gated-apply
+#
+# WHY A COMPONENT AND NOT deploy/base. Base is every deployment's default
+# posture. The default posture of this recipe is read-only — scenarios
+# A/B/C depend on it, and G4 in the drill scorecard is literally "no
+# mutating call reaches the cluster". Deployment-patch rights must be
+# something an operator opts into by composing this, not something they
+# get by running the recipe.
+#
+# WHY A COMPONENT AND NOT A HAND-APPLIED MANIFEST. These objects live in
+# TARGET_NS. `kubectl delete namespace ${DEMO_NS}` does not reach them and
+# neither did teardown.sh until this component existed — so a binding
+# applied by hand survives teardown AND a full rebuild, leaving the daemon
+# holding patch rights on a cluster the operator believes is clean. That
+# is the same orphan-RBAC failure the watcher's kube-system Role/RoleBinding
+# (14/15) are namespace-suffixed and explicitly torn down to avoid.
+# scripts/teardown.sh now deletes these too.
+#
+# TWO COORDINATES must be substituted before apply, and a third string that
+# looks like one must NOT be:
+#
+#   your-target-namespace -> TARGET_NS   (role.yaml + rolebinding.yaml,
+#                                         metadata.namespace on both)
+#   your-project-id       -> PROJECT_ID  (rolebinding.yaml, inside the
+#                                         subject name)
+#   gke-platform-agent    -> LEAVE IT    (both object names, roleRef.name,
+#                                         and the subject's bracket)
+#
+# scripts/set-up-demo.sh rewrites the two placeholders when the overlay
+# composes this component. It does not touch the third, because
+# `gke-platform-agent` here is not a placeholder for DEMO_NS — it is the
+# namespace deploy/base hardcodes for the daemon (00-namespace.yaml,
+# 10-serviceaccount-daemon.yaml). DEMO_NS is only ever a `kubectl -n`
+# argument; nothing substitutes it into base. Rewrite the bracket from it
+# and an overridden DEMO_NS writes a subject naming a namespace the daemon
+# does NOT run in — which is strictly worse than leaving the literal alone,
+# since the literal is unconditionally right. The recipe test
+# TestGatedApplySubjectMatchesDaemonNamespace pins the bracket to base;
+# require_demo_ns_matches_base in scripts/prereqs.sh — called by every
+# script that creates, grants or deletes state named from DEMO_NS —
+# refuses to run if DEMO_NS was overridden at all; and set-up-demo.sh
+# compares the bracket against the
+# RENDERED manifest, so an overlay that moves the daemon is caught too.
+#
+# A wrong subject does not fail, it simply never matches, and the agent's
+# patch keeps 403'ing with nothing in any log to say why. Run
+# scripts/verify-gated-apply.sh after applying — it is the only check that
+# exercises the real token, and it asserts the grant, the verb boundary,
+# the namespace boundary and the resource boundary.
+#
+# NAMESPACING: the explicit `metadata.namespace` on these two objects is
+# load-bearing, and there is NO safety net behind it.
+#
+# The tempting analogy is to 14/15, which stay in kube-system because
+# deploy/base/namespace-transformer.yaml is a NamespaceTransformer with
+# `unsetOnly: true`. That does not apply here. Those objects live in
+# `base`, where the transformer runs. A component composed at the OVERLAY
+# is never seen by base's transformer at all — verified by deleting the
+# `namespace:` line and rebuilding, which emits a Role with no namespace
+# whatsoever rather than one defaulted to the daemon's.
+#
+# A namespace-less Role lands wherever kubectl happens to be pointed. So:
+# do not remove those lines, and do not assume anything will put them back.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - role.yaml
+  - rolebinding.yaml

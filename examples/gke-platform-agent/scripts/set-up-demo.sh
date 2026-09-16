@@ -40,6 +40,10 @@ source "${SCRIPT_DIR}/prereqs.sh"
 
 # ── Preflight ────────────────────────────────────────────────────────
 require_coordinates || exit 1
+# This one APPLIES base, so an overridden DEMO_NS deploys into one
+# namespace and then talks to another. See require_demo_ns_matches_base
+# in prereqs.sh for why the read-only scripts do not call this.
+require_demo_ns_matches_base || exit 1
 command -v kustomize >/dev/null || { echo "✗ kustomize not on PATH (or use 'kubectl kustomize')"; exit 1; }
 # Deploying alongside another watcher is fine; only ./scripts/break-workload.sh
 # actually races. Surface it here so it's known before the incident step.
@@ -201,6 +205,167 @@ patch_watcher_flag() {
 patch_watcher_flag cluster-name "${CLUSTER_NAME}"
 patch_watcher_flag owner        "${ADMIN_IDENTITY}"
 
+# The gated-apply component, but only when the overlay actually composes it.
+# TWO coordinates are substituted here — PROJECT_ID in the RoleBinding subject
+# and TARGET_NS as metadata.namespace on both objects — and a third thing that
+# looks like a coordinate is deliberately NOT:
+#
+#   your-project-id       -> PROJECT_ID   inside the subject, project id only
+#   your-target-namespace -> TARGET_NS    metadata.namespace on both objects
+#   gke-platform-agent    -> NOTHING      see below
+#
+# The daemon's namespace is not a coordinate of this recipe. deploy/base
+# hardcodes it (00-namespace.yaml, 10-serviceaccount-daemon.yaml and the
+# watcher's ClusterRole names), DEMO_NS is only ever a `kubectl -n` argument,
+# and nothing substitutes one into the other. So the bracket in the committed
+# subject is a LITERAL that has to match base — pinned by the recipe test
+# TestGatedApplySubjectMatchesDaemonNamespace — and rewriting it from DEMO_NS
+# would be strictly worse than leaving it alone: under an override it would
+# write a namespace the daemon does not run in, and that is the one failure
+# this component exists to warn about, the one with no error, no event and no
+# log line.
+#
+# An override breaks everything around it too — the Secrets, the Workload
+# Identity bindings, teardown's reconstructed names — so it is refused at the
+# top of this script, and of every other one that creates, grants or deletes
+# state named from DEMO_NS, by require_demo_ns_matches_base in prereqs.sh,
+# before anything here has patched a file. What that check cannot see is the
+# case below: an overlay-level `namespace:` field moves the daemon without
+# touching base or DEMO_NS at all.
+#
+# Captured, not piped: `grep -q` exits on the first match and closes the
+# pipe, and under `pipefail` a SIGPIPE'd kustomize fails the whole pipeline
+# even though the grep succeeded.
+APPLY_RENDER=$(kustomize build "${APPLY_DIR}")
+
+# WHERE THE RENDER ACTUALLY PUTS THE DAEMON — checked unconditionally, not
+# inside the gated-apply block below.
+#
+# This started life as a gated-apply check, which was too narrow: the
+# component is one of four consumers of "the daemon's namespace", and the
+# other three do not need it composed to be wrong. One `namespace: tenant-a`
+# line in an overlay relocates every object base leaves unset, so the daemon
+# moves while 00-namespace.yaml, 10-serviceaccount-daemon.yaml and DEMO_NS
+# all still agree with each other — gen-tokens.sh then writes the Secrets
+# into the empty namespace, grant-iam.sh binds Workload Identity there, and
+# teardown deletes it. Three sources of truth agreeing is not evidence when
+# none of them is the thing about to be applied.
+#
+# Defined as a function because it is called twice — here, and again on the
+# FINAL render after this script has edited the tree — and two copies of an
+# awk program is two things to keep in step.
+rendered_daemon_ns() {
+    awk '
+        function emit() { if (kind == "ServiceAccount" && name == "core-agent-daemon") print ns }
+        /^---[[:space:]]*$/        { emit(); kind=""; name=""; ns=""; next }
+        /^kind:[[:space:]]/        { kind = $2; next }
+        /^  name:[[:space:]]/      { if (name == "") name = $2; next }
+        /^  namespace:[[:space:]]/ { if (ns == "") ns = $2; next }
+        END { emit() }
+    '
+}
+RENDERED_DAEMON_NS=$(rendered_daemon_ns <<<"${APPLY_RENDER}")
+if [[ -z "${RENDERED_DAEMON_NS}" ]]; then
+    echo "✗ ${APPLY_DIR} renders no core-agent-daemon ServiceAccount with a namespace."
+    echo "  Everything this script does afterwards is addressed to a namespace it"
+    echo "  cannot confirm the daemon is in."
+    exit 1
+fi
+if [[ "${RENDERED_DAEMON_NS}" != "${DEMO_NS}" ]]; then
+    echo "✗ ${APPLY_DIR} renders the daemon into '${RENDERED_DAEMON_NS}', but this"
+    echo "  recipe addresses it as '${DEMO_NS}'."
+    echo '  Check whether an overlay sets a top-level `namespace:` field: that moves'
+    echo "  every object deploy/base leaves unset, and nothing else here would notice."
+    echo "  The Secrets, the Workload Identity bindings and teardown would all go to"
+    echo "  the wrong namespace, and the daemon would never report an error."
+    exit 1
+fi
+
+# Detection is by RENDER, not by grepping for a `components:` line: the
+# *-otel overlays compose through ../example, so the component can arrive
+# from a file that is not the one we are about to patch.
+if grep -q 'gated-apply' <<<"${APPLY_RENDER}"; then
+    GATED_APPLY_DIR="${DEMO_DEPLOY_DIR}/components/gated-apply"
+    GATED_APPLY_RB="${GATED_APPLY_DIR}/rolebinding.yaml"
+
+    # Read the bracket out of the committed file rather than building one:
+    # `<namespace>/<serviceaccount>`, both halves fixed by deploy/base.
+    if [[ $(grep -cE '^[[:space:]]+name:[[:space:]]*serviceAccount:' "${GATED_APPLY_RB}") -ne 1 ]]; then
+        echo "✗ expected exactly one 'name: serviceAccount:...' subject in ${GATED_APPLY_RB}"
+        exit 1
+    fi
+    GATED_APPLY_BRACKET=$(sed -nE \
+        's|^[[:space:]]+name:[[:space:]]*serviceAccount:[^.]+\.svc\.id\.goog\[([^]]+)\].*$|\1|p' \
+        "${GATED_APPLY_RB}")
+    if [[ -z "${GATED_APPLY_BRACKET}" ]]; then
+        echo "✗ could not read the Workload Identity bracket from ${GATED_APPLY_RB}"
+        echo "  Expected: name: serviceAccount:<project>.svc.id.goog[<ns>/<sa>]"
+        exit 1
+    fi
+    # Check the bracket against the RENDER — RENDERED_DAEMON_NS, derived
+    # above — not against DEMO_NS and not against the literal in base. Those
+    # two agree with each other by construction (require_demo_ns_matches_base
+    # enforces it) and could still both be wrong; the render is the only
+    # source that is the thing about to be applied. In practice the check
+    # above has already refused a render that disagrees with DEMO_NS, so this
+    # now catches the narrower case it was written for: the bracket drifting
+    # from the daemon while the daemon stays where the recipe expects it.
+    if [[ "${GATED_APPLY_BRACKET%%/*}" != "${RENDERED_DAEMON_NS}" ]]; then
+        echo "✗ the gated-apply subject binds [${GATED_APPLY_BRACKET}], but ${APPLY_DIR}"
+        echo "  renders the daemon into ${RENDERED_DAEMON_NS}."
+        echo "  RBAC will not match, and nothing — no error, no event, no log line —"
+        echo '  will say so. Check whether an overlay sets a `namespace:` field: that'
+        echo "  moves every object base leaves unset, including this component's own."
+        exit 1
+    fi
+
+    # Every rewrite below is anchored on the FIELD, never on the value it is
+    # replacing — same rule as patch_literal above, and for the same reason: a
+    # value-keyed regex that stops matching is indistinguishable from one that
+    # matched. The subject rewrite replaces the project id ALONE and leaves the
+    # bracket where it found it; the namespace rewrite is pinned to metadata's
+    # two-space indent so it cannot reach a `namespace:` nested under subjects.
+    sed -i -E "s|^([[:space:]]*name:[[:space:]]*serviceAccount:)[^.]+(\.svc\.id\.goog\[)|\1${PROJECT_ID}\2|" \
+        "${GATED_APPLY_RB}"
+    sed -i -E "s|^(  namespace: ).*$|\1${TARGET_NS}|" \
+        "${GATED_APPLY_DIR}/role.yaml" "${GATED_APPLY_RB}"
+
+    GATED_APPLY_SUBJECT="serviceAccount:${PROJECT_ID}.svc.id.goog[${GATED_APPLY_BRACKET}]"
+    GATED_APPLY_NAME="gated-apply-${DEMO_NS}"
+
+    # Assert both landed. The subject is the one worth asserting hardest: it is
+    # the only coordinate in this recipe whose failure produces no error
+    # anywhere, on either the script path or `kubectl apply -k`.
+    grep -qF "    name: ${GATED_APPLY_SUBJECT}" "${GATED_APPLY_RB}" || {
+        echo "✗ could not set the gated-apply subject in ${GATED_APPLY_RB}"
+        echo "  Wanted: name: ${GATED_APPLY_SUBJECT}"
+        exit 1
+    }
+    for f in role.yaml rolebinding.yaml; do
+        if [[ $(grep -cE "^  namespace: ${TARGET_NS}$" "${GATED_APPLY_DIR}/${f}") -ne 1 ]]; then
+            echo "✗ could not set the gated-apply namespace in ${GATED_APPLY_DIR}/${f}"
+            exit 1
+        fi
+    done
+    # Counted, not matched: teardown deletes `gated-apply-${DEMO_NS}` by name,
+    # and rolebinding.yaml carries that name TWICE — metadata.name and
+    # roleRef.name. A single grep passes while those two disagree, which binds
+    # the subject to a Role that does not exist. Same silent class as above.
+    if [[ $(grep -cE "^  name: ${GATED_APPLY_NAME}$" "${GATED_APPLY_RB}") -ne 2 ]]; then
+        echo "✗ ${GATED_APPLY_RB} must name ${GATED_APPLY_NAME} twice (metadata.name, roleRef.name)"
+        echo "  teardown deletes that name; a mismatch leaves the binding behind."
+        exit 1
+    fi
+    if [[ $(grep -cE "^  name: ${GATED_APPLY_NAME}$" "${GATED_APPLY_DIR}/role.yaml") -ne 1 ]]; then
+        echo "✗ ${GATED_APPLY_DIR}/role.yaml must be named ${GATED_APPLY_NAME}"
+        exit 1
+    fi
+    echo "→ gated-apply: ${GATED_APPLY_NAME} in ${TARGET_NS}, subject ${GATED_APPLY_SUBJECT}"
+    echo "    NOTE: this rewrote tracked files under deploy/components/gated-apply,"
+    echo "    which also turns the recipe's own gated-apply tests red in this"
+    echo "    checkout. Revert those files before committing or running go test."
+fi
+
 # Model flavor: point the daemon's -c at the matching config file.
 AGENT_CONFIG_PATH="${CONTENT_MOUNT}/.agents/${AGENT_CONFIG_BASENAME}"
 sed -i -E "s|^  value: .*/\.agents/config\..*$|  value: ${AGENT_CONFIG_PATH}|" \
@@ -286,13 +451,29 @@ echo "→ daemon config: ${RENDERED_CFG}"
 #
 # Comments are stripped first: the manifests explain their own
 # placeholders, and the explanation is not the defect.
-LEFTOVER=$(kustomize build "${APPLY_DIR}" \
-    | sed -E 's/[[:space:]]*#.*$//' \
+FINAL_RENDER=$(kustomize build "${APPLY_DIR}")
+LEFTOVER=$(sed -E 's/[[:space:]]*#.*$//' <<<"${FINAL_RENDER}" \
     | grep -nE 'your-project-id|your-cluster|your-repo' || true)
 if [[ -n "${LEFTOVER}" ]]; then
     echo "✗ placeholders survived into the rendered manifest:"
     echo "${LEFTOVER}" | sed 's/^/    /'
     echo "  Something in ${APPLY_DIR} is not covered by a patch in this script."
+    exit 1
+fi
+
+# Re-derive the daemon's namespace from THIS render, not the one captured
+# before the patches. The check up at the top runs against a render taken
+# before `kustomize edit set image` and before the component seds, and while
+# nothing in between can move a namespace today, "nothing in between can" is
+# an argument the next reader has to reconstruct. This render is the one
+# `kubectl apply -k` is about to produce again, so the claim needs no
+# argument at all.
+FINAL_DAEMON_NS=$(rendered_daemon_ns <<<"${FINAL_RENDER}")
+if [[ "${FINAL_DAEMON_NS}" != "${DEMO_NS}" ]]; then
+    echo "✗ after patching, ${APPLY_DIR} renders the daemon into"
+    echo "  '${FINAL_DAEMON_NS:-<none>}' but this recipe addresses it as '${DEMO_NS}'."
+    echo "  Something this script edited moved the daemon. Nothing below this"
+    echo "  point is addressed to the namespace it is actually in."
     exit 1
 fi
 

@@ -143,6 +143,10 @@ esac
 
 source "${SCRIPT_DIR}/prereqs.sh"
 require_coordinates || exit 1
+# This one GRANTS Workload Identity on ns/${DEMO_NS}/sa/... — the
+# silent failure: the binding succeeds and the daemon never gets a
+# token, with no error anywhere to say why.
+require_demo_ns_matches_base || exit 1
 
 # Unlike set-up-demo.sh's best-effort check, granting IS this script's
 # job, so an unreadable project number is fatal. An empty one builds a

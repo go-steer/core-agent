@@ -1,0 +1,67 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Binds the daemon's cluster identity to the gated-apply Role.
+#
+# THE SUBJECT IS THE SUBTLE PART. It is `kind: User`, not
+# `kind: ServiceAccount`, and the string is GKE's Workload Identity
+# USERNAME:
+#
+#   serviceAccount:<PROJECT_ID>.svc.id.goog[<NAMESPACE>/core-agent-daemon]
+#
+# <NAMESPACE> is the namespace the DAEMON runs in, which deploy/base
+# hardcodes — it is not DEMO_NS, and it is not TARGET_NS. See README.md,
+# "Two coordinates, and one string that looks like a third".
+#
+# Note the contrast with 13-clusterrolebinding-watcher.yaml and
+# 15-rolebinding-watcher-capacity.yaml, which both use plain
+# `kind: ServiceAccount`. Those bind the WATCHER, which holds a projected
+# KSA token and talks to the API server directly, so it authenticates as
+# system:serviceaccount:<ns>:<name>. The daemon does not work that way: it
+# reaches the cluster through the GKE MCP endpoint, which forwards the
+# daemon's GOOGLE principal, and the API server resolves that to the
+# Workload Identity username above. Binding `kind: ServiceAccount` here
+# would be silently inert.
+#
+# It is also NOT the `principal://iam.googleapis.com/...` direct-binding
+# form, which is what the design originally guessed and what the IAM
+# policy on 10-serviceaccount-daemon.yaml actually contains. That guess
+# was wrong. The string here was RECOVERED from a live 403 — GKE names the
+# principal in its own denial message — rather than constructed, and that
+# is the only reliable way to get it.
+#
+# HOW TO CHECK IT. Not with `kubectl auth can-i --as=<subject>`: on GKE
+# that exercises only the RBAC authorizer, while IAM arrives via a webhook
+# keyed to the AUTHENTICATED identity, so it disagrees with reality in
+# both directions. A wrong subject here produces NO error anywhere — RBAC
+# simply does not match, and the agent's patch keeps 403'ing as if the
+# component were never applied. The only valid check is a real token:
+#
+#   ./scripts/verify-gated-apply.sh
+#
+# PLACEHOLDERS: `your-target-namespace` (TARGET_NS) and `your-project-id`
+# (PROJECT_ID) must both be substituted before apply. See README.md.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gated-apply-gke-platform-agent
+  namespace: your-target-namespace
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: serviceAccount:your-project-id.svc.id.goog[gke-platform-agent/core-agent-daemon]
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gated-apply-gke-platform-agent

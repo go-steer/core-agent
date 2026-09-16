@@ -69,6 +69,120 @@ require_coordinates() {
         echo "  Set them in the environment or edit scripts/prereqs.sh." >&2
         return 1
     fi
+
+    return 0
+}
+
+# DEMO_NS is not a coordinate you can move the deployment with, and this is
+# the only place that says so. deploy/base hardcodes the daemon's namespace
+# (00-namespace.yaml, 10-serviceaccount-daemon.yaml, and the watcher's
+# suffixed cluster-scoped names); DEMO_NS is only ever a `kubectl -n`
+# argument, and nothing substitutes it into base. Override it and nothing
+# moves.
+#
+# WHO MUST CALL THIS, and why it is not folded into require_coordinates.
+# The damage is not uniform. Scripts that CREATE, GRANT or DELETE anything
+# named from DEMO_NS desynchronise it from where the daemon actually runs:
+#
+#   gen-tokens.sh        creates the Secrets somewhere the daemon will not
+#                        look
+#   grant-iam.sh         binds Workload Identity on a namespace with no
+#                        workloads — no error, the daemon simply never gets
+#                        a token
+#   set-up-demo.sh       applies base into the hardcoded namespace, then
+#                        talks to another one, and writes the gated-apply
+#                        subject
+#   teardown.sh          deletes a namespace that was never created and
+#                        leaves the real one standing
+#   debug-pod.sh         creates a Pod as `default`, a ServiceAccount that
+#                        exists in EVERY namespace, so the create succeeds
+#                        wherever it is pointed
+#   verify-gated-apply.sh creates a probe Pod as the daemon's ServiceAccount
+#                        and reports on an identity it read from a file, so
+#                        under a mismatch it measures one principal and
+#                        names another
+#
+# The last two read as diagnostics and were classified read-only in the
+# first draft of this split. They are not: "does it create a Pod" is the
+# question, not "is its purpose to look at something".
+#
+# Scripts that genuinely only read — attach.sh (port-forward),
+# break-workload.sh (works entirely in TARGET_NS), build-content-image.sh
+# (never mentions DEMO_NS) — fail loudly and harmlessly against an empty
+# namespace. So does dev/uat/gke-drill, which sources this file and runs
+# its dryrun against a fake kubectl with deliberately distinct coordinates
+# so that a hardcoded name anywhere in the drill is caught; refusing there
+# would make DEMO_NS the one coordinate it cannot vary.
+#
+# The parse is strict on purpose. This is `sed`, not a YAML parser, so the
+# only safe thing it can do is refuse anything it was not written for:
+# `head -1` on a file that grew a second document, or a second `  name:`
+# under some other key, would silently pick a namespace nobody meant and
+# then compare DEMO_NS against it. So: exactly one `kind:` line, and it
+# must be Namespace; exactly one two-space `name:` line. If this manifest
+# is ever restructured, this refuses rather than guesses, and the caller
+# stops before it applies anything. TestDemoNSGuardParsesTheNamespace
+# runs this function against mutated copies of the manifest to prove it.
+require_demo_ns_matches_base() {
+    local ns_manifest="${DEMO_DEPLOY_DIR}/base/00-namespace.yaml"
+    if [[ ! -f "${ns_manifest}" ]]; then
+        echo "✗ no deployment namespace manifest at ${ns_manifest}" >&2
+        return 1
+    fi
+
+    local kinds names base_ns
+    kinds=$(grep -c '^kind:' "${ns_manifest}")
+    names=$(grep -cE '^  name:[[:space:]]' "${ns_manifest}")
+    if [[ "${kinds}" != 1 || "${names}" != 1 ]] \
+        || ! grep -q '^kind: Namespace$' "${ns_manifest}"; then
+        echo "✗ ${ns_manifest} is not the single Namespace object this expects" >&2
+        echo "  (found ${kinds} 'kind:' and ${names} 'name:' lines). It is read" >&2
+        echo "  with sed, not a YAML parser, so it refuses rather than guess" >&2
+        echo "  which namespace the daemon is deployed into." >&2
+        return 1
+    fi
+
+    # Trailing whitespace is stripped rather than carried into the compare.
+    # A name line ending in one space fails closed — which is safe — but it
+    # bricks every mutating script while showing the operator two strings
+    # that are visually identical: "DEMO_NS is 'x', but this deploy tree
+    # hardcodes 'x '". An unreadable diagnostic on a fail-closed path is
+    # still a defect, because the operator's next move is to doubt the
+    # check rather than the file.
+    base_ns=$(sed -nE 's/^  name:[[:space:]]+(.*[^[:space:]])[[:space:]]*$/\1/p' "${ns_manifest}")
+    if [[ -z "${base_ns}" ]]; then
+        echo "✗ could not read the deployment namespace from ${ns_manifest}" >&2
+        return 1
+    fi
+    # The sed reads a bare scalar and only a bare scalar. `name: "x"` and
+    # `name: x # a comment` are both valid YAML that kustomize and kubectl
+    # accept, and both would come back through that expression with the quotes
+    # or the comment still attached — failing closed, but reporting
+    # `hardcodes '"x"'`, which is the same visually-confusing diagnostic the
+    # trailing-whitespace strip above exists to prevent. So the value is
+    # checked against the shape of an RFC 1123 label and the refusal says
+    # what it found, rather than comparing a mangled string and blaming
+    # DEMO_NS for the mismatch. This is a PARSE check, not an admission
+    # check — it asks "did the sed read a name, or some YAML around a
+    # name", and the API server owns everything else about the value,
+    # length included.
+    if [[ ! "${base_ns}" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+        echo "✗ ${ns_manifest} has 'name: ${base_ns}', which is not a bare" >&2
+        echo "  namespace name. This file is read with sed, not a YAML parser," >&2
+        echo "  so a quoted value or a trailing '# comment' is carried through" >&2
+        echo "  verbatim instead of being understood. Write the name unquoted" >&2
+        echo "  and uncommented." >&2
+        return 1
+    fi
+    if [[ "${DEMO_NS}" != "${base_ns}" ]]; then
+        echo "✗ DEMO_NS is '${DEMO_NS}', but this deploy tree hardcodes '${base_ns}'." >&2
+        echo "  DEMO_NS does not move the deployment — it is only a 'kubectl -n'" >&2
+        echo "  argument — so overriding it desynchronises the Secrets, the IAM" >&2
+        echo "  bindings, teardown and the gated-apply subject from where the" >&2
+        echo "  daemon actually runs. Unset DEMO_NS, or rename the namespace in" >&2
+        echo "  ${DEMO_DEPLOY_DIR}/base and update this default to match." >&2
+        return 1
+    fi
     return 0
 }
 

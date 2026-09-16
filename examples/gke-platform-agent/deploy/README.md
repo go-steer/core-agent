@@ -10,7 +10,7 @@ manifests: what each object is for, and which decisions are load-bearing.
 
 ```
 base/            one namespace, two Deployments, the RBAC they need
-components/      composable add-ons (tracing)
+components/      composable add-ons (tracing, gated-apply RBAC)
 overlays/        2 × 2 — content delivery × tracing
 content.Dockerfile
 ```

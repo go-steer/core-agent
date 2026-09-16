@@ -24,6 +24,9 @@ set -euo pipefail
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 source "${SCRIPT_DIR}/prereqs.sh"
 require_coordinates || exit 1
+# This one CREATES Secrets in DEMO_NS, which the daemon reads from the
+# namespace deploy/base hardcodes. A mismatch strands them unread.
+require_demo_ns_matches_base || exit 1
 
 
 PLATFORM_TOKEN=$(openssl rand -hex 32)

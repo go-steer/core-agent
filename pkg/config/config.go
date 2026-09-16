@@ -1041,17 +1041,18 @@ type CallPeerConfig struct {
 // Zero values mean the built-in defaults; see pkg/tools.
 type WaitAndVerifyConfig struct {
 	// PollAllow names tools that may be polled despite not being
-	// classified read-only by the runtime. This exists for MCP: ADK's
-	// MCP adapter does not surface the server's readOnlyHint
-	// annotation, so an MCP tool lands on the fail-safe "mutating"
-	// side of tools.IsReadOnlyTool and would be refused. Listing a
-	// tool here is the operator asserting it only observes state.
+	// classified read-only by the runtime, which would otherwise
+	// refuse them at the fail-safe "mutating" side of
+	// tools.IsReadOnlyTool. Listing a tool here is the operator
+	// asserting it only observes state.
 	//
-	// For a server that is read-only in its entirety — a provider's
-	// /mcp/read-only endpoint — prefer `read_only: true` on the
-	// ServerSpec in mcp.json (#693), which classifies every tool the
-	// server exposes. This list is then for the finer case: one
-	// read-only tool on a server that also mutates.
+	// Try the two cheaper doors first. A server that publishes MCP
+	// readOnlyHint annotations classifies its own tools and needs
+	// nothing here at all; a server that publishes none but is
+	// read-only in its entirety — a provider's /mcp/read-only
+	// endpoint — wants `read_only: true` on the ServerSpec in
+	// mcp.json (#693). This list is what is left: a pollable tool on
+	// an unannotated server that also mutates.
 	//
 	// Names are the ones the model sees, i.e. namespaced for MCP
 	// ("gke_get_pod" and not "get_pod").

@@ -127,12 +127,14 @@ func BindCatalogs(binders []CatalogBinder, ts []adktool.Tool, sets []adktool.Too
 // config by NewWaitAndVerifyTool.
 type WaitAndVerifyOptions struct {
 	// PollAllow names tools that may be polled even though the
-	// runtime can't classify them read-only. This is how MCP tools
-	// become pollable: ADK's MCP adapter does not surface the
-	// server's readOnlyHint annotation, so every MCP tool classifies
-	// as mutating (the fail-safe default) and would otherwise be
-	// refused. Listing one here is an operator assertion that the
-	// tool observes without mutating.
+	// runtime can't classify them read-only. Listing one here is an
+	// operator assertion that the tool observes without mutating.
+	//
+	// It is no longer the only door for MCP: a server that publishes
+	// a readOnlyHint annotation classifies its own tools, and
+	// `read_only: true` in mcp.json covers a server that publishes
+	// nothing. This list is for what neither reaches — a pollable
+	// tool on an unannotated server that also mutates.
 	PollAllow []string
 	// MaxTimeout caps timeout_seconds. Zero means defaultWaitMaxTimeout.
 	MaxTimeout time.Duration

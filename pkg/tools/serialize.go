@@ -75,9 +75,9 @@ var readOnlyBuiltins = map[string]bool{
 }
 
 // ReadOnlyHinter is the optional interface a tool implements to
-// declare its own dispatch class — the MCP adapter satisfies it from
-// the server-declared readOnlyHint annotation, and custom tools may
-// too. Takes precedence over the builtin name table.
+// declare its own dispatch class — pkg/mcp satisfies it from the
+// server-declared readOnlyHint annotation, and custom tools may too.
+// Takes precedence over the builtin name table.
 type ReadOnlyHinter interface {
 	ReadOnlyHint() bool
 }
@@ -127,7 +127,7 @@ func SerializeMutating(ts []adktool.Tool, mu *MutationSerializer) []adktool.Tool
 // SerializeMutatingToolset wraps a toolset so every mutating tool it
 // yields serializes on mu. Tools resolve lazily (MCP toolsets fetch
 // on demand), so classification happens per Tools() call — which is
-// also when the MCP adapter's readOnlyHint is available.
+// also when a server's readOnlyHint has just come off the wire.
 func SerializeMutatingToolset(ts adktool.Toolset, mu *MutationSerializer) adktool.Toolset {
 	if ts == nil {
 		return nil

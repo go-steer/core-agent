@@ -150,7 +150,8 @@ func TestReadOnlyHint_SurvivesTheShippedComposition(t *testing.T) {
 	t.Parallel()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
 	spec := ServerSpec{Transport: "http", URL: "u"}
-	tools := toolsOf(t, wrapServerToolset(newAnnotatedToolset(t), "gke", spec, &DigestOptions{}, gate))
+	composed, _ := wrapServerToolset(newAnnotatedToolset(t), "gke", spec, &DigestOptions{}, gate)
+	tools := toolsOf(t, composed)
 
 	for name, want := range map[string]bool{
 		"gke_get_pod":      true,

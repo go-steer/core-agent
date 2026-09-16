@@ -143,6 +143,34 @@ type ServerSpec struct {
 	// authority as the config that turned plan-first on.
 	ReadOnly bool `json:"read_only,omitempty"`
 
+	// Tools is an allowlist: when non-empty, only the tools it names
+	// are registered, and the rest of the server's catalog is dropped
+	// before it is namespaced, declared, or listed. Absent means the
+	// whole catalog, which is what every config written before this
+	// meant and must keep meaning.
+	//
+	// Keyed on the name the SERVER exposes, like ToolNotes and for the
+	// same reason — the namespace prefix is this server's own key in
+	// the enclosing object.
+	//
+	// This is a REGISTRATION decision, not a permission one, and the
+	// distinction is the reason it exists. The gate can already deny a
+	// call; what it cannot do is un-advertise the tool, and a tool in
+	// the catalog is a promise (#759). Mounting a provider's full
+	// endpoint to reach one verb otherwise hands the model every other
+	// verb on it and leaves the gate to say no afterwards, which costs
+	// a turn to discover a boundary the catalog should have described.
+	//
+	// It is not a security boundary either: the server decides what a
+	// call is allowed to do, and an allowlist the client applies to
+	// its own catalog is worth exactly as much as the client. Scope
+	// the credential — IAM, RBAC — and use this so the model is not
+	// told a different story from the one the server will enforce.
+	//
+	// A name that matches no tool the server exposes is a startup
+	// warning, not an error; see unmatchedToolAllowlist.
+	Tools []string `json:"tools,omitempty"`
+
 	// ToolNotes appends operator-authored text to the description the
 	// MODEL reads for a tool, keyed by the name the SERVER exposes —
 	// no namespace prefix, because the prefix is this server's own key
@@ -274,6 +302,21 @@ func (s ServerSpec) Validate(name string) error {
 		if strings.TrimSpace(note) == "" {
 			return fmt.Errorf("mcp: server %q: tool_notes[%q] is empty", name, toolName)
 		}
+	}
+	// Same reasoning for the allowlist, with one extra: an empty
+	// string here would be an entry that can never match, and an
+	// allowlist whose entries silently cannot match is the failure
+	// this field's warning exists to catch. `"tools": []` is NOT this
+	// case — it is an absent allowlist, and means the whole catalog.
+	seenTool := make(map[string]bool, len(s.Tools))
+	for _, toolName := range s.Tools {
+		if strings.TrimSpace(toolName) == "" {
+			return fmt.Errorf("mcp: server %q: tools has an empty tool name", name)
+		}
+		if seenTool[toolName] {
+			return fmt.Errorf("mcp: server %q: tools lists %q twice", name, toolName)
+		}
+		seenTool[toolName] = true
 	}
 	return nil
 }

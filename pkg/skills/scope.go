@@ -52,9 +52,6 @@ func (s Skills) Scoped(ctx context.Context, allow []string) (Skills, error) {
 	if len(allow) == 0 {
 		return Skills{}, nil
 	}
-	if s.source == nil {
-		return Skills{}, fmt.Errorf("skills: cannot scope to %v: no skills are loaded", allow)
-	}
 
 	// Validate every requested name against what was loaded — an unknown
 	// skill reference is a bundle/config bug, not an empty scope.
@@ -65,9 +62,24 @@ func (s Skills) Scoped(ctx context.Context, allow []string) (Skills, error) {
 	want := make(map[string]bool, len(allow))
 	for _, name := range allow {
 		if !known[name] {
+			// The name may be a skill that IS on disk and was withheld
+			// because this runtime can't satisfy its `requires:` (#962).
+			// "unknown skill" would send the author looking for a typo
+			// in a file that is sitting right where they put it, so say
+			// what actually happened. Checked before the no-skills case
+			// below for the same reason: a subagent grant that names the
+			// only skill in the bundle deserves the real answer.
+			for _, d := range s.Dropped {
+				if d.Skill == name {
+					return Skills{}, fmt.Errorf("skills: skill %q is not loaded in this runtime: %s", name, d.Reason)
+				}
+			}
 			return Skills{}, fmt.Errorf("skills: unknown skill %q (not among the %d loaded)", name, len(s.Infos))
 		}
 		want[name] = true
+	}
+	if s.source == nil {
+		return Skills{}, fmt.Errorf("skills: cannot scope to %v: no skills are loaded", allow)
 	}
 
 	filtered := &filteredSource{inner: s.source, allow: want}
@@ -88,7 +100,11 @@ func (s Skills) Scoped(ctx context.Context, allow []string) (Skills, error) {
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
 
-	return Skills{Toolset: ts, Infos: infos, source: filtered, gate: s.gate}, nil
+	// Dropped rides along unchanged: the narrowing is a grant, not a
+	// second capability check, and a scoped view that forgot the drops
+	// would answer "unknown skill" to the very question it just answered
+	// properly one level up.
+	return Skills{Toolset: ts, Infos: infos, Dropped: s.Dropped, source: filtered, gate: s.gate}, nil
 }
 
 // filteredSource wraps a skill.Source and exposes only the skills whose

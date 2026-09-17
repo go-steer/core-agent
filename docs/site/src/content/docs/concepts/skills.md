@@ -56,7 +56,52 @@ Always include the ticket key (e.g. `PROJ-123`) in your response.
 
 ### Optional frontmatter
 
-The Anthropic SKILL.md spec allows additional fields (`allowed_tools`, `version`, etc.). `core-agent` parses the `name` and `description` for its own metadata; the rest is preserved verbatim and passed through to the underlying ADK `skilltoolset`.
+| Field | Notes |
+|---|---|
+| `requires` | Capabilities the runtime must actually have for the skill to be loaded at all. See [Runtime requirements](#runtime-requirements) below. |
+| `allowed-tools` | Passed through to the ADK `skilltoolset`. A *permission* — what the skill may use — where `requires` is a *capability*. Deliberately separate. |
+| `license`, `compatibility`, `metadata` | Passed through to the ADK `skilltoolset`. |
+
+Anything else the Anthropic SKILL.md spec allows (`version`, Claude Skills 2.0 extensions) is **dropped before parsing**, not preserved: the ADK frontmatter parser rejects unknown keys outright, so a bundle carrying them would fail to load at all. The body is untouched either way.
+
+---
+
+## Runtime requirements
+
+The published image is `gcr.io/distroless/static-debian12:nonroot` — no shell, no `kubectl`, no `gcloud`, no Python. A skill that tells the model to run those loads perfectly happily and then instructs it to do something the runtime cannot do; the model spends turns discovering that, and the operator sees a skill that quietly does nothing.
+
+`requires:` is how a bundle says what it needs:
+
+```yaml
+---
+name: gke-workload-troubleshooting
+description: Diagnose a failing GKE workload from events, logs and rollout state.
+requires: [shell, kubectl, gcloud]
+---
+```
+
+At load time each token is resolved against the live runtime. A skill with an unmet requirement is **not loaded** — it is withheld from the toolset entirely, so `list_skills` never mentions it and `load_skill` cannot reach it — and the daemon says so on stderr at startup:
+
+```
+core-agent: skills: gke-workload-troubleshooting: unmet "requires:" — kubectl (not on PATH); gcloud (not on PATH) — NOT loaded
+```
+
+### The grammar
+
+| Token | Resolved by |
+|---|---|
+| `shell` (or `bash`) | Whether **this build registered the `bash` tool**. Not whether a shell binary exists: the failure this key was written for is a build with `--disable-tools=bash` on a machine whose `/bin/bash` is right there. |
+| anything else | `exec.LookPath` — the binary must be on `PATH`. |
+
+`requires: []` means "nothing", same as omitting the key. A `requires:` that is neither a string nor a list of strings is a drop too, naming the malformation: a bundle whose requirements cannot be read is unsatisfiable by inspection, and silently loading it would restore the failure the key exists to end.
+
+### What it does not do
+
+- **It is not a permission.** `requires` says what must exist; `allowed-tools` and the [permission gate](/concepts/permissions/) say what may be used. A satisfied `requires` grants nothing.
+- **MCP-server availability is not covered.** It is the same *shape* of claim and a different resolution path; if you need it, say so on [#962](https://github.com/go-steer/core-agent/issues/962).
+- **There is no warn mode.** A withheld skill is already loud and non-fatal — the daemon starts, names the skill and the missing capability, and carries on with the rest of the bundle.
+
+A [declarative subagent](/agent-design/subagents-and-wrappers/) whose `skills:` grant names a withheld skill fails with the capability named, not with "unknown skill" — the two have different fixes and must not read the same.
 
 ### Body conventions
 
@@ -105,13 +150,17 @@ The loader:
 
 1. Stats each of the three `skills/` directories. Missing directories are silently skipped (most operators have none or one populated).
 2. Lists frontmatters via ADK's `skill.NewFileSystemSource` over the merged view.
-3. If at least one valid frontmatter is found, builds a `skilltoolset` and registers it as a single ADK Toolset.
-4. If a [permission gate](/concepts/permissions/) is configured, wraps the toolset with the gate under the `skill` namespace.
+3. Resolves each skill's [`requires:`](#runtime-requirements) against the live runtime and withholds the ones this runtime cannot serve. Requirements are read from the *winning* copy of a shadowed skill, so a project bundle overriding a user-global one of the same name contributes its own.
+4. If at least one skill survives, builds a `skilltoolset` over the surviving set and registers it as a single ADK Toolset.
+5. If a [permission gate](/concepts/permissions/) is configured, wraps the toolset with the gate under the `skill` namespace.
 
 The `Skills` returned by `skills.Load` carries:
 
 - `Toolset` — pass to `agent.WithToolsets(...)`.
-- `Infos []Info` — name + description for each discovered skill, suitable for rendering a `/skills` view in your host.
+- `Infos []Info` — name + description for each **loaded** skill, suitable for rendering a `/skills` view in your host.
+- `Dropped []Unsatisfied` — skill name + reason for each skill withheld at step 3. Print these; a withheld skill nobody mentions is the same silent failure `requires:` exists to end.
+
+Embedders that build their tool registry *after* loading skills — as `cmd/core-agent` does — should pass `skills.WithShellTool(tools.BashRegistered(b))` so the `shell` token is answered against the catalog the build ends up with. Every other caller can leave it unset: the answer is read off the permission gate, which `tools.Build` has already told.
 
 ```go
 loaded, err := skills.Load(ctx, agentsDir, gate)

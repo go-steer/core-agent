@@ -594,6 +594,13 @@ func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subage
 	if err != nil {
 		return "", parentSurface{}, servers, fmt.Errorf("skills: %w", err)
 	}
+	// Named in full, one per line — rootInventory only counts them, and a
+	// count doesn't tell the author which binary to install (#962). Same
+	// channel as the mcp warnings just above, for the same reason: a
+	// content root's promises get reconciled out loud at boot.
+	for _, d := range rootSkills.Dropped {
+		deps.send(fmt.Sprintf("subagent %q: skills: %s — NOT loaded", spec.Name, d))
+	}
 
 	// builtinTools intentionally nil: resolveSubagentTools already resolved
 	// built-ins against the parent registry; resolveSubagentToolsets reads
@@ -622,7 +629,16 @@ func rootInventory(surface parentSurface) string {
 	if down > 0 {
 		mcpDesc += fmt.Sprintf(", %d down", down)
 	}
-	return fmt.Sprintf("%s, skills: %d loaded", mcpDesc, len(surface.skills.Infos))
+	skillDesc := fmt.Sprintf("skills: %d loaded", len(surface.skills.Infos))
+	// A skill the root shipped but this runtime withheld for an unmet
+	// `requires:` (#962) is the same class of fact as a down MCP server:
+	// the root promised a surface and the boot line is where that promise
+	// gets reconciled with what the subagent actually got. Counted here
+	// and named in full on the lines below.
+	if n := len(surface.skills.Dropped); n > 0 {
+		skillDesc += fmt.Sprintf(", %d withheld", n)
+	}
+	return fmt.Sprintf("%s, %s", mcpDesc, skillDesc)
 }
 
 // rootedSubagentInstruction resolves a rooted subagent's persona. An inline

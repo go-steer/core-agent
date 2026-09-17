@@ -1,0 +1,34 @@
+[
+  {
+    "timestamp": "2026-09-17T12:00:00.112000Z",
+    "protoPayload": {
+      "methodName": "io.k8s.apps.v1.deployments.patch",
+      "resourceName": "k8s.io/apis/apps/v1/namespaces/drill-target/deployments/emailservice",
+      "authenticationInfo": {
+        "principalEmail": "drill-operator@example.com"
+      },
+      "authorizationInfo": [
+        {
+          "permission": "io.k8s.apps.v1.deployments.patch",
+          "granted": true
+        }
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-09-17T12:03:41.884000Z",
+    "protoPayload": {
+      "methodName": "io.k8s.apps.v1.deployments.patch",
+      "resourceName": "k8s.io/apis/apps/v1/namespaces/drill-target/deployments/emailservice",
+      "authenticationInfo": {
+        "principalEmail": "fixture-project.svc.id.goog[drill-demo/core-agent-daemon]"
+      },
+      "authorizationInfo": [
+        {
+          "permission": "io.k8s.apps.v1.deployments.patch",
+          "granted": true
+        }
+      ]
+    }
+  }
+]

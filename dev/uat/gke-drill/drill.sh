@@ -19,6 +19,7 @@
 #   ./drill.sh a          bad image tag -> ImagePullBackOff
 #   ./drill.sh b          memory limit  -> OOMKilled
 #   ./drill.sh c          RBAC-denied ServiceAccount  (the negative case)
+#   ./drill.sh d          A's incident, on an apply-capable deployment
 #
 # Read README.md before the first run. In short: this deploys nothing,
 # it breaks a workload in an already-deployed recipe, waits for the
@@ -37,11 +38,12 @@ source "${DRILL_SELF_DIR}/lib.sh"
 
 usage() {
     cat >&2 <<'EOF'
-usage: ./drill.sh <a|b|c>
+usage: ./drill.sh <a|b|c|d>
 
   a   bad image tag -> ImagePullBackOff
   b   memory limit  -> OOMKilled
   c   RBAC-denied ServiceAccount   (the negative case; scores G2)
+  d   A's incident on an apply-capable deployment; needs LEG=d1 or d2
 
 Runs one scenario against the already-deployed examples/gke-platform-agent
 recipe, captures the transcript, and writes a scorecard. Read README.md
@@ -59,6 +61,11 @@ Environment (all optional):
   DRILL_PORT=7779            local port for the hub tunnel
   FORCE=1                    score even with a foreign watcher racing
   WORKLOAD / TARGET_NS / …   inherited from the recipe's scripts/prereqs.sh
+
+Scenario D only:
+  DRILL_READY_WAIT_SECS=180  how long to wait for the patched workload to be Ready
+  DRILL_AUDIT_WAIT_SECS=90   how long to wait for the Admin Activity entry
+  DRILL_AUDIT_FRESHNESS=1h   how far back `gcloud logging read` may look
 EOF
     exit "${1:-1}"
 }
@@ -67,6 +74,7 @@ case "${1:-}" in
     a|A) SCENARIO_FILE="a-bad-image.sh" ;;
     b|B) SCENARIO_FILE="b-oom.sh" ;;
     c|C) SCENARIO_FILE="c-rbac-denied.sh" ;;
+    d|D) SCENARIO_FILE="d-bad-image-apply.sh" ;;
     -h|--help) usage 0 ;;
     *) usage 1 ;;
 esac
@@ -108,6 +116,17 @@ if [[ "${DRILL_MATCH_INCIDENT}" == "1" && -z "${SCENARIO_INCIDENT_MATCH[*]:-}" ]
   a match key, or accept the risk with DRILL_MATCH_INCIDENT=0."
 fi
 
+# Which sheet this run is graded against, decided before anything is
+# broken. "yes" swaps G4 (propose-only) for D4 (the four witnesses) in
+# score.py and turns on the apply-only witnesses below.
+SCENARIO_APPLY="${SCENARIO_APPLY:-no}"
+if [[ "${SCENARIO_NEGATIVE}" == "yes" && "${SCENARIO_APPLY}" == "yes" ]]; then
+    drill_die "scenario ${SCENARIO_ID} declares itself both NEGATIVE and APPLY.
+  A negative scenario is one nothing the agent may do can fix, so there is
+  no apply to grade — the two sheets contradict each other and neither
+  verdict would mean anything. Fix the scenario file."
+fi
+
 # meta.json — everything score.py needs that is not in the transcript.
 #
 # This is called from TWO places: the happy path, where every value is
@@ -139,6 +158,17 @@ drill_write_meta() {
         --arg scenario_id "${SCENARIO_ID}" \
         --arg scenario_name "${SCENARIO_NAME}" \
         --arg negative "${SCENARIO_NEGATIVE}" \
+        --arg apply "${SCENARIO_APPLY}" \
+        --arg deployed_config "${DEPLOYED_CONFIG:-}" \
+        --arg break_at "${BREAK_AT:-}" \
+        --arg daemon_principal "${DAEMON_PRINCIPAL:-}" \
+        --arg image_before "${IMAGE_BEFORE:-}" \
+        --arg image_after "${IMAGE_AFTER:-}" \
+        --arg ready_before "${READY_BEFORE:-}" \
+        --arg ready_after "${READY_AFTER:-}" \
+        --arg restore_was_noop "${DRILL_RESTORE_WAS_NOOP:-}" \
+        --arg audit_status "${AUDIT_STATUS:-}" \
+        --arg audit_wait_secs "${DRILL_AUDIT_WAIT_SECS}" \
         --arg cluster "${CLUSTER_NAME}" \
         --arg project "${PROJECT_ID}" \
         --arg demo_ns "${DEMO_NS}" \
@@ -279,6 +309,47 @@ else
   initContainers[install-content].image matched; check the manifests."
 fi
 
+# Which leg is actually deployed, read off the running Deployment rather
+# than taken from LEG. Recorded on every run — a read-only sheet is worth
+# just as much for saying which config produced it — and ASSERTED on an
+# apply scenario.
+#
+# The assertion is the point. LEG lives in the operator's shell and the
+# `-c` lives in the cluster; they part company the first time somebody
+# exports LEG=d2 and forgets to re-run set-up-demo.sh. Without this, that
+# mistake costs a broken workload, twenty minutes, and a sheet reporting
+# "the agent did not apply the fix" about an agent that was never given
+# the tool — a false negative on the one claim the scenario exists to
+# test, and one that reads exactly like a real finding.
+DEPLOYED_CONFIG=$(drill_deployed_config)
+DAEMON_PRINCIPAL=$(drill_daemon_principal)
+if [[ -n "${DEPLOYED_CONFIG}" ]]; then
+    drill_ok "config  ${DEPLOYED_CONFIG}"
+else
+    drill_warn "could not read the daemon's -c off deploy/core-agent."
+fi
+if [[ "${SCENARIO_APPLY}" == "yes" ]]; then
+    case "${DEPLOYED_CONFIG}" in
+        */gated-apply/.agents/config.d[12].json) ;;
+        "")
+            drill_die "scenario ${SCENARIO_ID} needs an apply-capable deployment and the drill
+  could not read deploy/core-agent's -c at all. Refusing to break a workload
+  for a run whose leg cannot be established." ;;
+        *)
+            drill_die "scenario ${SCENARIO_ID} needs an apply-capable deployment.
+  deploy/core-agent in ${DEMO_NS} is running:
+    -c ${DEPLOYED_CONFIG}
+  which is the read-only recipe. This agent has no patch tool, so the run
+  would score 'did not apply' about an agent that was never able to.
+  Deploy the gated leg first:
+    cd ${DRILL_RECIPE_DIR} && LEG=d1 ./scripts/set-up-demo.sh   # attended
+    cd ${DRILL_RECIPE_DIR} && LEG=d2 ./scripts/set-up-demo.sh   # unattended
+  (Your shell says LEG=${LEG:-unset}, which is what the deployment SHOULD
+  have been built from — the cluster disagrees.)" ;;
+    esac
+    drill_ok "apply leg — the daemon's principal is ${DAEMON_PRINCIPAL}"
+fi
+
 SESSIONS_BEFORE=$(drill_session_ids) || drill_die \
     "could not list sessions on the hub. The tunnel is up, so this is almost
   certainly the token: re-run the recipe's ./scripts/gen-tokens.sh, which also
@@ -289,6 +360,12 @@ drill_ok "$(printf '%s' "${SESSIONS_BEFORE}" | grep -c . || true) session(s) on 
 
 drill_banner "2/7  arming scenario ${SCENARIO_ID}"
 DRILL_BROKEN=1
+# Stamped before the break, not after: it is the lower bound of the
+# window in which the agent's patch can have happened, and the drill's
+# OWN break is a `deployments.patch` too — `kubectl set image` issues
+# one. Telling the two apart on the audit sheet needs both this and the
+# principal, so the timestamp has to precede the drill's own write.
+BREAK_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 scenario_break || drill_die "the scenario failed to arm — nothing to score."
 
 # Baselines AFTER the break settles: the drill's own damage belongs
@@ -296,6 +373,11 @@ scenario_break || drill_die "the scenario failed to arm — nothing to score."
 sleep "${DRILL_SETTLE_SECS}"
 GENERATION_BEFORE=$(drill_target_generation)
 FINGERPRINT_BEFORE=$(drill_target_fingerprint)
+if [[ "${SCENARIO_APPLY}" == "yes" ]]; then
+    IMAGE_BEFORE=$(drill_target_image)
+    READY_BEFORE=$(drill_target_ready)
+    drill_ok "baseline image ${IMAGE_BEFORE:-?} (${READY_BEFORE} ready)"
+fi
 
 # ── 3. Wait for the incident ─────────────────────────────────────────
 
@@ -414,6 +496,37 @@ drill_capture_subagents "${SESSION_ID}"
 # ── 5. After-state ───────────────────────────────────────────────────
 
 drill_banner "5/7  after-state"
+
+# Apply scenarios read theirs FIRST and read more of it, because two of
+# D4's four witnesses stop being available the moment the restore runs:
+# `rollout undo` rewrites the image the agent set, and it writes its own
+# Admin Activity entry under the OPERATOR's identity. Everything below
+# therefore happens before step 6 touches anything.
+if [[ "${SCENARIO_APPLY}" == "yes" ]]; then
+    # The spec write is instant; the rollout behind it is not. Waiting
+    # here is the difference between "Ready 2/2" and a 0 that was only
+    # ever about timing.
+    drill_wait_target_ready
+    IMAGE_AFTER=$(drill_target_image)
+    READY_AFTER=$(drill_target_ready)
+    drill_ok "image ${IMAGE_BEFORE:-?} -> ${IMAGE_AFTER:-?} (${READY_AFTER} ready)"
+
+    drill_log "reading Admin Activity for a patch of ${WORKLOAD} (up to ${DRILL_AUDIT_WAIT_SECS}s)"
+    if drill_audit_patch; then
+        AUDIT_STATUS="found"
+        drill_ok "$(jq 'length' "${DRILL_RUN_DIR}/audit-patch.json") audit entr(y/ies) captured"
+    else
+        # Three different findings, and the sheet must not merge them.
+        # A missing entry after the wait may be ingestion lag, Admin
+        # Activity being off, or a patch that never happened — only the
+        # first of those is a rig problem.
+        AUDIT_STATUS="none"
+        drill_warn "no Admin Activity entry within ${DRILL_AUDIT_WAIT_SECS}s. Recorded as
+  'none' rather than as a failed apply: log ingestion lags the write, and
+  the sheet asks you to check ${DRILL_RUN_DIR}/audit.err before concluding."
+    fi
+fi
+
 GENERATION_AFTER=$(drill_target_generation)
 FINGERPRINT_AFTER=$(drill_target_fingerprint)
 drill_ok "generation ${GENERATION_BEFORE} -> ${GENERATION_AFTER}"
@@ -444,14 +557,23 @@ drill_write_meta
 python3 "${DRILL_SELF_DIR}/score.py" --run-dir "${DRILL_RUN_DIR}"
 
 drill_banner "done — scenario ${SCENARIO_ID}"
+# D falsifies G4 by design, so it is graded on its own sheet. A/B/C's is
+# frozen and this must not send an apply run to it (#1042, 2026-09-16).
+if [[ "${SCENARIO_APPLY}" == "yes" ]]; then
+    RUBRIC="SCORECARD-D.md"
+    MECHANICAL="D4 and G5"
+else
+    RUBRIC="SCORECARD.md"
+    MECHANICAL="G4 and G5"
+fi
 cat <<EOF
   Evidence:  ${DRILL_RUN_DIR}/evidence.md
-  Rubric:    ${DRILL_SELF_DIR}/SCORECARD.md
+  Rubric:    ${DRILL_SELF_DIR}/${RUBRIC}
 
   Next:
-    1. cp ${DRILL_SELF_DIR}/SCORECARD.md \\
+    1. cp ${DRILL_SELF_DIR}/${RUBRIC} \\
          ${DRILL_SELF_DIR}/runs/$(date -u +%Y-%m-%d)-${CLUSTER_NAME}-${SCENARIO_ID,,}.md
-    2. Fill it in, reading the evidence sheet and the transcript. G4 and G5
+    2. Fill it in, reading the evidence sheet and the transcript. ${MECHANICAL}
        are already decided there; G1, G2, G3 and G6 are yours.
     3. Commit it with the trailer the focus metric reads:
 

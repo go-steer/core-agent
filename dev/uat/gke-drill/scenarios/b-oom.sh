@@ -28,6 +28,9 @@ SCENARIO_ID="B"
 SCENARIO_NAME="memory limit squeeze -> OOMKilled"
 SCENARIO_NEGATIVE="no"
 
+# Propose-only; see a-bad-image.sh for why every scenario states this.
+SCENARIO_APPLY="no"
+
 SCENARIO_EXPECT_TERMS=(
     "${WORKLOAD}"
     "OOMKilled"

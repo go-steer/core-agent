@@ -200,13 +200,24 @@ recipe exists to detect, and it is what G1/G3 of the drill rubric score.
 
 Breaking a workload by hand and reading the transcript tells you whether *that*
 run went well. It does not accumulate. [`dev/uat/gke-drill/`](../../dev/uat/gke-drill/)
-drives three of these modes end to end against this recipe, captures the parent
+drives four scenarios end to end against this recipe — three of the modes
+above, one of them twice — captures the parent
 *and* subagent transcripts, and pre-scores the two mechanical boxes of a
 six-box rubric so a human only has to judge the other four:
 
 ```sh
 cd ../../dev/uat/gke-drill && ./drill.sh a   # or b, or c
 ```
+
+`d` is the fourth scenario and the one that runs twice over `bad-image`: it is
+the apply leg's, breaking exactly what `a` breaks and then asking whether the
+daemon *fixed* it. Reusing `a`'s mode is what keeps the comparison honest — `d`
+is `a` plus apply, and nothing else differs. It needs a `LEG=d1` or `LEG=d2`
+deployment and refuses to break anything without one — it reads the `-c` off
+the running Deployment rather than trusting the variable in your shell. It is
+also graded on a different sheet, `SCORECARD-D.md`, because the propose-only
+rubric's fourth box is "no mutating call reached the cluster" and an apply run
+that did nothing at all passes it.
 
 It deploys nothing and owns no coordinates — it sources this recipe's
 `scripts/prereqs.sh`, so it cannot score a deployment other than the one you

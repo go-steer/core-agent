@@ -1121,12 +1121,59 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// stand up their own servers (below): mcp.RegisterMetrics creates a
 	// same-named ObservableGauge each call, so it must run ONCE over the
 	// combined parent + subagent-root slice (#338).
+	// Built-in tool toggles are settled HERE, ahead of skill loading,
+	// even though tools.Build still runs further down. A skill's
+	// `requires: [shell]` (#962) is a question about the catalog THIS
+	// build ends up with, and skills.LoadAll — which is what answers it
+	// — runs before Build is in a position to have told the gate. Under
+	// --no-builtin-tools b stays zero, which is the truthful answer:
+	// that build registers no bash.
+	var b tools.BuiltinTools
+	if !noBuiltinTools {
+		b = tools.Default()
+		for _, name := range cfg.Tools.Disable {
+			if err := b.Disable(name); err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: config tools.disable: %v\n", err)
+				return runner.ExitConfigError
+			}
+		}
+		for _, name := range strings.Split(disableTools, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if err := b.Disable(name); err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: --disable-tools: %v\n", err)
+				return runner.ExitConfigError
+			}
+		}
+		// Task-profile disables (#160) come last and are already
+		// filtered by --enable-tools. Names are profile-authored, so a
+		// failure here is a table bug, not operator input — surface it
+		// as such.
+		for _, name := range profileDisables {
+			if err := b.Disable(name); err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: task class %q profile: %v\n", cfg.Session.TaskClass, err)
+				return runner.ExitConfigError
+			}
+		}
+	}
+
 	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
 		skills.WithHomeAgentsSkillsDir(homeAgentsDir),
 		skills.WithContentRoots(contentRoots),
+		skills.WithShellTool(tools.BashRegistered(b)),
 		skills.WithInterpolator(envInterp))
 	if skillsErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: skills: %v\n", skillsErr)
+	}
+	// A skill withheld for an unmet `requires:` is a silent narrowing of
+	// what the operator shipped, so say it out loud — same reason the
+	// dropped-alert-target warning below exists, and the same shape. This
+	// line is often the only thing between "the recipe has a GKE skill"
+	// and a model that never sees it.
+	for _, d := range loadedSkills.Dropped {
+		fmt.Fprintf(os.Stderr, "core-agent: skills: %s — NOT loaded\n", d)
 	}
 
 	// #322: surface drift diagnostics AFTER instruction + skill loading
@@ -1176,33 +1223,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// specific entries (composed by union).
 	var builtinTools []adktool.Tool
 	if !noBuiltinTools {
-		b := tools.Default()
-		for _, name := range cfg.Tools.Disable {
-			if err := b.Disable(name); err != nil {
-				fmt.Fprintf(os.Stderr, "core-agent: config tools.disable: %v\n", err)
-				return runner.ExitConfigError
-			}
-		}
-		for _, name := range strings.Split(disableTools, ",") {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
-			}
-			if err := b.Disable(name); err != nil {
-				fmt.Fprintf(os.Stderr, "core-agent: --disable-tools: %v\n", err)
-				return runner.ExitConfigError
-			}
-		}
-		// Task-profile disables (#160) come last and are already
-		// filtered by --enable-tools. Names are profile-authored, so a
-		// failure here is a table bug, not operator input — surface it
-		// as such.
-		for _, name := range profileDisables {
-			if err := b.Disable(name); err != nil {
-				fmt.Fprintf(os.Stderr, "core-agent: task class %q profile: %v\n", cfg.Session.TaskClass, err)
-				return runner.ExitConfigError
-			}
-		}
+		// b was composed above, before skills.LoadAll, because the skill
+		// loader needs to know whether this build registers bash.
+		//
 		// An alert target whose url_env (or auth env) is unset in this
 		// process can never deliver, so Build drops it from the tool
 		// rather than advertise an escalation path that fails at the one

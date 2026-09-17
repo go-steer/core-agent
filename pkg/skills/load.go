@@ -59,6 +59,14 @@ type Skills struct {
 	Toolset adktool.Toolset
 	Infos   []Info
 
+	// Dropped lists the skills that were found on disk but withheld from
+	// the toolset because this runtime cannot satisfy their `requires:`
+	// key (#962), sorted by name. Hosts print these at startup — a
+	// withheld skill that nobody mentions is the same silent failure the
+	// key exists to end. Scoped also reads it, so a subagent granted a
+	// dropped skill is told why rather than "unknown skill".
+	Dropped []Unsatisfied
+
 	// source is the composed skill.Source the Toolset was built over,
 	// retained so Scoped can build a name-filtered view for a declarative
 	// subagent without re-walking the filesystem. Nil when no skills were
@@ -96,6 +104,16 @@ type loadOptions struct {
 	// root, so a root that merely lacks skills/ is legitimate). Empty =
 	// no external skill sources.
 	contentRoots []string
+
+	// shellTool, when non-nil, is this build's answer to a skill's
+	// `requires: [shell]` (#962). Nil = read it off the gate. See
+	// capabilitiesFor.
+	shellTool *bool
+
+	// lookPath resolves a bare `requires:` token to an executable. Nil =
+	// exec.LookPath. Test seam only — there is no exported setter,
+	// because a host that wants a different PATH should set PATH.
+	lookPath func(string) (string, error)
 }
 
 // WithInterpolator supplies a string transform applied to every .md
@@ -127,6 +145,20 @@ func WithHomeAgentsSkillsDir(dir string) Option {
 // "no external skill sources."
 func WithContentRoots(dirs []string) Option {
 	return func(o *loadOptions) { o.contentRoots = dirs }
+}
+
+// WithShellTool declares whether this build registered the `bash` tool,
+// which is what a skill's `requires: [shell]` asks about (#962).
+//
+// Only hosts that load skills BEFORE building their tool registry need
+// it — the daemon's first load is one, because tools.Build runs after
+// skills.LoadAll and is what teaches the gate its catalog. Every later
+// load (skill reload, a declarative subagent's root, a multi-session
+// host) can leave this unset and LoadAll reads the answer off the gate,
+// which by then knows. Passing it when the gate also knows is harmless
+// and the explicit value wins.
+func WithShellTool(registered bool) Option {
+	return func(o *loadOptions) { o.shellTool = &registered }
 }
 
 // Load discovers skills under agentsDir/skills/ only. A missing
@@ -210,13 +242,37 @@ func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *p
 	// skill governs HOW, never WHAT or WHERE (#711). It wraps here rather
 	// than at the toolset so Skills.source carries it, which is what keeps
 	// a declarative subagent's Scoped view framed as well.
-	source := &framedSource{inner: skill.NewFileSystemSource(rootFS)}
+	var source skill.Source = &framedSource{inner: skill.NewFileSystemSource(rootFS)}
 	frontmatters, err := source.ListFrontmatters(ctx)
 	if err != nil {
 		return Skills{}, fmt.Errorf("skills: list: %w", err)
 	}
 	if len(frontmatters) == 0 {
 		return Skills{}, nil
+	}
+
+	// #962: withhold the skills this runtime cannot honestly serve.
+	//
+	// The filter goes on as the OUTERMOST source layer, so Skills.source
+	// carries it — which is what stops a declarative subagent's Scoped
+	// view from reaching a skill the parent dropped. Applied only when it
+	// actually drops something, so the common case keeps the plain
+	// source and its error messages.
+	names := make([]string, 0, len(frontmatters))
+	for _, fm := range frontmatters {
+		names = append(names, fm.Name)
+	}
+	keep, dropped := partitionByRequirements(names, scanRequires(composed), capabilitiesFor(lo, gate))
+	if len(dropped) > 0 {
+		if len(keep) == 0 {
+			// Nothing survived. Returning a zero toolset rather than an
+			// empty one keeps Empty() true, so hosts add no skill
+			// toolset at all — but the drops still ride home, because
+			// "every skill was withheld" is the single most important
+			// thing this load has to say.
+			return Skills{Dropped: dropped}, nil
+		}
+		source = &filteredSource{inner: source, allow: keep}
 	}
 
 	skillTS, err := skilltoolset.New(ctx, skilltoolset.Config{Source: source})
@@ -228,13 +284,15 @@ func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *p
 		ts = coretools.GateToolset(ts, gate, "skill")
 	}
 
-	infos := make([]Info, 0, len(frontmatters))
+	infos := make([]Info, 0, len(keep))
 	for _, fm := range frontmatters {
-		infos = append(infos, Info{Name: fm.Name, Description: fm.Description})
+		if keep[fm.Name] {
+			infos = append(infos, Info{Name: fm.Name, Description: fm.Description})
+		}
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
 
-	return Skills{Toolset: ts, Infos: infos, source: source, gate: gate}, nil
+	return Skills{Toolset: ts, Infos: infos, Dropped: dropped, source: source, gate: gate}, nil
 }
 
 // openSkillsDir returns an fs.FS rooted at dir/skills/, plus a bool
@@ -328,16 +386,11 @@ func (s *sanitizingFS) Open(name string) (fs.File, error) {
 }
 
 func sanitizeFrontmatter(data []byte) []byte {
-	// Check for YAML frontmatter block starting with "---"
-	if !bytes.HasPrefix(data, []byte("---\n")) && !bytes.HasPrefix(data, []byte("---\r\n")) {
+	fmBytes := frontmatterYAML(data)
+	if fmBytes == nil {
 		return data
 	}
-	parts := bytes.SplitN(data, []byte("---"), 3)
-	if len(parts) < 3 {
-		return data
-	}
-	fmBytes := parts[1]
-	bodyBytes := parts[2]
+	bodyBytes := bytes.SplitN(data, []byte("---"), 3)[2]
 
 	var raw map[string]any
 	if err := yaml.Unmarshal(fmBytes, &raw); err != nil {
@@ -347,6 +400,12 @@ func sanitizeFrontmatter(data []byte) []byte {
 
 	// Filter down to fields strictly supported by google.golang.org/adk/tool/skilltoolset/skill.Frontmatter.
 	// This ensures maximum compatibility and prevents yaml unmarshal errors for extended schemas (e.g. Claude Skills 2.0).
+	//
+	// core-agent's own `requires:` key (#962) is among the fields this
+	// drops, and has to be: ADK's parser decodes with KnownFields(true),
+	// so leaving it in fails the parse for every skill that uses it.
+	// scanRequires therefore reads that key from the raw SKILL.md, one
+	// layer below this wrapper — see its doc comment.
 	sanitized := make(map[string]any)
 	if name, ok := raw["name"]; ok {
 		sanitized["name"] = name

@@ -542,6 +542,14 @@ Lazy loading: bodies aren't read until a skill is invoked. Cold-start stays fast
 
 Permission gating: skill invocations go through the gate under the `skill` namespace. Allowlist patterns look like `skill:my-skill`. Same shape as MCP gating.
 
+**Runtime requirements (`requires:`).** The one place we extend the published frontmatter. The published image is distroless — no shell, no `kubectl`, no `gcloud` — and a skill naming those loaded happily and then told the model to do something impossible. We fixed that twice as instances (#644, #674) before fixing it as a class: a skill may declare `requires: [shell, kubectl, gcloud]`, and one whose requirements this runtime cannot meet is withheld from the toolset entirely and named on stderr at startup.
+
+Three decisions worth recording:
+
+- **`shell` asks whether the `bash` *tool* is registered**, not whether a shell binary exists. Both instances were builds that disabled the tool on machines whose `/bin/bash` was right there.
+- **It is a capability, not a permission.** `allowed-tools` says what a skill may use; `requires` says what must exist for the body to be worth serving. Merging them would make a satisfied requirement into a grant.
+- **The key is stripped before the ADK parser sees it.** ADK decodes frontmatter with `KnownFields(true)`, so an unrecognised key fails the parse for the whole bundle. The requirement scan reads the raw `SKILL.md` one layer below the sanitizing wrapper — which also means it resolves overlay precedence, so a project skill shadowing a user-global one contributes its own requirements.
+
 ---
 
 ## CLI shape (`cmd/core-agent`)

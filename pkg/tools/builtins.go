@@ -218,6 +218,24 @@ func whenTool(present bool, note string) string {
 	return note
 }
 
+// BashRegistered reports whether Build will register the `bash` tool
+// for this toggle set, WITHOUT building anything.
+//
+// Build already publishes the truth — gate.SetRegisteredTools, derived
+// from the specs' own `on` expressions — but it publishes it at Build
+// time, and one caller needs the answer earlier: skills.LoadAll runs
+// before Build in cmd/core-agent, and a skill declaring
+// `requires: [shell]` (#962) has to be resolved against the catalog this
+// build will end up with. Answering "assume registered" there would make
+// the key inert for the exact case it was written for — a distroless
+// image with the bash tool disabled.
+//
+// This is the one predicate duplicated out of the specs table, so it is
+// pinned by TestBashRegisteredMatchesBuild rather than by reading
+// carefully. Any future condition added to the bash spec has to be added
+// here too, and that test is what says so.
+func BashRegistered(b BuiltinTools) bool { return b.Bash }
+
 // Registry is the assembled built-in tool set returned by Build.
 //
 // Tools is the slice you pass to agent.WithTools(...).

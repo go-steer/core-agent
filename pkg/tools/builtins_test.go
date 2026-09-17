@@ -360,3 +360,33 @@ func TestBuild_WaitAndVerifyCarriesTheConfiguredBounds(t *testing.T) {
 	}
 	t.Fatal("wait_and_verify not registered")
 }
+
+// TestBashRegisteredMatchesBuild pins the one predicate that is
+// duplicated out of the specs table.
+//
+// BashRegistered exists because skills.LoadAll runs before Build in
+// cmd/core-agent and has to resolve a skill's `requires: [shell]` (#962)
+// against the catalog this build will end up with. Build publishes that
+// catalog itself (gate.SetRegisteredTools, derived from the specs' own
+// `on` expressions), so the two can disagree only by drift — and drift
+// here means skills silently kept or silently withheld. Comparing
+// against Build's own answer is what stops it: add a condition to the
+// bash spec without adding it to BashRegistered and this fails.
+func TestBashRegisteredMatchesBuild(t *testing.T) {
+	t.Parallel()
+	on := Default()
+	off := Default()
+	if err := off.Disable("bash"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	for _, b := range []BuiltinTools{on, off, {}} {
+		cfg := config.DefaultConfig()
+		gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+		if _, err := Build(cfg, gate, t.TempDir(), b); err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if got, want := BashRegistered(b), gate.RegisteredTools()["bash"]; got != want {
+			t.Errorf("BashRegistered(%+v) = %v, but Build registered bash = %v", b, got, want)
+		}
+	}
+}

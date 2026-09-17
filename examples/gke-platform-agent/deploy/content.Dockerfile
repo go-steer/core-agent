@@ -70,6 +70,30 @@ FROM ${BASE}
 # INSIDE this read-only mount, and a read-only image layer can't have that
 # mount point created at mount time — so it must be pre-baked here. See
 # .agents/plans/.gitkeep and deploy/base/50-deployment-daemon.yaml.
-COPY .agents/   /.agents/
-COPY AGENTS.md  /AGENTS.md
-COPY cluster/   /cluster/
+# gated-apply/ is the SECOND content root (#1105): its own AGENTS.md and
+# its own .agents/ holding an mcp.json that mounts the full (not
+# /read-only) GKE MCP endpoint plus the two leg configs. It ships in the
+# same image as the read-only recipe and is selected at deploy time by
+# `-c <mount>/gated-apply/.agents/config.d{1,2}.json`; nothing loads it
+# otherwise, so the default posture is unchanged by its presence.
+#
+# It has to be a directory rather than a third config file next to
+# config.hub.json for two reasons that both come down to path
+# resolution. mcp.json is found by a FIXED name inside the agents dir
+# (pkg/mcp.MCPFileName) and no config field points at a different one, so
+# two MCP surfaces need two agents dirs. And AGENTS.md is loaded from
+# dir(agentsDir), so the extra level is also what gives this leg a
+# persona that may say "apply it" where the base says "propose it".
+#
+# It does NOT carry its own cluster/: the subagent root is "../../cluster"
+# rather than the base recipe's "../cluster", which resolves back to the
+# ONE shared tree COPY'd below. That is deliberate — the `cluster`
+# subagent stays read-only in both legs, and it stays that way because it
+# keeps its own read-only mcp.json, not because the model is asked nicely.
+#
+# gated-apply/.agents/plans/ is pre-baked for the same reason .agents/
+# plans/ is; see the note above and the overlay's plans mountPath.
+COPY .agents/      /.agents/
+COPY AGENTS.md     /AGENTS.md
+COPY cluster/      /cluster/
+COPY gated-apply/  /gated-apply/

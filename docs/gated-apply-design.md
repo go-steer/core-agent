@@ -34,8 +34,8 @@ Build **one overlay, two legs, differing by exactly one config field.**
 | | D1 — approval | D2 — unattended |
 |---|---|---|
 | `permissions.mode` | `ask` | `allow` |
-| `approval_timeout` | set | n/a |
-| `approval_notify` | set | n/a |
+| `approval_timeout` | set — **deferred, see below** | n/a |
+| `approval_notify` | set — **deferred, see below** | n/a |
 | everything else | identical | identical |
 
 "Everything else" means: same mount (`/mcp`), same `tools` allowlist, same
@@ -101,19 +101,57 @@ Mounting the full `container.googleapis.com/mcp` (23 tools) instead of its
    advertising `delete_k8s_resource` and the cluster-lifecycle verbs in the
    same breath. #1100 added `ServerSpec.Tools`, so a server can be mounted
    for the tools you want.
-3. **`read_only: true` would have become a lie.** It is dropped in the
-   overlay. Per-tool hints win over the server declaration, so the three
+3. **`read_only: true` would have become a lie.** It is absent from
+   `gated-apply/.agents/mcp.json` — and absent is not the same as `false`,
+   since `false` would have *forced* every read onto the mutating path and
+   re-broken plan-first. Per-tool hints win over the server declaration, so the three
    mutating verbs would not have been laundered — but any tool the server
    failed to annotate would have been, and a claim that is only accidentally
    harmless is still a claim we should not ship.
 
-With those landed, the overlay is a mount swap, an allowlist, a RoleBinding
-and one permissions field.
+With those landed, what the leg needs is a mount swap, an allowlist, a
+RoleBinding and a handful of permissions fields.
 
-## The overlay
+## The gated-apply content root
 
-`examples/gke-platform-agent/deploy/overlays/gated-apply/`, a copy of
-`overlays/example` with three patches.
+> **Corrected 2026-09-17, while building it.** This section first said
+> `deploy/overlays/gated-apply/` would be "a copy of `overlays/example` with
+> three patches". It cannot be. Two of the three things that have to change
+> are not in the deploy tree at all, and the section under-counted a third.
+> The corrected shape is below; the reasoning is kept because the mistake is
+> instructive about where this recipe's configuration actually lives.
+
+The leg ships as `examples/gke-platform-agent/gated-apply/` — a **second
+content root** inside the same content image, alongside the read-only
+recipe's `.agents/` and `cluster/`. It is selected at deploy time by
+`-c <mount>/gated-apply/.agents/config.d{1,2}.json`. Nothing loads it
+otherwise, so the default posture of the recipe is unchanged by its presence.
+
+It has to be a directory rather than a second config file next to
+`config.hub.json`, for two reasons that are both path resolution:
+
+- **`mcp.json` is found by a fixed name.** `pkg/mcp.MCPFileName` is the
+  constant `"mcp.json"`, and no config field points at a different one. Two
+  MCP surfaces therefore require two agents dirs — there is no "use this
+  other MCP file" knob to patch. `mcp.json` also ships in the *content*
+  image, not the deploy tree, so it could not have been a kustomize patch
+  even if the name were configurable.
+- **`AGENTS.md` is loaded from `dir(agentsDir)`.** `agentsDir = dir(-c)` and
+  `projectRoot = filepath.Dir(agentsDir)`, so the extra directory level is
+  also what gives this leg its own persona. That turns out to matter more
+  than the mount swap — see §The persona is part of the leg.
+
+The `cluster` subagent is **not** duplicated. Its root is `"../../cluster"`
+here rather than the base recipe's `"../cluster"`, resolving back to the one
+shared tree. The subagent stays read-only in both legs, and it stays that way
+because it keeps its own read-only `mcp.json` — not because the parent's
+persona asks it to.
+
+What remains for `deploy/overlays/gated-apply/` is genuinely thin, and lands
+as a follow-up: the `-c` argument, re-pointing the writable `plans` emptyDir
+from `.agents/plans` to `gated-apply/.agents/plans`, and composing in the
+`gated-apply` RBAC component. The content image itself is unchanged for the
+read-only legs — both flavors just carry one more directory.
 
 ### `mcp.json` — mount and allowlist
 
@@ -130,6 +168,16 @@ and one permissions field.
         "list_k8s_events",
         "get_k8s_logs",
         "get_k8s_rollout_status",
+        "list_k8s_api_resources",
+        "get_k8s_cluster_info",
+        "get_k8s_version",
+        "check_k8s_auth",
+        "list_clusters",
+        "get_cluster",
+        "list_node_pools",
+        "get_node_pool",
+        "list_operations",
+        "get_operation",
         "patch_k8s_resource"
       ]
     }
@@ -141,6 +189,37 @@ and one permissions field.
 same key space as `tool_notes`, and a name that matches nothing is a startup
 warning that lists what the server *did* expose. The `get_k8s_resource`
 fidelity note carries over unchanged.
+
+> **Corrected 2026-09-17.** This list originally held six names — the five
+> reads this recipe's transcripts happened to show, plus patch. That would
+> have given scenario D's agent a **narrower read surface than scenario A's**,
+> because the base recipe has no `tools` field at all and its parent therefore
+> registers all 15 tools the read-only endpoint serves. Narrowing the reads is
+> a confound in the comparison this design exists to draw, and a silent one:
+> the tool is simply absent and the agent reasons around the gap. The
+> allowlist exists to exclude the *mutating* verbs, so on reads it should not
+> narrow at all. `list_clusters` is included despite the persona forbidding
+> it, because parity with A/B/C is the property under protection and the
+> persona is what stops the call either way.
+>
+> **Corrected again, same day, and this is the more useful correction.** The
+> first fix widened the list to 13 from evidence — the names this recipe's
+> transcripts show, `check_k8s_auth` from the 2026-09-10 C runs, the fleet and
+> operations reads from `examples/gke-troubleshoot-agent` — on the belief that
+> the endpoint's catalog is recorded nowhere in-repo. It is: `examples/gke-
+> parallel-triage/.agents/AGENTS.md` enumerates the read-only endpoint by
+> category for its own model, and it lists **15**, not 13.
+> `get_k8s_cluster_info` and `get_k8s_version` were missing, and they were
+> invisible to every source the evidence-based list was built from — named
+> nowhere in this recipe, never called in a recorded run. The count checks
+> out: 23 tools on the full endpoint minus 15 reads is exactly the 8 mutating
+> verbs. The lesson is about the *oracle*, not the list. A scan over our own
+> content can only ask "is every read we mention registered?", and the
+> question is "is every read the endpoint serves registered?" — so
+> `TestGatedApplyRegistersTheWholeReadOnlyCatalog` asserts set equality
+> against that enumeration in both directions, since a name the server does
+> not serve is a startup warning rather than an error and costs a read
+> silently.
 
 The allowlist admits exactly one mutating verb, and the choice is
 deliberate:
@@ -159,32 +238,60 @@ these calls, but denying a tool the model was told it has is the shape
 [#759](https://github.com/go-steer/core-agent/issues/759) removed — a tool
 in the catalog is a promise.
 
-### `config.json` — the one field that differs
+### `config.json` — the four fields that differ
 
-D1:
+> **Corrected 2026-09-17.** This section was headed "the one field that
+> differs" and showed an allow entry in a grammar the gate does not parse.
+> Both are fixed below. The legs differ by four fields, and the extra three
+> are not incidental — two of them are what keeps D1 an experiment about the
+> patch rather than about approval fatigue.
+
+D1 — `config.d1.json`, abbreviated; the real file allowlists every read in
+`mcp.json`'s `tools`, not the three shown:
 
 ```json
 {
   "permissions": {
     "mode": "ask",
     "plan_mode": "required",
-    "approval_timeout": "10m",
-    "approval_notify": { "...": "..." }
+    "allow": [
+      "mcp:gke_get_k8s_resource*",
+      "mcp:gke_describe_k8s_resource*",
+      "mcp:gke_check_k8s_auth*",
+      "…",
+      "spawn_agent:cluster",
+      "alert:oncall"
+    ]
   }
 }
 ```
 
-D2:
+D2 — `config.d2.json`: the same, with `"mode": "allow"` and one more allow
+entry, `"mcp:gke_patch_k8s_resource*"`.
 
-```json
-{
-  "permissions": {
-    "mode": "allow",
-    "plan_mode": "required",
-    "allow": ["mcp__gke__patch_k8s_resource"]
-  }
-}
-```
+So the difference that the experiment is about is exactly one line: whether
+the patch is allowlisted or falls through to a human. Everything else the
+agent does is identically authorized in both legs.
+
+> **Corrected 2026-09-17, while building it.** The snippet above no longer
+> declares `approval_timeout` and `approval_notify`, and the decision table's
+> "set" is an intent rather than a description. Both fields require
+> ≥ `2.10.0-dev.1`, and `recipecheck` computes a recipe's version floor as a
+> union over **every** `config*.json` the recipe ships — the floor is the floor
+> of the strictest way to run it, which is correct, because an operator may
+> point `-c` at any config in the tree. Declaring them in D1 therefore raises
+> the floor above the overlays' `2.9.0` pin and fails the *read-only* overlays
+> too, and the pin cannot move because 2.10.0-dev.1 has not been cut. The
+> fields are deferred rather than dropped: without them D1 is `mode: ask` in a
+> pod with nobody attached, which is the hang
+> [#647](https://github.com/go-steer/core-agent/issues/647) exists to close, so
+> **until the pin moves, D1 is an attended leg** — an operator on
+> `/perms/stream` is the answer channel, and that case needs neither field.
+> `TestGatedApplyD1GainsApprovalFieldsWhenThePinAllows` reads the lowest
+> overlay pin and flips direction at the gate: below it, both fields must be
+> absent; at or above it, the test fails until D1 declares them with the
+> intended values and these documents are updated. The deferral expires by
+> itself rather than by anybody remembering it.
 
 The current recipe runs `mode: yolo`. **Both legs turn it off**, which is
 box A3's stated condition, and `allow` is a better answer than the
@@ -194,12 +301,67 @@ deny-by-default with no human in the loop: the unattended posture, without
 yolo, without a prompt that can hang. A tool that is neither allowlisted nor
 read-only is refused, not queued.
 
-Read tools do not need allowlisting — #1098 means they classify read-only
-and take the read-only path.
+**Read tools do need allowlisting.** An earlier draft of this section said
+they did not — that #1098's read-only classification would carry them. It
+does not. `readOnly` is threaded into `gateRequest` for exactly one purpose:
+`planFirstDenial` (`gate.go:1095`). After that pre-check, the policy match
+and the mode switch are identical for read-only and mutating calls, so under
+`ModeAllow` an unlisted read is refused (`gate.go:1133`) and under `ModeAsk`
+it prompts. Left unlisted, D2 would have booted an agent that could not
+read the cluster at all, and D1 would have asked the operator to approve
+thirty reads before reaching the one decision worth their attention.
+
+Two details about the allow entries that are easy to get wrong, and silent
+when you do:
+
+- **The namespace prefix is the bucket, not part of the tool name.** Rules
+  split on the first `:`, so `mcp:` is the bucket and the rest is matched
+  against the key. The key the MCP gate builds is the *namespaced* tool name
+  — `gke_patch_k8s_resource`, from the `"gke"` server key in `mcp.json`, per
+  `pkg/mcp/namespace.go`. `mcp__gke__patch_k8s_resource`, which this section
+  used to show, matches nothing.
+- **The trailing `*` is load-bearing.** `pkg/tools/gate.go`'s
+  `summarizeRequest` makes the key `name + " " + json(args)`, truncated at
+  200 bytes. Every call the model actually makes carries arguments, so a
+  pattern that matches only the bare name is inert in practice while reading
+  correctly in review. `matchGlob`'s open-prefix form is what makes it match.
+
+`spawn_agent:cluster` and `alert:oncall` are on the same list for the same
+reason: both buckets are gated, keyed by subagent name
+(`pkg/agent/subagent.go:360`) and target name
+(`pkg/tools/alert/alert.go:172`) respectively, and `ModeAllow` would refuse
+them too. `record_plan`, `todo` and `wait_and_verify` are not gated and need
+no entry.
 
 `tools.disable` (bash, write_file, edit_file, delete_file, glob, grep,
 list_dir) stays as it is. The agent's entire mutation surface is one MCP
 verb.
+
+### The persona is part of the leg
+
+The base `AGENTS.md` is propose-only in seven distinct passages — not as a
+preamble, but woven through the write-path rule, the MCP surface
+description, the `wait_and_verify` guidance ("not part of incident
+handling… does not poll"), the mutation section, the plan-first framing, the
+incident-close checklist and the finish line. Shipping the apply leg with
+that persona would register `patch_k8s_resource` and then instruct the model
+not to use it, and the run would read as "the model chose not to apply" — a
+confounded result, not a negative one. Scenario D has to be scenario A *plus
+apply* or the A/B/C comparison means nothing.
+
+So `gated-apply/AGENTS.md` is a variant, and the two are kept honest by
+**marked stance regions**: seven `<!-- stance:begin NAME -->` /
+`<!-- stance:end NAME -->` pairs in both files, wrapping exactly the
+passages that are allowed to differ. A test asserts the two personas are
+byte-identical outside the markers, that the same regions appear in the same
+order, and that every region's content actually differs — the last one
+catches a `cp` that was never edited, which would otherwise pass the
+identity check while telling the apply agent it may not apply.
+
+One thing the apply persona says that the base cannot: *"Applied" is true
+only when the patch call itself returned success; "resolved" is true only
+when a read taken afterwards shows the workload healthy.* That distinction
+is the whole reason `wait_and_verify` re-enters the picture in this leg.
 
 ## `plan_mode: required` stays on in both
 
@@ -474,8 +636,11 @@ grade the world via a witness. Three witnesses:
 3. **The plan artifact exists and precedes the patch.** `record_plan` fired,
    and what it recorded matches what was patched.
 
-On D1 there is a fourth: the approval prompt was rendered and answered, and
-`approval_notify` delivered.
+On D1 there is a fourth: the approval prompt was rendered and answered. The
+`approval_notify` delivery is **not** part of it while the fields are deferred
+(above) — D1 runs attended, so the answer channel is the attached operator, and
+there is nothing to notify. It returns as an acceptance criterion in the same
+change that adds the fields back, which the deferral test will demand.
 
 ### Adversarial tests: the boundary holds when the gate is off
 
@@ -598,8 +763,14 @@ by [#1105](https://github.com/go-steer/core-agent/issues/1105).
 
    The Role lives in the **target** namespace, which is what makes "cannot
    cross namespaces" true by construction rather than by instruction.
-3. Build the `gated-apply` overlay: mount swap, `tools` allowlist, the two
-   `config.json` variants.
+3. ~~Build the `gated-apply` overlay: mount swap, `tools` allowlist, the two
+   `config.json` variants.~~ **Content root done 2026-09-17** — it is
+   `examples/gke-platform-agent/gated-apply/`, not a deploy overlay; see
+   §The gated-apply content root for why, and for the variant persona this
+   item did not anticipate. The remaining deploy-side work — the `-c`
+   argument, the `plans` mount re-point, composing in the RBAC component,
+   and parameterizing `set-up-demo.sh`'s hardcoded `.agents` — is a
+   follow-up PR.
 4. Scenario D + its scorecard sheet.
 5. Run D1. Read what the agent actually proposed.
 6. Run D2. Then the adversarial boundary tests.
@@ -615,6 +786,20 @@ by [#1105](https://github.com/go-steer/core-agent/issues/1105).
 - ~~**Does the MCP endpoint forward the caller's principal?**~~ Answered
   2026-09-16: yes. See §Probe status — the `container.pods.getLogs` episode
   is only possible if the API server authorizes the caller, not the node SA.
+- **Is `patch_k8s_resource` the server's real name for that verb?** Every
+  other tool in the allowlist appears in a recorded drill transcript; this
+  one does not, because no leg has ever been allowed to call it. An
+  unmatched `tools` entry is a startup **warning**, not an error
+  (`srv.Warnings`), so a wrong name boots a perfectly healthy agent with no
+  write path and the failure surfaces only mid-incident. First D1 run: read
+  the daemon's startup warnings before anything else. The warning helpfully
+  lists what the server *did* expose.
+- **Does the endpoint actually publish `readOnlyHint` on all 23 tools?**
+  §What changed under us asserts it does and the whole plan-first
+  composition depends on it. #1098's fallback is fail-safe mutating, so if
+  the annotations are missing the reads classify mutating and plan-first
+  denies the research — visible immediately on the first D1 run, but worth
+  naming as a dependency rather than a fact.
 - **The node service account holds `roles/editor` and
   `roles/container.developer`** on this project. Nothing in this design
   depends on that and nothing here changes it, but it is the blast radius

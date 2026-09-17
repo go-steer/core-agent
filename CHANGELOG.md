@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+_No unreleased changes since [2.10.0-dev.1]._
+
+## [2.10.0-dev.1] — 2026-09-17
+
 ### Breaking Changes
 
 - **`agent.SubagentManager` gains a `HasPendingAlerts() bool` method.** Adding a method to an exported interface breaks any out-of-tree implementation, and the alternative here was worse than the break. A guardrail reset needs to know whether a subagent alert is waiting before it decides to drive a turn (see the [#1040](https://github.com/go-steer/core-agent/issues/1040) entry under Bug or Regression); the only pre-existing way to ask was `PrependPendingAlerts`, which *consumes* — so an optional-capability type assertion would have meant a wrapper predating the method silently stranding the alert it was asked about, with nothing saying why. The contract is explicitly read-only and the one in-tree implementation (`agent/background.Manager`) is two field reads; test fakes need one line. ([#1040](https://github.com/go-steer/core-agent/issues/1040))

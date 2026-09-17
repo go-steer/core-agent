@@ -63,10 +63,19 @@ func TestContextWindowSizeFor(t *testing.T) {
 		{"claude-sonnet-4-6-1m", 1_000_000},
 		{"claude-opus-5", 1_000_000},
 		{"claude-sonnet-5", 1_000_000},
-		// Earlier 4.x stay 200K base; honor the "-1m" long-context suffix.
+		// Opus 4.5 is still 200K in the catalog. "-1m" is a spelling
+		// LiteLLM has never published for it, so that row exercises
+		// the fallback's long-context suffix rather than this tier.
 		{"claude-opus-4-5", 200_000},
 		{"claude-opus-4-5-1m", 1_000_000},
-		{"claude-sonnet-4-5", 200_000},
+		// Sonnet 4.5 read 200_000 here until the 2026-09-17 regen.
+		// Upstream moved the bare id (and the dated one) to 1,000,000
+		// and no longer carries a "-1m" key for anything — the long
+		// context stopped being a separate model id on the Sonnet
+		// line. This row resolves in the generated tier, so the number
+		// is the catalog's and not ours, which is the whole reason
+		// that tier sits above the switch.
+		{"claude-sonnet-4-5", 1_000_000},
 		// Haiku 4.5 has no 1M tier — stays 200K.
 		{"claude-haiku-4-5-20251001", 200_000},
 		// Legacy + unknown Claude default conservatively to 200K.

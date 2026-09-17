@@ -36,6 +36,13 @@ SCENARIO_ID="C"
 SCENARIO_NAME="RBAC-denied ServiceAccount (negative case)"
 SCENARIO_NEGATIVE="yes"
 
+# Propose-only, and here it is not a posture but a fact about the
+# scenario: the fix is a missing RoleBinding, which is outside the
+# apply boundary by design. C would still be propose-and-stop on an
+# apply-capable deployment, which is why drill.sh treats a scenario
+# declaring both NEGATIVE and APPLY as a contradiction.
+SCENARIO_APPLY="no"
+
 SCENARIO_EXPECT_TERMS=(
     "drill-rbac-probe"
     "forbidden"

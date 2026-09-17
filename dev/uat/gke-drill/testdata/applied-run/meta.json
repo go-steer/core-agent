@@ -1,0 +1,43 @@
+{
+  "run_id": "20260917T120000Z-d",
+  "started_at": "2026-09-17T12:00:00Z",
+  "scenario_id": "D",
+  "scenario_name": "bad image tag -> ImagePullBackOff, applied",
+  "negative": "no",
+  "apply": "yes",
+  "deployed_config": "/content/recipes/gke-platform-agent/gated-apply/.agents/config.d1.json",
+  "break_at": "2026-09-17T12:00:00Z",
+  "daemon_principal": "fixture-project.svc.id.goog[drill-demo/core-agent-daemon]",
+  "image_before": "gcr.io/google-samples/microservices-demo/emailservice:does-not-exist",
+  "image_after": "gcr.io/google-samples/microservices-demo/emailservice:v0.10.3",
+  "ready_before": "0/1",
+  "ready_after": "1/1",
+  "restore_was_noop": "yes",
+  "audit_status": "found",
+  "audit_wait_secs": "90",
+  "cluster": "fixture-cluster",
+  "project": "fixture-project",
+  "demo_ns": "drill-demo",
+  "target_ns": "drill-target",
+  "workload": "emailservice",
+  "model_flavor": "gemini",
+  "daemon_image": "ghcr.io/go-steer/core-agent:v2.10.0-dev.1",
+  "content_image": "us-docker.pkg.dev/fixture/content:v14",
+  "session_id": "sess-fixture-applied",
+  "frame_count": 13,
+  "expect_terms": ["emailservice", "does-not-exist", "ImagePullBackOff"],
+  "incident_match": "drill-target emailservice",
+  "followup": "Before you go further: which exact image reference was the failing container pinned to when you found it, and where did you read that from?",
+  "generation_before": "4",
+  "generation_after": "5",
+  "fingerprint_before": [
+    "Deployment/emailservice:gen4",
+    "Deployment/cartservice:gen2",
+    "ServiceAccount/default:rv120"
+  ],
+  "fingerprint_after": [
+    "Deployment/emailservice:gen5",
+    "Deployment/cartservice:gen2",
+    "ServiceAccount/default:rv120"
+  ]
+}

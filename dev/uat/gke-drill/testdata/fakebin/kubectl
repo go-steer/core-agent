@@ -37,13 +37,39 @@ STATE="${FAKE}/kubectl-state.env"
 GEN="${FAKE_GENERATION:-3}"
 IMG="${FAKE_WORKLOAD_IMAGE:-gcr.io/google-samples/microservices-demo/emailservice:v0.10.3}"
 PROBE="present"
+PATCHED="no"
 if [[ -f "${STATE}" ]]; then
     # shellcheck source=/dev/null
     source "${STATE}"
 fi
 save_state() {
-    printf 'GEN=%q\nIMG=%q\nPROBE=%q\n' "${GEN}" "${IMG}" "${PROBE}" > "${STATE}"
+    printf 'GEN=%q\nIMG=%q\nPROBE=%q\nPATCHED=%q\n' \
+        "${GEN}" "${IMG}" "${PROBE}" "${PATCHED}" > "${STATE}"
 }
+
+# ── Scenario D: the agent patches, mid-turn ──────────────────────────
+#
+# The drill never issues the agent's patch — the agent does, inside the
+# cluster, while the drill is holding the SSE stream open. So the fake
+# models it the same way: the fake curl drops `captured` when the real
+# capture starts, and the first read after that sees a healed workload.
+#
+# Not a `kubectl patch` branch, deliberately. A branch there would only
+# fire if something in the drill ran the patch, and nothing in the drill
+# should. Tying it to the capture instead means a drill that accidentally
+# patched the cluster itself would NOT light this up, and the dry run
+# would still say the object moved for the wrong reason.
+#
+# Idempotent through PATCHED rather than through the tag: a case that
+# arms FAKE_AGENT_PATCHED_IMAGE to a SECOND unpullable tag — the agent
+# that "fixed" it and did not — must still advance the generation exactly
+# once, and a tag test would re-fire on every read.
+if [[ "${FAKE_AGENT_PATCHES:-}" == "1" && -f "${FAKE}/captured" && "${PATCHED}" != "yes" ]]; then
+    IMG="${FAKE_AGENT_PATCHED_IMAGE:-gcr.io/google-samples/microservices-demo/emailservice:v0.10.3}"
+    GEN=$(( GEN + 1 ))
+    PATCHED="yes"
+    save_state
+fi
 
 die() { printf 'fake kubectl: %s\n' "$*" >&2; exit 64; }
 
@@ -129,6 +155,24 @@ fi
 if has 'get deploy core-agent' && has 'containers[0].image'; then
     printf '%s' "${FAKE_DAEMON_IMAGE_BY_INDEX:-}"; exit 0
 fi
+
+# drill_deployed_config. A JSON array, because that is what jsonpath
+# renders for `.args` and the caller pipes it through jq — an answer
+# shaped as a bare string would make jq's `index("-c")` return null and
+# the drill would report "could not read the -c" on a correct manifest.
+#
+# FAKE_DEPLOYED_ARGS overrides the whole array, which is how a case arms
+# the read-only leg and the unreadable one.
+if has 'containers[?(@.name=="core-agent")].args'; then
+    if [[ -n "${FAKE_DEPLOYED_ARGS+x}" ]]; then
+        printf '%s' "${FAKE_DEPLOYED_ARGS}"
+    else
+        printf '["serve","--session-db-path=/data/sessions.db","-c","%s"]' \
+            "${FAKE_DEPLOYED_CONFIG:-/content/recipes/gke-platform-agent/gated-apply/.agents/config.d1.json}"
+    fi
+    exit 0
+fi
+
 if has 'volumes[?(@.name=="recipe-content")].image.reference'; then
     printf '%s' "${FAKE_CONTENT_IMAGE:-}"; exit 0
 fi
@@ -140,13 +184,45 @@ fi
 # .metadata.generation, so it has to be matched FIRST or the
 # single-workload generation read below swallows it.
 if has 'get deploy,statefulset,daemonset'; then
-    printf '%s\n' "${FAKE_FP_WORKLOADS:-}"; exit 0
+    # `@GEN@` expands to the live generation, so a case can have the
+    # fingerprint move when the object moves. Without it the two
+    # snapshots are the same static string on every run, and D4's first
+    # witness would report "the workload's own fingerprint did not move"
+    # on a run where it demonstrably did.
+    fp="${FAKE_FP_WORKLOADS:-}"
+    printf '%s\n' "${fp//@GEN@/${GEN}}"; exit 0
 fi
 if has 'get sa,role,rolebinding,cm,secret'; then
     printf '%s\n' "${FAKE_FP_OBJECTS:-}"; exit 0
 fi
 if has '{.metadata.generation}'; then
     printf '%s' "${GEN}"; exit 0
+fi
+
+# D4's first witness: readiness of the SCENARIO's workload. Must come
+# after the two named Deployments above, which are the drill's own and
+# are read by the same jsonpath.
+#
+# Derived from the tag rather than set independently, because that is the
+# relationship the witness is actually asserting: an unpullable image
+# means no Ready replica. A case that patches one bad tag to another gets
+# a moved generation, a changed image string and a still-broken workload
+# for free — which is the interesting failure, and the reason readiness
+# is part of the witness at all.
+#
+# Which tags are unpullable is a REGEX and not the literal the drill
+# breaks with, so a case can arm a tag the drill would never write. That
+# matters: while "unpullable" and "contains does-not-exist" were the same
+# set, a scenario predicate that tested for the drill's own break string
+# looked identical to one that tested health, and no dry-run case could
+# tell them apart.
+if has '{.status.readyReplicas}'; then
+    if [[ "${IMG}" =~ ${FAKE_UNREADY_IMAGE_RE:-does-not-exist} ]]; then printf ''
+    else printf '%s' "${FAKE_TARGET_REPLICAS:-1}"; fi
+    exit 0
+fi
+if has '{.spec.replicas}'; then
+    printf '%s' "${FAKE_TARGET_REPLICAS:-1}"; exit 0
 fi
 
 # ── Scenario A, via the recipe's break-workload.sh ───────────────────

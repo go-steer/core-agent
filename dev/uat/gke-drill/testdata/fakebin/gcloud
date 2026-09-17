@@ -27,6 +27,83 @@ case "$*" in
         printf '%s\n' "${FAKE_PROJECT_ID:-fixture-project}" ;;
     "projects describe"*)
         printf '%s\n' "${FAKE_PROJECT_NUMBER:-123456789012}" ;;
+
+    # drill_audit_patch, scenario D's second witness.
+    #
+    # Four shapes, selected by FAKE_AUDIT:
+    #   daemon   the happy path — the operator's break AND the daemon's
+    #            patch, in that order, because both are `deployments.patch`
+    #            and telling them apart by principal IS the witness
+    #   empty    the query ran and matched nothing (ingestion lag, or no
+    #            patch was ever made)
+    #   operator entries exist, none of them the daemon's
+    #   stale    the daemon patched, but before this run's break — a
+    #            PREVIOUS run's evidence, which `--freshness` is supposed
+    #            to keep out and which the scorer must catch if it does not
+    #   denied   the daemon's patch is there, after the break, and was
+    #            REFUSED. Admin Activity logs denials too — it is how this
+    #            cluster's RBAC boundary was confirmed — so this is the
+    #            shape that tells "the daemon applied it" from "the daemon
+    #            asked and the API server said no"
+    #   error    gcloud itself fails, so the poll loop is exercised
+    #
+    # Timestamps are relative to FAKE_BREAK_AT so a case does not have to
+    # know what `date` said inside the drill. The fractional seconds are
+    # deliberate: Cloud Logging writes them, the drill's BREAK_AT does
+    # not, and `.` sorts before `Z` — a scorer comparing these as strings
+    # puts a patch one tenth of a second after the break on the wrong side
+    # of it.
+    "logging read"*)
+        case "${FAKE_AUDIT:-daemon}" in
+            error)
+                printf 'ERROR: (gcloud.logging.read) PERMISSION_DENIED\n' >&2
+                exit 1 ;;
+            empty)
+                printf '[]\n' ;;
+            *)
+                # Defaults to NOW, not to a fixed date. The drill stamps
+                # BREAK_AT from the clock a few seconds earlier, and
+                # witness 2 requires the daemon's entry to fall after it
+                # — a fixture pinned to a past date fails every dry run
+                # for a reason that has nothing to do with the drill.
+                base="${FAKE_BREAK_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+                # The operator's own break lands a fraction after BREAK_AT,
+                # which is stamped just before it; the daemon's patch lands
+                # later still. `stale` is dated years back so "before this
+                # run's break" cannot be an accident of the fixture.
+                t_op="${base%Z}.100000Z"
+                t_daemon="${base%Z}.900000Z"
+                t_stale="2000-01-01T00:00:00.000000Z"
+                op="${FAKE_AUDIT_OPERATOR:-user@example.com}"
+                dae="${FAKE_AUDIT_DAEMON:-fixture-project.svc.id.goog[core-agent-demo/core-agent-daemon]}"
+                res="k8s.io/apis/apps/v1/namespaces/${FAKE_TARGET_NS:-online-boutique}/deployments/${FAKE_WORKLOAD:-emailservice}"
+                jq -n --arg op "${op}" --arg dae "${dae}" --arg res "${res}" \
+                      --arg t_op "${t_op}" --arg t_daemon "${t_daemon}" \
+                      --arg t_stale "${t_stale}" --arg who "${FAKE_AUDIT:-daemon}" '
+                    # `granted` and `status` are what separate a patch
+                    # the API server ACCEPTED from one it refused. Both
+                    # are on every entry, so a fixture cannot pass the
+                    # witness by simply omitting them.
+                    def entry($ts; $email; $granted):
+                        {timestamp: $ts,
+                         protoPayload: (
+                             {methodName: "io.k8s.apps.v1.deployments.patch",
+                              resourceName: $res,
+                              authenticationInfo: {principalEmail: $email},
+                              authorizationInfo: [{granted: $granted}]}
+                             + (if $granted then {}
+                                else {status: {code: 7, message: "PERMISSION_DENIED"}}
+                                end))};
+                    # The operator break is present in every non-empty
+                    # shape: it is what the drill itself did.
+                    [ entry($t_op; $op; true) ]
+                    + (if $who == "operator" then []
+                       elif $who == "stale" then [ entry($t_stale; $dae; true) ]
+                       elif $who == "denied" then [ entry($t_daemon; $dae; false) ]
+                       else [ entry($t_daemon; $dae; true) ]
+                       end)' ;;
+        esac ;;
+
     *)
         printf 'fake gcloud: unhandled invocation: %s\n' "$*" >&2
         exit 64 ;;

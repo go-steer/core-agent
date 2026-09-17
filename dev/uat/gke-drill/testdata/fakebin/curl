@@ -137,6 +137,12 @@ if [[ "${path}" == */events* ]]; then
         sleep "${maxtime}"
         exit 28
     fi
+    # The REAL capture has started — the peek above is not it. The fake
+    # kubectl keys scenario D's "the agent patched during the turn" off
+    # this marker, so it must be dropped on this branch only: dropping it
+    # on the peek would heal the workload before the drill has taken the
+    # baseline it is going to compare against.
+    touch "${FAKE}/captured"
     exec sleep 3600
 fi
 

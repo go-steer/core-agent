@@ -132,6 +132,41 @@ DRILL_PEEK_SECS="${DRILL_PEEK_SECS:-5}"
 # README.
 DRILL_MATCH_INCIDENT="${DRILL_MATCH_INCIDENT:-1}"
 
+# ── Apply scenarios only (scenario D, #1105) ─────────────────────────
+
+# How long to wait, after the turn ends, for the workload the agent
+# patched to become Ready.
+#
+# D4's first witness is "the object moved AND the pods are Ready", and
+# those two become true at different times: the spec write is instant,
+# the rollout behind it needs a pull and a probe. The capture ends
+# DRILL_IDLE_SECS after the agent's last frame, which is usually but not
+# always enough. Reading readiness at that instant and recording a 0
+# would score a successful apply as a failed one, on timing.
+#
+# Only apply scenarios wait, so A/B/C pay nothing: there the workload is
+# supposed to still be broken and this would be two minutes of waiting
+# for something that must not happen.
+DRILL_READY_WAIT_SECS="${DRILL_READY_WAIT_SECS:-180}"
+
+# How long to wait for the Admin Activity entry for the agent's patch to
+# show up in Cloud Logging.
+#
+# Ingestion is not instant and the delay is not bounded by anything the
+# drill controls. Ninety seconds covers what has been observed; a run
+# that times out here says so on the sheet rather than reporting "no
+# audit entry", because those are different findings — one is a lagging
+# log, the other is a patch that was made by somebody else's identity.
+DRILL_AUDIT_WAIT_SECS="${DRILL_AUDIT_WAIT_SECS:-90}"
+
+# How far back that query looks. This is the knob that keeps a second
+# run on the same day from scoring the FIRST run's patch, so it is a
+# correctness control and not a tuning one — declared here beside its
+# siblings rather than inlined at the call site, because a default
+# spelled at the point of use is a default nobody finds when they need
+# to widen it by hand to re-check a lagging log.
+DRILL_AUDIT_FRESHNESS="${DRILL_AUDIT_FRESHNESS:-1h}"
+
 # Artifacts. Under $HOME, deliberately, and this is worth explaining
 # because two obvious alternatives are both wrong.
 #
@@ -642,4 +677,149 @@ drill_target_fingerprint() {
         ${k} get sa,role,rolebinding,cm,secret \
             -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}:rv{.metadata.resourceVersion}{"\n"}{end}' 2>/dev/null
     } | grep . | sort || true
+}
+
+# ── D4 evidence: did the agent's patch land, as the agent? (#1105) ───
+#
+# G4's witnesses answer "did anything move". D4 needs the harder
+# questions — did the RIGHT thing move, did it move because of the
+# agent, and did the agent plan it first — so these three helpers exist
+# beside the two above rather than replacing them. A/B/C never call
+# them.
+
+# The container image the scenario's workload is pinned to. Read with
+# the same selector break-workload.sh writes with, so a before/after
+# pair is comparable with the break itself.
+drill_target_image() {
+    kubectl --context "${KUBE_CONTEXT}" -n "${TARGET_NS}" \
+        get deploy "${WORKLOAD}" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true
+}
+
+# "<ready>/<desired>" for the scenario's workload — empty fields read as
+# 0, because jsonpath renders an absent .status.readyReplicas as the
+# empty string and "/2" would be scored as unparseable rather than as
+# the zero it is.
+drill_target_ready() {
+    local ready desired
+    ready=$(kubectl --context "${KUBE_CONTEXT}" -n "${TARGET_NS}" \
+        get deploy "${WORKLOAD}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
+    desired=$(kubectl --context "${KUBE_CONTEXT}" -n "${TARGET_NS}" \
+        get deploy "${WORKLOAD}" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+    printf '%s/%s' "${ready:-0}" "${desired:-0}"
+}
+
+# True when every desired replica is Ready right now.
+#
+# The predicate is separate from the wait because the restore path needs
+# to ASK without waiting, and because "is this workload healthy" must
+# have exactly one definition. D's restore used to answer it by testing
+# the image against the drill's own break string, which is true of the
+# tag the drill sets and of nothing else the agent might set — so a
+# patch to a plausible-but-wrong tag read as healthy.
+drill_target_is_ready() {
+    local state
+    state=$(drill_target_ready)
+    [[ "${state}" == */* && "${state%/*}" -gt 0 && "${state%/*}" == "${state#*/}" ]]
+}
+
+# Block until the workload is fully Ready, or the budget runs out.
+# Returns 0 either way: a workload that never came Ready is a D4 finding
+# to be scored, not a reason to abandon a captured run before the
+# cluster has been restored.
+drill_wait_target_ready() {
+    local deadline=$(( SECONDS + DRILL_READY_WAIT_SECS )) state
+    while (( SECONDS < deadline )); do
+        if drill_target_is_ready; then
+            state=$(drill_target_ready)
+            drill_ok "workload Ready ${state}"
+            return 0
+        fi
+        state=$(drill_target_ready)
+        sleep "${DRILL_POLL_SECS}"
+    done
+    drill_warn "workload is ${state:-?} after ${DRILL_READY_WAIT_SECS}s — recording it and scoring anyway."
+    return 0
+}
+
+# The daemon's `-c`, read off the running Deployment.
+#
+# This is the only trustworthy answer to "which leg is deployed". LEG is
+# what the operator's shell says; this is what the pod is running, and
+# the two part company the moment somebody exports LEG=d2 and forgets to
+# re-run set-up-demo.sh. Scoring a read-only deployment against D4 would
+# report "the agent did not apply the fix" about an agent that was never
+# given the tool.
+# The element AFTER `-c`, not the first argument that looks like a
+# path. `--session-db-path=` is also a path and `config.hub.json` is
+# also a `.json`, so a pattern match here would be right on today's
+# manifest and quietly wrong on the next one.
+drill_deployed_config() {
+    kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" \
+        get deploy core-agent \
+        -o jsonpath='{.spec.template.spec.containers[?(@.name=="core-agent")].args}' 2>/dev/null \
+        | jq -r 'if type == "array" then (index("-c") as $i | if $i == null then empty else .[$i + 1] // empty end) else empty end' 2>/dev/null \
+        || true
+}
+
+# The Google principal a GKE RoleBinding names for this daemon, and the
+# string the Admin Activity entry is expected to carry.
+#
+# Direct Workload Identity Federation: no GSA, so no email of its own.
+# Confirmed on the cluster 2026-09-16 (docs/gated-apply-design.md, §the
+# RBAC subject) — the earlier `principal://…` guess was wrong and cost
+# an afternoon, so it is written down here rather than re-derived.
+drill_daemon_principal() {
+    printf '%s.svc.id.goog[%s/core-agent-daemon]' "${PROJECT_ID}" "${DEMO_NS}"
+}
+
+# The Admin Activity entries for a patch of the scenario's workload,
+# written to <run>/audit-patch.json as a JSON array.
+#
+# Polls, because ingestion lags the write by an amount nothing here
+# controls. Exits non-zero only when the budget ran out with no entry —
+# and that is reported as "no entry within Ns", never as "the patch was
+# not made by the daemon". Those are different findings and a grader
+# that conflates them blames the agent for a slow log.
+#
+# `--freshness` is what keeps this from finding the patch a PREVIOUS
+# drill run made. Without it `logging read` searches the last 24 hours
+# by default, so a second run on the same day would score the first
+# run's evidence — the same class of bug as taking a stranger's
+# incident (#1093), one layer down.
+drill_audit_patch() {
+    local out="${DRILL_RUN_DIR}/audit-patch.json"
+    local deadline=$(( SECONDS + DRILL_AUDIT_WAIT_SECS ))
+    local filter
+    filter=$(printf '%s' \
+        "logName=\"projects/${PROJECT_ID}/logs/cloudaudit.googleapis.com%2Factivity\" AND " \
+        "resource.type=\"k8s_cluster\" AND " \
+        "resource.labels.cluster_name=\"${CLUSTER_NAME}\" AND " \
+        "protoPayload.methodName:\"deployments.patch\" AND " \
+        "protoPayload.resourceName:\"namespaces/${TARGET_NS}/deployments/${WORKLOAD}\"")
+
+    # Truncated once, then APPENDED to: `>` inside the loop would leave
+    # only the last attempt's stderr, and on a poll that finally
+    # succeeded it would leave nothing at all — erasing the evidence that
+    # the first six attempts were being refused. The sheet points the
+    # reader here by name.
+    : > "${DRILL_RUN_DIR}/audit.err"
+    while :; do
+        if gcloud logging read "${filter}" \
+                --project "${PROJECT_ID}" \
+                --freshness "${DRILL_AUDIT_FRESHNESS}" \
+                --limit 10 --format json > "${out}.tmp" 2>>"${DRILL_RUN_DIR}/audit.err"; then
+            mv "${out}.tmp" "${out}"
+            if [[ "$(jq 'length' "${out}" 2>/dev/null || echo 0)" -gt 0 ]]; then
+                return 0
+            fi
+        fi
+        (( SECONDS < deadline )) || break
+        sleep "${DRILL_POLL_SECS}"
+    done
+    # Leave a well-formed empty array rather than nothing: score.py must
+    # be able to tell "looked and found none" from "never looked", and a
+    # missing file is the second of those.
+    [[ -s "${out}" ]] || printf '[]\n' > "${out}"
+    rm -f "${out}.tmp"
+    return 1
 }

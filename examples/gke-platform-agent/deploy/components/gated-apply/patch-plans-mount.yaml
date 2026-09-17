@@ -1,0 +1,50 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Move the writable `plans` emptyDir to the gated-apply agents dir.
+#
+# `record_plan` derives plansDir = agentsDir + "/plans" and MkdirAll's it
+# (pkg/tools/record_plan.go), and agentsDir is dir(-c). deploy/base nests
+# the emptyDir at exactly /opt/gke-platform-agent/.agents/plans, which is
+# right for the one config base runs and wrong for every other. The
+# sibling patch-agent-config.yaml moves `-c` into gated-apply/, so plansDir
+# moves with it and lands on the read-only content mount unless this patch
+# moves the emptyDir too.
+#
+# That is not a missing-artifact problem. Both legs run
+# `permissions.plan_mode: "required"`, and plan-first is the structural
+# guarantee the whole design rests on — an unwritable plans dir breaks the
+# leg rather than degrading it. gated-apply/.agents/plans/.gitkeep pre-bakes
+# the mount POINT (a read-only layer cannot have one created at mount time),
+# but a mount point is not a mount.
+#
+# WHY JSON 6902 BY INDEX AND NOT A STRATEGIC MERGE. The obvious
+# index-independent spelling is a strategic-merge patch that deletes the
+# old mount (the merge key for volumeMounts is `mountPath`, not `name`) and
+# appends the new one. It renders, and it is wrong: the delete-then-append
+# puts `plans` FIRST in the list, ahead of the `recipe-content` mount it is
+# supposed to nest inside. Mount order is load-bearing here — the parent
+# has to be mounted before the child, or the parent shadows it — and
+# nothing downstream would have reported it. Verified by building both
+# spellings and reading the rendered list.
+#
+# The index is guarded instead of avoided. `test` makes a reordering of
+# deploy/base's volumeMounts a `kustomize build` failure with the offending
+# path named, rather than a silent rewrite of somebody else's mountPath.
+- op: test
+  path: /spec/template/spec/containers/0/volumeMounts/1/name
+  value: plans
+- op: replace
+  path: /spec/template/spec/containers/0/volumeMounts/1/mountPath
+  value: /opt/gke-platform-agent/gated-apply/.agents/plans

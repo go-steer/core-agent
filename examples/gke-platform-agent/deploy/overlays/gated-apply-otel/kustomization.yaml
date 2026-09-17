@@ -1,0 +1,41 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The apply-capable leg PLUS OpenTelemetry to GKE Managed OTel.
+# set-up-demo.sh picks this when LEG=d1|d2 and the cluster serves managed
+# OTel — the same OTEL=auto probe that chooses ../example-otel over
+# ../example for a read-only run.
+#
+# This overlay exists so that turning the apply leg on does not turn
+# tracing off. Drill scenarios A/B/C run on ../example-otel, and scenario
+# D's evidence is read against theirs; losing spans on the one leg that
+# mutates the cluster would make the comparison weaker exactly where it
+# needs to be strongest.
+#
+# It composes ../gated-apply (which is itself ../example + the gated-apply
+# component) and adds ../../components/otel-gke — the same component both
+# read-only tracing overlays use, so the tracing wiring still exists once.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../gated-apply
+
+components:
+  - ../../components/otel-gke
+
+# No `images:` block — see ../example-otel/kustomization.yaml for why.
+# set-up-demo.sh writes the pins into ../example and they flow through
+# both compositions; restating them here would silently override the
+# operator's prereqs.sh values.

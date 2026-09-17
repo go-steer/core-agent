@@ -75,6 +75,25 @@ else
     echo "→ delivery: initContainer copy (overlays/initcontainer-copy)"
 fi
 
+# ── The posture axis (LEG), third and unlike the other two ───────────
+# Delivery and tracing are forced by the cluster and probed above. LEG is
+# chosen by the operator in prereqs.sh and never auto-detected: deploying
+# an apply-capable agent because a version check happened to pass is not
+# a thing this script should be able to do.
+#
+# The gated overlays compose the IMAGE-VOLUME delivery path only. Below
+# the floor the fix is one line (see prereqs.sh), but an overlay nobody
+# has built is not one this script should quietly apply.
+if [[ "${LEG}" != "readonly" && "${OVERLAY}" != "example" ]]; then
+    echo "✗ LEG=${LEG} needs the image-volume delivery path, but this cluster"
+    echo "  selected the initContainer-copy fallback (k8s 1.${SERVER_MINOR:-?})."
+    echo "  No gated overlay is shipped for that path. To build one, change the"
+    echo "  'resources:' entry in deploy/overlays/gated-apply/kustomization.yaml"
+    echo "  to ../initcontainer-copy — the initContainer already copies"
+    echo "  /gated-apply out of the content image — and re-run."
+    exit 1
+fi
+
 # ── Decide the tracing axis ──────────────────────────────────────────
 # Orthogonal to delivery: the *-otel overlays compose the delivery
 # overlay above and add components/otel-gke. The Instrumentation CR in
@@ -149,6 +168,36 @@ if [[ "${OTEL}" == "1" ]]; then
 else
     APPLY_DIR="${OVERLAY_DIR}"
     echo "→ tracing: off (${APPLY_DIR##*/})"
+fi
+
+# The gated overlays compose the read-only ones, so LEG picks the build
+# target and leaves OVERLAY_DIR — the mutation target — exactly where it
+# was. Everything this script writes into the delivery overlay (the four
+# coordinates, the watcher args, the image pins) flows through the
+# composition untouched, which is the same property the *-otel overlays
+# rely on.
+#
+# The ONE exception is the daemon's -c, because the gated component
+# deliberately overrides it. So the config path is written into a file
+# that depends on the leg, and CONFIG_PATCH_FILE is the only place that
+# choice is made. The post-render assertion further down reads the
+# rendered manifest either way, so a wrong target here fails loudly.
+CONFIG_PATCH_FILE="${OVERLAY_DIR}/patch-agent-config.yaml"
+if [[ "${LEG}" != "readonly" ]]; then
+    if [[ "${OTEL}" == "1" ]]; then
+        APPLY_DIR="${DEMO_OVERLAY_GATED_OTEL_DIR}"
+    else
+        APPLY_DIR="${DEMO_OVERLAY_GATED_DIR}"
+    fi
+    CONFIG_PATCH_FILE="${DEMO_DEPLOY_DIR}/components/gated-apply/patch-agent-config.yaml"
+    echo "→ posture: LEG=${LEG} — APPLY-CAPABLE (${APPLY_DIR##*/})"
+    echo "    content root ${AGENTS_ROOT}, patch grant on apps/deployments in ${TARGET_NS}"
+    if [[ "${LEG}" == "d1" ]]; then
+        echo "    d1 is ATTENDED: permissions.mode is \"ask\" and nothing in a pod"
+        echo "    answers a prompt. Have scripts/attach-tui.sh ready before the incident."
+    fi
+else
+    echo "→ posture: read-only (propose-only; no mutating call can reach the cluster)"
 fi
 
 # ── Patch per-cluster values into the chosen overlay ─────────────────
@@ -282,9 +331,14 @@ if [[ "${RENDERED_DAEMON_NS}" != "${DEMO_NS}" ]]; then
 fi
 
 # Detection is by RENDER, not by grepping for a `components:` line: the
-# *-otel overlays compose through ../example, so the component can arrive
-# from a file that is not the one we are about to patch.
-if grep -q 'gated-apply' <<<"${APPLY_RENDER}"; then
+# *-otel and gated overlays compose through ../example, so the component
+# can arrive from a file that is not the one we are about to patch.
+#
+# Rendering was the right idea and the first PREDICATE over it was not —
+# a bare substring search also matched the initContainer that copies
+# /gated-apply out of the content image on the below-floor delivery path.
+# renders_gated_apply (prereqs.sh) looks for the Role instead; see there.
+if renders_gated_apply <<<"${APPLY_RENDER}"; then
     GATED_APPLY_DIR="${DEMO_DEPLOY_DIR}/components/gated-apply"
     GATED_APPLY_RB="${GATED_APPLY_DIR}/rolebinding.yaml"
 
@@ -366,11 +420,26 @@ if grep -q 'gated-apply' <<<"${APPLY_RENDER}"; then
     echo "    checkout. Revert those files before committing or running go test."
 fi
 
-# Model flavor: point the daemon's -c at the matching config file.
-AGENT_CONFIG_PATH="${CONTENT_MOUNT}/.agents/${AGENT_CONFIG_BASENAME}"
+# Point the daemon's -c at the config this run selected. AGENT_CONFIG_PATH
+# is derived in prereqs.sh from LEG (which root) and MODEL_FLAVOR (which
+# flavor inside it) so that the path is spelled once; CONFIG_PATCH_FILE is
+# the patch that owns the argument for this leg — the delivery overlay's
+# for a read-only run, the gated component's for d1/d2, since the
+# component's patch is the outer one and would otherwise overwrite
+# whatever we wrote into the overlay.
 sed -i -E "s|^  value: .*/\.agents/config\..*$|  value: ${AGENT_CONFIG_PATH}|" \
-    "${OVERLAY_DIR}/patch-agent-config.yaml"
-echo "→ model flavor: ${MODEL_FLAVOR}  (-c ${AGENT_CONFIG_BASENAME})"
+    "${CONFIG_PATCH_FILE}"
+# A `sed` that matched nothing is indistinguishable from one that worked,
+# and on the gated path the un-rewritten file still names a REAL config
+# (config.d1.json) — so a LEG=d2 run would deploy d1 and look fine. The
+# rendered-manifest assertion further down is the backstop, but check the
+# write here too, where the failure can still name the file.
+grep -qF "  value: ${AGENT_CONFIG_PATH}" "${CONFIG_PATCH_FILE}" || {
+    echo "✗ could not write the -c value into ${CONFIG_PATCH_FILE}"
+    echo "  Wanted: value: ${AGENT_CONFIG_PATH}"
+    exit 1
+}
+echo "→ model flavor: ${MODEL_FLAVOR}  (-c ${AGENT_CONFIG_PATH})"
 if [[ "${MODEL_FLAVOR}" == "anthropic" ]]; then
     echo "    parent=${ANTHROPIC_PARENT_MODEL}  cluster=${ANTHROPIC_CLUSTER_MODEL}"
     echo "    ceilings: turn=\$${ANTHROPIC_MAX_TURN_COST_USD} session=\$${ANTHROPIC_MAX_SESSION_COST_USD}"
@@ -427,8 +496,13 @@ for d in yaml.safe_load_all(sys.stdin):
 ')
 if [[ "${RENDERED_CFG}" != "${AGENT_CONFIG_PATH}" ]]; then
     echo "✗ daemon -c resolved to '${RENDERED_CFG}', expected '${AGENT_CONFIG_PATH}'"
-    echo "  patch-agent-config.yaml targets args[1] by index — check the base"
-    echo "  Deployment's arg order in deploy/base/50-deployment-daemon.yaml."
+    echo "  ${CONFIG_PATCH_FILE#"${DEMO_DEPLOY_DIR}/"} targets args[1] by index — check"
+    echo "  the base Deployment's arg order in deploy/base/50-deployment-daemon.yaml."
+    if [[ "${LEG}" != "readonly" ]]; then
+        echo "  On a gated leg TWO patches address that argument: the delivery"
+        echo "  overlay's and the component's. The component's is the outer one"
+        echo "  and wins, which is why this run wrote to it."
+    fi
     exit 1
 fi
 echo "→ daemon config: ${RENDERED_CFG}"

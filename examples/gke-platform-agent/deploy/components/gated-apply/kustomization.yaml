@@ -12,14 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# gated-apply RBAC component — the authorization boundary for the leg of
-# this recipe that lets the agent APPLY the fix it diagnosed, rather than
-# only describe it. Design: docs/gated-apply-design.md.
+# gated-apply component — everything that turns this recipe's read-only
+# deployment into the leg that APPLIES the fix it diagnosed, rather than
+# only describing it. Design: docs/gated-apply-design.md.
 #
 # Compose into an overlay via:
 #
 #   components:
 #     - ../../components/gated-apply
+#
+# THREE THINGS, ONE OPT-IN. The component started as RBAC alone (#1109)
+# and now also carries the two Deployment patches that select the leg
+# (#1105):
+#
+#   role.yaml + rolebinding.yaml  the authorization boundary
+#   patch-agent-config.yaml       -c -> gated-apply/.agents/config.d1.json
+#   patch-plans-mount.yaml        the writable plans emptyDir, moved to match
+#
+# They are one component rather than three composable pieces because every
+# proper subset is broken, and broken quietly:
+#
+#   config swap without the plans remount — `record_plan` derives plansDir
+#     from agentsDir, so plans land on the read-only content mount and the
+#     leg dies at its first plan under `plan_mode: "required"`. The pod is
+#     healthy the whole time.
+#   config swap without the RBAC — the agent proposes, decides to apply,
+#     and 403s with nothing in any log explaining why.
+#   RBAC without the config swap — a standing patch grant held by a
+#     deployment running the propose-only recipe, which is the one
+#     combination that is both useless and dangerous.
+#
+# WHY A COMPONENT AND NOT MORE OVERLAYS. deploy/overlays is a 2x2 over two
+# axes the CLUSTER forces: content delivery (image volume on GKE 1.35+,
+# initContainer copy below it) and tracing (on if managed OTel is served).
+# Apply-capability is the opposite kind of axis — nothing about a cluster
+# decides it, an operator does — so it is composed rather than enumerated.
+# Enumerating it would have made the tree 2x2x2 to express one choice.
+# deploy/overlays/gated-apply{,-otel} are worked examples of the
+# composition on the image-volume path; composing onto
+# ../initcontainer-copy is the same two lines.
 #
 # WHY A COMPONENT AND NOT deploy/base. Base is every deployment's default
 # posture. The default posture of this recipe is read-only — scenarios
@@ -88,3 +119,29 @@ kind: Component
 resources:
   - role.yaml
   - rolebinding.yaml
+
+# Both patches address the daemon Deployment by JSON 6902 index and both
+# open with a `test` op, so a reordering of deploy/base's args or
+# volumeMounts fails `kustomize build` by name instead of rewriting a
+# neighbour. See each file for why the index is guarded rather than
+# avoided.
+#
+# Ordering note: these run AFTER the composing overlay's own patches, so
+# patch-agent-config.yaml here overrides the `-c` that
+# overlays/*/patch-agent-config.yaml sets. That is deliberate and it is
+# why set-up-demo.sh writes the model-flavor path into the delivery
+# overlay for read-only runs but into THIS file for gated ones — two
+# patches on one path, and the outer one wins.
+patches:
+  - path: patch-agent-config.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: core-agent
+  - path: patch-plans-mount.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: core-agent

@@ -1,10 +1,19 @@
-# `gated-apply` — the authorization boundary
+# `gated-apply` — the apply-capable posture
 
-The RBAC that lets `gke-platform-agent` **apply** the fix it diagnosed,
-instead of only describing it. Design of record:
+Everything that turns `gke-platform-agent` from an agent that **describes**
+the fix into one that **applies** it. Design of record:
 [`docs/gated-apply-design.md`](../../../../../docs/gated-apply-design.md).
 
-Two objects, both in `TARGET_NS`:
+Composing this component does three things, and it exists so that they
+cannot be done separately:
+
+| | |
+|---|---|
+| `patch-agent-config.yaml` | Repoints the daemon's `-c` at the second content root, `…/gated-apply/.agents/config.d1.json`. |
+| `patch-plans-mount.yaml` | Moves the writable `plans` emptyDir to follow it. |
+| `role.yaml` + `rolebinding.yaml` | The RBAC, in `TARGET_NS`. |
+
+The RBAC half is two objects:
 
 | Object | What it grants |
 |---|---|
@@ -14,6 +23,38 @@ Two objects, both in `TARGET_NS`:
 (The suffix is the namespace the *daemon* runs in, which `deploy/base`
 hardcodes — not `TARGET_NS`, where these two objects land, and not
 `DEMO_NS`. See "Two coordinates, and one string that looks like a third".)
+
+## Three things, one opt-in
+
+Each proper subset of the three is broken, and each fails differently:
+
+- **Config swap without the plans remount.** `record_plan` derives its
+  output directory as `dir(-c) + "/plans"`, so moving `-c` without moving
+  the emptyDir points it at a path inside the read-only image volume. The
+  pod is healthy, every probe passes, and the leg dies at its first plan —
+  which under `plan_mode: "required"` is before its first mutation.
+- **Config swap without the RBAC.** Every patch returns 403. The agent
+  behaves as designed right up to the API server.
+- **RBAC without the config swap.** The one combination that is both
+  useless and dangerous: the daemon holds patch rights on `TARGET_NS` and
+  is running a configuration that was never meant to use them. Nothing
+  reports this; it looks exactly like the read-only posture.
+
+`kustomization.yaml` carries the same list next to the wiring.
+
+### `d1` and `d2`
+
+`d1` is attended — the approval gate is on, and a human answers it. `d2`
+is unattended. The committed patch selects **`d1`**: if a rendered manifest
+is deployed without anyone reading it, the posture it lands in should be
+the one that still asks. Switch to `d2` by editing the one `value:` line
+in `patch-agent-config.yaml`, which is what `LEG=d2 scripts/set-up-demo.sh`
+does for you.
+
+Both patches open with a JSON6902 `test` op naming the index they are
+about to rewrite. That is not decoration: kustomize *enforces* `test`, so
+reordering the base's `args` or `volumeMounts` fails the build with
+`testing value … failed` instead of silently patching the wrong element.
 
 ## Why this is the whole security argument
 
@@ -62,10 +103,28 @@ implied by the parent resource.
 
 ## Composing it
 
+Two overlays already do:
+
+| | |
+|---|---|
+| [`overlays/gated-apply`](../../overlays/gated-apply) | tracing off |
+| [`overlays/gated-apply-otel`](../../overlays/gated-apply-otel) | tracing on |
+
+Both build on `overlays/example`, so the apply leg is image-volume only —
+see `deploy/README.md` for why there is no `initcontainer-copy` variant.
+In your own overlay it is one stanza:
+
 ```yaml
 components:
   - ../../components/gated-apply
 ```
+
+Note the ordering, which is why the config swap lives here rather than in
+an overlay: a component's `patches:` are applied *after* those of the
+overlay composing it, so this component's `-c` patch wins over
+`overlays/example/patch-agent-config.yaml`. That is the same
+"outer transformer wins" rule that makes the `*-otel` composers omit
+`images:`.
 
 It is deliberately **not** in `deploy/base`. Base is every deployment's
 default posture, and this recipe's default posture is read-only — drill
@@ -91,7 +150,20 @@ because they have predictable, namespace-suffixed names.
 `scripts/set-up-demo.sh` rewrites the first two, but only when the overlay
 it is deploying actually composes this component. It detects that from the
 rendered manifest rather than from a `components:` line, because the
-`*-otel` overlays compose through `../example`.
+`*-otel` overlays compose through `../example` — a `components:` line in
+`overlays/gated-apply-otel/kustomization.yaml` names `otel-gke`, not this
+one.
+
+The detection is `renders_gated_apply` in `scripts/prereqs.sh`, which asks
+whether the render contains a **`Role` named `gated-apply-*`**. It used to
+ask whether the render contained the string `gated-apply` anywhere, and
+that was wrong: the `initcontainer-copy` overlays copy the whole content
+image, whose `cp -a` list names `/gated-apply` — the second content root
+ships in every flavor of the image whether or not an overlay selects it.
+A read-only below-floor deploy therefore announced that it had substituted
+coordinates into RBAC it was not applying. Nothing was mis-granted, since
+`kubectl` applies only what the overlay renders, but it rewrote two tracked
+files and printed a claim about authorization that was not true.
 
 The third row is the one to understand. `gke-platform-agent` is *not* a
 stand-in for `DEMO_NS`: it is the namespace `deploy/base` hardcodes for the
@@ -137,11 +209,13 @@ failure below rather than prevent it. Three things keep that honest:
   after its own edits, so an overlay that relocates the daemon some other
   way is caught too.
 
-**Note that this rewrites files tracked by git.** That is the same
-property the overlay patches have, and it is why a `git status` after a
-deploy is dirty. It also turns this component's own recipe tests red in
-your checkout, since they assert the committed placeholders. Revert
-`deploy/components/gated-apply/` before committing or running `go test`.
+**Note that this rewrites files tracked by git** — `role.yaml`,
+`rolebinding.yaml`, and on a `LEG=d2` run the `-c` value in
+`patch-agent-config.yaml`. That is the same property the overlay patches
+have, and it is why a `git status` after a deploy is dirty. It also turns
+this component's own recipe tests red in your checkout, since they assert
+the committed values. Revert `deploy/components/gated-apply/` before
+committing or running `go test`.
 
 Which one bites depends on the path you take:
 

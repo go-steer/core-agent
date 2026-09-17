@@ -236,7 +236,7 @@ Try, in order:
 ## Deploy it to a cluster
 
 The recipe ships its own deployment: [`deploy/`](deploy/) is a kustomize
-base plus four overlays, and [`scripts/`](scripts/) is the operator rig that
+base plus six overlays, and [`scripts/`](scripts/) is the operator rig that
 drives them. Full walkthrough in [`DEMO.md`](DEMO.md).
 
 ```sh
@@ -268,7 +268,14 @@ Two decisions get made for you by probing the cluster, because both are
 forced rather than preferred: content arrives as an **OCI image volume** on
 GKE 1.35+ and via an **initContainer copy** below it, and **tracing** to
 Cloud Trace turns on if the cluster serves GKE Managed OpenTelemetry. That
-is the 2 × 2 of overlays. See [`deploy/README.md`](deploy/README.md).
+is the 2 × 2 of read-only overlays.
+
+The one decision the cluster has no opinion on — whether the agent may
+**apply** what it proposes — is composed instead of enumerated:
+`LEG=d1|d2 ./scripts/set-up-demo.sh` adds `deploy/components/gated-apply`,
+which moves the `-c`, the writable `plans` mount and the RBAC together. That
+is the rule: a forced axis is enumerated, a chosen one is composed. See
+[`deploy/README.md`](deploy/README.md).
 
 ## What CI proves, and what it does not
 

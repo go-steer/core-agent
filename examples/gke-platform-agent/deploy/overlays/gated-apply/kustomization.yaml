@@ -1,0 +1,67 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The image-volume overlay PLUS the apply-capable leg.
+#
+# This is NOT the recipe's default posture and set-up-demo.sh will not
+# pick it on its own — it is reached only by LEG=d1|d2, and the read-only
+# overlays are unaffected by its existence. Design:
+# docs/gated-apply-design.md. Persona and configs:
+# ../../../gated-apply/.
+#
+# A superset of ../example, not a fork: it composes that overlay verbatim
+# and adds the gated-apply component, which brings three things that have
+# to arrive together — the `-c` swap into the gated content root, the
+# writable `plans` emptyDir moved to match it, and the Role/RoleBinding
+# granting `patch` on apps/deployments in TARGET_NS. See the component's
+# kustomization.yaml for why every proper subset of those three is broken.
+#
+# WHAT THIS DOES NOT CHANGE. The `cluster` subagent stays read-only (its
+# own mcp.json, in the shared ../../../cluster tree), `plan_mode:
+# "required"` stays on in both legs, and `safety.watchdog: "enforce"` and
+# the cost ceilings are inherited unchanged. The delta against ../example
+# is one config path, one mountPath, and one namespaced Role.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../example
+
+components:
+  - ../../components/gated-apply
+
+# NO `images:` BLOCK HERE, DELIBERATELY — same reasoning as
+# ../example-otel/kustomization.yaml, and the same trap. set-up-demo.sh
+# writes the pins with `kustomize edit set image` into the DELIVERY
+# overlay (../example), because that is where the custom fieldSpec lives
+# that also rewrites the image-VOLUME reference. An `images:` block here
+# would be an outer transformer over already-pinned output, so it would
+# win — with whatever tag was hand-typed here rather than the one the
+# operator configured in prereqs.sh.
+#
+# Same for the per-cluster values (GOOGLE_CLOUD_PROJECT, --cluster-name,
+# the model-flavor path): they are patched into ../example and flow
+# through this composition untouched. The one exception is the `-c`
+# argument, which the component deliberately overrides — see its
+# kustomization.yaml, and note that set-up-demo.sh writes the gated
+# config path into the COMPONENT's patch file rather than this overlay's,
+# so there is still exactly one place that argument is spelled.
+#
+# FOR A CLUSTER BELOW THE IMAGE-VOLUME FLOOR (k8s < 1.33 / GKE < 1.35),
+# change the `resources:` entry above to ../initcontainer-copy. Nothing
+# else moves: patch-content-via-initcontainer.yaml already copies
+# /gated-apply out of the content image into the shared emptyDir, for
+# exactly this. That combination is not shipped as a fifth overlay
+# because it has no consumer — the drill this leg exists for runs on
+# GKE 1.35+ — and an unshipped overlay is an untested one.

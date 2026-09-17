@@ -820,20 +820,36 @@ func TestGatedApplyRoleGrantsOnlyDeploymentPatch(t *testing.T) {
 // TestGatedApplyRoleGrantsOnlyDeploymentPatch and
 // TestGatedApplySubjectMatchesDaemonNamespace both assert on two files reached
 // by path. Neither reads the kustomization, so a third filename in `resources`
-// — or a patch, or a generator — renders an arbitrary object into every
-// overlay that composes this component, with nothing checking it and nothing
-// in teardown deleting it. The component is meant to be two objects; this says
-// so in the one place that decides.
+// — or a generator — renders an arbitrary object into every overlay that
+// composes this component, with nothing checking it and nothing in teardown
+// deleting it. The component creates two objects; this says so in the one
+// place that decides.
+//
+// It also *modifies* the daemon, via exactly two patches, each named here.
+// That is a deliberate widening of this guard rather than a hole in it: the
+// `-c` swap and the plans remount are inseparable from the RBAC (see the
+// component README), so they ship together, and the two filenames are pinned
+// so a third patch is still a test failure. What each one does to the
+// Deployment is TestGatedApplyPatchesGuardTheirIndices' job.
 func TestGatedApplyComponentShipsOnlyItsTwoObjects(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(gatedApplyDir, "kustomization.yaml"))
 	if err != nil {
 		t.Fatalf("read kustomization.yaml: %v", err)
 	}
 	var comp struct {
-		Kind               string      `yaml:"kind"`
-		Resources          []string    `yaml:"resources"`
-		Components         []string    `yaml:"components"`
-		Patches            []yaml.Node `yaml:"patches"`
+		Kind       string   `yaml:"kind"`
+		Resources  []string `yaml:"resources"`
+		Components []string `yaml:"components"`
+		Patches    []struct {
+			Path   string `yaml:"path"`
+			Patch  string `yaml:"patch"`
+			Target struct {
+				Group   string `yaml:"group"`
+				Version string `yaml:"version"`
+				Kind    string `yaml:"kind"`
+				Name    string `yaml:"name"`
+			} `yaml:"target"`
+		} `yaml:"patches"`
 		PatchesStrategic   []yaml.Node `yaml:"patchesStrategicMerge"`
 		ConfigMapGenerator []yaml.Node `yaml:"configMapGenerator"`
 		SecretGenerator    []yaml.Node `yaml:"secretGenerator"`
@@ -857,15 +873,36 @@ func TestGatedApplyComponentShipsOnlyItsTwoObjects(t *testing.T) {
 		n    int
 	}{
 		{"components", len(comp.Components)},
-		{"patches", len(comp.Patches)},
 		{"patchesStrategicMerge", len(comp.PatchesStrategic)},
 		{"configMapGenerator", len(comp.ConfigMapGenerator)},
 		{"secretGenerator", len(comp.SecretGenerator)},
 	} {
 		if f.n != 0 {
 			t.Errorf("%s is set: this component may only contribute the two RBAC "+
-				"objects it is reviewed as", f.name)
+				"objects and the two daemon patches it is reviewed as", f.name)
 		}
+	}
+
+	// The patch list, by filename and target. A patch here lands on every
+	// overlay that composes the component, and — because a component's
+	// patches run AFTER the composing overlay's — it silently outranks
+	// anything overlays/example says about the same field.
+	wantPatches := []string{"patch-agent-config.yaml", "patch-plans-mount.yaml"}
+	gotPatches := make([]string, 0, len(comp.Patches))
+	for _, p := range comp.Patches {
+		if p.Patch != "" {
+			t.Errorf("patch %q is inline: keep these in files, so the JSON6902 ops "+
+				"stay reviewable next to their rationale", p.Path)
+		}
+		gotPatches = append(gotPatches, p.Path)
+		tgt := p.Target
+		if tgt.Group != "apps" || tgt.Version != "v1" || tgt.Kind != "Deployment" || tgt.Name != "core-agent" {
+			t.Errorf("patch %q targets %+v, want the apps/v1 Deployment core-agent; "+
+				"an unnamed or wider target would also hit the watcher", p.Path, tgt)
+		}
+	}
+	if !slices.Equal(gotPatches, wantPatches) {
+		t.Errorf("patches = %v, want exactly %v", gotPatches, wantPatches)
 	}
 	if comp.Namespace != "" {
 		t.Errorf("namespace = %q: a namespace field here would relocate both objects "+

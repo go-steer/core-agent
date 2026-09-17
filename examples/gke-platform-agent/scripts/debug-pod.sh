@@ -55,6 +55,14 @@ K="kubectl --context ${KUBE_CONTEXT} -n ${DEMO_NS}"
 read -r -d '' CHECK_SCRIPT <<EOF || true
 set -u
 root=${CONTENT_MOUNT}
+# The plans dir is the one path that is NOT under \$root on a gated leg:
+# the daemon's agents root moves to ${CONTENT_MOUNT}/gated-apply and
+# record_plan writes beside it, which is where the emptyDir is mounted.
+# Writing "\$root/.agents/plans" here instead would test a directory that
+# exists in the image on every leg — so on a gated leg it would sit on the
+# read-only volume with no emptyDir over it, and the check would fail the
+# whole run while the mount it was supposed to verify went untested.
+plans=${AGENTS_ROOT}/.agents/plans
 fail=0
 say() { printf '%s\n' "\$*"; }
 say "== content sanity =="
@@ -64,6 +72,12 @@ if [ -f "\$root/.agents/config.hub.json" ]; then say "  config.hub.json: OK"; el
 # MODEL_FLAVOR=anthropic pointing -c at a file that isn't there, and the
 # daemon would crash-loop on a missing config rather than say so here.
 if [ -f "\$root/.agents/${AGENT_CONFIG_BASENAME}" ]; then say "  ${AGENT_CONFIG_BASENAME} (flavor=${MODEL_FLAVOR}): OK"; else say "  ${AGENT_CONFIG_BASENAME}: MISSING — rebuild the content image with build-content-image.sh"; fail=1; fi
+# The config THIS run's -c actually names. Identical to the line above on
+# a read-only run; on a gated leg it is the one check that the second
+# content root reached the image, which a content image built before
+# #1105 would fail. Checked as an absolute path, because AGENTS_ROOT is
+# below \$root on a gated leg and equal to it otherwise.
+if [ -f "${AGENT_CONFIG_PATH}" ]; then say "  -c ${AGENT_CONFIG_PATH} (LEG=${LEG}): OK"; else say "  -c ${AGENT_CONFIG_PATH}: MISSING — the daemon would crash-loop on this"; fail=1; fi
 if [ -f "\$root/AGENTS.md" ]; then say "  parent AGENTS.md: OK"; else say "  parent AGENTS.md: MISSING"; fail=1; fi
 # AGENTS.d/ is deliberately absent — its one file was a stub for
 # fleet-governance SOPs this runtime cannot execute. Assert it stays gone,
@@ -87,14 +101,14 @@ csk=\$(ls -1d "\$root"/cluster/skills/*/ 2>/dev/null | wc -l | tr -d ' ')
 say "  cluster skills discovered: \${csk} (expect 6)"
 [ "\${csk:-0}" -ge 1 ] || { say "  no cluster skills found"; fail=1; }
 
-say "== nested writable plans =="
-if [ -d "\$root/.agents/plans" ]; then
-  say "  .agents/plans mount point: present"
+say "== nested writable plans (LEG=${LEG}) =="
+if [ -d "\$plans" ]; then
+  say "  \$plans mount point: present"
 else
-  say "  .agents/plans mount point: MISSING — read-only image can't create it at mount time"; fail=1
+  say "  \$plans mount point: MISSING — read-only image can't create it at mount time"; fail=1
 fi
-if touch "\$root/.agents/plans/.writetest" 2>/dev/null; then
-  rm -f "\$root/.agents/plans/.writetest"; say "  plans writable: OK"
+if touch "\$plans/.writetest" 2>/dev/null; then
+  rm -f "\$plans/.writetest"; say "  plans writable: OK"
 else
   say "  plans writable: NO — record_plan artifacts would fail, and plan_mode=required would block every mutation"; fail=1
 fi
@@ -142,7 +156,13 @@ spec:
       command: ${CMD_JSON}
       volumeMounts:
         - { name: recipe-content, mountPath: ${CONTENT_MOUNT}, readOnly: true }
-        - { name: plans, mountPath: ${CONTENT_MOUNT}/.agents/plans }
+        # AGENTS_ROOT, not CONTENT_MOUNT: on a gated leg the daemon loads
+        # ${CONTENT_MOUNT}/gated-apply/.agents and record_plan writes
+        # beside it, so mounting the base recipe's plans dir here would
+        # have this pod exercising a path the daemon does not use. Order
+        # matters — the parent read-only mount has to come first or it
+        # shadows this one.
+        - { name: plans, mountPath: ${AGENTS_ROOT}/.agents/plans }
   volumes:
     - name: recipe-content
       image: { reference: ${CONTENT_REF}, pullPolicy: IfNotPresent }

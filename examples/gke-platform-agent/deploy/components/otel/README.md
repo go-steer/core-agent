@@ -28,7 +28,7 @@ or set operator-side anywhere else.
 `GOOGLE_CLOUD_PROJECT`, which Cloud Trace needs for the `gcp.project_id`
 resource attribute, is already on the daemon via the base's `envFrom` reference
 to the `core-agent-gcp-env` ConfigMap. The watcher has no such `envFrom` — see
-[Watcher spans](#watcher-spans-a-known-open-question).
+[Bind both service accounts](#bind-both-service-accounts).
 
 ### Why env vars and not config
 
@@ -42,7 +42,8 @@ ConfigMap.
 
 ## Four overlays, two axes
 
-This recipe has two orthogonal deployment decisions, so it has 2 × 2 overlays:
+This recipe has two orthogonal *forced* deployment decisions, so it has 2 × 2
+read-only overlays:
 
 | | tracing off | tracing on (default) |
 |---|---|---|
@@ -53,6 +54,13 @@ Content delivery is forced by the cluster's Kubernetes version; tracing is
 forced by whether Managed OpenTelemetry is enabled. `set-up-demo.sh` probes for
 both and picks one of the four. Override tracing with `OTEL=0` (off) or
 `OTEL=1` (on, and fail loudly if the CRD is missing).
+
+Apply-capability is the third decision, and it is *chosen* rather than forced,
+so it is a `gated-apply` **component** instead of a fifth and sixth cell — see
+[`../gated-apply/README.md`](../gated-apply/README.md). It has two overlays of
+its own, and `overlays/gated-apply-otel` composes `otel-gke` on top of them the
+same way the cells above do, because turning the apply leg on does not turn
+tracing off.
 
 The `-otel` overlays are deliberately thin: they add
 `../../components/otel-gke` over their delivery sibling and declare **no

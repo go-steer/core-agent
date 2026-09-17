@@ -147,11 +147,48 @@ shared tree. The subagent stays read-only in both legs, and it stays that way
 because it keeps its own read-only `mcp.json` — not because the parent's
 persona asks it to.
 
-What remains for `deploy/overlays/gated-apply/` is genuinely thin, and lands
-as a follow-up: the `-c` argument, re-pointing the writable `plans` emptyDir
-from `.agents/plans` to `gated-apply/.agents/plans`, and composing in the
-`gated-apply` RBAC component. The content image itself is unchanged for the
-read-only legs — both flavors just carry one more directory.
+The deploy side was expected to be thin, and it was — three things: the `-c`
+argument, re-pointing the writable `plans` emptyDir from `.agents/plans` to
+`gated-apply/.agents/plans`, and the `gated-apply` RBAC. The content image
+itself is unchanged for the read-only legs — both flavors just carry one more
+directory.
+
+**Where those three landed is the one decision worth recording.** All three
+went into `deploy/components/gated-apply/`, and the two overlays that select
+the leg — `overlays/gated-apply` and `overlays/gated-apply-otel` — are two
+stanzas each, a `resources:` entry and a `components:` entry. The `-c` patch
+could have lived in the overlays instead; it does not, for two reasons.
+
+The first is that the three are inseparable, and each proper subset fails in
+a way nothing reports. The config swap without the plans remount kills the
+leg at its first plan, under `plan_mode: "required"`, with a healthy pod and
+passing probes. The config swap without the RBAC 403s. The RBAC without the
+config swap leaves the daemon holding patch rights on `TARGET_NS` while
+running a configuration that was never meant to use them — useless and
+dangerous at once. Keeping all three in one component means no proper subset
+is composable.
+
+The second is a rule this tree now states explicitly, in `deploy/README.md`:
+**a forced axis is enumerated, a chosen one is composed.** Content delivery
+and tracing are forced by the cluster — the operator does not pick them, and
+picking wrong is a deploy that does not work — so they are 2 × 2 directories.
+Apply-capability has no cluster-side answer; it is the operator declaring
+what this daemon may do. Enumerating it would have made the tree 2 × 2 × 2.
+
+Ordering makes this work: a component's `patches:` are applied after those of
+the overlay composing it, so the component's `-c` beats
+`overlays/example/patch-agent-config.yaml` without the overlay knowing the
+component exists. Both component patches open with a JSON6902 `test` op on
+the index they rewrite — kustomize enforces `test`, so a reordering of the
+base's `args` or `volumeMounts` fails the build rather than patching the
+wrong element.
+
+One thing that did not survive first contact: the plans remount was written
+as a strategic-merge patch, and strategic merge keys `volumeMounts` on
+`mountPath`, so a delete-then-append moved `plans` *ahead* of the
+`recipe-content` mount it nests inside — which shadows it. Mount order is
+load-bearing here and nothing downstream reports getting it wrong. The
+JSON6902 form is index-addressed and preserves order.
 
 ### `mcp.json` — mount and allowlist
 
@@ -767,10 +804,11 @@ by [#1105](https://github.com/go-steer/core-agent/issues/1105).
    `config.json` variants.~~ **Content root done 2026-09-17** — it is
    `examples/gke-platform-agent/gated-apply/`, not a deploy overlay; see
    §The gated-apply content root for why, and for the variant persona this
-   item did not anticipate. The remaining deploy-side work — the `-c`
-   argument, the `plans` mount re-point, composing in the RBAC component,
-   and parameterizing `set-up-demo.sh`'s hardcoded `.agents` — is a
-   follow-up PR.
+   item did not anticipate. The deploy side followed on the same day: the
+   `-c` argument, the `plans` mount re-point and the RBAC all ship in
+   `deploy/components/gated-apply/`, selected by `overlays/gated-apply` and
+   `overlays/gated-apply-otel`, with `set-up-demo.sh` taking a `LEG`
+   (`readonly` | `d1` | `d2`) and deriving the agents root from it.
 4. Scenario D + its scorecard sheet.
 5. Run D1. Read what the agent actually proposed.
 6. Run D2. Then the adversarial boundary tests.

@@ -10,8 +10,9 @@ manifests: what each object is for, and which decisions are load-bearing.
 
 ```
 base/            one namespace, two Deployments, the RBAC they need
-components/      composable add-ons (tracing, gated-apply RBAC)
-overlays/        2 × 2 — content delivery × tracing
+components/      composable add-ons (tracing, gated-apply)
+overlays/        2 × 2 read-only — content delivery × tracing
+                 + 2 gated-apply composers
 content.Dockerfile
 ```
 
@@ -101,7 +102,7 @@ plans, the image volume is read-only, so a writable emptyDir is nested at
 point inside the read-only parent. Without the `.gitkeep`, the directory
 does not exist in the image and the pod fails to start.
 
-## `overlays/` — two axes, four directories
+## `overlays/` — two forced axes, plus one chosen one
 
 Two independent decisions, neither of which is a preference:
 
@@ -128,6 +129,43 @@ a tag and deploy a different one.
 `components/otel/` holds the tracing wiring and its own
 [README](components/otel/README.md), including the GKE prerequisites and
 the two IAM bindings that fail silently when missing.
+
+### The third axis is a component, not four more directories
+
+Apply-capability — whether the daemon may write to the cluster at all —
+is the one decision here that *is* a choice. It gets composed:
+
+| | |
+| --- | --- |
+| `gated-apply` | the apply-capable agent, tracing off |
+| `gated-apply-otel` | the same, tracing on |
+
+Both start from `overlays/example` (the image-volume path) and add
+`components/gated-apply`. Enumerating apply-capability the way delivery
+and tracing are enumerated would make the tree 2 × 2 × 2; composing it
+keeps it at six directories and keeps the wiring in one file.
+
+The distinction is not stylistic. **A forced axis is enumerated, because
+the operator does not pick it — the cluster does, and picking wrong is a
+deploy that does not work.** Apply-capability has no cluster-side answer;
+it is the operator saying what this daemon is allowed to do. That belongs
+in a thing you opt into by name.
+
+`components/gated-apply/` moves three things together — the `-c`
+argument, the `plans` emptyDir that has to follow it, and the RBAC — and
+its [README](components/gated-apply/README.md) explains why every proper
+subset of those three is broken. The worst subset is RBAC without the
+config swap: a daemon holding write permissions it was never reconfigured
+to use.
+
+Neither gated overlay declares `images:`, for the same reason the `*-otel`
+composers don't.
+
+There is no gated `initcontainer-copy` variant. Nothing prevents one —
+point a copy of `overlays/gated-apply/` at `../initcontainer-copy`
+instead — but it has no consumer, and an unshipped overlay is an
+untested one. `set-up-demo.sh` refuses `LEG=d1|d2` below the image-volume
+floor rather than rendering something nobody has run.
 
 ## Deploying by hand
 

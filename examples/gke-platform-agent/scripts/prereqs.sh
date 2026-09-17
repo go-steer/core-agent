@@ -186,6 +186,36 @@ require_demo_ns_matches_base() {
     return 0
 }
 
+# Does a rendered manifest (on stdin) actually compose the gated-apply
+# component? Exit 0 if yes.
+#
+# NOT `grep -q gated-apply`. That was the first spelling and it is wrong
+# on the DEFAULT below-floor path: overlays/initcontainer-copy delivers
+# the content by running `cp -a … /gated-apply …` in an initContainer,
+# because every flavor of the content image carries that directory
+# whether or not any overlay selects it. So the literal string appears in
+# the rendered Deployment of a deployment that composes no component at
+# all, and both initcontainer-copy overlays matched.
+#
+# Nothing was mis-granted by that — kubectl applies the objects the
+# overlay names, and a read-only overlay names none of them. What it did
+# was rewrite two tracked files under deploy/components/gated-apply and
+# print "→ gated-apply: … in …", which is a claim about authorization
+# that was not true, on the path an operator is least able to check.
+#
+# Match on an OBJECT the component contributes instead, per document, the
+# way set-up-demo.sh's rendered_daemon_ns does. A directory path in a
+# command argument cannot look like a Role.
+renders_gated_apply() {
+    awk '
+        function emit() { if (kind == "Role" && name ~ /^gated-apply-/) found = 1 }
+        /^---[[:space:]]*$/   { emit(); kind=""; name=""; next }
+        /^kind:[[:space:]]/   { kind = $2; next }
+        /^  name:[[:space:]]/ { if (name == "") name = $2; next }
+        END { emit(); if (found) exit 0; exit 1 }
+    '
+}
+
 # ── Content source ───────────────────────────────────────────────────
 # This recipe is SELF-CONTAINED — no content_roots, no vendored
 # upstream/, no @include — so the content image is built straight from
@@ -316,10 +346,10 @@ export WATCHER_IDENTITY="${WATCHER_IDENTITY:-sa:lookout-watch}"
 export DEMO_DIR="${RECIPE_ROOT}"
 export DEMO_DEPLOY_DIR="${DEMO_DIR}/deploy"
 
-# FOUR overlays, two orthogonal axes. Content DELIVERY (image volume vs
-# initContainer copy) is forced by the cluster's Kubernetes version;
-# TRACING (on vs off) is forced by whether the cluster has GKE Managed
-# OpenTelemetry enabled. set-up-demo.sh probes for both and picks.
+# FOUR read-only overlays, two orthogonal axes. Content DELIVERY (image
+# volume vs initContainer copy) is forced by the cluster's Kubernetes
+# version; TRACING (on vs off) is forced by whether the cluster has GKE
+# Managed OpenTelemetry enabled. set-up-demo.sh probes for both and picks.
 #
 # The two *-otel dirs are thin composers: they add the otel-gke component
 # and nothing else. Crucially they carry NO `images:` block and no
@@ -332,6 +362,83 @@ export DEMO_OVERLAY_COPY_DIR="${DEMO_DEPLOY_DIR}/overlays/initcontainer-copy"   
 export DEMO_OVERLAY_OTEL_DIR="${DEMO_DEPLOY_DIR}/overlays/example-otel"                  # image volume + tracing
 export DEMO_OVERLAY_COPY_OTEL_DIR="${DEMO_DEPLOY_DIR}/overlays/initcontainer-copy-otel"  # fallback + tracing
 
+# Two MORE, for the apply-capable leg. This is a THIRD axis, and it is not
+# like the other two: nothing about a cluster decides it, an operator
+# does. So it is composed rather than enumerated — the wiring lives once
+# in deploy/components/gated-apply and these two dirs are worked examples
+# of composing it onto the image-volume path. Enumerating the axis would
+# have made deploy/overlays a 2x2x2 to express one choice.
+#
+# Below the image-volume floor there is no shipped gated overlay: change
+# the `resources:` entry in overlays/gated-apply to ../initcontainer-copy
+# (the initContainer already copies /gated-apply out of the image for
+# exactly this). Not shipped because it has no consumer, and an unshipped
+# overlay is an untested one.
+export DEMO_OVERLAY_GATED_DIR="${DEMO_DEPLOY_DIR}/overlays/gated-apply"            # image volume + apply leg
+export DEMO_OVERLAY_GATED_OTEL_DIR="${DEMO_DEPLOY_DIR}/overlays/gated-apply-otel"  # image volume + apply leg + tracing
+
+# Where the content image is mounted in the daemon pod. Kept in one place
+# because debug-pod.sh must mount it at exactly the same path the daemon
+# does, or its assertions prove nothing. Declared before the LEG switch
+# below, which derives AGENTS_ROOT from it.
+export CONTENT_MOUNT="/opt/gke-platform-agent"
+
+# ── LEG: read-only (default) | d1 | d2 ───────────────────────────────
+# Which POSTURE to deploy. `readonly` is the recipe as scenarios A/B/C
+# run it. d1 and d2 both select the gated-apply content root and the
+# `patch` grant that goes with it; they differ by one config field.
+#
+#   d1  permissions.mode "ask"    — the patch waits for a human. ATTENDED:
+#                                   nothing answers a prompt in a pod, so
+#                                   somebody has to be on the TUI.
+#   d2  permissions.mode "allow"  — the patch is allowlisted, nothing
+#                                   prompts, deny-by-default for anything
+#                                   unlisted. This is the leg an
+#                                   unattended soak can actually exercise.
+#
+# Run d1 before d2 on a given day: under d1 the worst case is a bad
+# proposal, under d2 it is a bad patch on a live workload.
+# See docs/gated-apply-design.md.
+export LEG="${LEG:-readonly}"
+
+# AGENTS_ROOT is the directory inside the content mount whose `.agents/`
+# the daemon loads. Every path that depends on which root is selected is
+# derived from this one variable — the `-c` value, and the writable plans
+# mount that has to sit beside it, because record_plan derives plansDir =
+# agentsDir + "/plans". debug-pod.sh reads it too, so its assertions run
+# against the same root the daemon does.
+case "${LEG}" in
+    readonly)
+        export AGENTS_ROOT="${CONTENT_MOUNT}"
+        export LEG_CONFIG_BASENAME="${AGENT_CONFIG_BASENAME}"
+        ;;
+    d1|d2)
+        export AGENTS_ROOT="${CONTENT_MOUNT}/gated-apply"
+        export LEG_CONFIG_BASENAME="config.${LEG}.json"
+        # The gated-apply root ships gemini configs only.
+        # build-content-image.sh derives the *.anthropic variants for
+        # .agents/config.hub.json and .agents/config.json and nothing
+        # else, so MODEL_FLAVOR=anthropic here would point -c at a file
+        # that is not in the image — a crash-loop several minutes after
+        # this script reports success. Refuse instead.
+        if [[ "${MODEL_FLAVOR}" != "gemini" ]]; then
+            echo "✗ LEG=${LEG} requires MODEL_FLAVOR=gemini (got '${MODEL_FLAVOR}')." >&2
+            echo "  The gated-apply content root ships no anthropic config variant:" >&2
+            echo "  build-content-image.sh renders those for .agents/ only." >&2
+            return 1 2>/dev/null || exit 1
+        fi
+        ;;
+    *)
+        echo "✗ LEG must be 'readonly', 'd1' or 'd2' (got '${LEG}')" >&2
+        return 1 2>/dev/null || exit 1
+        ;;
+esac
+
+# The single spelling of the daemon's -c argument. set-up-demo.sh writes
+# this into a patch file and then asserts the RENDERED manifest carries
+# it; debug-pod.sh asserts the file exists in the mount.
+export AGENT_CONFIG_PATH="${AGENTS_ROOT}/.agents/${LEG_CONFIG_BASENAME}"
+
 # Per-run state the rig produces: the operator's bearer token, and the
 # users.json bearer table on its way into a Secret. Deliberately under
 # TMPDIR and not in the checkout. Both are live credentials for the
@@ -340,11 +447,6 @@ export DEMO_OVERLAY_COPY_OTEL_DIR="${DEMO_DEPLOY_DIR}/overlays/initcontainer-cop
 # `cp -r` of the recipe directory, one archive of the worktree, and a
 # gitignored secret has travelled anyway.
 export RIG_STATE_DIR="${RIG_STATE_DIR:-${TMPDIR:-/tmp}/gke-platform-agent}"
-
-# Where the content image is mounted in the daemon pod. Kept in one place
-# because debug-pod.sh must mount it at exactly the same path the daemon
-# does, or its assertions prove nothing.
-export CONTENT_MOUNT="/opt/gke-platform-agent"
 
 # Convenience (best-effort; harmless if gcloud is not yet configured).
 export PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)' 2>/dev/null)"

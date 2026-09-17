@@ -34,11 +34,15 @@ package gkeplatformagent_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -51,6 +55,13 @@ import (
 const (
 	gatedRoot      = "gated-apply"
 	gatedAgentsDir = gatedRoot + "/.agents"
+
+	// Where deploy/base mounts the content image in the daemon pod, and so
+	// the prefix of every in-pod path these manifests name. Kept in step
+	// with CONTENT_MOUNT in scripts/prereqs.sh by
+	// TestGatedApplyPlansMountFollowsTheConfig, which fails if no `-c`
+	// selects contentMount/gated-apply.
+	contentMount = "/opt/gke-platform-agent"
 
 	// applyEndpoint is the full GKE MCP endpoint. Its whole significance is
 	// the absence of the /read-only suffix: that sibling does not serve a
@@ -1165,52 +1176,77 @@ func initContainerCopySources(t *testing.T) []string {
 	return nil
 }
 
-// TestGatedApplyOverlayMustRemountPlans is a tripwire for the follow-up.
+// TestGatedApplyPlansMountFollowsTheConfig is the coupling this leg lives on.
 //
 // `record_plan` derives its output directory as agentsDir + "/plans" and
-// MkdirAll's it (pkg/tools/record_plan.go). The content mount is read-only,
-// so `deploy/base` nests a writable emptyDir at exactly
-// /opt/gke-platform-agent/.agents/plans — one specific path, chosen for the
-// one config the base runs.
+// MkdirAll's it (pkg/tools/record_plan.go), where agentsDir is dir(-c). The
+// content mount is read-only, so `deploy/base` nests a writable emptyDir at
+// exactly /opt/gke-platform-agent/.agents/plans — one specific path, chosen
+// for the one config the base runs.
 //
-// Selecting this leg moves agentsDir. `-c <mount>/gated-apply/.agents/
-// config.d1.json` puts plansDir at <mount>/gated-apply/.agents/plans, which
-// the base does not mount, so it lands on the read-only image volume. The
-// failure is not a missing artifact: both legs run `plan_mode: "required"`,
-// and plan-first is the structural guarantee the whole gated-apply design
-// rests on, so an unwritable plans dir breaks the leg rather than degrading
-// it. gated-apply/.agents/plans/.gitkeep pre-bakes the mount POINT — a
-// read-only layer cannot have one created at mount time — but a mount point
-// is not a mount.
+// Selecting this leg moves agentsDir, so the emptyDir has to move with it or
+// plans land on the read-only image volume. The failure is not a missing
+// artifact: both legs run `plan_mode: "required"`, and plan-first is the
+// structural guarantee the whole gated-apply design rests on, so an
+// unwritable plans dir breaks the leg rather than degrading it.
+// gated-apply/.agents/plans/.gitkeep pre-bakes the mount POINT — a read-only
+// layer cannot have one created at mount time — but a mount point is not a
+// mount.
 //
-// No overlay selects this leg yet; the `-c` swap and the plans remount are
-// the same follow-up. This test exists so they cannot land apart, because
-// the half that is easy to remember is the half that does not fail in CI.
-func TestGatedApplyOverlayMustRemountPlans(t *testing.T) {
-	const (
-		selector  = gatedRoot + "/.agents/config.d"
-		plansPath = gatedRoot + "/.agents/plans"
-	)
+// This began as a bidirectional tripwire for an unbuilt overlay (either half
+// alone was an error, neither was the shipped state). Both halves now exist,
+// in deploy/components/gated-apply, so the test asserts the stronger thing:
+// that the two paths agree on a ROOT. "Both files mention gated-apply" was
+// enough to catch a dropped half and would not catch a typo in one of them,
+// which is the likelier mistake now that both are written.
+func TestGatedApplyPlansMountFollowsTheConfig(t *testing.T) {
+	// Deliberately NOT anchored to gated-apply. Reducing every agents path
+	// under deploy/ to the ROOT it implies — a `-c` of
+	// <root>/.agents/config.X.json and a mount of <root>/.agents/plans both
+	// reduce to <root> — makes this one invariant over BOTH legs rather than
+	// a special case for the new one, and the read-only pair is what proves
+	// the check can see anything at all.
+	cfgRE := regexp.MustCompile(`^(/.+)/\.agents/config\.[^/]+\.json$`)
+	mntRE := regexp.MustCompile(`^(/.+)/\.agents/plans$`)
 
-	var selects, mounts []string
+	configRoots := map[string][]string{} // root -> files that select it
+	mountRoots := map[string][]string{}  // root -> files that mount plans under it
+
+	// Only files some kustomization actually pulls in. Walking the directory
+	// alone would read a patch that is on disk and composed by nothing as
+	// though it were deployed — and dropping an entry from a `patches:` list
+	// while leaving the file behind is exactly how this coupling breaks: the
+	// render is wrong, the diff looks like a deletion of nothing, and every
+	// file this test cares about is still sitting there saying the right
+	// thing.
+	composed := composedFiles(t)
+
 	err := filepath.Walk("deploy", func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".yaml") {
 			return err
+		}
+		if !composed[filepath.Clean(path)] {
+			return nil
 		}
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(body), selector) {
-			selects = append(selects, path)
-		}
-		// Deliberately matched as a mountPath rather than anywhere in the
-		// file: the Dockerfile-adjacent comments name this path too, and a
-		// comment is not a mount.
 		for _, line := range strings.Split(string(body), "\n") {
-			if strings.Contains(line, "mountPath:") && strings.Contains(line, plansPath) {
-				mounts = append(mounts, path)
-				break
+			// Comments name these paths at length — the component's patch
+			// files explain themselves, and deploy/base's mount carries a
+			// nine-line rationale — and a comment is not a mount. Take only
+			// what the YAML actually sets.
+			code, _, _ := strings.Cut(line, "#")
+			v := yamlScalar(code)
+			if !strings.HasPrefix(v, "/") {
+				continue
+			}
+			if m := cfgRE.FindStringSubmatch(v); m != nil {
+				configRoots[m[1]] = append(configRoots[m[1]], path)
+			}
+			if m := mntRE.FindStringSubmatch(v); m != nil {
+				mountRoots[m[1]] = append(mountRoots[m[1]], path)
 			}
 		}
 		return nil
@@ -1218,22 +1254,440 @@ func TestGatedApplyOverlayMustRemountPlans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk deploy/: %v", err)
 	}
+	if _, ok := configRoots[contentMount+"/"+gatedRoot]; !ok {
+		t.Errorf("no `-c` under deploy/ selects the gated-apply root %s/%s.\nThe leg is "+
+			"deployed by pointing the daemon's config argument into that directory and nothing "+
+			"else; without it deploy/ runs the read-only recipe however the overlay is named.",
+			contentMount, gatedRoot)
+	}
 
-	switch {
-	case len(selects) == 0 && len(mounts) == 0:
-		// The shipped state: no overlay runs this leg, so nothing to remount.
-		// Documented in gated-apply/README.md §Running it.
-	case len(selects) > 0 && len(mounts) == 0:
-		t.Errorf("%v point `-c` at the gated-apply leg, but nothing under deploy/ mounts a "+
-			"writable volume at %s.\nrecord_plan derives plansDir from agentsDir, so this leg's "+
-			"plans land on the read-only content mount and plan-first — which both legs require "+
-			"— fails at the first plan. Add a `plans` volumeMount at that path, the way "+
-			"deploy/base does for .agents/plans.", selects, plansPath)
-	case len(selects) == 0 && len(mounts) > 0:
-		t.Errorf("%v mount a writable volume at %s, but nothing points `-c` at the gated-apply "+
-			"leg.\nEither the `-c` swap was dropped from the overlay — in which case the "+
-			"deployment is still running the read-only recipe and the mount is inert — or this "+
-			"path is stale and should be removed.", mounts, plansPath)
+	if len(configRoots) == 0 || len(mountRoots) == 0 {
+		t.Fatalf("found %d config roots and %d plans mounts under deploy/ — this test is not "+
+			"reading the tree it thinks it is, and would pass no matter what the manifests say.",
+			len(configRoots), len(mountRoots))
+	}
+
+	for root, files := range configRoots {
+		if _, ok := mountRoots[root]; !ok {
+			t.Errorf("%v point `-c` at agents root %q, but no plans mount under deploy/ uses "+
+				"that root (mounted roots: %v).\nrecord_plan derives plansDir as "+
+				"agentsDir+\"/plans\", so the two are one decision. A pod with them "+
+				"disagreeing boots healthy, passes every probe, and dies at its first plan "+
+				"under plan_mode: \"required\".", files, root, keysOf(mountRoots))
+		} else {
+			t.Logf("agents root %q: -c in %v, plans mount in %v", root, files, mountRoots[root])
+		}
+	}
+	for root, files := range mountRoots {
+		if _, ok := configRoots[root]; !ok {
+			t.Errorf("%v mount a writable plans dir under agents root %q, but no `-c` under "+
+				"deploy/ selects that root (selected roots: %v).\nThe mount is inert: either "+
+				"the config swap that needed it was dropped, in which case that deployment is "+
+				"running a different recipe than its mounts suggest, or the path is stale.",
+				files, root, keysOf(configRoots))
+		}
+	}
+}
+
+// composedFiles returns every .yaml under deploy/ that some kustomization
+// pulls in, as a `resources:` entry or a `patches: - path:` entry, keyed by
+// clean repo-relative path.
+//
+// It is the difference between "this file says the right thing" and "this
+// file is part of a render". A patch sitting on disk, correct and referenced
+// by nothing, is the shape a half-reverted change leaves behind.
+//
+// Directory entries (`../example`, `../../components/gated-apply`) are not
+// recorded: they name another kustomization, which this already visits on its
+// own, and their contents are reached through it.
+func composedFiles(t *testing.T) map[string]bool {
+	t.Helper()
+
+	var kustomizations []string
+	err := filepath.Walk("deploy", func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		if filepath.Base(path) == "kustomization.yaml" {
+			kustomizations = append(kustomizations, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk deploy/: %v", err)
+	}
+	if len(kustomizations) == 0 {
+		t.Fatalf("no kustomization.yaml under deploy/ — this reads nothing and would let " +
+			"every caller pass vacuously")
+	}
+
+	out := map[string]bool{}
+	for _, k := range kustomizations {
+		out[filepath.Clean(k)] = true
+		b, err := os.ReadFile(k)
+		if err != nil {
+			t.Fatalf("read %s: %v", k, err)
+		}
+		var doc struct {
+			Resources []string `yaml:"resources"`
+			Patches   []struct {
+				Path string `yaml:"path"`
+			} `yaml:"patches"`
+		}
+		if err := yaml.Unmarshal(b, &doc); err != nil {
+			t.Fatalf("parse %s: %v", k, err)
+		}
+		refs := append([]string{}, doc.Resources...)
+		for _, p := range doc.Patches {
+			if p.Path != "" {
+				refs = append(refs, p.Path)
+			}
+		}
+		for _, r := range refs {
+			p := filepath.Clean(filepath.Join(filepath.Dir(k), r))
+			if info, err := os.Stat(p); err == nil && !info.IsDir() {
+				out[p] = true
+			}
+		}
+	}
+	return out
+}
+
+// yamlScalar returns the scalar a line sets, for the handful of shapes these
+// manifests use — `key: value`, a `- value` sequence item, and either of
+// those quoted. Not a YAML parser: the callers walk raw lines because the
+// paths they are after live in three different structures (container args,
+// a strategic-merge mountPath, and a JSON 6902 `value:`) and unmarshalling
+// each shape separately would be more code guarding less.
+func yamlScalar(code string) string {
+	s := strings.TrimSpace(code)
+	if _, after, ok := strings.Cut(s, ": "); ok {
+		s = strings.TrimSpace(after)
+	} else if rest, ok := strings.CutPrefix(s, "- "); ok {
+		s = strings.TrimSpace(rest)
+	} else {
+		return ""
+	}
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
+		s = s[1 : len(s)-1]
+	}
+	return s
+}
+
+func keysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestGatedApplyPatchesGuardTheirIndices re-derives, from deploy/base, the two
+// facts the component's JSON 6902 patches assume.
+//
+// Both patches address the daemon container by index — args[1] for the config
+// path, volumeMounts[1] for the plans mountPath — because the index-free
+// spellings are worse here. For args there is no merge key at all. For
+// volumeMounts the merge key is `mountPath`, not `name`, so a strategic-merge
+// patch has to delete the old entry and append a new one, and the append puts
+// `plans` AHEAD of the `recipe-content` mount it is supposed to nest inside.
+// Mount order is load-bearing — the parent must be mounted before the child
+// or it shadows it — and nothing downstream reports that.
+//
+// So the indices are guarded instead of avoided. Each patch opens with a
+// JSON 6902 `test` op, which kustomize enforces (verified by mutating one:
+// the build fails naming the path). This test checks the other side of that
+// bargain — that the `test` ops are present, and that deploy/base still
+// satisfies them. Without it the ops could quietly assert something that
+// moved, and `kustomize build` would fail at deploy time on the operator's
+// terminal rather than here.
+// TestGatedApplyCommittedPatchSelectsTheAttendedLeg pins the default posture.
+//
+// `LEG=d2 scripts/set-up-demo.sh` rewrites this exact line with `sed -i`, and
+// this recipe's deploy path is already known to dirty the checkout — so the
+// realistic way `config.d2.json` becomes the committed default is a `git add
+// -A` after an unattended run, not someone deciding to change it.
+//
+// Both values are real, working config paths, so nothing else in the tree can
+// tell them apart: the render is valid either way, every other assertion here
+// passes, and the difference is only visible on a live cluster, as the absence
+// of a prompt. What lands is a manifest that applies cluster changes with
+// nobody watching, reached by an operator who did nothing but commit.
+//
+// So the tree commits **d1**, the attended leg: a manifest deployed by someone
+// who did not read it should land in the posture that still asks. The claim is
+// made in the component README and in the CHANGELOG; this is the thing that
+// makes it true.
+func TestGatedApplyCommittedPatchSelectsTheAttendedLeg(t *testing.T) {
+	patchPath := filepath.Join("deploy", "components", gatedRoot, "patch-agent-config.yaml")
+	body, err := os.ReadFile(patchPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", patchPath, err)
+	}
+	var ops []struct {
+		Op    string `yaml:"op"`
+		Value string `yaml:"value"`
+	}
+	if err := yaml.Unmarshal(body, &ops); err != nil {
+		t.Fatalf("parse %s: %v", patchPath, err)
+	}
+
+	want := contentMount + "/" + gatedRoot + "/.agents/config.d1.json"
+	found := false
+	for _, o := range ops {
+		if o.Op != "replace" {
+			continue
+		}
+		found = true
+		if o.Value != want {
+			t.Errorf("%s selects %q, want %q.\nIf this is a stray `LEG=d2` deploy in your "+
+				"checkout, revert deploy/components/%s/. If it is deliberate, the component "+
+				"README and the CHANGELOG both argue the committed default is the attended "+
+				"leg, and they have to change with it.", patchPath, o.Value, want, gatedRoot)
+		}
+	}
+	if !found {
+		t.Fatalf("%s declares no replace op", patchPath)
+	}
+
+	// The pin means nothing if d1 is the only config that exists — then this
+	// asserts the tree has one choice rather than that it made the right one.
+	for _, leg := range []string{"config.d1.json", "config.d2.json"} {
+		p := filepath.Join(gatedRoot, ".agents", leg)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s: %v — both legs must exist for the committed choice to be a choice", p, err)
+		}
+	}
+}
+
+// resolveJSONPointer walks a generically-decoded YAML document by an RFC 6901
+// pointer and returns the scalar at the end of it. ok=false means the pointer
+// does not address a string in this document — a missing key, an index past
+// the end of a list, or a path that stops on a map.
+//
+// Deliberately generic: the point of the caller is to evaluate the pointer a
+// patch *wrote*, and anything that reaches into the document by a hardcoded
+// index cannot tell a correct pointer from a mistyped one.
+func resolveJSONPointer(doc any, ptr string) (string, bool) {
+	cur := doc
+	for _, seg := range strings.Split(strings.TrimPrefix(ptr, "/"), "/") {
+		switch node := cur.(type) {
+		case map[string]any:
+			v, ok := node[seg]
+			if !ok {
+				return "", false
+			}
+			cur = v
+		case []any:
+			i, err := strconv.Atoi(seg)
+			if err != nil || i < 0 || i >= len(node) {
+				return "", false
+			}
+			cur = node[i]
+		default:
+			return "", false
+		}
+	}
+	s, ok := cur.(string)
+	return s, ok
+}
+
+func TestGatedApplyPatchesGuardTheirIndices(t *testing.T) {
+	type op struct {
+		Op    string `yaml:"op"`
+		Path  string `yaml:"path"`
+		Value string `yaml:"value"`
+	}
+
+	// What the base actually declares, read out of the manifest rather than
+	// restated here — a restated expectation is the thing that goes stale.
+	// Decoded generically so the tested pointer can be resolved as written:
+	// a struct with named fields would have to hardcode the index the patch
+	// claims to guard, which is exactly the value under test.
+	var base any
+	baseFile := filepath.Join("deploy", "base", "50-deployment-daemon.yaml")
+	b, err := os.ReadFile(baseFile)
+	if err != nil {
+		t.Fatalf("read %s: %v", baseFile, err)
+	}
+	if err := yaml.Unmarshal(b, &base); err != nil {
+		t.Fatalf("parse %s: %v", baseFile, err)
+	}
+
+	// The patches, and where each one's `replace` has to land relative to the
+	// pointer its `test` guards. The relationship is NOT the same for the two,
+	// which is why it is declared per patch rather than inferred:
+	//
+	//   - patch-agent-config tests the FLAG (`args[i] == "-c"`) and rewrites
+	//     its operand, one slot later. Same array, next index.
+	//   - patch-plans-mount tests one field of a list element
+	//     (`volumeMounts[i].name == "plans"`) and rewrites another field of
+	//     that same element.
+	//
+	// An earlier version of this test compared only the arrays, which let a
+	// `test` on args[3] sit above a `replace` on args[1] — a guard covering
+	// nothing, reading as though it covered everything.
+	cases := []struct {
+		file        string
+		wantReplace func(testPath string) (string, error)
+	}{
+		{
+			file: "patch-agent-config.yaml",
+			wantReplace: func(p string) (string, error) {
+				dir, last := path.Split(p)
+				i, err := strconv.Atoi(last)
+				if err != nil {
+					return "", fmt.Errorf("test path %q does not end in an array index: %w", p, err)
+				}
+				return dir + strconv.Itoa(i+1), nil
+			},
+		},
+		{
+			file: "patch-plans-mount.yaml",
+			wantReplace: func(p string) (string, error) {
+				if !strings.HasSuffix(p, "/name") {
+					return "", fmt.Errorf("test path %q does not end in /name", p)
+				}
+				return strings.TrimSuffix(p, "/name") + "/mountPath", nil
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			patchPath := filepath.Join("deploy", "components", gatedRoot, tc.file)
+			body, err := os.ReadFile(patchPath)
+			if err != nil {
+				t.Fatalf("read %s: %v", patchPath, err)
+			}
+			var ops []op
+			if err := yaml.Unmarshal(body, &ops); err != nil {
+				t.Fatalf("parse %s: %v", patchPath, err)
+			}
+			if len(ops) == 0 {
+				t.Fatalf("%s declares no ops", patchPath)
+			}
+			if ops[0].Op != "test" {
+				t.Fatalf("%s opens with op %q, want \"test\".\nThe replace below it addresses "+
+					"the daemon container by INDEX; without a leading test op a reordering in "+
+					"%s silently rewrites a neighbouring field instead of failing the build.",
+					patchPath, ops[0].Op, baseFile)
+			}
+			want, ok := resolveJSONPointer(base, ops[0].Path)
+			if !ok {
+				t.Fatalf("%s tests %s, but %s has no scalar there.\nEither the base's container "+
+					"spec shrank under this patch, or the test op names an index that does not "+
+					"exist — in which case `kustomize build` fails, but only on the operator's "+
+					"terminal at deploy time.", patchPath, ops[0].Path, baseFile)
+			}
+			if ops[0].Value != want {
+				t.Errorf("%s tests %s == %q, but %s has %q there.\n`kustomize build` fails on "+
+					"this — which is the design — but it fails on the operator's terminal at "+
+					"deploy time. Either the base's order moved (update both the test and the "+
+					"replace beneath it) or the test op was mistyped.",
+					patchPath, ops[0].Path, ops[0].Value, baseFile, want)
+			}
+
+			// The replace has to land where the guard actually proves
+			// something. Checked against the pointer the test op names, not
+			// against a hardcoded index — a mistyped test op is precisely the
+			// mistake this is here to catch.
+			wantReplace, err := tc.wantReplace(ops[0].Path)
+			if err != nil {
+				t.Fatalf("%s: %v", patchPath, err)
+			}
+			replaces := 0
+			for _, o := range ops[1:] {
+				if o.Op != "replace" {
+					continue
+				}
+				replaces++
+				if o.Path != wantReplace {
+					t.Errorf("%s tests %s, so its replace must address %s — it addresses %s "+
+						"instead.\nA guard on one element above a write to another reads as "+
+						"though it covers the write, and does not.",
+						patchPath, ops[0].Path, wantReplace, o.Path)
+				}
+			}
+			if replaces == 0 {
+				t.Errorf("%s declares a test op and no replace: the guard is the whole patch.",
+					patchPath)
+			}
+		})
+	}
+}
+
+// TestGatedOverlaysComposeTheComponentAndReadOnlyOnesDoNot pins the opt-in.
+//
+// The component is the whole apply-capable leg: the `-c` swap, the plans
+// remount, and the patch grant. Read-only is this recipe's default posture
+// and drill scenarios A/B/C depend on it — G4 is literally "no mutating call
+// reaches the cluster" — so an overlay acquiring this component by accident
+// is the failure that matters most here, and it is silent from the cluster.
+func TestGatedOverlaysComposeTheComponentAndReadOnlyOnesDoNot(t *testing.T) {
+	const componentRef = "components/" + gatedRoot
+
+	// Named rather than globbed: which overlays are apply-capable is a fact
+	// about this recipe, not something to read off the directory listing and
+	// then assert against itself.
+	gated := map[string]bool{
+		"gated-apply":      true,
+		"gated-apply-otel": true,
+	}
+
+	dirs, err := filepath.Glob(filepath.Join("deploy", "overlays", "*", "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("glob overlays: %v", err)
+	}
+	if len(dirs) == 0 {
+		t.Fatal("no overlay kustomizations found; this guard is checking nothing")
+	}
+
+	seen := map[string]bool{}
+	for _, f := range dirs {
+		name := filepath.Base(filepath.Dir(f))
+		seen[name] = true
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		var k struct {
+			Resources  []string `yaml:"resources"`
+			Components []string `yaml:"components"`
+		}
+		if err := yaml.Unmarshal(b, &k); err != nil {
+			t.Fatalf("parse %s: %v", f, err)
+		}
+		composes := slices.ContainsFunc(k.Components, func(c string) bool {
+			return strings.HasSuffix(c, componentRef)
+		})
+		// An overlay can also inherit the component through `resources:` —
+		// gated-apply-otel composes ../gated-apply and gets it that way —
+		// which is exactly why "does this file list it" is not the question.
+		inherits := slices.ContainsFunc(k.Resources, func(r string) bool {
+			return gated[filepath.Base(r)]
+		})
+
+		switch {
+		case gated[name] && !composes && !inherits:
+			t.Errorf("%s is an apply-capable overlay but neither composes %s nor builds on one "+
+				"that does. It would deploy the read-only recipe under a name that promises "+
+				"otherwise.", f, componentRef)
+		case !gated[name] && (composes || inherits):
+			t.Errorf("%s is a READ-ONLY overlay and it reaches the gated-apply component "+
+				"(composes=%v, inherits=%v).\nThat grants patch on apps/deployments and points "+
+				"-c at the apply persona. Scenarios A/B/C assert no mutating call reaches the "+
+				"cluster and would stop being able to.", f, composes, inherits)
+		}
+	}
+
+	for name := range gated {
+		if !seen[name] {
+			t.Errorf("deploy/overlays/%s is missing. It is how #1105's leg is deployed at all; "+
+				"scripts/prereqs.sh exports its path as DEMO_OVERLAY_GATED*_DIR and "+
+				"set-up-demo.sh applies it for LEG=d1|d2.", name)
+		}
 	}
 }
 
@@ -1278,5 +1732,189 @@ func TestContentImageShipsEveryRootInBothFlavors(t *testing.T) {
 		if !slices.Contains(drained, want) {
 			t.Errorf("%s does not copy %s out of the image", initCopyPatch, want)
 		}
+	}
+}
+
+// TestRendersGatedApplyIgnoresTheContentImagePath is the regression test for
+// a defect in the detection predicate shipped with the component (#1109).
+//
+// set-up-demo.sh substitutes TARGET_NS and PROJECT_ID into the component's
+// Role and RoleBinding, and only when the deployment about to be applied
+// actually composes the component. Deciding that from the RENDER rather than
+// from a `components:` line was right — the *-otel and gated overlays compose
+// through ../example, so the component arrives from a file that is not the
+// one being patched. The PREDICATE over the render was not: it was
+// `grep -q gated-apply`, and overlays/initcontainer-copy delivers content by
+// running `cp -a … /gated-apply …` in an initContainer, because every flavor
+// of the content image carries that directory whether or not an overlay
+// selects it. So the literal appears in the rendered Deployment of a
+// deployment that composes no component at all.
+//
+// Nothing was mis-granted: kubectl applies the objects the overlay names, and
+// a read-only overlay names none of them. What happened instead is that a
+// read-only run on the below-floor delivery path rewrote two tracked files
+// and printed "→ gated-apply: … in …" — a claim about authorization that was
+// not true, on the path an operator is least able to check, and on a recipe
+// whose entire default posture is "no mutating call can reach the cluster".
+//
+// The substring predicate is kept here as a CONTROL rather than described in
+// prose. Asserting only that the fix returns "no" on the initContainer
+// fixture would pass just as well against a fixture that never reproduced
+// the bug; running the old predicate over the same bytes is what shows the
+// fixture is the real thing.
+func TestRendersGatedApplyIgnoresTheContentImagePath(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash not on PATH: %v", err)
+	}
+	prereqs, err := filepath.Abs(filepath.Join("scripts", "prereqs.sh"))
+	if err != nil {
+		t.Fatalf("resolve prereqs.sh: %v", err)
+	}
+
+	// The initContainer fixture is taken from the committed patch rather than
+	// hand-written, so it cannot drift into a shape that no longer triggers
+	// the bug this test is about.
+	drained := initContainerCopySources(t)
+	if !slices.Contains(drained, "/"+gatedRoot) {
+		t.Fatalf("the initContainer copy list %v no longer carries /%s, so the false positive "+
+			"this test guards cannot occur. If the content image stopped shipping the gated "+
+			"root on the copy path, that is a bigger change than this test.", drained, gatedRoot)
+	}
+	initContainerRender := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n" +
+		"  name: core-agent\n  namespace: gke-platform-agent\nspec:\n  template:\n" +
+		"    spec:\n      initContainers:\n      - name: copy-content\n        command:\n" +
+		"        - cp\n        - -a\n"
+	for _, d := range drained {
+		initContainerRender += "        - " + d + "\n"
+	}
+	initContainerRender += "        - /content\n"
+
+	const roleRender = "apiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n" +
+		"  name: gated-apply-my-workloads\n  namespace: my-workloads\nrules:\n" +
+		"- apiGroups:\n  - apps\n  resources:\n  - deployments\n  verbs:\n  - patch\n"
+
+	cases := []struct {
+		name string
+		in   string
+		want bool // should renders_gated_apply say yes?
+		// wantSubstring records what the OLD predicate said, so a fixture
+		// that does not reproduce the bug fails loudly instead of passing.
+		wantSubstring bool
+	}{
+		{
+			name:          "initContainer copy list (the false positive)",
+			in:            initContainerRender,
+			want:          false,
+			wantSubstring: true,
+		},
+		{
+			name:          "the component's Role",
+			in:            roleRender,
+			want:          true,
+			wantSubstring: true,
+		},
+		{
+			name:          "the Role among other documents",
+			in:            initContainerRender + "---\n" + roleRender,
+			want:          true,
+			wantSubstring: true,
+		},
+		{
+			name: "an unrelated object that merely has the name",
+			in: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n" +
+				"  name: gated-apply-notes\n  namespace: gke-platform-agent\ndata: {}\n",
+			want:          false,
+			wantSubstring: true,
+		},
+		{
+			name: "a read-only render",
+			in: "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n" +
+				"  name: core-agent\n  namespace: gke-platform-agent\nspec: {}\n",
+			want:          false,
+			wantSubstring: false,
+		},
+	}
+
+	// One bash process for every case: sourcing prereqs.sh costs ~1.6s, and
+	// SCRIPT_DIR is pointed at a directory that does not exist so nothing
+	// here can read the committed tree or the developer's gcloud config.
+	root := t.TempDir()
+	args := []string{"bash", prereqs}
+	for i, tc := range cases {
+		f := filepath.Join(root, fmt.Sprintf("case%d.yaml", i))
+		if err := os.WriteFile(f, []byte(tc.in), 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		args = append(args, f)
+	}
+	const driver = `
+SCRIPT_DIR=/nonexistent/scripts
+. "$1"
+shift
+i=0
+for f in "$@"; do
+    echo "=== CASE ${i}"
+    if renders_gated_apply <"$f"; then echo "FIXED yes"; else echo "FIXED no"; fi
+    if grep -q 'gated-apply' "$f";   then echo "OLD yes";   else echo "OLD no";   fi
+    i=$((i + 1))
+done
+`
+	cmd := exec.Command(bash, append([]string{"-c", driver}, args...)...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("driver failed: %v\noutput:\n%s", err, out)
+	}
+
+	blocks := strings.Split(string(out), "=== CASE ")
+	if len(blocks) != len(cases)+1 {
+		t.Fatalf("got %d case blocks, want %d\noutput:\n%s", len(blocks)-1, len(cases), out)
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			block := blocks[i+1]
+			gotFixed := strings.Contains(block, "FIXED yes")
+			gotOld := strings.Contains(block, "OLD yes")
+			if gotFixed != tc.want {
+				t.Errorf("renders_gated_apply said %v, want %v, for:\n%s", gotFixed, tc.want, tc.in)
+			}
+			if gotOld != tc.wantSubstring {
+				t.Errorf("the control (`grep -q gated-apply`) said %v, want %v.\nThis fixture no "+
+					"longer exercises what it was written for, so the result above proves less "+
+					"than it looks like it does.\nfixture:\n%s", gotOld, tc.wantSubstring, tc.in)
+			}
+		})
+	}
+}
+
+// TestSetUpDemoCallsTheGatedApplyPredicate closes the other half.
+//
+// The predicate can be correct and unused: set-up-demo.sh could keep its
+// inline `grep -q gated-apply` while prereqs.sh grows a function nothing
+// calls, and every assertion above would still pass. Scanned through
+// shellCode so a mention inside a comment or a heredoc does not count as a
+// call — the same reason TestDemoNSGuardCoversEveryMutatingScript needs it.
+//
+// The obvious second assertion — "and it no longer contains
+// `grep -q 'gated-apply'`" — is deliberately absent, because it cannot fail.
+// shellCode blanks quoted spans, so the old predicate survives the scan as
+// `grep -q` followed by whitespace and there is no literal left to match.
+// Written against the RAW body instead it flips the other way and matches
+// this file's own explanatory comments. So this test asserts the presence of
+// the call, and leaves the absence of the old one to
+// TestRendersGatedApplyIgnoresTheContentImagePath, which settles it by
+// behaviour rather than by text.
+func TestSetUpDemoCallsTheGatedApplyPredicate(t *testing.T) {
+	path := filepath.Join("scripts", "set-up-demo.sh")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !strings.Contains(shellCode(string(body)), "renders_gated_apply") {
+		t.Errorf("%s does not call renders_gated_apply.\nIt decides whether to substitute "+
+			"TARGET_NS and PROJECT_ID into the component's RBAC, and the predicate it used to "+
+			"use matched any render containing the literal \"gated-apply\" — including the "+
+			"initContainer copy list on the read-only below-floor path.", path)
 	}
 }

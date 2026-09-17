@@ -35,18 +35,32 @@ Nothing loads this tree unless `-c` points into it. The read-only recipe's
 posture is completely unchanged by its presence — including in the content
 image, which ships both roots and lets the deployment choose.
 
-**On a cluster, not yet.** No overlay selects this leg, and pointing `-c` at
-it without the rest of the follow-up will not work: `record_plan` derives its
-output directory as `agentsDir + "/plans"`, so selecting this tree moves the
-plans dir to `gated-apply/.agents/plans` — a path that sits on the *read-only*
-content mount, because `deploy/base` nests its writable emptyDir at the base
-recipe's `.agents/plans` and nowhere else. `plans/.gitkeep` pre-bakes the
-mount point, which a read-only layer needs and which is not the same as a
-mount. Both legs run `plan_mode: "required"`, so this is not a lost artifact;
-it is the leg failing at its first plan, on the one guarantee the whole design
-rests on. The `-c` swap and the plans remount are the same follow-up, and
-`TestGatedApplyOverlayMustRemountPlans` fails if either lands without the
-other. Until then this tree runs locally, where `plans/` is just a directory.
+On a cluster, two overlays select this leg:
+
+```sh
+LEG=d1 scripts/set-up-demo.sh      # attended — the approval gate answers
+LEG=d2 scripts/set-up-demo.sh      # unattended
+```
+
+which render `deploy/overlays/gated-apply` (or `-otel`, chosen the same way
+the read-only legs choose it). By hand it is
+`kubectl apply -k deploy/overlays/gated-apply` after the substitutions
+[`deploy/components/gated-apply/README.md`](../deploy/components/gated-apply/README.md)
+lists.
+
+**The `-c` swap does not travel alone.** `record_plan` derives its output
+directory as `agentsDir + "/plans"`, so selecting this tree moves the plans
+dir to `gated-apply/.agents/plans` — a path that sits on the *read-only*
+content mount unless the writable emptyDir moves with it, because
+`deploy/base` nests that emptyDir at the base recipe's `.agents/plans` and
+nowhere else. `plans/.gitkeep` pre-bakes the mount point, which a read-only
+layer needs and which is not the same as a mount. Both legs run
+`plan_mode: "required"`, so getting this wrong is not a lost artifact; it is
+the leg failing at its first plan, on the one guarantee the whole design
+rests on — with a healthy pod and every probe passing. That is why the two
+patches ship in one component rather than in an overlay, and why
+`TestGatedApplyPlansMountFollowsTheConfig` fails if any agents root in
+`deploy/` has a `-c` without a matching plans mount, or the reverse.
 
 ## Why a directory and not a third config file
 

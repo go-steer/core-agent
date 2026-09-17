@@ -126,7 +126,10 @@ the TUI *by variable name*, so it never reaches `argv` or `ps`.
 
 `set-up-demo.sh` probes the cluster for two independent things and picks one of
 four overlays — see [Content delivery](#content-delivery-overlayexamplecopy) and
-[Tracing](#tracing-otel10). On the image-volume path it then runs
+[Tracing](#tracing-otel10). A third, which it does *not* probe for because the
+cluster has no opinion on it, is
+[`LEG`](#propose-only-or-apply-legreadonlyd1d2): propose-only by default,
+apply-capable only if you say so. On the image-volume path it then runs
 `./scripts/debug-pod.sh check`, which mounts the content image exactly as the
 daemon does and asserts the mechanics the daemon cannot self-report (it is
 distroless — there is no shell to exec into): content present, the selected
@@ -252,7 +255,7 @@ GKE Managed OpenTelemetry — and if it does, deploys the `-otel` overlay. Spans
 go to Cloud Trace with no collector to run.
 
 That is the second axis, orthogonal to content delivery, which is why there are
-four overlays for two decisions:
+four read-only overlays for two decisions:
 
 |                               | tracing off          | tracing on (default)      |
 | ----------------------------- | -------------------- | ------------------------- |
@@ -285,6 +288,46 @@ One gotcha when you go looking: Cloud Trace's `+service_name:` filter does
 Everything else — what the component patches, why it is env vars rather than
 config, the GKE prereqs, and sampling — is in
 [`deploy/components/otel/README.md`](deploy/components/otel/README.md).
+
+## Propose-only, or apply (`LEG=readonly|d1|d2`)
+
+**`readonly` is the default, and it is what scenarios A/B/C are graded
+against.** The agent diagnoses and proposes; no mutating call reaches the
+cluster, and nothing in the deploy grants one.
+
+- `LEG=d1` — apply-capable, **attended**. The approval gate is on, so the
+  patch waits for a human to answer it in the TUI. Do not start this one and
+  walk away.
+- `LEG=d2` — apply-capable, **unattended**. Deny-by-default with the patch
+  allowlisted: nothing prompts, and anything unlisted is refused.
+
+Both deploy `overlays/gated-apply` (or `-otel`), which is `overlays/example`
+plus `components/gated-apply`. `plan_mode: "required"` stays on either way —
+the propose step does not disappear when the human does, it becomes a
+recorded artifact instead of a rendered prompt.
+
+`LEG` changes three things at once, which is why it is one variable and one
+component rather than three: the daemon's `-c` moves to the apply-capable
+content root, the writable `plans` emptyDir follows it (`record_plan` derives
+its directory from `dir(-c)`, so leaving it behind kills the leg at its first
+plan — with a healthy pod and every probe green), and the `Role`/`RoleBinding`
+land in `TARGET_NS`.
+
+Two things it refuses rather than guesses:
+
+- **Below the image-volume floor.** There is no `initcontainer-copy` gated
+  overlay; the script says so and names the one-line change if you want to
+  build one.
+- **`MODEL_FLAVOR=anthropic`.** The apply leg ships Gemini configs only.
+
+Afterwards, `git status` is dirty — the RBAC's coordinates and, on `d2`, the
+`-c` value are substituted into tracked files. Revert
+`deploy/components/gated-apply/` before committing or running `go test`. The
+RBAC lives in `TARGET_NS`, so `teardown.sh` is what removes it; deleting the
+agent's namespace does not.
+
+Full reasoning, including the RBAC boundary as measured on a live cluster, is
+in [`deploy/components/gated-apply/README.md`](deploy/components/gated-apply/README.md).
 
 ## Gemini or Anthropic (`MODEL_FLAVOR`)
 

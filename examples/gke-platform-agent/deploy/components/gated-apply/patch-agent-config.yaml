@@ -1,0 +1,60 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Point the daemon at the gated-apply content root.
+#
+# This is the ENTIRE selection mechanism for the apply-capable leg. The
+# content image always carries `gated-apply/`; nothing loads it unless
+# `-c` names a config inside it, which is why the default posture of this
+# recipe is unchanged by its presence and why the read-only overlays need
+# no change to stay read-only.
+#
+#   config.d1.json   mode "ask"    — the patch waits for a human
+#   config.d2.json   mode "allow"  — the patch is allowlisted, nothing prompts
+#
+# D1 is committed here because it is the leg that runs first (see
+# docs/gated-apply-design.md §Why the approval leg runs first: under D1 the
+# worst case is a bad proposal, under D2 it is a bad patch on a live
+# workload). scripts/set-up-demo.sh rewrites the `value:` below from
+# ${LEG} and then asserts the rendered manifest carries the path it meant,
+# exactly as it does for the read-only overlays' MODEL_FLAVOR switch.
+#
+# THIS PATCH LIVES IN THE COMPONENT, NOT IN THE OVERLAY, and that is the
+# whole safety property. `record_plan` derives plansDir = agentsDir +
+# "/plans", so moving `-c` into this root moves where plans are written;
+# patch-plans-mount.yaml moves the writable emptyDir to match. Composing
+# one without the other yields a deployment that boots clean and fails at
+# its first plan under `plan_mode: "required"` — so they are not two
+# things an operator can compose separately. `components: [gated-apply]`
+# is the single opt-in that brings the config swap, the plans remount and
+# the RBAC together.
+#
+# NO ANTHROPIC FLAVOR. build-content-image.sh derives config.*.anthropic
+# variants for `.agents/config.hub.json` and `.agents/config.json` only —
+# the gated-apply root ships gemini configs and nothing else. prereqs.sh
+# refuses MODEL_FLAVOR=anthropic on a gated leg rather than letting -c
+# name a file that is not in the image.
+#
+# The `test` op is not decoration. args[1] is addressed by INDEX, and a
+# reordering of the daemon's args in deploy/base would silently rewrite
+# the wrong flag; `test` turns that into a `kustomize build` failure
+# before anything reaches a cluster, which is strictly earlier than the
+# post-render assertion in set-up-demo.sh that the read-only overlays
+# rely on.
+- op: test
+  path: /spec/template/spec/containers/0/args/0
+  value: "-c"
+- op: replace
+  path: /spec/template/spec/containers/0/args/1
+  value: /opt/gke-platform-agent/gated-apply/.agents/config.d1.json

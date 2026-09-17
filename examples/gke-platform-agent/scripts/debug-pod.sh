@@ -32,7 +32,12 @@ set -euo pipefail
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 source "${SCRIPT_DIR}/prereqs.sh"
 require_coordinates || exit 1
-
+# This one CREATES a Pod in DEMO_NS and deletes it again. It looks read-only
+# — it exists to look at a volume — but it sets no serviceAccountName, so it
+# runs as `default`, which exists in every namespace: under an overridden
+# DEMO_NS the create SUCCEEDS, in a namespace this recipe does not own, and
+# the pre-clean delete is silenced with `|| true`.
+require_demo_ns_matches_base || exit 1
 
 MODE="${1:-check}"
 POD="content-debug"

@@ -237,6 +237,7 @@ drives them. Full walkthrough in [`DEMO.md`](DEMO.md).
 ./scripts/set-up-demo.sh           # deploy hub + watcher, verify the mount
 ./scripts/break-workload.sh        # break a workload -> incident -> session
 ./scripts/attach.sh                # operator TUI
+./scripts/verify-gated-apply.sh    # only if deploy/components/gated-apply is composed
 ./scripts/teardown.sh
 ```
 

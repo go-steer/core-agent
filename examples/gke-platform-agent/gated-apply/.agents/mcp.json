@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "agentic_wrap_llm": true,
+  "servers": {
+    "gke": {
+      "transport": "http",
+      "url": "https://container.googleapis.com/mcp",
+      "auth": {
+        "google_oauth": {
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform"
+          ]
+        }
+      },
+      "tools": [
+        "get_k8s_resource",
+        "describe_k8s_resource",
+        "list_k8s_events",
+        "get_k8s_logs",
+        "get_k8s_rollout_status",
+        "list_k8s_api_resources",
+        "get_k8s_cluster_info",
+        "get_k8s_version",
+        "check_k8s_auth",
+        "list_clusters",
+        "get_cluster",
+        "list_node_pools",
+        "get_node_pool",
+        "list_operations",
+        "get_operation",
+        "patch_k8s_resource"
+      ],
+      "tool_notes": {
+        "get_k8s_resource": "outputFormat selects FIDELITY, not rendering. TABLE, WIDE, NAME and CUSTOM_COLUMNS return columns only — names, counts, ages, status — and carry NOTHING under spec: no resource limits, no probes, no image tags, no annotations. Only YAML and JSON return the whole object. Pick the format from the question before you call: \"which objects exist\" is a table read, \"how is this configured\" is a YAML one. A table read aimed at a field returns nothing you asked for, so it is not a cheaper opening move — it is a call you have to make twice. Going back to an object you already listed because you now need a field off its spec is a different read, not a repeated one."
+      }
+    }
+  }
+}

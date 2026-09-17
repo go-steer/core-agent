@@ -75,11 +75,20 @@ cluster/               # the `cluster` subagent's OWN content root
   mcp.json             # read-only gke
   env.yaml             # env manifest — REQUIRED for ${env:} to interpolate
   plans/.gitkeep       # pre-baked mount point for the nested writable emptyDir
+gated-apply/           # OPT-IN second content root — the same agent, allowed to patch
+  AGENTS.md            #   variant persona; differs only inside marked stance regions
+  README.md            #   why a directory, the three mcp.json deltas, the two legs
+  .agents/             #   full (not read-only) gke mcp.json + config.d1/d2.json
 deploy/                # kustomize base + 4 overlays; the content image Dockerfile
 scripts/               # the operator rig — build, deploy, break, attach, teardown
 DEMO.md                # the live-cluster walkthrough
 recipe_test.go         # credential-free loader + content validation
+gated_apply_test.go    # the same, for the gated-apply root + its drift guards
 ```
+
+`gated-apply/` is loaded only when `-c` points into it. Nothing in the default
+posture changes because it exists — see [`gated-apply/README.md`](gated-apply/README.md)
+and [`docs/gated-apply-design.md`](../../docs/gated-apply-design.md).
 
 Self-contained: **no `content_roots`, no `@include`, no vendored upstream.** That
 self-containment is load-bearing rather than cosmetic — it is why the content

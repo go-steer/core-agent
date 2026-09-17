@@ -199,7 +199,7 @@ The runtime sorts every tool into one of two dispatch classes, read-only or muta
 
 ### What the server says
 
-The MCP protocol has a per-tool `readOnlyHint` annotation — "if true, the tool does not modify its environment" — and `core-agent` reads it. A server that annotates its tools needs no configuration: the 14 read tools on `container.googleapis.com/mcp` classify read-only and the mutating ones (`apply_k8s_manifest`, `patch_k8s_resource`, `delete_k8s_resource`, the cluster-lifecycle verbs) classify mutating, per tool, with nothing in `mcp.json` saying so.
+The MCP protocol has a per-tool `readOnlyHint` annotation — "if true, the tool does not modify its environment" — and `core-agent` reads it. A server that annotates its tools needs no configuration: the 15 read tools on `container.googleapis.com/mcp` classify read-only and the mutating ones (`apply_k8s_manifest`, `patch_k8s_resource`, `delete_k8s_resource`, the cluster-lifecycle verbs) classify mutating, per tool, with nothing in `mcp.json` saying so.
 
 A tool that ships an annotation block counts as having answered even if the block omits `readOnlyHint`, because the spec's default for a published block is `false`. A tool with no annotations at all has said nothing, and falls through to the server declaration below.
 

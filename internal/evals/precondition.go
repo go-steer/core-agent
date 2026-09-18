@@ -65,7 +65,7 @@ import "strings"
 // and every case becomes indeterminate: loud, non-zero, and pointing at
 // the harness. The failure it replaces was silent green. A parser that
 // can only err towards "I do not know" is a parser worth having, and
-// TestStartupPreconditionMatchesTheRealSummary pins the agreement
+// TestShippedStartupPreconditionsMatchTheRealSummary pins the agreement
 // against the real producer so the drift is caught at unit time rather
 // than at provider-call time.
 

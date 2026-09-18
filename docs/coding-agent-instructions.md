@@ -186,3 +186,19 @@ To prevent confirmation bias (where the coding agent believes its edits are corr
 * **The Iteration Loop**: If the critic identifies any concerns, it rejects the changes and provides a structured code review. The executor must address these concerns in a sub-turn loop, and changes are only presented to the user once the critic issues an approval.
 
 
+
+---
+
+## Prior art, not guidance
+
+This document is a **survey of other projects' prompt surfaces**,
+compiled as input to `docs/system-prompt-layering-design.md` (#459). It
+is prior art and it is kept for that citation. It is *not* the
+instruction guidance for this project, and nothing here should be
+copied into a recipe verbatim: importing another harness's persona is
+what #656 was filed about, and the failures it produced are catalogued
+in the ledger of the doc below.
+
+For first-party personas — what ships, how to reference it from a
+recipe, and why each rule exists — see
+[`persona-library.md`](persona-library.md).

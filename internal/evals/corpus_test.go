@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
 
@@ -233,7 +234,7 @@ func TestShippedStartupPreconditionsMatchTheRealSummary(t *testing.T) {
 				t.Fatalf("Materialize: %v", err)
 			}
 
-			real := startupStderr(t, loadSkillsFromCwd(t, world.Workdir))
+			real := startupStderr(t, loadSkillsFromCwd(t, world.Workdir), loadInstructionFromCwd(t, world.Workdir))
 			for _, pc := range bound.Preconditions {
 				res := pc.Verify(StartupSource(real))
 				if !res.Passed || res.Vacuous {
@@ -243,11 +244,12 @@ func TestShippedStartupPreconditionsMatchTheRealSummary(t *testing.T) {
 			}
 
 			// And the converse, so the agreement above is not something
-			// every summary satisfies. With no skills loaded — which is
-			// exactly what a discovery regression produces — at least one
-			// precondition has to fail, or the case's assumptions are
-			// written down without being asked.
-			bare := startupStderr(t, skills.Skills{})
+			// every summary satisfies. With nothing discovered from cwd —
+			// no skills and no AGENTS.md, which is exactly what a
+			// discovery regression produces — at least one precondition
+			// has to fail, or the case's assumptions are written down
+			// without being asked.
+			bare := startupStderr(t, skills.Skills{}, instruction.Loaded{})
 			held := 0
 			for _, pc := range bound.Preconditions {
 				if res := pc.Verify(StartupSource(bare)); res.Passed && !res.Vacuous {
@@ -273,13 +275,33 @@ func loadSkillsFromCwd(t *testing.T, workdir string) skills.Skills {
 	return loaded
 }
 
-func startupStderr(t *testing.T, loaded skills.Skills) string {
+// loadInstructionFromCwd runs the real instruction loader over a
+// materialized workspace, with the workspace as the project root and no
+// user root — which is the shape a fixture run has, since the harness
+// gives the process a workdir and nothing resembling a home directory.
+//
+// Real rather than hand-built for the same reason the skills load is:
+// a builtin persona only appears in `Sources` if `processIncludes`
+// actually resolved the `@include builtin:` line out of the binary, so
+// a literal here would let the summary agree with itself about a
+// persona that never loaded (#656).
+func loadInstructionFromCwd(t *testing.T, workdir string) instruction.Loaded {
+	t.Helper()
+	loaded, err := instruction.Load(workdir, "")
+	if err != nil {
+		t.Fatalf("instruction.Load: %v", err)
+	}
+	return loaded
+}
+
+func startupStderr(t *testing.T, loaded skills.Skills, instr instruction.Loaded) string {
 	t.Helper()
 	lines := compose.FormatStartupSummary(compose.StartupSummaryInputs{
 		Cfg:          &config.Config{},
 		AgentsDir:    "/w/.agents",
 		ProviderName: "echo",
 		LoadedSkills: loaded,
+		Instruction:  &instr,
 	})
 	var b strings.Builder
 	for _, l := range lines {

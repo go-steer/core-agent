@@ -76,7 +76,7 @@ const userMemoryName = "AGENTS.md"
 // file loaded — primary, transitively included, or AGENTS.d/ scanned —
 // produces one Source entry.
 type Source struct {
-	Scope     string // "user" | "project"
+	Scope     string // "user" | "project" | "builtin" | a content-root label
 	Path      string // canonical absolute path
 	Bytes     int    // bytes after truncation
 	Truncated bool   // true if the on-disk file exceeded maxFileBytes
@@ -321,7 +321,7 @@ func Expand(body, baseDir, scopeRoot string, opts ...Option) (string, []Source, 
 	// reading it at depth 0.
 	var sources []Source
 	visited := make(map[string]bool)
-	expanded, err := processIncludes(body, "subagent", baseDir, scopeRoot, 1, visited, &sources, lo.interp)
+	expanded, err := processIncludes(body, "subagent", baseDir, false, scopeRoot, 1, visited, &sources, lo.interp)
 	if err != nil {
 		return "", nil, err
 	}
@@ -568,7 +568,7 @@ func loadFile(path, scope, scopeRoot string, depth int, visited map[string]bool,
 	// Recurse: resolve @include directives in the body. The
 	// containing file's directory is the base for relative paths.
 	fileDir := filepath.Dir(canonPath)
-	expanded, err := processIncludes(body, scope, fileDir, scopeRoot, depth+1, visited, sources, interp)
+	expanded, err := processIncludes(body, scope, fileDir, false, scopeRoot, depth+1, visited, sources, interp)
 	if err != nil {
 		return "", err
 	}
@@ -583,7 +583,14 @@ func loadFile(path, scope, scopeRoot string, depth int, visited map[string]bool,
 //
 // Code fence tracking is necessary so an @include in a markdown
 // example block stays literal rather than being expanded.
-func processIncludes(body, scope, fileDir, scopeRoot string, depth int, visited map[string]bool, sources *[]Source, interp func(string) string) (string, error) {
+//
+// inBuiltin says whether body came from a builtin persona rather than
+// from a file (see loadBuiltin). It changes exactly one thing: a
+// path-shaped @include is refused instead of resolved, because a
+// builtin has no directory of its own and resolving against the
+// including file's would make shipped prose mean different things in
+// different recipes.
+func processIncludes(body, scope, fileDir string, inBuiltin bool, scopeRoot string, depth int, visited map[string]bool, sources *[]Source, interp func(string) string) (string, error) {
 	var out strings.Builder
 	out.Grow(len(body))
 	inFence := false
@@ -596,6 +603,25 @@ func processIncludes(body, scope, fileDir, scopeRoot string, depth int, visited 
 		}
 		if !inFence {
 			if rel, ok := parseIncludeLine(line); ok {
+				// Builtin personas first: the target names a body in
+				// the binary, so none of the path handling below
+				// applies to it.
+				if name, isBuiltin := strings.CutPrefix(rel, builtinPrefix); isBuiltin {
+					included, err := loadBuiltin(name, depth, visited, sources)
+					if err != nil {
+						return "", err
+					}
+					out.WriteString(included)
+					if included != "" && !strings.HasSuffix(included, "\n") {
+						out.WriteByte('\n')
+					}
+					continue
+				}
+				if inBuiltin {
+					return "", fmt.Errorf("instruction: @include %q inside a builtin persona: "+
+						"a builtin has no directory to resolve a relative path against; "+
+						"builtins may only include other builtins (@include %sNAME)", rel, builtinPrefix)
+				}
 				if err := validateIncludePath(rel); err != nil {
 					return "", fmt.Errorf("instruction: @include %q: %w", rel, err)
 				}

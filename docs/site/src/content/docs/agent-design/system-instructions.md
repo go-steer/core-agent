@@ -36,6 +36,52 @@ If you're building a library binary and need to replace everything, see [Library
 
 ---
 
+## Don't write the generic half — include it (v2.10)
+
+Most of a good `AGENTS.md` isn't about your project. "Read before you write", "don't call it fixed without reading it back", "say what you did *not* do" — every operator writes some version of these, badly, from memory. Since #656 `core-agent` ships them, and you include them by name:
+
+```markdown
+# Logistics platform on-call
+
+You answer questions about one GKE cluster for the team that runs it.
+
+@include builtin:sre
+
+## Your environment — use these exact values
+
+- Cluster context: `logistics-prod-use4`
+- You reach the cluster only by running `kubectl` through `bash`.
+- `kubectl` is authenticated with **read verbs only**. A mutating verb
+  returns a `forbidden` error from the API server; it is not a prompt
+  you can approve past.
+```
+
+Three personas ship in the binary:
+
+| Name | What it carries |
+|---|---|
+| `builtin:core` | Identity and honesty — report as established only what a tool call in *this* session returned; your tool list is the truth about what you can do; repetition is not progress. Included automatically by the other two. |
+| `builtin:coder` | Conduct for changing software in a codebase you did not write. |
+| `builtin:sre` | Conduct for operating a live system you did not build. |
+
+The split the personas are built on is **identity → equipment → conduct**. Identity and conduct are portable, so they ship with the binary. *Equipment* — which tools, which cluster, which project, which approval mode — is not, so it stays in your `AGENTS.md`, next to the config that makes it true. That's the whole shape of the example above: twelve lines of equipment and one `@include`.
+
+Mechanics:
+
+- `@include builtin:coder` and `@include builtin:sre` in the same file emit `builtin:core` **once** — the loader dedupes by name, and duplicated system-prompt text is how a prompt stops being believed.
+- A typo is **fatal**. `@include builtin:sre-agent` fails the load and the daemon refuses to start, rather than running a quietly weaker agent.
+- Builtins resolve out of the binary, so they need nothing on disk. An `AGENTS.md` projected into a read-only ConfigMap can include one.
+- They are **not** interpolated — `${env:...}` in a builtin would silently resolve to empty, so there is none.
+- They show up in the startup summary by name, alongside your own files:
+
+  ```
+  core-agent: instruction: loaded 3 file(s): /w/.agents/AGENTS.md, builtin:sre, builtin:core
+  ```
+
+For the full text of each persona, the incident behind every rule, and how to add one, see [`docs/persona-library.md`](https://github.com/go-steer/core-agent/blob/main/docs/persona-library.md).
+
+---
+
 ## Patterns that work
 
 ### Lead with role, then the do/don't list

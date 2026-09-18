@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
@@ -82,11 +83,23 @@ type StartupSummaryInputs struct {
 	// LoadedSkills describes the discovered skills — count + names
 	// via LoadedSkills.Infos.
 	LoadedSkills skills.Skills
+	// Instruction is the result of the system-prompt load: which
+	// AGENTS.md files, AGENTS.d/ entries, @include targets and builtin
+	// personas ended up in the prompt — or which paths were searched
+	// when none did.
+	//
+	// A pointer because nil and empty mean different things. Nil is
+	// "this caller does not report instruction state" and omits the line
+	// entirely, which keeps every pre-#656 caller and test unchanged; a
+	// non-nil Loaded with no Sources is "the load ran and found
+	// nothing", which is the thing an operator wiring up a recipe needs
+	// to be told.
+	Instruction *instruction.Loaded
 }
 
 // FormatStartupSummary produces the config-summary block emitted at
 // daemon startup right after the config / instruction / MCP / skills
-// resolution completes. Seven lines, one per topic, in the standard
+// resolution completes. Eight lines, one per topic, in the standard
 // core-agent: <topic>: <detail> shape. Callers wrap each returned line
 // with the `send` helper defined in run().
 //
@@ -96,7 +109,7 @@ type StartupSummaryInputs struct {
 // and the other established lines) — this is the "what did the
 // daemon actually load" answer that was silent before #212.
 func FormatStartupSummary(in StartupSummaryInputs) []string {
-	lines := make([]string, 0, 7)
+	lines := make([]string, 0, 8)
 
 	// 1. config: source + resolution path.
 	lines = append(lines, formatConfigLine(in.CfgPath, in.DiscoveredConfigDir, in.AgentsDir))
@@ -104,22 +117,35 @@ func FormatStartupSummary(in StartupSummaryInputs) []string {
 	// 2. agentsDir: resolved absolute path + how we got there.
 	lines = append(lines, formatAgentsDirLine(in.CfgPath, in.AgentsDir, in.AgentsDirOrigin))
 
-	// 3. model + provider + project/location (for cloud providers) +
+	// 3. instruction: which files became the system prompt. Emitted
+	//    here rather than by the caller (where it lived until #656) for
+	//    the same reason the skills line is: "did my persona load" is the
+	//    same question as "did my skills load", and it should be
+	//    answerable from one block rather than from a line the caller
+	//    happens to print nearby. It also makes the fact assertable by
+	//    anything that reads the summary — which is what lets an eval
+	//    state that it is measuring a loaded persona rather than a raw
+	//    model.
+	if in.Instruction != nil {
+		lines = append(lines, formatInstructionLine(*in.Instruction))
+	}
+
+	// 4. model + provider + project/location (for cloud providers) +
 	//    the provider's server-side built-in tools.
 	lines = append(lines, formatModelLine(in.Cfg, in.ProviderName, in.BuiltinTools))
 
-	// 4. mcp: N server(s) loaded — names.
+	// 5. mcp: N server(s) loaded — names.
 	lines = append(lines, formatMCPLine(in.MCPServers))
 
-	// 5. skills: N loaded — names.
+	// 6. skills: N loaded — names.
 	lines = append(lines, formatSkillsLine(in.LoadedSkills))
 
-	// 6. subagents: N configured — the declarative roster (#627), so
+	// 7. subagents: N configured — the declarative roster (#627), so
 	//    operators can verify what the daemon loaded without grepping the
 	//    per-subagent boot lines.
 	lines = append(lines, formatSubagentsLine(in.Cfg))
 
-	// 7. multi-session auth: kind, user count, admin/proxy lists.
+	// 8. multi-session auth: kind, user count, admin/proxy lists.
 	//    Reads users.json directly (LoadUsersFile) rather than
 	//    depending on the BuildMultiSessionAuthn call in the attach
 	//    branch — the summary must fire regardless of attach mode.
@@ -229,6 +255,31 @@ func formatModelLine(cfg *config.Config, providerName, builtinTools string) stri
 		extras += " builtin-tools=" + builtinTools
 	}
 	return fmt.Sprintf("model: %s provider=%s%s", model, provider, extras)
+}
+
+// formatInstructionLine renders what the instruction loader assembled.
+//
+// The "found nothing" branch names every path that was probed rather
+// than just reporting the absence: loading nothing is legal (a `-p`
+// one-shot, a directory with no .agents/), so the only way an operator
+// whose recipe DOES ship an AGENTS.md learns why the model is ignoring
+// it is to see where we looked.
+//
+// Sources are listed in load order, by Path, because load order is the
+// order the text reaches the model and a later file's instructions win
+// arguments with an earlier one's. For a builtin persona the Path is
+// "builtin:<name>" — the text has no path on disk, and that string is
+// exactly what an AGENTS.md would have written to ask for it (#656).
+func formatInstructionLine(loaded instruction.Loaded) string {
+	if len(loaded.Sources) == 0 {
+		return fmt.Sprintf("instruction: no AGENTS.md found (searched: %s). Model will run without user instructions.",
+			strings.Join(loaded.Searched, ", "))
+	}
+	names := make([]string, 0, len(loaded.Sources))
+	for _, s := range loaded.Sources {
+		names = append(names, s.Path)
+	}
+	return fmt.Sprintf("instruction: loaded %d file(s): %s", len(loaded.Sources), strings.Join(names, ", "))
 }
 
 func formatMCPLine(servers []*mcp.Server) string {

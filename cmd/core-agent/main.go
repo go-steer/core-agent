@@ -933,16 +933,10 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// defaults and the operator has no visible clue why the model is
 	// ignoring their carefully-written instructions. See issue #218
 	// (surfaced live during the v2.6 GKE-troubleshoot demo drive).
-	if len(loaded.Sources) == 0 {
-		send(fmt.Sprintf("instruction: no AGENTS.md found (searched: %s). Model will run without user instructions.",
-			strings.Join(loaded.Searched, ", ")))
-	} else {
-		names := make([]string, 0, len(loaded.Sources))
-		for _, s := range loaded.Sources {
-			names = append(names, s.Path)
-		}
-		send(fmt.Sprintf("instruction: loaded %d file(s): %s", len(loaded.Sources), strings.Join(names, ", ")))
-	}
+	//
+	// The line is rendered by compose.FormatStartupSummary and emitted
+	// with the rest of that block below (#656), so `loaded` is carried
+	// down to the call site rather than printed here.
 
 	// Small-tier-parent guard (#121). When an interactive session
 	// (REPL or attach-listen — anything that isn't `-p` one-shot)
@@ -1208,6 +1202,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		BuiltinTools:        compose.BuiltinToolsSummary(provider),
 		MCPServers:          mcpServers,
 		LoadedSkills:        loadedSkills,
+		Instruction:         &loaded,
 	}) {
 		send(line)
 	}

@@ -191,6 +191,33 @@ A subagent that wakes periodically to check something, posts an alert if it sees
 
 See the [Autonomous quickstart](/run/autonomous/quickstart/) for a worked example.
 
+### They all share one working directory (v2.10+)
+
+Every in-process agent — the parent, its synchronous delegates, and its background subagents — runs in the **same process** and therefore the same current directory. There is no per-subagent cwd and no per-subagent worktree: `bash` execs without one, and file paths resolve against the process's directory whoever asked. Two agents editing `main.go` are editing the same `main.go`.
+
+Within a single agent this is already handled. Mutating tool calls in one response are serialized against each other (read-only ones still dispatch concurrently), and that covers a **synchronous** delegation too, because a subagent reached as a named tool is just another mutating call on the parent's serializer. Fan out five `research(request: …)` calls in one response and only one of them is inside the tree at a time.
+
+Background subagents are the case that needed a decision, because each one is built with a serializer of its own. By default a second **write-capable** background subagent is refused while the first is still running:
+
+```
+background: another write-capable subagent is already running: "reviewer-1" holds the
+shared working directory, so starting "reviewer-2" could interleave writes to the same
+files. Wait for "reviewer-1" to finish (or stop_agent it) and spawn again, give
+"reviewer-2" only read-only tools, or — if the two really must write in parallel — use
+spawn_remote_agent, which runs out of process with its own filesystem
+```
+
+Write-capable means the *granted tools*, not an observed collision: a subagent holding `bash` counts even if all it runs is `go test`, because by the time a collision is observable the tree is already wrong. Read-only fan-out is unaffected, so Pattern 2 against a roster of read-only investigators works exactly as before — which is most of the fan-outs worth doing. `safety.parallel_subagent_writes` selects `refuse` (default), `warn` (run it, log an operator notice) or `allow`.
+
+**Serializing the background agents instead was the obvious alternative and it is worse.** A background `bash` running a ten-minute test suite would hold the lock for ten minutes and block the parent's own edits behind it. Background subagents exist to be non-blocking; a safety property bought by stalling the interactive session is not a trade an operator would take.
+
+Two things this does **not** promise, so plan around them:
+
+- The parent's own writes are not serialized against a background subagent's. The guard is between background agents.
+- Nothing prevents a *logical* read-modify-write race — two agents that each read a file this turn and each write it next turn will still lose one edit, even though no two calls overlapped.
+
+For work that genuinely must write in parallel, use `spawn_remote_agent`: an out-of-process subagent gets its own filesystem, which is an isolation guarantee rather than a policy about sharing.
+
 ---
 
 ## Declarative subagents: a fixed roster in config

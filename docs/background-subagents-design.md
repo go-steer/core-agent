@@ -183,6 +183,39 @@ tool-result error the model can adapt to ("would exceed
 another"). Defense in depth on top of per-subagent cost/turn
 budgets.
 
+### 5. Shared working directory (#653, v2.10)
+
+Every in-process agent shares one cwd. Nothing in `pkg/tools` carries a
+per-agent working directory: `bash` execs without a `Dir`, and file
+paths absolutize against the process cwd.
+
+Within one agent this is already covered — #460's `MutationSerializer`
+makes mutating calls mutually exclusive — and, measured rather than
+assumed, that also covers **synchronous** delegation, because
+`WithSubagents` appends the subagent tools to the parent's tool list
+*before* `SerializeMutating` wraps it. Background agents are the gap:
+each `launch` builds its own agent with its own serializer.
+
+`Manager` therefore enforces a parallel-write policy
+(`safety.parallel_subagent_writes`, default `refuse`): while a
+write-capable subagent is Running, a second write-capable spawn is
+refused with `ErrConcurrentWriters`, naming the holder. Capability is
+decided at spawn time by `tools.WritesSharedFilesystem` over the
+granted tools plus the template's `ToolsetTools` snapshot — never by
+enumerating a live toolset, which would reach an MCP server to answer a
+spawn-time question. Unknown classifies as writing.
+
+Sharing the parent's serializer with background agents was rejected: a
+background `bash` running a long suite would hold it and block the
+parent's own edits, and background agents exist to be non-blocking.
+
+Still **not** guaranteed, and deliberately out of scope here: the
+parent's own writes against a background subagent's, and logical
+read-modify-write races across turns. The real fix is a per-subagent
+worktree; refusing the shape is what ships until it exists. Genuinely
+parallel writes belong on `spawn_remote_agent`, which has its own
+filesystem.
+
 ### Remote subagents and permissions
 
 `agent.NewSpawnRemoteAgentTool` does NOT extend the parent's

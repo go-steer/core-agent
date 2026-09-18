@@ -1397,6 +1397,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			// fire-and-continue wall-clock; on timeout the subagent keeps
 			// running and its result is pushed on a later turn (#626/D5).
 			background.WithSyncWaitTimeout(syncWait),
+			// Two background subagents that can both write share this
+			// process's one working directory (#653).
+			background.WithParallelWritePolicy(cfg.Safety.ParallelSubagentWrites),
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: background agents: %v\n", err)
@@ -1418,6 +1421,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			smallModelID:   bgSmallModel,
 			allowAdhoc:     allowAdhoc,
 			syncWait:       syncWait,
+			parallelWrites: cfg.Safety.ParallelSubagentWrites,
 			spawnToolNames: make(map[string]struct{}, len(spawnTools)),
 			live:           newSessionManagerSet(),
 		}

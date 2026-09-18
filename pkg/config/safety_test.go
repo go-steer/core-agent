@@ -151,6 +151,41 @@ func TestSafetyBashSearchGate_UnmarshalsFromJSON(t *testing.T) {
 	}
 }
 
+// Pin the safety.parallel_subagent_writes accept set (#653). The
+// values are deliberately the same three words as small_tier_parent
+// rather than a new vocabulary, so an operator who has met one guard
+// can read the other.
+func TestValidate_SafetyParallelSubagentWrites(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		mode    string
+		wantErr bool
+	}{
+		{"", false},
+		{ParallelSubagentWritesRefuse, false},
+		{ParallelSubagentWritesWarn, false},
+		{ParallelSubagentWritesAllow, false},
+		{"enforce", true}, // watchdog's vocabulary, not this one
+		{"REFUSE", true},  // case-sensitive, matching every sibling
+		{"allow ", true},
+		{"true", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			t.Parallel()
+			c := DefaultConfig()
+			c.Safety.ParallelSubagentWrites = tc.mode
+			err := c.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() with parallel_subagent_writes=%q: got nil, want error", tc.mode)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() with parallel_subagent_writes=%q: got %v, want nil", tc.mode, err)
+			}
+		})
+	}
+}
+
 // Canonical-constant sanity. These strings are what operators type
 // in their config and what the CLI flag accepts; a silent rename
 // would break every existing config file in the wild.
@@ -169,6 +204,9 @@ func TestSmallTierParentConstants_AreStable(t *testing.T) {
 		{BashSearchGateEnforce, "enforce"},
 		{BashSearchGateWarn, "warn"},
 		{BashSearchGateAllow, "allow"},
+		{ParallelSubagentWritesRefuse, "refuse"},
+		{ParallelSubagentWritesWarn, "warn"},
+		{ParallelSubagentWritesAllow, "allow"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

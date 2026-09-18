@@ -79,6 +79,18 @@ type Case struct {
 	// Checks are the deterministic verifiers. All of them are the same
 	// type on purpose — see Check.
 	Checks []Check `json:"checks"`
+
+	// Preconditions are what the case ASSUMES about the process it is
+	// grading, as opposed to what it asserts about the agent's
+	// behaviour. Each must read SourceStartup, and a failed one makes
+	// the run indeterminate rather than a violation. Optional: a case
+	// that assumes nothing beyond the fixture's probes declares none.
+	//
+	// Same type as Check, because the question has the same shape and a
+	// second type would be a taxonomy nobody needs. The difference that
+	// matters is in what a failure MEANS, and that lives in Verdict.
+	// See precondition.go for why this tier exists (#1061).
+	Preconditions []Check `json:"preconditions,omitempty"`
 }
 
 // A Check is the one deterministic verifier type.
@@ -189,35 +201,65 @@ func (c *Case) validate() error {
 	if len(c.Checks) == 0 {
 		return fmt.Errorf("at least one check is required")
 	}
+	// One name space across both lists: the report prints them together,
+	// and two entries answering to the same name is the same problem
+	// whichever list they came from.
 	seen := map[string]bool{}
 	for i, ck := range c.Checks {
-		where := fmt.Sprintf("checks[%d]", i)
-		if strings.TrimSpace(ck.Name) == "" {
-			return fmt.Errorf("%s: name is required", where)
+		if err := validateCheckShape(ck, fmt.Sprintf("checks[%d]", i), seen); err != nil {
+			return err
 		}
-		if seen[ck.Name] {
-			return fmt.Errorf("%s: duplicate check name %q; the report keys on it", where, ck.Name)
-		}
-		seen[ck.Name] = true
-		if strings.TrimSpace(ck.Why) == "" {
-			return fmt.Errorf("%s (%s): why is required; a check nobody can justify is a check nobody can delete", where, ck.Name)
+		if ck.Source == SourceStartup {
+			return fmt.Errorf("checks[%d] (%s): source %q is for preconditions only; a graded check that reads the process's own startup report is the process grading itself",
+				i, ck.Name, SourceStartup)
 		}
 		if ck.Source != SourceAnswer {
 			name, ok := ck.WitnessName()
 			if !ok || strings.TrimSpace(name) == "" {
-				return fmt.Errorf("%s (%s): source must be %q or %q<name>, got %q", where, ck.Name, SourceAnswer, witnessPrefix, ck.Source)
+				return fmt.Errorf("checks[%d] (%s): source must be %q or %q<name>, got %q", i, ck.Name, SourceAnswer, witnessPrefix, ck.Source)
 			}
 		}
-		if len(ck.AllOf) == 0 && len(ck.AnyOf) == 0 && len(ck.NoneOf) == 0 {
-			return fmt.Errorf("%s (%s): needs at least one of all_of, any_of, none_of; a check with none of them asserts nothing", where, ck.Name)
+	}
+	for i, pc := range c.Preconditions {
+		if err := validateCheckShape(pc, fmt.Sprintf("preconditions[%d]", i), seen); err != nil {
+			return err
 		}
-		if len(ck.AnyOf) == 1 {
-			return fmt.Errorf("%s (%s): any_of with a single term is all_of spelled misleadingly; use all_of", where, ck.Name)
+		// Narrow on purpose. There is exactly one source of process
+		// facts today, and a precondition reading a witness or the
+		// answer would be a graded check that cannot fail the case —
+		// the worst of both tiers. Widen this when a second process
+		// source exists, not before.
+		if pc.Source != SourceStartup {
+			return fmt.Errorf("preconditions[%d] (%s): source must be %q, got %q; a precondition asserts what the PROCESS did, and the world and the answer are what checks grade",
+				i, pc.Name, SourceStartup, pc.Source)
 		}
-		for _, term := range concat(ck.AllOf, ck.AnyOf, ck.NoneOf) {
-			if strings.TrimSpace(term) == "" {
-				return fmt.Errorf("%s (%s): empty term; an empty needle is found in every haystack", where, ck.Name)
-			}
+	}
+	return nil
+}
+
+// validateCheckShape holds the rules that are identical for a graded
+// check and a precondition. Source is the caller's business: it is the
+// one field where the two tiers genuinely differ.
+func validateCheckShape(ck Check, where string, seen map[string]bool) error {
+	if strings.TrimSpace(ck.Name) == "" {
+		return fmt.Errorf("%s: name is required", where)
+	}
+	if seen[ck.Name] {
+		return fmt.Errorf("%s: duplicate name %q; the report keys on it", where, ck.Name)
+	}
+	seen[ck.Name] = true
+	if strings.TrimSpace(ck.Why) == "" {
+		return fmt.Errorf("%s (%s): why is required; a check nobody can justify is a check nobody can delete", where, ck.Name)
+	}
+	if len(ck.AllOf) == 0 && len(ck.AnyOf) == 0 && len(ck.NoneOf) == 0 {
+		return fmt.Errorf("%s (%s): needs at least one of all_of, any_of, none_of; a check with none of them asserts nothing", where, ck.Name)
+	}
+	if len(ck.AnyOf) == 1 {
+		return fmt.Errorf("%s (%s): any_of with a single term is all_of spelled misleadingly; use all_of", where, ck.Name)
+	}
+	for _, term := range concat(ck.AllOf, ck.AnyOf, ck.NoneOf) {
+		if strings.TrimSpace(term) == "" {
+			return fmt.Errorf("%s (%s): empty term; an empty needle is found in every haystack", where, ck.Name)
 		}
 	}
 	return nil
@@ -255,16 +297,9 @@ func (c *Case) Bind(f *Fixture) (*Case, error) {
 	}
 
 	for i, ck := range c.Checks {
-		out := ck
-		var err error
-		if out.AllOf, err = expandTerms(ck.AllOf, f.Facts); err != nil {
-			return nil, fmt.Errorf("evals: case %s: check %q: all_of: %w", c.ID, ck.Name, err)
-		}
-		if out.AnyOf, err = expandTerms(ck.AnyOf, f.Facts); err != nil {
-			return nil, fmt.Errorf("evals: case %s: check %q: any_of: %w", c.ID, ck.Name, err)
-		}
-		if out.NoneOf, err = expandTerms(ck.NoneOf, f.Facts); err != nil {
-			return nil, fmt.Errorf("evals: case %s: check %q: none_of: %w", c.ID, ck.Name, err)
+		out, err := bindTerms(ck, c.ID, "check", f)
+		if err != nil {
+			return nil, err
 		}
 		if name, ok := ck.WitnessName(); ok {
 			if _, declared := f.Witnesses[name]; !declared {
@@ -274,7 +309,41 @@ func (c *Case) Bind(f *Fixture) (*Case, error) {
 		}
 		bound.Checks[i] = out
 	}
+
+	// Preconditions bind the same way. They are the likeliest place for
+	// a ${fact.…} to be worth writing — "the skill this fixture ships
+	// was loaded" wants the fixture's own name for it, not a copy — and
+	// an unknown key has to be as fatal here as it is in a check, since
+	// an empty needle would turn a precondition into one that always
+	// holds. Which would recreate exactly the hole #1061 is about.
+	bound.Preconditions = make([]Check, len(c.Preconditions))
+	for i, pc := range c.Preconditions {
+		out, err := bindTerms(pc, c.ID, "precondition", f)
+		if err != nil {
+			return nil, err
+		}
+		bound.Preconditions[i] = out
+	}
 	return &bound, nil
+}
+
+// bindTerms expands one entry's terms. kind is the word the error uses
+// for it — "check" or "precondition" — for the same reason the duplicate
+// name message stopped saying "check": an error that misnames the list it
+// came from sends the reader to the wrong half of the file.
+func bindTerms(ck Check, caseID, kind string, f *Fixture) (Check, error) {
+	out := ck
+	var err error
+	if out.AllOf, err = expandTerms(ck.AllOf, f.Facts); err != nil {
+		return out, fmt.Errorf("evals: case %s: %s %q: all_of: %w", caseID, kind, ck.Name, err)
+	}
+	if out.AnyOf, err = expandTerms(ck.AnyOf, f.Facts); err != nil {
+		return out, fmt.Errorf("evals: case %s: %s %q: any_of: %w", caseID, kind, ck.Name, err)
+	}
+	if out.NoneOf, err = expandTerms(ck.NoneOf, f.Facts); err != nil {
+		return out, fmt.Errorf("evals: case %s: %s %q: none_of: %w", caseID, kind, ck.Name, err)
+	}
+	return out, nil
 }
 
 func expandTerms(terms []string, facts map[string]string) ([]string, error) {

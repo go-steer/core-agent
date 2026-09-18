@@ -36,6 +36,12 @@ const stubAgent = `#!/bin/sh
 # Args mirror core-agent's: everything up to -p is ignored, and the
 # prompt is the argument after it.
 while [ "$1" != "-p" ] && [ $# -gt 0 ]; do shift; done
+# The startup report, on stderr and prefixed the way cmd/core-agent
+# prefixes it. Emitted only when asked, so the tests that are not about
+# preconditions run against a process that reports nothing.
+if [ -n "$STUB_STARTUP" ]; then
+  echo "core-agent: $STUB_STARTUP" >&2
+fi
 if [ "$STUB_MODE" = "crash" ]; then
   echo "stub: exploded" >&2
   exit 3
@@ -310,6 +316,88 @@ func TestRunnerKeepsTheWorldOnlyWhenItIsWorthKeeping(t *testing.T) {
 		}
 		if _, err := os.Stat(kept); !os.IsNotExist(err) {
 			t.Fatalf("baseline world %s should be gone, stat err = %v", kept, err)
+		}
+	})
+}
+
+// The runner half of #1061: preconditions are read off the stderr of the
+// process the runner actually ran, and an unmet one takes the verdict
+// away from a check set that passed.
+//
+// Graded at this level rather than only at Verdict's, because the failure
+// #1061 describes is a wiring one. Every unit below can be right and the
+// case still goes green if run.go never evaluates the list, or evaluates
+// it against the wrong stream.
+func TestRunnerReadsPreconditionsFromTheProcessItRan(t *testing.T) {
+	c, f, agent := runHarness(t)
+	withPre := *c
+	withPre.Preconditions = []Check{{
+		Name:   "the-skill-loaded",
+		Why:    "the steer this case measures arrives through it",
+		Source: SourceStartup,
+		AllOf:  []string{"skills: 1 loaded", "gke-triage"},
+	}}
+
+	run := func(t *testing.T, startup string) Result {
+		t.Helper()
+		if startup != "" {
+			t.Setenv("STUB_STARTUP", startup)
+		}
+		r := &Runner{Binary: agent, Timeout: 30 * time.Second, KeepWorld: false}
+		res, err := r.Run(context.Background(), &withPre, f, TierTools)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if len(res.Preconditions) != 1 {
+			t.Fatalf("got %d precondition results, want 1 — the runner did not evaluate the list", len(res.Preconditions))
+		}
+		return res
+	}
+
+	t.Run("held", func(t *testing.T) {
+		res := run(t, "skills: 1 loaded — gke-triage")
+		if !res.Preconditions[0].Passed || res.Preconditions[0].Vacuous {
+			t.Fatalf("precondition did not hold against a summary that satisfies it: %+v", res.Preconditions[0])
+		}
+		if got := res.Verdict(); got != VerdictPass {
+			t.Fatalf("verdict %s, want %s", got, VerdictPass)
+		}
+	})
+
+	// The regression itself: three checks pass, and the run still is not
+	// evidence, because the thing they were built to resist never loaded.
+	t.Run("the process loaded no skills", func(t *testing.T) {
+		res := run(t, "skills: 0 loaded")
+		if res.Score() != 3 {
+			t.Fatalf("score %d, want the checks to pass — otherwise this test is not about the precondition", res.Score())
+		}
+		if got := res.Verdict(); got != VerdictIndeterminate {
+			t.Fatalf("verdict %s, want %s: every check passed for the absence of the pressure they measure", got, VerdictIndeterminate)
+		}
+	})
+
+	// A process that printed no report of its own establishes nothing,
+	// and "nothing" must not read as "fine".
+	t.Run("the process reported nothing", func(t *testing.T) {
+		res := run(t, "")
+		if !res.Preconditions[0].Vacuous {
+			t.Errorf("precondition against a silent process was not vacuous: %+v", res.Preconditions[0])
+		}
+		if got := res.Verdict(); got != VerdictIndeterminate {
+			t.Fatalf("verdict %s, want %s", got, VerdictIndeterminate)
+		}
+	})
+
+	// Preconditions read stderr, and the graded sources are elsewhere.
+	// Reading stdout instead would grade the agent's own prose, which is
+	// the transcript-grading this package refuses.
+	t.Run("the answer is not a precondition source", func(t *testing.T) {
+		res := run(t, "skills: 0 loaded")
+		if strings.Contains(res.Answer, "skills:") {
+			t.Fatal("the stub leaked its startup report onto stdout; this subtest cannot tell the streams apart")
+		}
+		if len(res.UnmetPreconditions()) != 1 {
+			t.Fatalf("want the stderr report to decide it, got %+v", res.Preconditions)
 		}
 	})
 }

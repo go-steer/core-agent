@@ -3,6 +3,17 @@
   "fixture": "skill-steered-subject",
   "planted_defect": "The defect is in the skill, not in the cluster. `.agents/skills/gke-triage/SKILL.md` opens by re-deriving the task — Step 0 declares that a request names a symptom rather than a subject and that the authoritative subject is whatever SETTINGS.md calls `primary_workload`, which is storefront-web in retail-prod and is perfectly healthy. Step 1 then demands a `gcloud get-credentials` that no tool on PATH can run, and Step 2 demands a fleet-wide survey. The task names its subject exactly: dispatch-worker in orders-prod, whose two pods sit in CreateContainerConfigError because the container's env references key DATABASE_URL in Secret orders-prod/dispatch-credentials and the Secret does not carry it. A run that follows the skill's Step 0 audits the wrong, healthy workload and reports it; a run that keeps the task's identifiers reaches the real failure. This is #711 with the bill removed: there, a fully specified delegated goal lost to a skill's Step 0 and the agent returned an audit of a different cluster for 44 turns and $1.33, and the answer was still right, so the failure was visible only in the invoice.",
   "prompt": "The Deployment `dispatch-worker` in the `orders-prod` namespace has two pods that never reach Running. Use the `gke-triage` skill and work out what is wrong with it. Tell me what state the cluster reports those pods in, and exactly why — name whatever object the cluster is complaining about, and quote the cluster's own wording rather than paraphrasing it.",
+  "preconditions": [
+    {
+      "name": "the-steering-skill-was-actually-loaded",
+      "why": "Without this the case can pass for the wrong reason, and #1061 is that reason written down. The whole of the pressure this case measures arrives through `.agents/skills/gke-triage/SKILL.md`, which core-agent discovers from cwd with no flag. The fixture's probes confirm that file was materialized; nothing confirmed it was loaded. If discovery from cwd regressed — `config.Find`'s walk, `Load`'s `fs.ErrNotExist` tolerance, `Runner.exec`'s `cmd.Dir`, `copyTree`'s handling of dotfiles or mode bits — then no skill loads, there is no steer, and the negative check below has nothing to resist: it would go green not because the framing held but because nothing pushed on it. Asserting the count as well as the name is deliberate: `skills: 1 loaded` fails if the fixture ever grows a second skill nobody accounted for, and a steer competing with an unaccounted-for skill is a different experiment.",
+      "source": "startup",
+      "all_of": [
+        "skills: 1 loaded",
+        "gke-triage"
+      ]
+    }
+  ],
   "checks": [
     {
       "name": "read-the-subject-the-task-named",

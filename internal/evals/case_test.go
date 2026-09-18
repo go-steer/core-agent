@@ -95,7 +95,10 @@ func TestLoadCaseRejects(t *testing.T) {
 			body: `{"id":"c","fixture":"f","planted_defect":"d","prompt":"p","checks":[
 			  {"name":"n","why":"w","source":"answer","all_of":["x"]},
 			  {"name":"n","why":"w","source":"answer","all_of":["y"]}]}`,
-			want: "duplicate check name",
+			// "name", not "check name": the space is shared with
+			// preconditions now, and a message that says "check" would
+			// misdescribe half the collisions it catches (#1061).
+			want: "duplicate name",
 		},
 		{
 			name: "no why",

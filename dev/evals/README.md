@@ -63,14 +63,14 @@ ANTHROPIC_VERTEX_PROJECT_ID=<project> CLOUD_ML_REGION=us-east5 \
 
 Exit codes: `0` the tools tier passed and the baseline held, `1` a check
 failed or the baseline scored, `2` the report is indeterminate — some
-check observed nothing.
+check observed nothing, or a precondition did not hold.
 
 `2` is separate from `1` deliberately. A failing check says the agent did
 the wrong thing; an indeterminate one says the harness did not find out
 what the agent did. They send an operator to different places, and both
 are non-zero, because an unanswered question is not a pass.
 
-## The four rules
+## The five rules
 
 Each of these is enforced by code, not by review. That is the whole
 difference between a harness and a habit.
@@ -110,6 +110,41 @@ witness the world never wrote *passes*, because nothing is absent from
 nothing. An aggregate that counted it would report a clean run in which
 nothing happened — which is the shape of credential-less green that #488
 was filed for, one layer up.
+
+**5. A case says what it assumes about the process.** Rule 1 says a
+graded check may only read the world or the answer, and that rule holds.
+But some cases depend on a fact about the *process* rather than about the
+world, and the process is the only possible source for it — so those go
+in `preconditions`, which read `source: "startup"` (the agent's own
+`core-agent: …` startup report on stderr) and are never graded.
+
+The difference that matters is what a failure means:
+
+| | source | a failure means |
+| --- | --- | --- |
+| `checks` | the world, or the answer | **violation** — the agent did the wrong thing |
+| `preconditions` | the process's startup report | **indeterminate** — the case did not test what it claims |
+
+This is #1061. `skill-steer-delegated-subject` grades whether a skill can
+change which subject a delegated task is about, and the whole of the
+pressure arrives through a `SKILL.md` the fixture ships in the workspace.
+The fixture's probes confirm that file was *materialized*; nothing
+confirmed it was *loaded*. If discovery from cwd regressed, no skill
+loads, there is no steer, the case has nothing to resist — and it goes
+green. Not "the framing held" but "there was no pressure on it". A check
+that cannot fail is worse than no check, because it occupies the slot
+where a real one would go.
+
+Two things keep the log-text coupling honest. It can only fail towards
+"I do not know": if the summary's shape changes, cases go indeterminate
+and non-zero rather than silently green. And
+`TestStartupPreconditionMatchesTheRealSummary` pins the agreement against
+the real producer — `compose.FormatStartupSummary` — so the drift is
+caught at unit time instead of at provider-call time.
+
+A fixture that ships a skill *must* name it in a precondition;
+`TestACaseWhoseFixtureShipsASkillSaysSoInAPrecondition` enforces it, so a
+case that grows a skill later cannot keep its old silent pass.
 
 ## The two tiers
 
@@ -155,7 +190,8 @@ instrument improving rather than the schema failing.
 
 ```
 dev/evals/
-  cases/<id>.json           the prompt, the planted defect, the checks
+  cases/<id>.json           the prompt, the planted defect, the
+                            preconditions and the checks
   fixtures/
     _shared/bin/kubectl     laid down under every fixture, first
     <name>/
@@ -184,6 +220,27 @@ fail on the answer, which means an `all_of` or an `any_of`.
 `corpus_test.go` enforces this offline, so it costs a unit-test run
 rather than two provider runs to find out.
 
+**A fixture that ships a skill must name it in a `preconditions` entry**
+(rule 5), and `corpus_test.go` walks the fixture for `SKILL.md` to make
+that mechanical rather than advisory. The entry the shipped case uses is
+the template:
+
+```json
+"preconditions": [
+  {
+    "name": "the-steering-skill-was-actually-loaded",
+    "why": "…what the case would be measuring if it did not load…",
+    "source": "startup",
+    "all_of": ["skills: 1 loaded", "gke-triage"]
+  }
+]
+```
+
+Assert the count alongside the name. `skills: 1 loaded` is what fails if
+the fixture grows a second skill nobody accounted for, and a steer
+competing with an unaccounted-for skill is a different experiment than
+the one the case describes.
+
 ## What runs without a model
 
 `internal/evals/corpus_test.go` is the offline half of the corpus's
@@ -192,8 +249,9 @@ objective check scores zero with no tool access" costs two provider runs
 to answer and is answered in `dev/tools/e2e-real-provider` by whoever
 pushed. A prompt that leaks a fact, a `${fact.…}` nothing resolves, a
 witness the fixture does not declare, a probe missing from the
-materialized world, a duplicated case id, and the baseline precondition
-above are all decidable for nothing, and they are decided in unit CI.
+materialized world, a duplicated case id, a fixture that ships a skill no
+`preconditions` entry names, and the mandatory answer-sourced check above
+are all decidable for nothing, and they are decided in unit CI.
 
 It also checks the thing the withhold-the-location rule does not reach.
 `Case.Bind` guards the prompt; it says nothing about the fixture's own

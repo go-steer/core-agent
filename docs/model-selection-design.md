@@ -187,6 +187,31 @@ no LLM calls. Runs in the same process, fires between turns.
 | Context utilization growth rate | > 5% / turn for 5 turns | Heading for the wall fast |
 | Cost burn rate | > $1 / 5 min for 15 min | Diverging from any reasonable trajectory |
 
+**Status of that table — all five resolved (#655).** Row 2 shipped as
+`repeated-tool-call` in #123 and grew four relatives (#649, #702, #639,
+#907, plus `no-new-state`, which is the "these two calls ask the same
+question differently" line solved by comparing the answers). Row 3
+shipped as `tools-without-text`, at **12** rather than 15: the guess in
+this table predates any measurement, and sixty-four archived GKE-drill
+sessions put the longest textless run in a *good* session at 10.
+
+The other three are closed rather than built, each because something
+that ships already covers it and *acts* instead of warning:
+
+- **Row 1, files-not-touched.** `no-new-state` is the same question
+  without the assumption that the workload has a filesystem — most of
+  this project's agents are read-only cluster agents, for which "has
+  not touched a new file" is the description of a correct run.
+- **Row 4, context growth.** #119's per-tier compaction watches
+  utilization and compacts on it. A warning next to a component whose
+  job is to empty the context is decoration.
+- **Row 5, cost burn.** The session ceiling (#145) and the per-turn
+  ceiling (#1049) both ship and both stop, which is strictly stronger,
+  on evidence the watchdog would have to be handed rather than observe.
+
+The escalation modes below (prompt, auto) remain deferred; it is the
+signal table that is finished.
+
 When any signal trips, the watchdog emits a `WatchdogAlert` event.
 Default behavior (configurable):
 

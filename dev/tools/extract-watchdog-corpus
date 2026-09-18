@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# extract-watchdog-corpus — distil archived GKE-drill SSE streams into
+# the watchdog's recorded-session corpus (#655).
+#
+#   dev/tools/extract-watchdog-corpus [ARCHIVE_DIR] [OUT]
+#
+#   ARCHIVE_DIR  defaults to ~/.gke-drill/runs; every
+#                <run-id>/events.sse under it is read.
+#   OUT          defaults to pkg/watchdog/testdata/corpus/gke-drill.jsonl
+#
+# WHY THIS EXISTS. #655's second acceptance criterion asks for
+# corpus-based tests over recorded transcripts, and every watchdog test
+# before this one replays a shape reconstructed from a docstring. A
+# reconstructed shape can only confirm what its author already believed.
+# It cannot answer the question every threshold in this package is a
+# guess about: what does an ordinary session actually look like?
+#
+# These archives can. They are sixty-odd recorded runs of the GKE drill
+# against a live cluster, all of them sessions we judged good at the
+# time. So the corpus is a FALSE-POSITIVE corpus, and that is the
+# direction that could not be written by hand: positive cases we can
+# reconstruct from an issue, but "and this threshold does not fire on
+# real work" is only knowable from real work. Every trace is therefore
+# marked expect_silent, and the replay test fails if any default signal
+# alerts on one.
+#
+# WHEN A RUN IS NOT SILENT. Flip that trace's expect_silent to false and
+# list the signals that should fire in expect_signals. That is how a
+# recorded runaway enters the corpus — the drill already archives every
+# run, so the next real loop is one extraction away rather than
+# something to wait for. The test reads the flag; nothing else changes.
+#
+# WHAT IS KEPT. Only what the default signal set reads, and nothing that
+# identifies a cluster:
+#
+#   call    tool name + an opaque key for the arguments
+#   result  tool name, whether it failed, the self-declared no_op flag,
+#           and an opaque key for the response payload
+#   text    the CHARACTER COUNT of an assistant text part
+#   turn    a turn boundary, recovered from the stream's turn-complete
+#           frames (no-new-state clears its memory on one)
+#
+# The two opaque keys are short hashes. Nothing downstream reads a
+# digest's or an argument blob's bits — the detectors compare them for
+# equality — so the fixture records the equality relation and lets the
+# replayer supply it. That is also the redaction: raw drill arguments
+# carry the project, cluster and namespace the drill ran against, and
+# none of that belongs in a committed fixture.
+#
+# Hashing the argument blob is behaviour-preserving for the detectors
+# ONLY as long as no argument key is path-shaped: canonicalArgs and
+# argsEquivalent path-normalize values under such keys, and two paths
+# that the detectors would judge equivalent hash to two unequal keys —
+# which would silently make the corpus weaker rather than louder. The
+# extractor therefore refuses to write a fixture containing one, rather
+# than leaving the fidelity loss to be discovered later. Keep that list
+# in step with pkg/watchdog/canonical.go's pathishKey.
+#
+# Assistant prose is recorded as a length and discarded: the only
+# property any signal reads is "did the model say anything". The cost is
+# worth naming — a FUTURE signal that reads what the model SAID cannot
+# use this corpus, and whoever writes one needs a second extraction pass
+# rather than a re-read of the JSON.
+#
+# The archives themselves are not committed: 13 MB of raw SSE against a
+# named cluster, versus 40 KB of names and hashes.
+#
+# Needs python3. No credentials, no network, no cluster.
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+archive_dir=${1:-"${HOME}/.gke-drill/runs"}
+out=${2:-"${repo_root}/pkg/watchdog/testdata/corpus/gke-drill.jsonl"}
+
+if [[ ! -d ${archive_dir} ]]; then
+  echo "extract-watchdog-corpus: no archive directory at ${archive_dir}" >&2
+  echo "  run the GKE drill first (dev/uat/gke-drill/README.md), or pass a directory" >&2
+  exit 1
+fi
+
+ARCHIVE_DIR=${archive_dir} OUT=${out} python3 - <<'PY'
+import glob
+import hashlib
+import json
+import os
+import re
+import sys
+
+archive_dir = os.environ["ARCHIVE_DIR"]
+out = os.environ["OUT"]
+
+# Keep in step with pkg/watchdog/canonical.go's pathishKey. See header.
+PATHISH_EXACT = {"target", "source", "destination", "src", "dst", "cwd"}
+PATHISH_SUBSTR = ("path", "file", "dir", "folder")
+
+
+def pathish(key):
+    k = key.lower()
+    return k in PATHISH_EXACT or any(s in k for s in PATHISH_SUBSTR)
+
+
+def opaque(value):
+    """A stable, short key standing in for a blob the detectors only
+    ever compare for equality."""
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
+
+
+def canonical(obj):
+    """Stable JSON, order-independent — the property the production
+    encoders get from encoding/json sorting map keys."""
+    try:
+        return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return ""
+
+
+def failed(resp):
+    """The ADK convention: a tool error is a reserved "error" key.
+    Mirrors toolcalls.ResponseError, which the agent tap delegates to;
+    only presence matters here, and the text is dropped because it can
+    name the cluster."""
+    return isinstance(resp, dict) and bool(resp.get("error"))
+
+
+def no_op(resp):
+    """The reserved "no_op" key. Only a literal true counts, matching
+    toolResponseNoOp's fail-open reading."""
+    if not isinstance(resp, dict):
+        return False
+    return resp.get("no_op") is True or resp.get("no_op") == "true"
+
+
+offenders = set()
+
+
+def trace(path):
+    obs = [{"kind": "turn"}]
+    turn_pending = False
+    event_name = None
+    for line in open(path, encoding="utf-8", errors="replace"):
+        line = line.rstrip("\n")
+        if line.startswith("event: "):
+            event_name = line[7:].strip()
+            continue
+        if not line.startswith("data: "):
+            continue
+        if event_name == "turn-complete":
+            # The next observation, if any, opens a new turn. Held
+            # rather than appended so a trailing turn-complete does not
+            # leave a boundary with nothing behind it.
+            turn_pending = True
+            continue
+        if event_name != "agent":
+            continue
+        try:
+            frame = json.loads(line[6:])
+        except json.JSONDecodeError:
+            continue
+        ev = frame.get("event")
+        if not isinstance(ev, dict) or ev.get("Partial"):
+            # Partial events are what the agent tap skips too: in
+            # streaming mode ADK re-emits every part on the aggregated
+            # event, and counting both doubles every call.
+            continue
+        content = ev.get("Content") or {}
+        role = content.get("role")
+        for part in content.get("parts") or []:
+            got = None
+            if part.get("functionCall") and role == "model":
+                fc = part["functionCall"]
+                args = fc.get("args") or {}
+                for k in args:
+                    if pathish(k):
+                        offenders.add(k)
+                got = {
+                    "kind": "call",
+                    "name": fc.get("name", ""),
+                    "args": opaque(canonical(args)) if args else "",
+                }
+            elif part.get("functionResponse"):
+                fr = part["functionResponse"]
+                resp = fr.get("response") or {}
+                got = {
+                    "kind": "result",
+                    "name": fr.get("name", ""),
+                    "failed": failed(resp),
+                    "no_op": no_op(resp),
+                    "payload": opaque(canonical(resp)),
+                }
+            elif role == "model" and isinstance(part.get("text"), str):
+                if part["text"].strip():
+                    got = {"kind": "text", "chars": len(part["text"])}
+            if got is None:
+                continue
+            if turn_pending:
+                obs.append({"kind": "turn"})
+                turn_pending = False
+            obs.append(got)
+    return obs
+
+
+traces = []
+for path in sorted(glob.glob(os.path.join(archive_dir, "*", "events.sse"))):
+    run_id = os.path.basename(os.path.dirname(path))
+    if not re.fullmatch(r"[0-9A-Za-z._-]+", run_id):
+        continue
+    obs = trace(path)
+    if not any(o["kind"] == "call" for o in obs):
+        # A run that made no tool call exercises no signal.
+        continue
+    traces.append({"id": run_id, "expect_silent": True, "observations": obs})
+
+if offenders:
+    print(
+        "extract-watchdog-corpus: refusing to write — path-shaped argument "
+        f"key(s) {sorted(offenders)} in the archives. Hashing the argument "
+        "blob would drop the path normalization the loop detectors do, and "
+        "the corpus would get quietly weaker. Record those values instead of "
+        "hashing them (and redact them), or extend this extractor.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+if not traces:
+    print(f"extract-watchdog-corpus: no usable runs under {archive_dir}", file=sys.stderr)
+    sys.exit(1)
+
+os.makedirs(os.path.dirname(out), exist_ok=True)
+with open(out, "w", encoding="utf-8") as f:
+    for t in traces:
+        f.write(json.dumps(t, separators=(",", ":"), sort_keys=False) + "\n")
+
+calls = sum(1 for t in traces for o in t["observations"] if o["kind"] == "call")
+print(f"extract-watchdog-corpus: {len(traces)} traces, {calls} tool calls -> {out}")
+PY

@@ -1633,6 +1633,13 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 				// Tool *outcomes* (#639), for signals that read them.
 				// Same event, same dedup set, separate key space.
 				observed = a.observeToolResultsForWatchdog(ev, watchdogSeen) || observed
+				// What the model SAID (#655), for the signal that
+				// measures its absence. Deliberately NOT folded into
+				// `observed`: assistant text can only clear a run,
+				// never start or extend one, so re-running the enforce
+				// pass on it would be work that cannot change an
+				// outcome.
+				a.observeAssistantTextForWatchdog(ev)
 				// Enforce mode halts a loop WHILE it loops (#705). A
 				// tool-call loop inside one turn never reaches the
 				// post-turn drain below, so a boundary-only backstop

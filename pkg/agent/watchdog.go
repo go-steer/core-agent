@@ -27,6 +27,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -294,6 +295,59 @@ func (a *Agent) observeTurnStartForWatchdog() {
 	if to, ok := w.(watchdog.TurnObserver); ok {
 		to.ObserveTurnStart()
 	}
+}
+
+// observeAssistantTextForWatchdog feeds the model's own output to the
+// wired watchdog, when it implements the optional
+// watchdog.AssistantTextObserver extension (#655). A watchdog that only
+// reads calls and results is left alone.
+//
+// Three filters decide what counts as the model saying something, and
+// each is the difference between this signal measuring silence and it
+// measuring nothing:
+//
+// Partial events are skipped, for the reason the call tap skips them —
+// in streaming mode ADK emits one event per chunk plus an aggregated
+// event carrying every part, so a sentence would otherwise arrive once
+// per token. Here that would not merely overcount, it would make the
+// signal unfireable: a streaming turn emits text deltas constantly, and
+// each one would clear the run.
+//
+// Author must be this agent. A session's event stream carries the
+// user's turns, injected inbox messages and (under --watchdog=feedback)
+// our own guidance block, all of them text parts on events that are not
+// the model's. Counting those would mean an agent grinding away in
+// silence gets its run cleared every time somebody talks TO it, which
+// is the opposite of the thing being measured. The comparison is
+// against a.agentName because that is what the llmagent is constructed
+// with, and therefore the Author ADK stamps on the events this agent's
+// own flow produces.
+//
+// Thought parts are skipped. The question is whether anyone has been
+// told anything, and a reasoning trace the operator never sees is not
+// an answer to it. Providers that do not mark their reasoning are
+// indistinguishable from ones with none, and the signal is a warning,
+// so the failure direction is a run cleared early — quieter, not louder.
+func (a *Agent) observeAssistantTextForWatchdog(ev *session.Event) bool {
+	if a == nil || ev == nil || ev.Content == nil || ev.Partial {
+		return false
+	}
+	obs, ok := a.watchdog.(watchdog.AssistantTextObserver)
+	if !ok {
+		return false
+	}
+	if ev.Author != a.agentName {
+		return false
+	}
+	observed := false
+	for _, p := range ev.Content.Parts {
+		if p == nil || p.Thought || strings.TrimSpace(p.Text) == "" {
+			continue
+		}
+		observed = true
+		obs.ObserveAssistantText(p.Text)
+	}
+	return observed
 }
 
 func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string]struct{}) bool {

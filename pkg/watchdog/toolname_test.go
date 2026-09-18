@@ -296,7 +296,7 @@ func TestNewDefaultWatchdog_WiresTheToolNameDetector(t *testing.T) {
 	for _, c := range reworded("mark_task_done", DefaultToolNameRun) {
 		w.ObserveToolCall(c)
 	}
-	alerts := w.Check()
+	alerts := callsOnly(w.Check())
 	if len(alerts) != 1 || alerts[0].Signal != "repeated-tool-name" {
 		t.Fatalf("default watchdog alerts = %+v, want exactly one repeated-tool-name", alerts)
 	}

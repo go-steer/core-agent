@@ -46,7 +46,9 @@
 #     Ready → rollout times out
 #   ✓ AGENTS.md load-path mismatch (agents/ vs .agents/) → daemon
 #     boots with empty instructions → "instruction: loaded" log line
-#     absent → assertion FAIL
+#     absent → assertion FAIL (phase 7 required_patterns)
+#   ✓ A builtin persona that cannot resolve from a read-only projected
+#     ConfigMap volume → "builtin:sre" absent from the same line
 #
 # What this deliberately does NOT catch:
 #
@@ -333,6 +335,18 @@ required_patterns=(
     # this asserts is that the loader ran and accounted for the one
     # configured server rather than silently skipping mcp.json.
     "mcp: 1 server(s) loaded"
+    # The load-path assertion this script's header has claimed since it
+    # was written, finally made real (#656). A daemon whose AGENTS.md
+    # landed at `agents/` instead of `.agents/` boots fine, answers
+    # fine, and runs on raw provider defaults — every other assertion
+    # here passes. This is the one that notices.
+    "instruction: loaded"
+    # And the builtin persona the recipe's AGENTS.md includes, which is
+    # only provable in a cluster: the .agents/ tree is a read-only
+    # projected ConfigMap volume, so a persona that needed a second file
+    # on disk could not resolve here. Resolving out of the binary is the
+    # property, and this is where it is tested.
+    "builtin:sre"
 )
 for pat in "${required_patterns[@]}"; do
     if ! echo "$LOG" | grep -qF -- "$pat"; then

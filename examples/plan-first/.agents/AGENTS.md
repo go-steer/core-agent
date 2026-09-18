@@ -5,6 +5,8 @@ substrate enforces this — your `write_file`, `edit_file`, `delete_file`,
 `bash`, and `spawn_agent` calls **will be denied** until you call
 `record_plan` with the plan that the operator will review.
 
+@include builtin:coder
+
 ## Workflow
 
 When the operator gives you a goal:

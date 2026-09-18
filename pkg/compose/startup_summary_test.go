@@ -25,6 +25,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
@@ -523,13 +524,16 @@ func TestFormatSubagentsLine(t *testing.T) {
 	}
 }
 
-// TestFormatStartupSummary covers the assembly itself. The seven
-// per-topic formatters are each tested above; what this pins is that
-// FormatStartupSummary emits all seven, once, in the documented
+// TestFormatStartupSummary covers the assembly itself. The per-topic
+// formatters are each tested above; what this pins is that
+// FormatStartupSummary emits all of them, once, in the documented
 // order. A line dropped or reordered here is invisible to every test
 // above — and the block is the daemon's answer to "what did you
 // actually load", so a silently missing line is a startup summary
 // that lies by omission.
+//
+// Instruction is left nil here on purpose: that is the pre-#656 caller
+// shape, and the seven lines below are what it must still produce.
 func TestFormatStartupSummary(t *testing.T) {
 	t.Parallel()
 
@@ -596,6 +600,79 @@ func TestFormatStartupSummary_DegradedInputs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("line %d:\n got %q\nwant %q", i+1, got[i], want[i])
 		}
+	}
+}
+
+// TestFormatInstructionLine pins the wording of the instruction line.
+//
+// The wording is load-bearing twice over. Operators grep it, and
+// #218's whole point was that the empty case has to name the paths it
+// searched rather than just reporting the absence. It is also what an
+// eval's startup precondition matches on (#656) — a case that says
+// "this run had the SRE persona loaded" is asserting against these
+// exact substrings, so a reworded line silently turns those
+// preconditions into unmet ones.
+func TestFormatInstructionLine(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		loaded instruction.Loaded
+		want   string
+	}{
+		{
+			name:   "nothing found names where it looked",
+			loaded: instruction.Loaded{Searched: []string{"/w/.agents/AGENTS.md", "/w/AGENTS.md"}},
+			want:   "instruction: no AGENTS.md found (searched: /w/.agents/AGENTS.md, /w/AGENTS.md). Model will run without user instructions.",
+		},
+		{
+			name: "a file and the builtins it pulled in",
+			loaded: instruction.Loaded{Sources: []instruction.Source{
+				{Scope: "project", Path: "/w/.agents/AGENTS.md", Bytes: 412},
+				{Scope: "builtin", Path: "builtin:sre", Bytes: 2100},
+				{Scope: "builtin", Path: "builtin:core", Bytes: 1800},
+			}},
+			// Load order, not sorted: it is the order the text reaches
+			// the model, and a builtin included from an AGENTS.md has to
+			// read as having come after it.
+			want: "instruction: loaded 3 file(s): /w/.agents/AGENTS.md, builtin:sre, builtin:core",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := formatInstructionLine(tc.loaded); got != tc.want {
+				t.Errorf("\n got %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFormatStartupSummary_WithInstruction pins where the line lands.
+//
+// Position is the claim: the summary is ordered by resolution order, so
+// instruction sits after agentsDir (which is where the loader looked)
+// and before model (which is what the prompt will be handed to). An
+// eval precondition reads the whole block rather than a line index, but
+// an operator reads it top to bottom, and a line that shows up after
+// "multi-session auth" reads as an afterthought rather than as part of
+// what was loaded.
+func TestFormatStartupSummary_WithInstruction(t *testing.T) {
+	t.Parallel()
+
+	got := FormatStartupSummary(StartupSummaryInputs{
+		Instruction: &instruction.Loaded{Sources: []instruction.Source{
+			{Scope: "project", Path: "/w/.agents/AGENTS.md"},
+			{Scope: "builtin", Path: "builtin:sre"},
+			{Scope: "builtin", Path: "builtin:core"},
+		}},
+	})
+	if len(got) != 8 {
+		t.Fatalf("got %d lines, want 8:\n%s", len(got), strings.Join(got, "\n"))
+	}
+	const want = "instruction: loaded 3 file(s): /w/.agents/AGENTS.md, builtin:sre, builtin:core"
+	if got[2] != want {
+		t.Errorf("line 3:\n got %q\nwant %q", got[2], want)
 	}
 }
 

@@ -1,0 +1,410 @@
+{
+  "planted": {
+    "workload": "manifest-sync",
+    "failure_reason": "OOMKilled",
+    "exit_code": "137",
+    "memory_limit": "96Mi",
+    "benign_cause": "NodeNotReady"
+  },
+  "cluster": {
+    "context": "eval-fixture-logistics",
+    "default_namespace": "default",
+    "nodes": [
+      "gke-eval-pool-1a44",
+      "gke-eval-pool-77bc"
+    ],
+    "namespaces": {
+      "default": {
+        "age": "203d",
+        "deployments": []
+      },
+      "kube-system": {
+        "age": "203d",
+        "deployments": [
+          {
+            "name": "konnectivity-agent",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "203d",
+            "container": "konnectivity-agent",
+            "image": "gke.gcr.io/proxy-agent:v0.1.6-gke.0",
+            "conditions": [
+              {
+                "type": "Available",
+                "status": "True",
+                "message": "Deployment has minimum availability."
+              }
+            ],
+            "pods": [
+              {
+                "name": "konnectivity-agent-79c5d6b844-t8fzp",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "203d",
+                "node": "gke-eval-pool-1a44",
+                "labels": {
+                  "app": "konnectivity-agent"
+                },
+                "logs": "I0916 02:18:44 connect.go:120] connected to control plane",
+                "events": []
+              },
+              {
+                "name": "konnectivity-agent-79c5d6b844-l4vqm",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "203d",
+                "node": "gke-eval-pool-77bc",
+                "labels": {
+                  "app": "konnectivity-agent"
+                },
+                "logs": "I0916 02:18:44 connect.go:120] connected to control plane",
+                "events": []
+              }
+            ]
+          }
+        ]
+      },
+      "logistics-prod": {
+        "age": "58d",
+        "deployments": [
+          {
+            "name": "route-planner",
+            "ready": "3/3",
+            "replicas": 3,
+            "up_to_date": 3,
+            "available": 3,
+            "age": "58d",
+            "container": "route-planner",
+            "image": "ghcr.io/acme/route-planner:v8.0.2",
+            "conditions": [
+              {
+                "type": "Available",
+                "status": "True",
+                "message": "Deployment has minimum availability."
+              }
+            ],
+            "pods": [
+              {
+                "name": "route-planner-6b94f7c2d8-x4m2t",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "58d",
+                "node": "gke-eval-pool-1a44",
+                "labels": {
+                  "app": "route-planner"
+                },
+                "logs": "solver warm; 412 routes/s",
+                "events": []
+              },
+              {
+                "name": "route-planner-6b94f7c2d8-9plqz",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "58d",
+                "node": "gke-eval-pool-77bc",
+                "labels": {
+                  "app": "route-planner"
+                },
+                "logs": "solver warm; 412 routes/s",
+                "events": []
+              },
+              {
+                "name": "route-planner-6b94f7c2d8-hd3vn",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "58d",
+                "node": "gke-eval-pool-1a44",
+                "labels": {
+                  "app": "route-planner"
+                },
+                "logs": "solver warm; 412 routes/s",
+                "events": []
+              }
+            ]
+          },
+          {
+            "name": "dispatch-api",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "58d",
+            "container": "dispatch-api",
+            "image": "ghcr.io/acme/dispatch-api:v2.11.0",
+            "conditions": [
+              {
+                "type": "Available",
+                "status": "True",
+                "message": "Deployment has minimum availability."
+              }
+            ],
+            "pods": [
+              {
+                "name": "dispatch-api-845cfb1e96-tz7kr",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "58d",
+                "node": "gke-eval-pool-1a44",
+                "labels": {
+                  "app": "dispatch-api"
+                },
+                "logs": "listening on :8080",
+                "events": []
+              },
+              {
+                "name": "dispatch-api-845cfb1e96-m28wb",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "58d",
+                "node": "gke-eval-pool-77bc",
+                "labels": {
+                  "app": "dispatch-api"
+                },
+                "logs": "listening on :8080",
+                "events": []
+              }
+            ]
+          },
+          {
+            "name": "geo-index",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "58d",
+            "container": "geo-index",
+            "image": "ghcr.io/acme/geo-index:v1.4.7",
+            "conditions": [
+              {
+                "type": "Available",
+                "status": "True",
+                "message": "Deployment has minimum availability."
+              }
+            ],
+            "pods": [
+              {
+                "name": "geo-index-5f7a2d9c41-qn6xh",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "58d",
+                "node": "gke-eval-pool-1a44",
+                "labels": {
+                  "app": "geo-index"
+                },
+                "logs": "index loaded: 18.2M cells",
+                "events": []
+              },
+              {
+                "name": "geo-index-5f7a2d9c41-b93sd",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "58d",
+                "node": "gke-eval-pool-77bc",
+                "labels": {
+                  "app": "geo-index"
+                },
+                "logs": "index loaded: 18.2M cells",
+                "events": []
+              }
+            ]
+          },
+          {
+            "name": "label-printer",
+            "ready": "2/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 2,
+            "age": "126d",
+            "container": "label-printer",
+            "image": "ghcr.io/acme/label-printer:v3.1.4",
+            "conditions": [
+              {
+                "type": "Available",
+                "status": "True",
+                "message": "Deployment has minimum availability."
+              }
+            ],
+            "pods": [
+              {
+                "name": "label-printer-c19e46b7a3-w5tjp",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 6,
+                "age": "31d",
+                "node": "gke-eval-pool-1a44",
+                "labels": {
+                  "app": "label-printer"
+                },
+                "logs": "print queue drained; 0 pending",
+                "events": [
+                  {
+                    "type": "Warning",
+                    "reason": "NodeNotReady",
+                    "age": "31d",
+                    "message": "Node gke-eval-pool-1a44 status is now: NodeNotReady"
+                  },
+                  {
+                    "type": "Normal",
+                    "reason": "Pulled",
+                    "age": "31d",
+                    "message": "Container image \"ghcr.io/acme/label-printer:v3.1.4\" already present on machine"
+                  },
+                  {
+                    "type": "Normal",
+                    "reason": "Started",
+                    "age": "31d",
+                    "message": "Started container label-printer"
+                  }
+                ]
+              },
+              {
+                "name": "label-printer-c19e46b7a3-r82fc",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 6,
+                "age": "31d",
+                "node": "gke-eval-pool-77bc",
+                "labels": {
+                  "app": "label-printer"
+                },
+                "logs": "print queue drained; 0 pending",
+                "events": [
+                  {
+                    "type": "Warning",
+                    "reason": "NodeNotReady",
+                    "age": "31d",
+                    "message": "Node gke-eval-pool-77bc status is now: NodeNotReady"
+                  },
+                  {
+                    "type": "Normal",
+                    "reason": "Pulled",
+                    "age": "31d",
+                    "message": "Container image \"ghcr.io/acme/label-printer:v3.1.4\" already present on machine"
+                  },
+                  {
+                    "type": "Normal",
+                    "reason": "Started",
+                    "age": "31d",
+                    "message": "Started container label-printer"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "manifest-sync",
+            "ready": "0/2",
+            "replicas": 2,
+            "up_to_date": 2,
+            "available": 0,
+            "age": "58d",
+            "container": "manifest-sync",
+            "image": "ghcr.io/acme/manifest-sync:v4.2.0",
+            "conditions": [
+              {
+                "type": "Available",
+                "status": "False",
+                "message": "Deployment does not have minimum availability."
+              },
+              {
+                "type": "Progressing",
+                "status": "True",
+                "message": "ReplicaSet \"manifest-sync-59f8b4c7d6\" is progressing."
+              }
+            ],
+            "pods": [
+              {
+                "name": "manifest-sync-59f8b4c7d6-k2j8d",
+                "ready": "0/1",
+                "status": "CrashLoopBackOff",
+                "phase": "Running",
+                "restarts": 118,
+                "age": "9h37m",
+                "node": "gke-eval-pool-1a44",
+                "labels": {
+                  "app": "manifest-sync"
+                },
+                "logs": "loading route table from object store (184 MB)\ndecoding shard 1/4",
+                "events": [
+                  {
+                    "type": "Normal",
+                    "reason": "Scheduled",
+                    "age": "9h37m",
+                    "message": "Successfully assigned logistics-prod/manifest-sync-59f8b4c7d6-k2j8d to gke-eval-pool-1a44"
+                  },
+                  {
+                    "type": "Warning",
+                    "reason": "OOMKilling",
+                    "age": "3m11s",
+                    "message": "Container manifest-sync terminated with Reason:OOMKilled, ExitCode:137 \u2014 the container exceeded its memory limit of 96Mi"
+                  },
+                  {
+                    "type": "Warning",
+                    "reason": "BackOff",
+                    "age": "41s",
+                    "message": "Back-off restarting failed container manifest-sync in pod manifest-sync-59f8b4c7d6-k2j8d_logistics-prod"
+                  }
+                ]
+              },
+              {
+                "name": "manifest-sync-59f8b4c7d6-vq4mn",
+                "ready": "0/1",
+                "status": "CrashLoopBackOff",
+                "phase": "Running",
+                "restarts": 119,
+                "age": "9h37m",
+                "node": "gke-eval-pool-77bc",
+                "labels": {
+                  "app": "manifest-sync"
+                },
+                "logs": "loading route table from object store (184 MB)\ndecoding shard 1/4",
+                "events": [
+                  {
+                    "type": "Normal",
+                    "reason": "Scheduled",
+                    "age": "9h37m",
+                    "message": "Successfully assigned logistics-prod/manifest-sync-59f8b4c7d6-vq4mn to gke-eval-pool-77bc"
+                  },
+                  {
+                    "type": "Warning",
+                    "reason": "OOMKilling",
+                    "age": "3m12s",
+                    "message": "Container manifest-sync terminated with Reason:OOMKilled, ExitCode:137 \u2014 the container exceeded its memory limit of 96Mi"
+                  },
+                  {
+                    "type": "Warning",
+                    "reason": "BackOff",
+                    "age": "41s",
+                    "message": "Back-off restarting failed container manifest-sync in pod manifest-sync-59f8b4c7d6-vq4mn_logistics-prod"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

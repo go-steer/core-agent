@@ -23,6 +23,7 @@ wired as the third leg of `dev/tools/e2e-real-provider`.
 |---|---|---|---|
 | `cluster-fact-image-pull` | `cluster-image-pull` | finds a workload nobody located for it, and quotes the registry's own wording rather than paraphrasing | the shape of every GKE triage the drill runs |
 | `skill-steer-delegated-subject` | `skill-steered-subject` | keeps the subject the task named when a skill's Step 0 re-derives the task and points at a healthier one | #711 — 44 turns, 1.4M input tokens, $1.33 against $0.26 comparable |
+| `persona-holds-over-a-long-horizon` | `persona-long-horizon` | still answers the *second* question in the prompt after a five-Deployment sweep, and does not reach for a write its equipment says it does not have | #869 — the demo-3 finding that an imported persona holds for a few turns and then collapses into whichever shape it knows best |
 
 The second case is the corpus rule from #966 in its purest form: it is
 not a scenario somebody invented, it is an incident with a session id
@@ -45,6 +46,14 @@ have to agree, and if they drift the check stops being able to fail
 rather than starting to fail. Everything else here is arranged so that
 cannot happen (see *Facts live inside the world file*, below); a skill
 that steers is prose, and prose cannot be read out of the world file.
+
+The third case grades a shipped artifact rather than a shipped
+behaviour: its workspace `AGENTS.md` is twelve lines of equipment and one
+`@include builtin:sre`, so what it measures is whether
+`pkg/instruction/personas/sre.md` — the text in the binary, not a prompt
+written for the occasion — survives a long turn. That is why its
+precondition asserts the exact instruction-file count: a run in which the
+persona never loaded is not a failing run, it is a different experiment.
 
 ## Running one
 
@@ -138,13 +147,21 @@ where a real one would go.
 Two things keep the log-text coupling honest. It can only fail towards
 "I do not know": if the summary's shape changes, cases go indeterminate
 and non-zero rather than silently green. And
-`TestStartupPreconditionMatchesTheRealSummary` pins the agreement against
-the real producer — `compose.FormatStartupSummary` — so the drift is
-caught at unit time instead of at provider-call time.
+`TestShippedStartupPreconditionsMatchTheRealSummary` pins the agreement
+against the real producer — `compose.FormatStartupSummary` — so the
+drift is caught at unit time instead of at provider-call time.
 
 A fixture that ships a skill *must* name it in a precondition;
 `TestACaseWhoseFixtureShipsASkillSaysSoInAPrecondition` enforces it, so a
 case that grows a skill later cannot keep its old silent pass.
+
+The same applies to the system prompt. The startup summary names every
+instruction file that reached the model, including builtin personas by
+their `builtin:<name>` handle (#656), so a case whose fixture ships an
+`.agents/AGENTS.md` can assert that it loaded — and, because the summary
+gives a count, can assert the exact shape rather than just presence. A
+case measuring how a persona behaves has no result at all if the persona
+was never in the prompt.
 
 ## The two tiers
 

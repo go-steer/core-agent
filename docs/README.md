@@ -72,6 +72,7 @@ research + friction logs, or handover notes.
 ### Instructions, skills + discovery
 
 - [`instruction-loader-v2-design.md`](instruction-loader-v2-design.md) — composition + multi-file system instructions (`AGENTS.d/*.md`, `@include`)
+- [`persona-library.md`](persona-library.md) — the first-party builtin personas (`@include builtin:core|coder|sre`), the identity → equipment → conduct split, and the incident each rule came from (*shipped*, [#656](https://github.com/go-steer/core-agent/issues/656))
 - [`agent-card-design.md`](agent-card-design.md) — `/.well-known/agent-card.json` for agent discovery
 
 ### Observability, safety + scheduling
@@ -108,7 +109,7 @@ research + friction logs, or handover notes.
 - [`agent-runtime-go-friction-log.md`](agent-runtime-go-friction-log.md) — deploying a Go agent to Google Cloud's Agent Engine / Agent Runtime
 - [`adk-skills-issue.md`](adk-skills-issue.md) — strict YAML unmarshaling of `SKILL.md` frontmatter vs. Claude Skills interop
 - [`compaction.md`](compaction.md) — context-window compaction research (Crush + Antigravity prior art)
-- [`coding-agent-instructions.md`](coding-agent-instructions.md) — Crush system-prompt + instructions reference
+- [`coding-agent-instructions.md`](coding-agent-instructions.md) — Crush + Claude Code system-prompt survey (prior art only; for first-party personas see [`persona-library.md`](persona-library.md))
 
 ## Audits, strategy + handover notes
 

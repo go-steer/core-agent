@@ -13,9 +13,12 @@ Both trigger on `push: tags: ['v*.*.*']`.
 2. **Bump `internal/version.Version`** in [`internal/version/version.go`](../internal/version/version.go) to `vX.Y.Z` (the tag you're about to cut), commit.
 3. **Tag and push:**
    ```bash
-   git tag vX.Y.Z
+   git -c tag.gpgsign=false tag vX.Y.Z
    git push origin vX.Y.Z
    ```
+   **Every tag in this repo is lightweight** (`git cat-file -t v2.9.0-dev.3` → `commit`). A local `tag.gpgsign true` forces an annotated tag and then fails with "no tag message?", so pass `-c tag.gpgsign=false` rather than reaching for `-m`.
+
+   **Dry-running the release body requires the tag to already exist.** `compose-release-notes.sh TAG OUT` resolves `LAST_STABLE..$TAG` through git, so on a tag that does not exist yet it **exits 128 having written a full-size file and printed nothing** — the failing `git log` sits inside a `2>/dev/null` command substitution, so there is no error and the half-written output looks like a result. A "dry run" done before tagging therefore proves nothing, and in particular never exercises the 125,000-character shed. Create the tag locally first, compose, read the output, then `git tag -d` it and re-create it on the merge commit. A correct run prints `wrote release notes for … (N characters)` on stderr.
 4. **Bump `internal/version.Version`** to `v<next-minor>.0-dev` (e.g. `v2.4.0` release → main becomes `v2.5.0-dev`) so post-release builds report their next-target version. Commit + push. Enforced by [`dev/ci/presubmits/verify-version-fallback`](../dev/ci/presubmits/verify-version-fallback) — the next PR after a release will fail CI until this bump lands, so drift can't rot silently (this was retroactive after the bump was skipped for v2.5.0 + v2.6.0).
 5. **Verify both workflows went green** on the [Actions tab](https://github.com/go-steer/core-agent/actions):
    - `Release` → produces 8 archives (`core-agent` + `core-agent-tui`, each in linux/darwin × amd64/arm64), `checksums.txt`, `checksums.txt.sig`, `checksums.txt.pem`. All attached to the GitHub Release.

@@ -206,9 +206,12 @@ func TestNoOpStreakSignal_ReplaysTheObservedLoop(t *testing.T) {
 // threshold, and toolname.go's false-positive argument needs
 // re-litigating before this file's does. A NEW call-reading signal
 // tripping is a different event entirely and should not be reported as
-// this one: `tools-without-text` is designed and deferred (see the
-// package doc), and this trace is 14 consecutive tool calls with no
-// assistant text, so it will trip on it by construction and correctly.
+// this one: `tools-without-text` shipped in #655, and this trace is
+// fifteen consecutive tool calls with no assistant text, so it trips on
+// it by construction and correctly. That was written here as a
+// prediction while the signal was still deferred, and the assertion at
+// the bottom now holds it to it — a prediction nobody checks is a
+// comment.
 func TestObservedLoopIsInvisibleFromCallsAlone(t *testing.T) {
 	t.Parallel()
 
@@ -233,12 +236,24 @@ func TestObservedLoopIsInvisibleFromCallsAlone(t *testing.T) {
 		call("mark_task_done", fmt.Sprintf(`{"detail":"work on api-7d9 finished, phrasing %d"}`, i+7))
 	}
 
+	silence := false
 	for _, a := range w.Check() {
 		if blind[a.Signal] {
 			t.Errorf("%s tripped on a call-only reading of the observed loop — "+
 				"the premise of #907 is that this trace is invisible to the call-keyed "+
 				"detectors: %+v", a.Signal, a)
 		}
+		if a.Signal == "tools-without-text" {
+			silence = true
+		}
+	}
+	// The other half, and the reason the four above are named
+	// individually rather than "nothing fired": #905 is fifteen calls
+	// with not a word said about any of them, which is precisely what
+	// the silence detector reads. If it stops firing here, the threshold
+	// moved past a recorded runaway.
+	if !silence {
+		t.Error("tools-without-text stayed silent on a fifteen-call run with no assistant text")
 	}
 }
 

@@ -30,8 +30,7 @@
 //     family) and, since #649, alternating cycles (a → b → a → b) plus
 //     path-canonicalized argument comparison, which are the two
 //     evasions the v1 detector documented and could not catch.
-//     The shape is built so adding signals (tools-without-text,
-//     files-not-touched, rate-based growth) is mechanical — each
+//     The shape is built so adding signals is mechanical — each
 //     signal is a small struct with an Observe/Check pair, the
 //     DefaultWatchdog just fans observations across them.
 //   - "Warn" mode: alerts are logged to stderr by the agent wiring.
@@ -73,12 +72,36 @@
 //     needs semantics, but by noticing the answers are identical, which
 //     does not. See stall.go.
 //
+//   - A tools-without-text detector (#655), the last of the designed
+//     signals and the only one that compares nothing: twelve tool calls
+//     in a row with not a word of assistant text between them. Every
+//     detector above has an evasion because every one of them asks a
+//     question about the calls; this one asks only whether anybody has
+//     been told anything, and the only way to evade it is to answer.
+//     See text.go, whose threshold is measured against the recorded
+//     corpus rather than guessed.
+//
+// Not built, and now closed rather than deferred (#655). Three signals
+// from the design doc's table have shipped elsewhere, in stronger form
+// than a watchdog warning could take:
+//
+//   - files-not-touched ("turns since a new file path was read"). Its
+//     generalization shipped above: NoNewState asks the same question —
+//     is new information arriving — without assuming the workload has a
+//     filesystem, which most of this project's agents do not. A signal
+//     that fires whenever a read-only cluster agent does its job
+//     correctly is not a signal.
+//   - context-growth-rate. #119's per-tier compaction already watches
+//     context utilization and compacts on it. Warning an operator that
+//     a context is filling, next to a component whose job is to empty
+//     it, is decoration.
+//   - cost-burn-rate. The session cost ceiling (#145) and the per-turn
+//     ceiling (#1049) both ship and both STOP — strictly stronger than
+//     a warning, on evidence the watchdog would have to be handed
+//     rather than observe.
+//
 // Future scope (deferred — see design doc §"Piece 2"):
 //
-//   - Additional signals: tools-without-text, files-not-touched,
-//     context-growth-rate, cost-burn-rate (#655 remains open for
-//     these, and for the recorded-transcript corpus its acceptance
-//     criteria ask for).
 //   - "Prompt" mode: pause turn, ask operator y/n via the existing
 //     permissions prompter, resume on either path.
 //   - "Auto" mode: invoke Agent.SwapModel (also unshipped) to
@@ -288,8 +311,11 @@ const DefaultRepeatThreshold = 5
 //     already seen. Keys on the ANSWER rather than the call, which is
 //     how it catches "these two calls ask the same question
 //     differently" without having to understand either one (#655).
+//   - ToolsWithoutText (12 in a row): twelve calls with no assistant
+//     text between them. The only signal that compares nothing, so the
+//     only one with no evasion other than talking (#655).
 //
-// Four of the seven are Critical, so they halt under --watchdog=enforce.
+// Four of the eight are Critical, so they halt under --watchdog=enforce.
 // The three args-keyed loop detectors qualify because each can prove
 // the calls are identical, so the agent is provably learning nothing;
 // NoOpStreak qualifies for the opposite reason — it proves nothing and
@@ -303,7 +329,9 @@ const DefaultRepeatThreshold = 5
 // NoNewState is Warn on the RepeatedToolName argument transposed from
 // the call to the result: a repeated payload cannot distinguish a loop
 // from a poll, and polling a cluster until it converges is most of what
-// this project's agents legitimately do.
+// this project's agents legitimately do. ToolsWithoutText is Warn for
+// the same reason at its limit: it has made no comparison at all, so a
+// sweep and a runaway are the same observation to it.
 // A Warn never halts; it reaches the operator log plus — under
 // --watchdog=feedback — the model's own next turn. Operators wanting
 // different thresholds, or a subset, construct DefaultWatchdog
@@ -319,6 +347,7 @@ func NewDefaultWatchdog() *DefaultWatchdog {
 			NewToolFailureStreakSignal(DefaultFailureStreak),
 			NewNoOpStreakSignal(DefaultNoOpStreak),
 			NewNoNewStateSignal(DefaultStallRun, DefaultStallMemory),
+			NewToolsWithoutTextSignal(DefaultToolsWithoutText),
 		},
 	}
 }

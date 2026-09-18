@@ -417,7 +417,7 @@ func TestNewDefaultWatchdog_WiresTheDensityDetector(t *testing.T) {
 	for _, c := range interleaved(4, 3) {
 		w.ObserveToolCall(c)
 	}
-	alerts := w.Check()
+	alerts := callsOnly(w.Check())
 	if len(alerts) != 1 || alerts[0].Signal != "dominant-tool-call" {
 		t.Fatalf("default watchdog alerts = %+v, want exactly one dominant-tool-call", alerts)
 	}

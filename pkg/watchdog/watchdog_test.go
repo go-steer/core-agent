@@ -158,6 +158,34 @@ func TestNewRepeatedToolCallSignal_ClampsBelow2(t *testing.T) {
 	}
 }
 
+// callsOnly drops the tools-without-text alert from a default-set
+// drain, for the wiring tests that replay a loop as a bare sequence of
+// tool calls.
+//
+// Those traces have no assistant text in them because nobody wrote any
+// — they are testing an args-keyed detector, and a text observation
+// would be noise in the fixture. That makes every one of them a silent
+// run by construction, so once the silence detector shipped (#655) it
+// co-fires on all of them, correctly: twelve calls with nothing said is
+// exactly what it is there to notice.
+//
+// What those tests are actually asserting is that the detector under
+// test did not start double-reporting with one of its NEIGHBOURS — the
+// other detectors that read the same calls and could plausibly claim
+// the same loop. Dropping this one alert keeps that assertion intact
+// and keeps it honest: a second args-keyed alert still fails, which is
+// the regression they were written for.
+func callsOnly(alerts []Alert) []Alert {
+	out := make([]Alert, 0, len(alerts))
+	for _, a := range alerts {
+		if a.Signal == "tools-without-text" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 func TestDefaultWatchdog_CheckAccumulatesAndDrains(t *testing.T) {
 	t.Parallel()
 	w := NewDefaultWatchdog()

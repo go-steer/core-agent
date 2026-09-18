@@ -128,8 +128,27 @@ func (r *Runner) Run(ctx context.Context, c *Case, f *Fixture, tier Tier) (Resul
 		res.RunError = summarizeExit(art.ExitErr, art.Stderr)
 	}
 
+	// Preconditions first, and against stderr rather than the graded
+	// sources. They decide whether anything below is worth reading: a
+	// case whose skill never loaded has nothing to resist, and its
+	// checks would pass for the absence of the pressure they measure
+	// (#1061).
+	startup := StartupSource(art.Stderr)
+	for _, pc := range bound.Preconditions {
+		res.Preconditions = append(res.Preconditions, pc.Verify(startup))
+	}
+
 	for _, ck := range bound.Checks {
 		res.Checks = append(res.Checks, ck.Verify(sourceFor(ck, world, art)))
+	}
+	// An unmet precondition is the other result a reader needs the world
+	// for, and for a sharper reason than vacuity: the question is what
+	// the process saw on disk, and the answer is in the world it saw.
+	// Kept on every tier, including the baseline — preconditions are
+	// expected to hold there too, so one failing is news.
+	if len(res.UnmetPreconditions()) > 0 {
+		keep = true
+		r.logf("precondition did not hold; keeping the world at %s", worldRoot)
 	}
 	// A vacuous result is the one a reader most needs the world for: it
 	// means a witness was never written, and the question is why.

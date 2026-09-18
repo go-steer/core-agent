@@ -171,6 +171,13 @@ type Result struct {
 	Tier          Tier          `json:"tier"`
 	Checks        []CheckResult `json:"checks"`
 
+	// Preconditions are the case's assumptions about the process,
+	// evaluated against its startup report. They never score. A failed
+	// one makes the result indeterminate, because a case whose
+	// assumptions did not hold did not test what it claims to test
+	// (#1061).
+	Preconditions []CheckResult `json:"preconditions,omitempty"`
+
 	// Answer is the agent's final output, kept so a failing run can be
 	// read without re-running it.
 	Answer string `json:"answer,omitempty"`
@@ -201,9 +208,35 @@ func (r Result) Vacuous() bool {
 	return false
 }
 
+// UnmetPreconditions returns the preconditions that did not hold —
+// failed, or vacuous because the process printed no startup report at
+// all.
+//
+// Vacuous counts as unmet, and that is the whole point of the tier: the
+// regression this exists to catch (skill discovery breaking, so the
+// case's steer never loads) shows up as terms that are missing, and a
+// process that never reported shows up as a source that is absent.
+// Neither is a state in which the case tested anything.
+func (r Result) UnmetPreconditions() []CheckResult {
+	var out []CheckResult
+	for _, p := range r.Preconditions {
+		if !p.Passed || p.Vacuous {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Verdict folds the checks into one answer.
 func (r Result) Verdict() Verdict {
 	if len(r.Checks) == 0 {
+		return VerdictIndeterminate
+	}
+	// Before the checks, and ahead of RunError: a case whose assumptions
+	// about the process did not hold did not measure the agent, whatever
+	// its checks say. Reporting that as a fail would send the reader to
+	// the agent's behaviour, which is the one place the answer is not.
+	if len(r.UnmetPreconditions()) > 0 {
 		return VerdictIndeterminate
 	}
 	if r.Vacuous() {
@@ -244,6 +277,21 @@ func BaselineHolds(r Result) error {
 		return fmt.Errorf(
 			"evals: case %s: the no-access baseline did not run to completion (%s) — a process that died scores zero for a reason that says nothing about the checks, so this is not evidence that they need tools",
 			r.CaseID, r.RunError)
+	}
+	// Same argument as RunError, one level subtler. --no-builtin-tools
+	// removes the agent's tools; it does not stop skills or config from
+	// loading, so a case's preconditions are expected to hold on this
+	// tier exactly as they do on the other. If they did not, the
+	// baseline's zero was produced by a process that was not the one the
+	// case describes, and it is not evidence about the checks either.
+	if unmet := r.UnmetPreconditions(); len(unmet) > 0 {
+		names := make([]string, len(unmet))
+		for i, p := range unmet {
+			names[i] = p.Name
+		}
+		return fmt.Errorf(
+			"evals: case %s: the no-access baseline's precondition(s) %s did not hold (%s) — the zero came from a process the case does not describe, so it says nothing about whether the checks need tools",
+			r.CaseID, quoteAll(names), unmet[0].Reason)
 	}
 	var scored []string
 	for _, c := range r.Checks {

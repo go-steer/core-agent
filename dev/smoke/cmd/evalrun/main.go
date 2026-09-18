@@ -152,6 +152,15 @@ func run(casePath, fixturesRoot, binary, agentArgs, tierList, jsonOut string, ti
 		fmt.Printf("report written to %s\n", jsonOut)
 	}
 
+	// Ahead of the baseline, and ahead of the verdict: an unmet
+	// precondition on ANY tier means the process under test was not the
+	// one the case describes. BaselineHolds reports that too, but it
+	// reports it as an error, and an error exits 1 — "the agent did the
+	// wrong thing". This is the other kind, and it exits 2.
+	if unmet := unmetPreconditions(report); unmet != "" {
+		return indeterminate{why: unmet}
+	}
+
 	// The baseline is reported before the verdict, and it wins. A
 	// tools-tier pass on a case whose checks a naked model can also
 	// satisfy is not evidence of anything, so there is no order of
@@ -178,9 +187,27 @@ func run(casePath, fixturesRoot, binary, agentArgs, tierList, jsonOut string, ti
 	}
 }
 
+// unmetPreconditions names the assumptions that did not hold, on EVERY
+// tier including the baseline. Vacuity in the baseline is the expected
+// shape and is filtered out elsewhere; a precondition that did not hold
+// is not, because it says the process was wrong rather than that the
+// agent was starved of tools by design.
+func unmetPreconditions(rep evals.Report) string {
+	var parts []string
+	for _, r := range rep.Results {
+		for _, p := range r.UnmetPreconditions() {
+			parts = append(parts, fmt.Sprintf("%s/precondition %s: %s", r.Tier, p.Name, p.Reason))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // indeterminateWhy names the checks that observed nothing, because
 // "indeterminate" with no referent is the least actionable word a
 // harness can print.
+// It does not mention preconditions: run returns on those before it gets
+// here, so a branch for them would be a branch that never runs, and a
+// reader would reasonably spend a minute working out when it does.
 func indeterminateWhy(rep evals.Report) string {
 	var parts []string
 	for _, r := range rep.Results {
@@ -204,6 +231,19 @@ func indeterminateWhy(rep evals.Report) string {
 }
 
 func printResult(r evals.Result) {
+	// Preconditions print above the checks because that is the order
+	// they should be read in: if one did not hold, every line below it
+	// is describing a run of something other than the case.
+	for _, p := range r.Preconditions {
+		mark := "PASS"
+		switch {
+		case p.Vacuous:
+			mark = "????"
+		case !p.Passed:
+			mark = "UNMET"
+		}
+		fmt.Printf("  [%s] precondition %s — %s\n", mark, p.Name, p.Reason)
+	}
 	for _, c := range r.Checks {
 		mark := "FAIL"
 		switch {

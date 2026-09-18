@@ -116,6 +116,7 @@ permissions.use_builtin_allow
 pricing.refresh
 pricing.source
 safety.bash_search_gate
+safety.parallel_subagent_writes
 safety.small_tier_parent
 safety.watchdog
 session.task_class

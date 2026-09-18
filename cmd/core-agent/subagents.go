@@ -105,6 +105,11 @@ type sessionBackgroundRecipe struct {
 	smallModelID string
 	allowAdhoc   bool
 	syncWait     time.Duration
+	// parallelWrites is safety.parallel_subagent_writes, carried here
+	// because a per-session manager is built from this recipe and would
+	// otherwise silently fall back to the default instead of honoring
+	// the operator's setting (#653).
+	parallelWrites string
 	// spawnToolNames are the DAEMON-bound spawn tools baked into the
 	// shared builtin list. They must be stripped from every session's
 	// surface and replaced with session-bound ones, or the session's
@@ -229,6 +234,7 @@ func (r sessionBackgroundRecipe) factory() compose.SessionBackgroundFactory {
 			background.WithAllowAdhoc(r.allowAdhoc),
 			background.WithSmallModelID(r.smallModelID),
 			background.WithSyncWaitTimeout(r.syncWait),
+			background.WithParallelWritePolicy(r.parallelWrites),
 		)
 		if err != nil {
 			return compose.SessionSubagents{}, err

@@ -160,6 +160,46 @@ type SafetyConfig struct {
 	//
 	// CLI override: --bash-search-gate=enforce|warn|allow.
 	BashSearchGate string `json:"bash_search_gate,omitempty"`
+
+	// ParallelSubagentWrites controls whether two background subagents
+	// that can both write to the filesystem may run at the same time
+	// (#653).
+	//
+	// Every in-process agent shares one working directory: there is no
+	// per-agent cwd anywhere in pkg/tools (bash execs without a Dir,
+	// file paths absolutize against the process cwd). Within a single
+	// agent, #460's mutation serializer already makes writes mutually
+	// exclusive, and that covers synchronous subagent delegation too,
+	// because subagent tools are wrapped by the parent's serializer.
+	// Background agents are the gap: each `spawn_agent` builds its own
+	// agent with its own serializer, so two of them can land a
+	// write_file — or a `bash` that runs `git checkout` — on the same
+	// tree in the same instant.
+	//
+	// Values: "refuse" (default) rejects a spawn whose granted tools
+	// can write while another write-capable background agent is still
+	// running, with an error naming the agent already holding the tree;
+	// "warn" allows it and logs a structured alert; "allow" disables
+	// the check.
+	//
+	// The check is on the *capability*, not on an observed collision —
+	// it fires on a subagent granted `bash` even if that agent only
+	// ever runs `go test`. That is deliberate: by the time a collision
+	// is observable the tree is already wrong. Two background agents
+	// granted only read-only or control-plane tools are never refused,
+	// and neither is a second spawn after the first has terminated.
+	//
+	// What this does NOT do, and no value of it does: serialize the
+	// parent's own writes against a background agent's, or prevent a
+	// logical read-modify-write race between agents that interleave at
+	// the turn level rather than the call level. The isolation this
+	// setting approximates is a per-subagent worktree; until that
+	// exists, refusing the shape is the guarantee on offer.
+	//
+	// The sanctioned escape for a genuinely parallel write workload is
+	// out-of-process subagents (spawn_remote_agent), which get their
+	// own filesystem, not "allow".
+	ParallelSubagentWrites string `json:"parallel_subagent_writes,omitempty"`
 }
 
 // SessionConfig carries per-session presets — currently just the
@@ -1710,6 +1750,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: unknown safety.bash_search_gate %q (want one of %q, %q, %q)",
 			c.Safety.BashSearchGate, BashSearchGateEnforce, BashSearchGateWarn, BashSearchGateAllow)
 	}
+	switch c.Safety.ParallelSubagentWrites {
+	case "", ParallelSubagentWritesRefuse, ParallelSubagentWritesWarn, ParallelSubagentWritesAllow:
+		// ok; "" defaults to refuse (see SafetyConfig.ParallelSubagentWrites).
+	default:
+		return fmt.Errorf("config: unknown safety.parallel_subagent_writes %q (want one of %q, %q, %q)",
+			c.Safety.ParallelSubagentWrites, ParallelSubagentWritesRefuse, ParallelSubagentWritesWarn, ParallelSubagentWritesAllow)
+	}
 	switch c.Permissions.PlanMode {
 	case "", PlanModeOff, PlanModeAdvisory, PlanModeRequired:
 		// ok; "" falls back to require_plan_artifact then off
@@ -1797,6 +1844,14 @@ const (
 	BashSearchGateEnforce = "enforce"
 	BashSearchGateWarn    = "warn"
 	BashSearchGateAllow   = "allow"
+)
+
+// Parallel-subagent-write policy constants. See
+// SafetyConfig.ParallelSubagentWrites. Listed strongest to weakest.
+const (
+	ParallelSubagentWritesRefuse = "refuse"
+	ParallelSubagentWritesWarn   = "warn"
+	ParallelSubagentWritesAllow  = "allow"
 )
 
 // Plan-mode constants. See PermissionsConfig.PlanMode for behavior.

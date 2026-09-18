@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
@@ -114,6 +116,13 @@ type resolvedSpawn struct {
 	// to reuse across concurrent instances.
 	tools    []tool.Tool
 	toolsets []tool.Toolset
+	// toolsetTools is the name+source snapshot of what toolsets expose,
+	// taken by the builder at registration (SubagentTemplate.
+	// ToolsetTools). The parallel-write guard classifies the toolset
+	// dimension from this rather than enumerating a live MCP server at
+	// spawn time; empty means "unknown surface", which classifies as
+	// writing. Nil on the catalog path, which has no toolsets.
+	toolsetTools []attach.ToolInfo
 	// buildModel builds a fresh LLM for this spawn. Called after the
 	// reservation so a Stop arriving during its (network) I/O still
 	// cancels cleanly (#366). priceModelID labels the model for /usage.
@@ -257,6 +266,23 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w (running=%d, max=%d)", ErrTooManyConcurrent, m.runningCount(), m.maxConcurrent)
 	}
+	// Two background subagents that can both write share one working
+	// directory, and unlike two tool calls inside one agent they are not
+	// covered by #460's mutation serializer — each launch builds its own
+	// (#653). Checked here, under the same lock as the caps, so a burst
+	// of concurrent launches cannot all observe "no writer running".
+	writesFS := spawnWritesSharedFilesystem(rs)
+	warnHolder := ""
+	if writesFS && m.parallelWrites != policyAllow {
+		if holder := m.runningWriterLocked(); holder != "" {
+			if m.parallelWrites == policyRefuse {
+				m.mu.Unlock()
+				return nil, concurrentWriterRefusal(rs.name, holder)
+			}
+			// policyWarn: proceed, but say so once the lock is dropped.
+			warnHolder = holder
+		}
+	}
 	// Reserve the slot before we drop the lock so a concurrent launch
 	// of the same name (or contending for the last concurrency slot)
 	// sees us already registered.
@@ -283,9 +309,15 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		status:    StatusRunning,
 		done:      make(chan struct{}),
 		cancel:    cancel,
+		writesFS:  writesFS,
 	}
 	m.agents[rs.name] = handle
 	m.mu.Unlock()
+
+	if warnHolder != "" {
+		log.Printf("Manager: safety.parallel_subagent_writes=warn: starting write-capable subagent %q while %q is already running; both write to the same working directory",
+			rs.name, warnHolder)
+	}
 
 	// Build a fresh LLM per subagent — see docs/background-subagents-design.md
 	// "LLM instance per subagent" for the rationale. For a catalog Spec this

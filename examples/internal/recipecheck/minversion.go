@@ -265,6 +265,15 @@ var GatedFeatures = []GatedFeature{
 		Why:  "the bash search gate; an older daemon ignores it and leaves the gate off",
 	},
 	{
+		Path: "safety.parallel_subagent_writes",
+		Min:  "2.10.0-dev.2",
+		Why: "whether two write-capable background subagents may share the working directory (#653). " +
+			"The silent reversal runs BOTH ways here: a recipe that set `refuse` gets concurrent " +
+			"writers on an older daemon, and a recipe that deliberately set `allow` — because its " +
+			"subagents write to disjoint trees — gets a guard that isn't there rather than one it " +
+			"turned off, which at least fails in the safe direction",
+	},
+	{
 		Path: "agent.auto_continue",
 		Min:  "2.8.0",
 		Why:  "auto-continue of a restart-interrupted turn (#559); an older daemon ignores the block, including an explicit opt-out",

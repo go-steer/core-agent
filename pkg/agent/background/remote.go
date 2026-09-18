@@ -265,6 +265,13 @@ const spawnRemoteAgentToolName = "spawn_remote_agent"
 // that maps events from the remote into the alert channel. Called by
 // NewSpawnRemoteAgentTool's handler.
 func (m *Manager) registerRemote(rh RemoteAgentHandle, spec RemoteAgentSpec) {
+	// writesFS is deliberately left false: a remote subagent runs out of
+	// process against its own filesystem, so it cannot interleave writes
+	// into this process's working directory. That is load-bearing, not
+	// incidental — the #653 refusal points the model at
+	// spawn_remote_agent as the way to get two writers running at once,
+	// and setting writesFS here would close the escape hatch our own
+	// error message recommends (TestSpawn_ARemoteAgentDoesNotHoldTheLocalTree).
 	bh := &Handle{
 		Name:      spec.Name,
 		Branch:    "remote." + spec.Name,

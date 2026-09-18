@@ -93,6 +93,10 @@ type Manager struct {
 	defaultBudgets   Budgets
 	defaultScheduler coretools.Scheduler
 
+	// parallelWrites is the resolved safety.parallel_subagent_writes
+	// policy: refuse (default) / warn / allow. See parallelwrites.go.
+	parallelWrites string
+
 	// predefined is the operator-curated roster the model can spawn by
 	// reference (spawn_agent {agent: "<name>"}), keyed by spec name.
 	// Templates: each carries a persona, tool grant, model, and budgets
@@ -160,6 +164,12 @@ type Handle struct {
 	Name      string
 	Branch    string
 	StartedAt time.Time
+
+	// writesFS records whether this subagent's granted tools could
+	// modify the shared working directory (#653). Set at construction,
+	// never mutated, so the parallel-write guard can read it while
+	// holding only m.mu.
+	writesFS bool
 
 	mu     sync.Mutex
 	status Status
@@ -443,6 +453,7 @@ type bgMgrConfig struct {
 	allowAdhoc       bool
 	smallModelID     string
 	syncWaitTimeout  time.Duration
+	parallelWrites   string
 }
 
 // WithProvider wires the model provider + model ID used to
@@ -481,6 +492,18 @@ func WithMaxDepth(n int) ManagerOption {
 // result error the model can adapt to. Default 8.
 func WithMaxConcurrent(n int) ManagerOption {
 	return func(c *bgMgrConfig) { c.maxConcurrent = n }
+}
+
+// WithParallelWritePolicy selects what happens when a write-capable
+// subagent would start while another write-capable subagent is still
+// running — they share one working directory (#653).
+//
+// One of "refuse" (default), "warn", or "allow"; empty or unrecognized
+// resolves to "refuse". See config.SafetyConfig.ParallelSubagentWrites
+// for the operator-facing description and parallelwrites.go for why
+// refusing the shape is the guarantee on offer instead of isolation.
+func WithParallelWritePolicy(mode string) ManagerOption {
+	return func(c *bgMgrConfig) { c.parallelWrites = mode }
 }
 
 // WithDefaultBudgets sets the budgets a spawn request
@@ -599,6 +622,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		catalog:          catalog,
 		maxDepth:         cfg.maxDepth,
 		maxConcurrent:    cfg.maxConcurrent,
+		parallelWrites:   resolveWritePolicy(cfg.parallelWrites),
 		defaultBudgets:   cfg.defaultBudgets,
 		defaultScheduler: cfg.defaultScheduler,
 		predefined:       predefined,

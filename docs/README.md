@@ -38,6 +38,7 @@ research + friction logs, or handover notes.
 - [`gemini-tier1-followup-plan.md`](gemini-tier1-followup-plan.md) — parallelism mandate, tool-description rewrites, `read_many_files`
 - [`scion-research-demo-design.md`](scion-research-demo-design.md) — Scion `RemoteAgentSpawner` reference + parallel-research demo
 - [`subagent-return-contract-design.md`](subagent-return-contract-design.md) — how a subagent hands a value back: `return_result`, terminating loops for bounded delegations, typed stop reasons
+- [`self-development-design.md`](self-development-design.md) — pointing core-agent at core-agent: a committed `/.agents/` recipe, the T0→T3 ladder, and the harness re-parenting the root config causes
 
 ### Sessions, durability + multi-tenancy
 

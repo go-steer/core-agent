@@ -258,6 +258,17 @@ session opens, and the first model call 403s inside a turn, minutes later.
 `set-up-demo.sh` re-checks the same bindings at the end of a deploy and
 prints what is missing, but by then you have already waited for a rollout.
 
+**`set-up-demo.sh` dirties the checkout.** It drives `kustomize edit`, which
+rewrites `deploy/overlays/example/kustomization.yaml` and
+`patch-watcher-args.yaml` **in place**, substituting your real `PROJECT_ID`,
+`CLUSTER_NAME`, Artifact Registry path and `--cluster-name` for the
+`your-project-id` / `your-cluster` placeholders — and reordering blocks and
+detaching their comments while it is there, so the diff is far larger than the
+substitution. After any live run, check `git status` for those two files and
+revert them (`git checkout -- examples/gke-platform-agent/`) before committing.
+A `git add -A` will otherwise publish your project ID and cluster name into the
+recipe.
+
 Deployed, the recipe is a **hub**: `config.hub.json` adds `attach.listen`
 plus `multi_session` with a bearer table, and a [lookout](https://github.com/go-steer/lookout)
 watcher injects one session per incident. The agent is the same in both

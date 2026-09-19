@@ -232,6 +232,18 @@ What a turn-scoped bound cannot do on its own is stop a driver that simply re-dr
 
 A **per-session** trip needs more than a bare reset. The accumulator is already at or past the ceiling, so clearing the flag alone re-trips on the very next turn — the reset surface refuses that case outright (HTTP **409**) and asks for `additional_budget_usd`, which RAISES the ceiling. It never zeroes the accumulator or restarts a spend window: `/usage`, the eventlog-derived cost, and the ceiling check all keep counting the same dollars, so a session that spent $12 still reports $12 after the operator hands it another $5 of runway. A per-turn **escalation** needs no budget — the bound it broke was per-turn, so a bare reset is enough, and the reset clears the consecutive-trip count along with the halt.
 
+#### Without an attach listener, the cut is in the log
+
+`guardrail-trip` reaches a client that subscribed to one. A plain `core-agent -p '…'` never did: the operator-event seam is a no-op until the attach adapter registers an emitter, so through v2.10.0-dev.1 an unattended cut produced no operator-visible report at all and the entire output was the model client's own `context canceled`, surfaced two layers down and indistinguishable from a provider failure. That is the shape that most needs it — unattended runs default to `watchdog=enforce` and a `$10.00` session ceiling, so they are at once the likeliest to trip a guardrail and the likeliest to have nobody listening ([#1131](https://github.com/go-steer/core-agent/issues/1131)).
+
+Every guardrail that cuts a turn — cost ceiling, watchdog, and the approval gate's [refusal-storm cut](/concepts/permissions/#in-session-decisions) — now writes one line naming itself, carrying its own reason, and disclaiming the cancellation that follows:
+
+```text
+agent: cost_ceiling guardrail cut the turn in flight — the cancellation error that follows is this cut, not a provider failure: per-turn cost ceiling exceeded: this turn cost $0.0512, ceiling is $0.0500. The turn was stopped; the session is NOT halted and the next turn starts from a fresh per-turn budget. 1 in a row now — at 3 the session halts and needs an operator reset.
+```
+
+The name is the same token `error.type` carries on `gen_ai.agent.invocation.duration`, so the log and the metrics backend describe one halt in one vocabulary. A trip at the turn *boundary* logs `guardrail tripped:` instead, because that turn completed and produced an answer — the same distinction `halted_turn` draws on the wire. Logging is unconditional rather than conditional on being headless: an attached client gets both, exactly as it has for [context-budget turn cuts](#growth-inside-a-turn-since-v210) since v2.10. Carrying the *whole* typed operator-event stream to stderr on headless runs is [#1132](https://github.com/go-steer/core-agent/issues/1132); this line stands on its own because the refusal-storm cut deliberately emits no event for such a stream to carry.
+
 ### Resetting a tripped guardrail
 
 Both backstops share one recovery surface ([#666](https://github.com/go-steer/core-agent/issues/666)):

@@ -49,23 +49,66 @@
 
 package agent
 
-import "github.com/go-steer/core-agent/v2/pkg/attach"
+import (
+	"log"
 
-// emitGuardrailTrip puts a trip on the attach stream as the
-// non-terminal `guardrail-trip` event (#891). One construction site for
-// both guardrails, so the two cannot drift — they were already meant to
-// be mirror images and the payload is now shared rather than parallel.
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+)
+
+// emitGuardrailTrip reports a trip: to the log always, and to the attach
+// stream as the non-terminal `guardrail-trip` event (#891). One
+// construction site for both guardrails, so the two cannot drift — they
+// were already meant to be mirror images and the payload is now shared
+// rather than parallel.
 //
 // haltedTurn tells the consumer which frame to expect next: true means
 // the caller is about to Interrupt and a `canceled` turn-error follows;
 // false means the turn completed (or never started) and `turn-complete`
 // follows, or nothing does.
+//
+// The log half is #1131, and it is here rather than at the two cut sites
+// for the reason the rest of this function is: the reason string is
+// built inside maybeTripWatchdog and maybeEnforceCostCeiling and does
+// not survive out to enforceWatchdogInTurn, and a third guardrail added
+// later gets the log for free instead of having to remember it. Logging
+// both shapes and not only the cut is deliberate — a session-scoped halt
+// at the turn boundary is equally invisible headless, and an operator
+// reading "the agent stopped taking turns" wants the same sentence.
 func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn bool) {
+	if haltedTurn {
+		logGuardrailCut(guardrail, reason)
+	} else {
+		log.Printf("agent: %s guardrail tripped: %s", guardrail, reason)
+	}
 	a.emit(attach.EventGuardrailTrip, attach.GuardrailTrip{
 		Guardrail:  guardrail,
 		Reason:     reason,
 		HaltedTurn: haltedTurn,
 	})
+}
+
+// logGuardrailCut writes the one line an unattended operator gets when a
+// guardrail cuts the turn in flight (#1131).
+//
+// Agent.emit is a no-op until an emitter is registered and the only
+// non-test registration site in the tree is the attach adapter, so a run
+// without --attach-listen had no channel for this at all. What reached
+// the operator instead was the downstream consequence — the model
+// client's `context canceled`, which reads as a provider failure — and
+// that is the shape MOST likely to need the line, because an unattended
+// run defaults to watchdog=enforce and a session cost ceiling. Same belt
+// as cutTurnForContextBudget, which has logged its own cut alongside the
+// event since #975.
+//
+// The message names the guardrail and disclaims the cancellation ahead
+// of time, because the cancellation is what the operator sees first in a
+// stream and the log line is what explains it. Wiring the whole typed
+// event stream to stderr is the broader fix (#1132); this line stands on
+// its own because the refusal-storm arm deliberately emits no event at
+// all (see refusal_storm.go) and so is invisible even with one.
+func logGuardrailCut(guardrail, reason string) {
+	log.Printf("agent: %s guardrail cut the turn in flight — the cancellation "+
+		"error that follows is this cut, not a provider failure: %s", guardrail, reason)
 }
 
 // markGuardrailHalt records that a guardrail is cutting the turn that is

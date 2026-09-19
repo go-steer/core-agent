@@ -76,9 +76,9 @@ import (
 // reading "the agent stopped taking turns" wants the same sentence.
 func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn bool) {
 	if haltedTurn {
-		logGuardrailCut(guardrail, reason)
+		a.logGuardrailCut(guardrail, reason)
 	} else {
-		log.Printf("agent: %s guardrail tripped: %s", guardrail, reason)
+		log.Printf("agent: %s guardrail tripped%s: %s", guardrail, a.logSessionSuffix(), reason)
 	}
 	a.emit(attach.EventGuardrailTrip, attach.GuardrailTrip{
 		Guardrail:  guardrail,
@@ -106,9 +106,56 @@ func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn bool) {
 // event stream to stderr is the broader fix (#1132); this line stands on
 // its own because the refusal-storm arm deliberately emits no event at
 // all (see refusal_storm.go) and so is invisible even with one.
-func logGuardrailCut(guardrail, reason string) {
-	log.Printf("agent: %s guardrail cut the turn in flight — the cancellation "+
-		"error that follows is this cut, not a provider failure: %s", guardrail, reason)
+//
+// It names the session too (#1136), which the one-shot run this was
+// written for does not need and a daemon cannot do without: several
+// sessions interleave their lines into one log, and the halt that most
+// needs an operator — a per-session cost ceiling — is reported by asking
+// them to reset it with additional budget, which is a request that takes
+// the id.
+func (a *Agent) logGuardrailCut(guardrail, reason string) {
+	log.Printf("agent: %s guardrail cut the turn in flight%s — the cancellation "+
+		"error that follows is this cut, not a provider failure: %s",
+		guardrail, a.logSessionSuffix(), reason)
+}
+
+// logSessionSuffix names the session a log line is about.
+//
+// Bracketed, where the daemon's own lines write a bare `session %s:`
+// prefix (pkg/compose/auto_continue.go, pkg/runner/wakeloop.go). Those
+// lead with it and can punctuate it with a colon; these two splice it
+// into the middle of a sentence, where an unbracketed `session s-7`
+// would read as prose. A grep for `session <id>` still finds both.
+//
+// Splicing costs one anchor and saves the other. `agent: <guardrail>
+// guardrail cut the turn in flight` survives byte-for-byte, because the
+// suffix lands after "in flight"; `<guardrail> guardrail tripped:` does
+// NOT, because the suffix lands between the word and the colon. That is
+// a real break and it is taken knowingly — #1131 is days old and in no
+// tag, and a sweep of the tree found nothing matching on either string.
+// Drop the colon from any grep that has one.
+//
+// It does not special-case the single-session run, even though its id is
+// the unglamorous `default` that New fills in when nothing passes
+// WithSession. That is a real id and not a placeholder: it is what the
+// reset endpoint takes, and it is already what the --no-repl banner
+// prints as `session %s`, so a log line saying something else about the
+// same run would be the inconsistency, not the noise.
+//
+// The empty case returns nothing rather than `[session ]` and is only
+// reachable through an explicit WithSession(_, ""), which no caller in
+// the tree does — a guard, not a mode.
+//
+// No lock on a.sessionID: no production path reassigns it — New sets it
+// from the options and nothing else writes it — and SessionID() has read
+// it unlocked since it was added. (One test does rebind it, on an idle
+// agent with no turn in flight. A future session-rebind path would have
+// to revisit both readers, not just this one.)
+func (a *Agent) logSessionSuffix() string {
+	if a == nil || a.sessionID == "" {
+		return ""
+	}
+	return " [session " + a.sessionID + "]"
 }
 
 // markGuardrailHalt records that a guardrail is cutting the turn that is

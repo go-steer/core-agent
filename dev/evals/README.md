@@ -368,6 +368,25 @@ than by reading it:
   is an error rather than an empty line, because empty reads as "the
   field is unset" and that is a fact the agent will report.
 
+- **A pod's state is read out of the world, once.** `describe` used to
+  hardcode `State: Waiting` and `Ready: False`, so a pod the world
+  declares Running and `1/1` came back as *waiting, because it is
+  running* — and disagreed with its own `-o json`, which derived
+  readiness correctly
+  ([#1128](https://github.com/go-steer/core-agent/issues/1128)). A live
+  run noticed the contradiction and spent turns deciding whether the
+  *cluster* was inconsistent, in a case whose entire subject is what
+  survives a long horizon. Both surfaces now call one helper, because
+  the defect was two hardcoded answers that were not the same answer.
+- **Every kind the shim serves renders in every format it advertises.**
+  `get events -o json` returned the text table long after the fallback
+  was removed for pods, deployments, namespaces and nodes, and it
+  survived because every output-format test exercised `get deployment`.
+  Events is the kind most likely to be piped into `jq`. The tests are now
+  driven by a per-kind table with a coverage contract against
+  `KIND_ALIASES`, so the next kind added fails until someone renders it —
+  a sample of one is how this class of bug hides.
+
 Fidelity failures of this kind share a shape, and it is not the shape a
 mock usually fails in. None of them is a refusal or a shrug — each is a
 confident, well-formed, quotable answer that happens to be false, which

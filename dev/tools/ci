@@ -48,11 +48,13 @@ STEPS=(
   "vet             dev/tools/vet"
   "build           dev/tools/build"
   "coretui-guards  dev/tools/verify-coretui-guards"
+  "config-pins     dev/tools/verify-harness-config-pinned"
   "lint            dev/tools/lint-go"
   "mod-tidy        dev/tools/verify-mod-tidy"
   "test            dev/tools/test-unit"
   "examples        dev/tools/examples-smoke"
   "gke-drill       dev/tools/verify-gke-drill"
+  "release-notes   dev/tools/verify-release-notes"
   "vuln            dev/tools/verify-vuln"
 )
 

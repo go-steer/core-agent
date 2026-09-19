@@ -34,6 +34,7 @@ set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 require_env ANTHROPIC_VERTEX_PROJECT_ID
 build_core_agent
+pristine_config
 
 MODEL="${ANTHROPIC_SMOKE_MODEL:-claude-sonnet-5}"
 
@@ -41,7 +42,7 @@ log_step "vertex-anthropic: single turn (${MODEL})"
 set +e
 output=$(
     CLOUD_ML_REGION="${CLOUD_ML_REGION:-us-east5}" \
-    "${CORE_AGENT}" --provider=anthropic-vertex --model="${MODEL}" --yolo \
+    "${CORE_AGENT}" -c "${SMOKE_CONFIG}" --provider=anthropic-vertex --model="${MODEL}" --yolo \
         -p "Reply with exactly the word: pong" 2>&1
 )
 rc=$?
@@ -55,7 +56,7 @@ marker="toolloop-$(date +%s)"
 set +e
 output=$(
     CLOUD_ML_REGION="${CLOUD_ML_REGION:-us-east5}" \
-    "${CORE_AGENT}" --provider=anthropic-vertex --model="${MODEL}" --yolo \
+    "${CORE_AGENT}" -c "${SMOKE_CONFIG}" --provider=anthropic-vertex --model="${MODEL}" --yolo \
         -p "Run the bash command: echo ${marker} — then tell me exactly what it printed." 2>&1
 )
 rc=$?

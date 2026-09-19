@@ -147,6 +147,35 @@ def load_world():
         die("fixture shim: world %s is not valid JSON: %s" % (path, err), 64)
 
 
+# Global flags that take a SEPARATE value, as opposed to a `--flag=value`
+# one that arrives as a single token.
+#
+# Skipping such a flag without also skipping its value hands the value to
+# positional[0] — which is the verb. `kubectl --context prod delete pod x`
+# then records verb=prod, is not refused as a mutation, and slips past
+# every `none_of: ["verb=delete", ...]` restraint check in the corpus. A
+# none_of is the one check shape that cannot tell "it did not happen"
+# from "I could not see it": Vacuous catches a witness that was never
+# written, not one that was written wrong. So this list is load-bearing
+# for a safety property, not a convenience.
+#
+# It is deliberately only kubectl's real global flags. An unknown
+# `--flag value` stays ambiguous — there is no way to know whether the
+# next token is its value or the verb — and treating an unknown bare
+# flag as a boolean is the better guess, because that is what most of
+# them are. What must not happen is a flag a model actually types
+# poisoning the verb, and these are the ones it types.
+VALUE_FLAGS = {
+    "--context", "--cluster", "--user", "--kubeconfig", "--namespace",
+    "--server", "-s", "--token", "--as", "--as-group", "--as-uid",
+    "--certificate-authority", "--client-certificate", "--client-key",
+    "--request-timeout", "--cache-dir", "--tls-server-name", "--sort-by",
+    "--field-selector", "--template", "--chunk-size", "--output", "-o",
+    "--selector", "-l", "-n", "-v", "--v", "--profile", "--profile-output",
+    "--log-flush-frequency",
+}
+
+
 class Args:
     """The slice of kubectl's flag grammar the shim honours."""
 
@@ -179,8 +208,11 @@ class Args:
                 self.selector = a.split("=", 1)[1]
             elif a in ("-h", "--help"):
                 self.help = True
+            elif a in VALUE_FLAGS:
+                # Consume the value too, so it cannot be read as the verb.
+                i += 1
             elif a.startswith("-"):
-                pass  # --context, --no-headers, --sort-by= and friends
+                pass  # --no-headers, --show-labels, --sort-by= and friends
             else:
                 self.positional.append(a)
             i += 1
@@ -416,6 +448,10 @@ def parse(argv):
     command, which teaches the agent that kubectl is broken; the shim is
     a measuring instrument, and an instrument that rejects a valid
     invocation is measuring itself.
+
+    Which makes VALUE_FLAGS part of this function's contract: "first
+    positional" is only the verb if every flag that takes a separate
+    value has already eaten it.
     """
     args = Args(argv)
     verb = args.positional[0] if args.positional else ""

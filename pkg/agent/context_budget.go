@@ -205,7 +205,14 @@ func (a *Agent) cutTurnForContextBudget(used, size int) {
 		"a tool result took the estimated context to %d of %d tokens (%.0f%%, including %d unmeasured bytes); "+
 			"cut the turn before building a request the provider would reject, and compaction will run first on the next turn.",
 		used, size, 100*float64(used)/float64(size), pending)
-	log.Printf("agent: %s", detail)
+	// The session goes on the log line only, not into detail (#1136).
+	// detail is also the durable degraded row's text, and that row is
+	// already filed under its session — repeating the id inside it would
+	// be noise in the one place it is redundant. Leading rather than
+	// mid-sentence because detail is a whole sentence of its own; the
+	// guardrail lines can splice theirs in after the guardrail's name
+	// because they build the sentence around it.
+	log.Printf("agent:%s %s", a.logSessionSuffix(), detail)
 	a.recordContextReductionDegraded(attach.ContextReductionTurnCut, detail)
 	a.Interrupt()
 }

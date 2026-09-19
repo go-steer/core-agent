@@ -137,13 +137,16 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 		label string
 		// reason is a distinctive fragment of the arm's own text.
 		reason string
+		// session is the id drive builds its agent with (#1136).
+		session string
 	}{
 		{
 			// $10/MTok x 1000 tokens = $0.01 per model call against a
 			// $0.05 per-turn ceiling: the trip lands mid-loop.
-			name:   "cost ceiling",
-			label:  attach.TurnErrorCostCeiling,
-			reason: "per-turn cost ceiling exceeded",
+			name:    "cost ceiling",
+			label:   attach.TurnErrorCostCeiling,
+			reason:  "per-turn cost ceiling exceeded",
+			session: "s-1131-cost",
 			drive: func(t *testing.T) {
 				llm := &burnLoopLLM{perCallIn: 1000}
 				a, err := New(llm,
@@ -176,9 +179,10 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 		{
 			// Critical on the first observed tool call, so the halt lands
 			// inside the turn rather than at its boundary.
-			name:   "watchdog enforce",
-			label:  attach.TurnErrorWatchdog,
-			reason: "looping on todo.",
+			name:    "watchdog enforce",
+			label:   attach.TurnErrorWatchdog,
+			reason:  "looping on todo.",
+			session: "s-1131-wd",
 			drive: func(t *testing.T) {
 				w := &fakeWatchdog{pending: []watchdog.Alert{{
 					Signal:   "repeated-tool-call",
@@ -209,9 +213,10 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 			// one on purpose), so this line is the only live report of it
 			// that exists — #1132's stderr emitter would not surface it
 			// either.
-			name:   "refusal storm",
-			label:  attach.TurnErrorRefusalStorm,
-			reason: "no operator reset is needed",
+			name:    "refusal storm",
+			label:   attach.TurnErrorRefusalStorm,
+			reason:  "no operator reset is needed",
+			session: "s-1131-storm",
 			drive: func(t *testing.T) {
 				h, cleanup := openTestEventLog(t)
 				defer cleanup()
@@ -252,6 +257,15 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 				t.Errorf("cut line does not carry the arm's own reason %q:\n%s\n\n"+
 					"Naming the guardrail says which one; the reason is the half that "+
 					"says why, and it is what the operator acts on", tc.reason, got)
+			}
+			// #1136. Distinct ids per arm, so this cannot pass on a
+			// constant: each case asserts the session ITS agent was
+			// built with, and any single hardcoded suffix fails at
+			// least two of the three.
+			if want := "[session " + tc.session + "]"; !strings.Contains(got, want) {
+				t.Errorf("cut line does not name %q:\n%s\n\n"+
+					"A daemon interleaves several sessions into one log, and the "+
+					"operator's next move — resetting the guardrail — takes the id", want, got)
 			}
 			if !strings.Contains(got, "not a provider failure") {
 				t.Errorf("cut line does not disclaim the cancellation that follows:\n%s\n\n"+
@@ -333,10 +347,16 @@ func TestGuardrailTripAtTheTurnBoundaryIsLoggedWithoutClaimingACut(t *testing.T)
 	}
 
 	out := sink.String()
-	if !strings.Contains(out, "watchdog guardrail tripped:") {
+	if !strings.Contains(out, "watchdog guardrail tripped") {
 		t.Errorf("a session-halting trip at the turn boundary was not logged:\n%s\n\n"+
 			"Headless, this is the only notice an operator gets that the agent has "+
 			"stopped accepting turns", out)
+	}
+	// #1136: and it says which session stopped accepting them. This is
+	// the branch that needs the id most — the reason text ends by asking
+	// the operator to reset the guardrail, and the reset takes an id.
+	if !strings.Contains(out, "watchdog guardrail tripped [session s-1131-post]:") {
+		t.Errorf("the boundary trip does not name the session an operator must reset:\n%s", out)
 	}
 	if !strings.Contains(out, "looping on read_file 5x.") {
 		t.Errorf("the trip line does not carry the watchdog's reason:\n%s", out)
@@ -345,5 +365,74 @@ func TestGuardrailTripAtTheTurnBoundaryIsLoggedWithoutClaimingACut(t *testing.T)
 		t.Errorf("a boundary trip logged %d cut lines %v; want none — the turn "+
 			"completed and answered, and telling the operator it was cut sends them "+
 			"looking for a truncated answer that exists", len(lines), lines)
+	}
+}
+
+// TestGuardrailTripNamesTheDefaultSessionToo pins the decision #1136 had
+// to make about the run that does NOT need the id: a single-session
+// agent, which is every `-p` invocation, because nothing on the CLI path
+// calls WithSession and New fills in `default`.
+//
+// Suppressing the suffix there would read as tidier and would be wrong.
+// `default` is the id the reset endpoint takes and the id the --no-repl
+// banner already prints, so an operator who reads the halt line and the
+// banner has to be given one answer, not one answer and a silence.
+func TestGuardrailTripNamesTheDefaultSessionToo(t *testing.T) {
+	// Deliberately not parallel: captures the global logger.
+	sink := captureAgentLog(t)
+
+	w := &fakeWatchdog{pending: []watchdog.Alert{{
+		Signal:   "repeated-tool-call",
+		Severity: watchdog.SeverityCritical,
+		Reason:   "looping on read_file 5x.",
+	}}}
+	// No WithSession, which is the whole point of the case.
+	a, err := New(oneShotLLM{}, WithWatchdog(w, nil), WithWatchdogEnforce())
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	assertHeadlessAgent(t, a)
+
+	for _, err := range a.Run(context.Background(), "hi") {
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	}
+
+	if out := sink.String(); !strings.Contains(out, "watchdog guardrail tripped [session "+defaultSessionID+"]:") {
+		t.Errorf("a trip on the default session names no session:\n%s\n\n"+
+			"An operator on a one-shot run still resets by id, and %q is the id",
+			out, defaultSessionID)
+	}
+}
+
+// TestContextBudgetCutNamesTheSession covers the fourth path that cuts a
+// turn in flight. It is not a guardrail and has logged on its own since
+// #975, so #1131 passed it over — but it ends a turn with the same
+// `context canceled` and is read out of the same multiplexed daemon log,
+// so leaving it as the one unnamed cut of four is a gap, not a scope.
+//
+// The id goes on the log line and NOT into the degraded row's detail
+// text: the row is already filed under its session, and this test pins
+// that split, because appending to `detail` would have satisfied a
+// looser reading of it while duplicating the id in the durable record.
+func TestContextBudgetCutNamesTheSession(t *testing.T) {
+	// Deliberately not parallel: captures the global logger.
+	sink := captureAgentLog(t)
+
+	window := budgetWindow(t)
+	a := budgetAgent(t, "s-1136-ctx", int(0.90*float64(window)), NewDefaultCompactor())
+	a.observeContextGrowth(toolResultEvent("kubectl", bytesForTokens(int(0.10*float64(window)))))
+
+	if out := sink.String(); !strings.Contains(out, "agent: [session s-1136-ctx] a tool result took") {
+		t.Errorf("the context-budget cut names no session:\n%s\n\n"+
+			"Three of the four in-turn cuts name theirs; an operator who greps a "+
+			"daemon log for the fourth gets a line they cannot attribute", out)
+	}
+	_, detail := findContextReductionDegradedRow(t, a)
+	if strings.Contains(detail, "s-1136-ctx") {
+		t.Errorf("the degraded row's detail repeats the session id:\n%s\n\n"+
+			"The row is already stored against its session, so the id belongs on "+
+			"the log line the operator greps and nowhere else", detail)
 	}
 }

@@ -387,6 +387,36 @@ Claude Code arm ran to completion. Output quality is not the risk; staying
 alive for the length of a task is. T3 is unattended `autonomous.Run` by
 definition, so this is gating for that rung specifically, not for T0–T2.
 
+*Narrowing (post-[#1131](https://github.com/go-steer/core-agent/issues/1131)).*
+"No trip in the log" was read at the time as covering every guardrail. It does
+not, and the halves fall on opposite sides:
+
+- **The watchdog is exonerated.** `drainWatchdogAlerts` hands every alert to
+  `onWatchdogAlert` regardless of mode, and `cmd/core-agent` wires that to
+  stderr, so a `core-agent: watchdog [critical] …` line would have printed on
+  this run with no attach listener and no flags. It did not. The same is true
+  of the context-budget cut, which has logged alongside its event since
+  [#975](https://github.com/go-steer/core-agent/issues/975). Both silences are
+  evidence.
+- **The cost ceiling and the refusal-storm cut are not.** Until #1131 those two
+  reported themselves only through the operator-event seam, which is a no-op
+  without the attach adapter. Their silence on this run means nothing, so the
+  suspect set is: a per-turn or per-session ceiling trip, a refusal-storm cut,
+  or a genuine provider-side cancellation.
+
+Two traps for whoever re-runs this. The recipe sets `max_turn_cost_usd: 2.0`
+(see the block above) and **`--max-turn-cost-usd=0` will not disarm it**:
+`cmd/core-agent` applies that flag only when it parses greater than zero,
+unlike `--max-session-cost-usd`, which tracks whether the flag was set at all.
+Disarming the per-turn ceiling for a diagnostic re-run means editing the
+recipe. And a re-run on a build that predates #1131 answers nothing — it
+reproduces the same silence by construction, and would reproduce it as the
+same false negative that opened this blocker. **No tagged release carries the
+fix**: `v2.10.0-dev.1` was cut 2026-09-17 and #1131 landed on main two days
+later as `edf3f625`, with the session-naming follow-up
+([#1136](https://github.com/go-steer/core-agent/issues/1136)) after it. The
+re-run has to build from a main that contains both.
+
 Method note, since it applies to the next round: n=1 per arm, and D's two runs
 agreed on the principle while disagreeing on the structure (shared package vs.
 self-contained checker), so run-to-run variance is real and these scores carry

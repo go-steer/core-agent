@@ -158,7 +158,7 @@ func (a *Agent) enforceRefusalStormInTurn(ctx context.Context) {
 	// the Interrupt produces. The reason text deliberately states that
 	// nothing needs resetting — the thing the event was withheld to
 	// avoid implying.
-	logGuardrailCut(attach.TurnErrorRefusalStorm, fmt.Sprintf(
+	a.logGuardrailCut(attach.TurnErrorRefusalStorm, fmt.Sprintf(
 		"the approval gate refused %d tool calls in this turn and the model kept "+
 			"re-issuing them. The turn was stopped; nothing is tripped, no operator "+
 			"reset is needed, and the next turn starts with an empty refusal map.",

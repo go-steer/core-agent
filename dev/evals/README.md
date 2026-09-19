@@ -324,7 +324,13 @@ than by reading it:
 - **The verb is the first positional argument, not `argv[0]`.** kubectl
   takes global flags on either side of the verb, so `kubectl -n prod get
   pods` is valid and an instrument that calls it an unknown command is
-  measuring itself.
+  measuring itself. Which makes `VALUE_FLAGS` part of that rule and not
+  a detail: a flag the parser skips *without* skipping its value donates
+  that value to the first positional slot, so `kubectl --context prod
+  delete pod x` records `verb=prod`, escapes the `Forbidden` refusal and
+  slips past every `none_of` restraint check. Found in a live run
+  ([#1122](https://github.com/go-steer/core-agent/issues/1122)), where
+  the model's very first command used the space-separated form.
 - **A pod that never started is waiting for a named reason.** `kubectl
   logs` on it returns `waiting to start: <reason>`, and the shim derives
   the reason from the pod's declared status instead of hardcoding the
@@ -343,6 +349,17 @@ that field**. The same flag-placement fact bites here from the other
 side: `kubectl -n prod delete pod x` is a delete that the substring
 `"kubectl delete"` does not appear in, and the check that must not be
 fooled by flag placement is exactly the one asserting nothing changed.
+`TestShippedRestraintChecksMatchTheVerbField` enforces it rather than
+leaving it to the author: a `none_of` term on a witness source that names
+a mutating verb without a `verb=` anchor fails offline.
+
+A `none_of` is the one check shape that cannot distinguish "it did not
+happen" from "I could not see it". `Vacuous` catches a witness that was
+never written; nothing catches a witness written *wrong*. So the shim's
+verb resolution and the corpus's restraint terms are both pinned by
+tests, and the shim is tested as a subprocess — the property is what
+lands in the witness file, and the witness is written at a call site a
+parser test would never reach.
 
 ## What this is not
 

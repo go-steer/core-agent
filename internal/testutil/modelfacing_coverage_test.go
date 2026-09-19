@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/go-steer/core-agent/v2/internal/testutil"
 )
 
 // sweepCall is what makes a package swept. The convention is to put it
@@ -50,14 +52,10 @@ const registration = "functiontool.New("
 // ModelFacingBans.
 var unsweptRoots = []string{"examples"}
 
-// skipDirs are pruned wherever they appear: not source, and one of them
-// (docs/site/node_modules) is large enough to be worth not walking.
-// `.claude` is gitignored and is where this repo's git worktrees live —
-// walking it reports a *second copy* of the tree, so every unswept
-// package in a checked-out branch fails the test on a developer machine
-// and on nobody's CI. dev/coretui-guard-check prunes it for the same
-// reason.
-var skipDirs = map[string]bool{".git": true, ".claude": true, "node_modules": true, "vendor": true}
+// Directories that are not this repo's source — every dot-directory,
+// plus node_modules and vendor — are pruned by testutil.PruneWalkDir,
+// which is shared with the other source walks in the tree so the rule
+// is stated once. dev/coretui-guard-check prunes for the same reason.
 
 // #909 shipped a ban list, swept four packages, and wrote "the four
 // packages that register model-facing tools" in a comment. The comment
@@ -80,9 +78,30 @@ var skipDirs = map[string]bool{".git": true, ".claude": true, "node_modules": tr
 func TestEveryToolRegisteringPackageHasASweep(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
-	swept := map[string]bool{}
-	registers := map[string]bool{}
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	swept, registers, err := sweepTree(root)
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+	if len(registers) == 0 {
+		t.Fatalf("found no package containing %q under %s: the guard would pass vacuously", registration, root)
+	}
+	for dir := range registers {
+		if !swept[dir] {
+			t.Errorf("%s registers a model-facing tool but no test in it calls %s — its descriptions and arg schemas are unswept. Add a description_neutrality_test.go (see internal/testutil.ModelFacingBans)", dir, sweepCall)
+		}
+	}
+}
+
+// sweepTree walks root and returns the package directories (relative to
+// root) that register a model-facing tool and those that sweep one.
+//
+// Takes a root rather than finding it, so the pruning rule can be tested
+// against a planted tree instead of only against this repo, where a
+// directory the walk should not descend into either is not present or is
+// somebody's untracked working state.
+func sweepTree(root string) (swept, registers map[string]bool, err error) {
+	swept, registers = map[string]bool{}, map[string]bool{}
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -91,7 +110,7 @@ func TestEveryToolRegisteringPackageHasASweep(t *testing.T) {
 			return relErr
 		}
 		if d.IsDir() {
-			if skipDirs[d.Name()] {
+			if testutil.PruneWalkDir(root, path, d.Name()) {
 				return filepath.SkipDir
 			}
 			for _, skip := range unsweptRoots {
@@ -120,17 +139,7 @@ func TestEveryToolRegisteringPackageHasASweep(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walking %s: %v", root, err)
-	}
-	if len(registers) == 0 {
-		t.Fatalf("found no package containing %q under %s: the guard would pass vacuously", registration, root)
-	}
-	for dir := range registers {
-		if !swept[dir] {
-			t.Errorf("%s registers a model-facing tool but no test in it calls %s — its descriptions and arg schemas are unswept. Add a description_neutrality_test.go (see internal/testutil.ModelFacingBans)", dir, sweepCall)
-		}
-	}
+	return swept, registers, err
 }
 
 // repoRoot walks up from this source file to the module root. Derived
@@ -142,15 +151,79 @@ func repoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller(0) failed: cannot locate the source tree")
 	}
-	dir := filepath.Dir(self)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
+	root, err := testutil.RepoRoot(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// A worktree under .claude is a full second checkout, so a sweep that
+// descends into one grades another branch's source against this tree's
+// sweep files — reporting failures that a clean shallow clone does not
+// have (#964). The planted tree reproduces that exactly: a dot-directory
+// holding a package that registers a tool and sweeps nothing, which is
+// the shape that fails if it is seen.
+//
+// Planted rather than asserted against this repo, because the property
+// is about a directory that must NOT be walked: in this tree such a
+// directory is either absent (CI) or untracked working state (a
+// developer machine with worktrees), so a test reading the real root
+// proves nothing on the machine where it matters and passes vacuously
+// on the one where it does not.
+func TestSweepDoesNotDescendIntoDotDirectories(t *testing.T) {
+	t.Parallel()
+	// The root is itself dot-named, which is the one case the rule has
+	// to make an exception for: a checkout can live anywhere, and a walk
+	// that pruned its own root would find nothing and report it as a
+	// clean tree. Naming it this way here means the exception is covered
+	// by every assertion below rather than by a case of its own.
+	root := filepath.Join(t.TempDir(), ".checkout")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plant := func(dir, file, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("no go.mod above %s", filepath.Dir(self))
+		if err := os.WriteFile(filepath.Join(root, dir, file), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
 		}
-		dir = parent
+	}
+
+	// A real package, swept. Present so the walk has something to find:
+	// a test whose only assertion is an absence passes just as well when
+	// the walk is broken end to end.
+	plant("realpkg", "tools.go", "package realpkg\n\nvar _ = "+registration+")\n")
+	plant("realpkg", "description_neutrality_test.go", "package realpkg\n\nvar _ = "+sweepCall+")\n")
+
+	// The same shape inside every directory the walk must not enter.
+	// node_modules and vendor are here so the two non-dot exclusions are
+	// covered by this test too, rather than only by the absence of a
+	// `functiontool.New(` under docs/site/node_modules in the real tree
+	// — which is a fact about npm, not about the rule.
+	hidden := []string{
+		filepath.Join(".claude", "worktrees", "some-branch", "otherpkg"),
+		filepath.Join(".fakeworktree", "otherpkg"),
+		filepath.Join("node_modules", "otherpkg"),
+		filepath.Join("vendor", "otherpkg"),
+	}
+	for _, dir := range hidden {
+		plant(dir, "tools.go", "package otherpkg\n\nvar _ = "+registration+")\n")
+	}
+
+	swept, registers, err := sweepTree(root)
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+	if !registers["realpkg"] || !swept["realpkg"] {
+		t.Fatalf("the planted real package was not seen at all (registers=%v swept=%v) — the walk found nothing, so the absences below prove nothing", registers, swept)
+	}
+	for _, dir := range hidden {
+		if registers[dir] {
+			t.Errorf("sweep descended into %s, which is not this repo's source: a dot-directory is untracked working state (and .claude/worktrees holds full second checkouts), node_modules and vendor are somebody else's code", dir)
+		}
 	}
 }

@@ -86,7 +86,11 @@ EOF
 log_step "start core-agent daemon (multi_session.enabled, provider=echo)"
 (
     cd "${WORK_DIR}"
-    "${CORE_AGENT}" --provider=echo --no-repl \
+    # -c names the config written above rather than letting discovery
+    # pick it up from the cwd. Discovery takes the FIRST .agents/ walking
+    # up, so an unpinned run is one `cd` away from testing a different
+    # agent entirely (#1116/D3).
+    "${CORE_AGENT}" -c "${WORK_DIR}/.agents/config.json" --provider=echo --no-repl \
         --session-db --session-db-path="${SESSION_DB}" \
         < /dev/null > "${LOG_FILE}" 2>&1 &
     echo $! > "${SMOKE_DIR}/daemon.pid"
@@ -381,7 +385,7 @@ pass "unauthenticated POST /sessions rejected (401)"
 log_step "loader rejects world-readable users.json at startup"
 chmod 0644 "${USERS_FILE}"
 loose_log="${SMOKE_DIR}/loose-mode-startup.log"
-if (cd "${WORK_DIR}" && "${CORE_AGENT}" --provider=echo \
+if (cd "${WORK_DIR}" && "${CORE_AGENT}" -c "${WORK_DIR}/.agents/config.json" --provider=echo \
         --session-db "${SMOKE_DIR}/loose.db" > "${loose_log}" 2>&1) ; then
     fail "daemon should have refused to start with mode 0644 users.json"
 fi

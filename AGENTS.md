@@ -261,7 +261,20 @@ Conventions worth knowing at agent prompt time:
 - **Run presubmits before every push.** `dev/ci/presubmits/*` are the
   same scripts CI runs. A green local run is the same green run as
   remote CI — skipping them ships preventable red builds. Full sweep:
-  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain,verify-coretui-guards,examples-smoke}`.
+  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain,verify-coretui-guards,verify-harness-config-pinned,examples-smoke}`.
+- **A harness script that runs the binary pins its config with `-c`.**
+  `config.Find` walks *up* from the process cwd, so an unpinned run
+  anywhere under the checkout silently inherits the first `.agents/`
+  above it — a different model, a different permission mode, a
+  `tools.disable` that removes the tool under test, and no error.
+  `--agents-dir` does **not** substitute: the config is loaded by
+  discovery before that flag is applied, so it moves the skills and
+  sessions and leaves the model and permissions behind. The smoke
+  scripts have `pristine_config` / `${SMOKE_CONFIG}` in `_common.sh` for
+  this; `dev/ci/presubmits/verify-harness-config-pinned` enforces it and
+  `--print` lists every site, including the ones built as strings and
+  dispatched through tmux (#1116). See
+  [`dev/README.md`](./dev/README.md#the-harness-config-pin-gate).
 - **An example under `examples/` is either run by CI or excluded with a
   reason.** `dev/ci/presubmits/examples-smoke` builds and runs every
   program `examples/internal/smokeset` marks runnable and fails on any

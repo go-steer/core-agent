@@ -94,7 +94,9 @@ start_daemon() {
     local log_file="$1"
     (
         cd "${WORK_DIR}"
-        "${CORE_AGENT}" --provider=echo --no-repl \
+        # -c names the config written above. Discovery would otherwise
+        # take the first .agents/ walking up from the cwd (#1116/D3).
+        "${CORE_AGENT}" -c "${WORK_DIR}/.agents/config.json" --provider=echo --no-repl \
             --session-db --session-db-path="${SESSION_DB}" \
             < /dev/null > "${log_file}" 2>&1 &
         echo $! > "${SMOKE_DIR}/daemon.pid"

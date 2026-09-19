@@ -39,6 +39,15 @@ build_core_agent
 workdir=$(mktemp -d)
 trap 'rm -rf "${workdir}"' EXIT
 mkdir -p "${workdir}/.agents"
+# An empty config, pinned with -c below. The pin is what makes this the
+# agent under test: without it the run would take its model, permissions
+# and budgets from whatever .agents/ sits above the cwd (#1116/D3), and
+# Dir(-c) is also what keeps mcp.json next door resolving.
+cat >"${workdir}/.agents/config.json" <<'JSON'
+{
+  "version": 1
+}
+JSON
 cat >"${workdir}/.agents/mcp.json" <<'JSON'
 {
   "version": 1,
@@ -58,7 +67,7 @@ JSON
 
 log_step "mcp-google-oauth: GKE MCP server via ADC OAuth access token"
 output=$(
-    cd "${workdir}" && "${CORE_AGENT}" --provider=gemini --yolo \
+    cd "${workdir}" && "${CORE_AGENT}" -c "${workdir}/.agents/config.json" --provider=gemini --yolo \
         -p "Use the GKE MCP server to list clusters in project ${MCP_GOOGLE_OAUTH_SMOKE_PROJECT}. Reply with only the cluster names (comma-separated), or the word NONE if there are no clusters." 2>&1
 )
 echo "${output}"

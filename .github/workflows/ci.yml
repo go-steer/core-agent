@@ -100,6 +100,14 @@ jobs:
       # full pipeline.
       - name: Capability guards
         run: dev/ci/presubmits/verify-coretui-guards
+      # Every harness script pins its config with -c, so a .agents/ at
+      # the repo root cannot silently re-parent the runs (#1116). A step
+      # in `test` for the same reasons as the guards above: it needs the
+      # module cache this job already has, and it inherits an existing
+      # *required* check rather than adding a name branch protection
+      # would have to be taught.
+      - name: Harness config pins
+        run: dev/ci/presubmits/verify-harness-config-pinned
       - name: Test
         # Provider-gated tests (anthropic-vertex) skip cleanly in CI
         # without GCP creds — see models/anthropic/vertex_test.go.

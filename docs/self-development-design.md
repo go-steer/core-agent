@@ -76,9 +76,9 @@ that runs the sweep is now wrong), and it is the highest-fidelity example we
 can ship — a recipe whose domain every reader already has checked out.
 
 The counter-argument is that a committed root config is an opinion imposed on
-every contributor. It is answered by D3: the live agent runs with an explicit
-`--agents-dir`, so the committed tree is a *template* that nothing picks up
-by accident.
+every contributor. It is answered by D3: every harness script pins its config
+with `-c`, so the committed tree is a *template* that nothing picks up by
+accident.
 
 ### D2 — Five artifact classes, five homes
 
@@ -112,21 +112,83 @@ every `core-agent` invocation anywhere under this checkout that does not pin
 a config inherits the self-development recipe's model, permissions, budgets
 and subagents.
 
-Measured: **zero of the 14 `dev/smoke/*.sh` scripts pass `--agents-dir` or
-`-c`.** They run on pristine defaults today and would not tomorrow. Recipes
-under `examples/*` that carry their own `.agents/` are safe, because Find
-stops at the first hit — but that safety is incidental, not designed.
+Measured, before P2: **zero of the 13 exec sites in the harness passed
+`--agents-dir` or `-c`** — 11 in 9 of the `dev/smoke/*.sh` scripts, plus 2
+command strings that `dev/uat/attach/run.sh` builds and dispatches through
+tmux. (An earlier draft of this section said "14 smoke scripts"; that was a
+file count, and several of those files never exec the binary.) An earlier
+draft also said they "ran on pristine defaults", and that was wrong in the
+direction that matters: run from the checkout they were already inheriting
+whatever sat above them. On the machine this was implemented on, an
+untracked `/.agents/` was in place and the unpinned run did not merely pick
+up a different model — it **failed**, because the local `AGENTS.md` there
+uses a session-state placeholder the smoke run does not set:
+
+```
+$ core-agent --provider=echo -p hi          # from the checkout, unpinned
+config: source=<repo>/.agents/config.json (via .agents/ discovery)
+instruction: loaded 2 file(s): <repo>/.agents/AGENTS.md, <repo>/AGENTS.md
+runner: agent run: failed to append instructions: failed to inject session
+        state into instruction: state key does not exist
+```
+
+Recipes under `examples/*` that carry their own `.agents/` are safe, because
+Find stops at the first hit — but that safety is incidental, not designed.
+
+**The pin has to be `-c`, not `--agents-dir`.** This section originally
+prescribed `--agents-dir` and was wrong. `loadConfig()`
+(`cmd/core-agent/main.go:507`) reads `config.json` by discovery from the
+process cwd *before* `resolveAgentsDir()` (`main.go:516`) applies the flag,
+so `--agents-dir` relocates the skills, MCP servers, env file and sessions
+and leaves the model, permissions and budgets still coming from whatever
+`.agents/` is above the script. `splitTreeWarning()` in
+`cmd/core-agent/agents_dir.go` exists precisely to warn about that split.
+Verified live rather than read off the source: with `--agents-dir` pointed at
+an empty tree, the startup summary still reported
+`config: source=<repo>/.agents/config.json` and the repo config's model. With
+`-c` it reported the pinned file. Both flags together is fine and is what the
+drill driver will want; `--agents-dir` alone is not a mitigation.
 
 Mitigations, all three required:
 
-1. Every `dev/smoke/*.sh` and every presubmit that shells out to the binary
-   pins `--agents-dir` explicitly. A bad `--agents-dir` is fatal (exit 2) and
-   never falls back, so a pin that rots fails loudly.
-2. A presubmit — `dev/ci/presubmits/verify-agents-dir-pinned` — scans what
-   the harness scripts *execute* for an unpinned `core-agent` invocation.
-   Scan the executed command, not the file text.
+1. Every harness script that shells out to the binary pins `-c` explicitly at
+   a config it owns — a `/tmp` pristine file for the smoke scripts, the
+   per-agent config the attach UAT already writes for its own fixtures.
+2. A presubmit — `dev/ci/presubmits/verify-harness-config-pinned` — scans
+   what the harness scripts *execute* for an unpinned `core-agent`
+   invocation. Scan the executed command, not the file text: two of the
+   thirteen sites live inside a double-quoted command string handed to tmux,
+   which a file-text grep for `-c` on the same line gets wrong in both
+   directions.
 3. The recipe's `display_name` is `core-agent-selfdev`, so the startup
    summary makes an accidental inheritance visible on line one.
+
+Two exemptions are structural rather than granted: `attach` and `ls` are
+dispatched in `main()` before `flag.Parse` and **reject** `-c` outright
+(`flag provided but not defined: -c`). They read no config, so the check
+names them as exempt rather than treating an un-pinnable site as a violation.
+That is why `--print` reports 15 sites where this section counts 13 — the
+two exempt ones are invocations, they are just not violations.
+
+Three things the pin does **not** do, recorded so nobody reads more into it:
+
+- **It does not close `$HOME`.** Instruction discovery still searches
+  `~/.core-agent/AGENTS.md` and `~/.agents/AGENTS.md` on a pinned run, so a
+  contributor with a personal instruction file there is still steering this
+  repo's tooling. The "small upside" paragraph below is about the config
+  half only.
+- **It moves the content root**, since `agentsDir` defaults to `Dir(-c)`.
+  For the six scripts pinned at the pristine `/tmp` config that means the
+  checkout's own `AGENTS.md` is no longer in the prompt, `record_plan`
+  becomes registered, and the persisted-grant store stops being a no-op.
+  All three are the intended direction — a smoke run should not be reading
+  the contributor guide — but they are a behaviour change, not a no-op.
+- **It cannot reach an exec the shell does not perform.**
+  `dev/smoke/11-evals-corpus.sh` runs the binary from Go with `cmd.Dir` set
+  to an `os.MkdirTemp` world, so no scanner reading shell can see it or pin
+  it. Its immunity rests on `TMPDIR` not living under the checkout, which is
+  true everywhere we run but is a property of the environment rather than of
+  the script.
 
 There is a small upside hiding here. Walking up from a checkout under
 `/home/<user>/projects/` reaches `~/.agents/` today, which means a
@@ -235,8 +297,10 @@ a fact the run is supposed to discover.
 
 ## Spike evidence (2026-09-17)
 
-Four runs of one real task, taken from this plan's own P2: write
-`dev/ci/presubmits/verify-agents-dir-pinned`, the check D3 requires. Each ran
+Four runs of one real task, taken from this plan's own P2: write the
+unpinned-invocation presubmit the check D3 requires (the spike called it
+`verify-agents-dir-pinned`; it shipped as `verify-harness-config-pinned`
+once the pin turned out to be `-c`). Each ran
 against a throwaway clone under `/tmp`, was told not to touch the smoke
 scripts, and was graded afterwards by a fixed six-mutation rubric — each
 mutation a single fixture dropped into `dev/smoke/`, scored on whether the
@@ -300,6 +364,21 @@ not of the script's intent, and it is the same accident that protects
 world). P2 should flag both anyway and let the pin make the immunity
 deliberate. Neither spike artifact is adopted as-is; the check is written by
 hand with this disagreement as a known test case.
+
+*Resolved in the shipped check, in D's direction:* quoted assignment content
+is treated as code. The soundness argument is the direction of failure — a
+violation scanner fails when it *finds* something, so a miss is fatal and a
+false positive is merely loud, and every ambiguity has to resolve towards
+"treat it as code". That is the inverse of the `#1105` gated-apply check's
+direction, where a scanner that over-reads its own content root produces a
+confound. The `dev/uat/attach/run.sh` sites turned out to be the load-bearing
+case rather than a curiosity: they are real invocations, they do need the
+pin, and they are invisible to any lexer that blanks quoted spans.
+`dev/smoke/11-evals-corpus.sh` is genuinely *not* a shell-visible exec site —
+the runner execs from Go with `cmd.Dir` set to an `os.MkdirTemp` world
+(`internal/evals/run.go:210`) — so it is out of the check's reach by
+construction and is left alone, with the caveat recorded above that this
+makes its safety a property of `TMPDIR` rather than of the script.
 
 **Open blocker: both core-agent runs died mid-task** with
 `anthropic: stream: context canceled` — the second in the background with no
@@ -377,10 +456,11 @@ all three are shipped.
 ## Implementation phases
 
 - **P1** — this doc + `docs/README.md` registration. (docs-only)
-- **P2** — D3 mitigations *first*: pin `--agents-dir` in the 14 smoke scripts
-  and the presubmits, add `verify-agents-dir-pinned`. Lands before any
-  `/.agents/` exists, so it can be verified against the current tree and
-  reviewed on its own merits.
+- **P2** — D3 mitigations *first*: pin `-c` at every harness exec site and
+  add `verify-harness-config-pinned`. Lands before any `/.agents/` exists, so
+  it can be verified against the current tree and reviewed on its own merits.
+  **Shipped**, with one correction to this doc: the pin is `-c`, not
+  `--agents-dir` (see D3).
 - **P3** — the recipe: `/.agents/`, the `reviewer` subagent, the skills, the
   `.gitignore` additions, `internal/selfrecipe/` test.
 - **P4** — `dev/uat/self-dev/` driver + T0 executed, with the resulting PR

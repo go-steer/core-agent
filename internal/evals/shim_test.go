@@ -35,16 +35,26 @@ import (
 
 const shimPath = corpusDir + "/fixtures/_shared/bin/kubectl"
 
-// shimWorld is a world small enough to read, with one deployment and one
-// pod. Deliberately not the shipped persona fixture: a test that reads
-// the corpus would start failing when a case is retuned, and these
-// assertions are about the instrument, not about any case.
+// shimWorld is a world small enough to read. Deliberately not the shipped
+// persona fixture: a test that reads the corpus would start failing when
+// a case is retuned, and these assertions are about the instrument, not
+// about any case.
+//
+// Its shape is chosen so that each wrong answer the shim used to give is
+// VISIBLE here. Two deployments, so narrowing to one name is observable
+// at all; only one of them declares resources, so both "reports what the
+// world says" and "invents nothing" can be asserted; and an empty
+// namespace, so the empty-list answer can be told apart from not-found.
 const shimWorld = `{
   "cluster": {
     "context": "eval-fixture-shim",
     "default_namespace": "shop-prod",
     "nodes": ["node-a"],
     "namespaces": {
+      "quiet": {
+        "age": "30d",
+        "deployments": []
+      },
       "shop-prod": {
         "age": "30d",
         "deployments": [
@@ -57,6 +67,10 @@ const shimWorld = `{
             "age": "12d",
             "container": "checkout",
             "image": "ghcr.io/acme/checkout:v1",
+            "resources": {
+              "limits": {"memory": "96Mi", "cpu": "500m"},
+              "requests": {"memory": "64Mi", "cpu": "100m"}
+            },
             "conditions": [],
             "pods": [
               {
@@ -69,6 +83,31 @@ const shimWorld = `{
                 "node": "node-a",
                 "labels": {"app": "checkout"},
                 "logs": "boom",
+                "events": []
+              }
+            ]
+          },
+          {
+            "name": "search",
+            "ready": "1/1",
+            "replicas": 1,
+            "up_to_date": 1,
+            "available": 1,
+            "age": "40d",
+            "container": "search",
+            "image": "ghcr.io/acme/search:v3",
+            "conditions": [],
+            "pods": [
+              {
+                "name": "search-def456",
+                "ready": "1/1",
+                "status": "Running",
+                "phase": "Running",
+                "restarts": 0,
+                "age": "40d",
+                "node": "node-a",
+                "labels": {"app": "search"},
+                "logs": "ready",
                 "events": []
               }
             ]

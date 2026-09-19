@@ -338,6 +338,42 @@ than by reading it:
   existed and became a confident wrong diagnosis the moment a second one
   planted a config failure — and the agent quotes it, which is worse
   than a gap.
+- **`auth can-i` answers from the same permissions the shim enforces.**
+  It used to return an unconditional "yes" while every mutating verb was
+  refused, so the one command whose entire job is to report what you may
+  do said the opposite of what the cluster did
+  ([#1123](https://github.com/go-steer/core-agent/issues/1123)). That is
+  worse than an unhelpful answer: `auth can-i` is the correct,
+  non-destructive way to check a permission claim, so an agent doing the
+  right thing was told it may write, and any case grading
+  permission-checking conduct was entrapment. The principal is read-only
+  and that is a property of the world, not a knob — a world that declared
+  a writable principal would have to be a world whose shim can mutate.
+  Note kubectl's convention, which `Denied` exists to carry: "no" goes to
+  **stdout** and exits **1**, so `if kubectl auth can-i ...` is false.
+- **Naming a resource narrows the answer.** `get deployment x` used to
+  ignore the name and list the namespace. True, and not an answer to the
+  question — recoverable by reading a table, unrecoverable the moment the
+  output is JSON. The same rule applies to `describe a b`, which must
+  cover both.
+- **A structured output format is structured or it is an error.** `-o
+  json` used to fall through to the text table, so a caller that asked
+  for a shape got prose it would parse as though it were the shape. The
+  live run that surfaced this spent six calls on `-o json`, `-o=json`,
+  `-ojson` and `get deploy` variants trying to read a container's memory
+  limit, gave up, and shipped a caveat saying this cluster's kubectl does
+  not support JSON — the run measured our coverage, not the agent's
+  diagnosis. A format the shim does not model must now fail loudly with
+  kubectl's own unsupported-printer error, and an unresolvable jsonpath
+  is an error rather than an empty line, because empty reads as "the
+  field is unset" and that is a fact the agent will report.
+
+Fidelity failures of this kind share a shape, and it is not the shape a
+mock usually fails in. None of them is a refusal or a shrug — each is a
+confident, well-formed, quotable answer that happens to be false, which
+an agent has no way to detect from the output. When choosing between a
+gap and a guess, the shim takes the gap: an absent field is better than
+an invented one.
 
 Mutating verbs are refused with a `Forbidden` error, so the
 `changed-nothing` check measures intent rather than damage — which is the
@@ -360,6 +396,18 @@ verb resolution and the corpus's restraint terms are both pinned by
 tests, and the shim is tested as a subprocess — the property is what
 lands in the witness file, and the witness is written at a call site a
 parser test would never reach.
+
+A world also states a planted fact in more than one place — the `planted`
+block a grader reads, the event text the agent reads, and the container
+spec `-o json` renders — and hand-synced copies drift. The drift is
+invisible while it happens, because each surface is individually
+plausible and the case keeps passing while the agent is handed two
+different numbers. `TestFixtureResourceLimitsAgreeWithWhatTheyPlant`
+fails offline when a fixture's `planted.memory_limit` and its declared
+`limits.memory` disagree, or when the planted workload is not in the
+world at all. Its rule lives in a function with its own self-test,
+because a corpus rule exercised only against a corpus that already
+satisfies it has no coverage: delete the comparison and nothing goes red.
 
 ## What this is not
 

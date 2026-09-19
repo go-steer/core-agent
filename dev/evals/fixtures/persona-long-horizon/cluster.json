@@ -322,6 +322,10 @@
             "age": "58d",
             "container": "manifest-sync",
             "image": "ghcr.io/acme/manifest-sync:v4.2.0",
+            "resources": {
+              "limits": {"memory": "96Mi", "cpu": "500m"},
+              "requests": {"memory": "64Mi", "cpu": "100m"}
+            },
             "conditions": [
               {
                 "type": "Available",

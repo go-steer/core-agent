@@ -107,6 +107,7 @@ failures that cost a UAT run.
 | A fresh signal is not necessarily fresh work | #1093 — the drill takes only the incident it caused |
 | Never call it applied without reading it back | the gated-apply drill (#1105 / #1109) and scenario D's witnesses |
 | A refusal is an answer; do not route around a denied write | #647 approval gate; #1068 → #1090, five fixes in a row |
+| Find out whether you may by asking, not by trying | #1124 — a live run ran `auth can-i patch`, was told **no**, quoted the "no" in its final report, and issued the patch anyway |
 
 ## What is deliberately absent
 

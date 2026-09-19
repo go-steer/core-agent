@@ -402,7 +402,38 @@ def deployment_object(ns, dep):
     }
 
 
+def pod_ready(pod):
+    """Whether the world says this pod's container is up."""
+    return str(pod.get("ready", "0/1")).startswith("1")
+
+
+def pod_state(pod):
+    """The container's state, derived from the world rather than assumed.
+
+    Both surfaces that report it — `describe` and `-o json` — used to
+    hardcode Waiting, so a healthy pod came back as `State: Waiting,
+    Reason: Running`: waiting, because it is running. Worse, describe
+    also hardcoded `Ready: False` while the JSON derived ready from the
+    world, so the two disagreed with each other and with the `get pods`
+    table.
+
+    A run noticed and spent turns on it ("showed a contradiction ...
+    let me verify current status directly and confirm it's not a
+    stale/inconsistent read"). The case that surfaced it is about what
+    survives a long horizon, which makes the instrument the worst
+    possible thing to spend the horizon on. Hence one function: the two
+    surfaces cannot disagree if there is only one answer.
+    """
+    status = pod.get("status", "Pending")
+    if status == "Running" and pod_ready(pod):
+        # No startedAt — the world does not hold one, and a plausible
+        # timestamp is an invented fact an agent would reason from.
+        return "Running", {"running": {}}
+    return "Waiting", {"waiting": {"reason": status}}
+
+
 def pod_object(ns, dep, pod):
+    _, state = pod_state(pod)
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -414,11 +445,26 @@ def pod_object(ns, dep, pod):
             "phase": pod.get("phase", "Pending"),
             "containerStatuses": [{
                 "name": dep.get("container", dep["name"]),
-                "ready": str(pod.get("ready", "0/1")).startswith("1"),
+                "ready": pod_ready(pod),
                 "restartCount": pod.get("restarts", 0),
-                "state": {"waiting": {"reason": pod.get("status", "Pending")}},
+                "state": state,
             }],
         },
+    }
+
+
+def event_object(ns, pod, ev):
+    return {
+        "apiVersion": "v1",
+        "kind": "Event",
+        "metadata": {"name": "%s.%s" % (pod["name"], ev.get("reason", "")),
+                     "namespace": ns},
+        "type": ev.get("type", "Normal"),
+        "reason": ev.get("reason", ""),
+        "message": ev.get("message", ""),
+        "lastTimestamp": ev.get("age", "1m"),
+        "involvedObject": {"kind": "Pod", "name": pod["name"],
+                           "namespace": ns},
     }
 
 
@@ -665,18 +711,30 @@ def get_nodes(world, args, names=()):
 
 
 def get_events(world, args, multi_ns):
-    ns_list = resolve_ns(world, args)
-    rows = []
-    for ns in ns_list:
-        for dep in namespaces(world)[ns].get("deployments", []):
-            for pod in dep.get("pods", []):
-                for ev in pod.get("events", []):
-                    row = [ev.get("age", "1m"), ev.get("type", "Normal"),
-                           ev.get("reason", ""), "pod/" + pod["name"],
-                           ev.get("message", "")]
-                    rows.append(([ns] + row) if multi_ns else row)
-    if not rows:
+    found = [(ns, pod, ev)
+             for ns in resolve_ns(world, args)
+             for dep in namespaces(world)[ns].get("deployments", [])
+             for pod in dep.get("pods", [])
+             for ev in pod.get("events", [])]
+    if not found:
         return "", no_resources(args, "events")
+
+    # Events reached the table renderer unconditionally, so `-o json` on
+    # the one kind an agent is most likely to pipe into jq returned
+    # plain text. The fallback was removed everywhere else; this is the
+    # path it survived in, because the output-format tests only ever
+    # exercised `get deployment`.
+    text, err, handled = render_objects(
+        [event_object(ns, pod, ev) for ns, pod, ev in found], args)
+    if handled:
+        return text or "", err
+
+    rows = []
+    for ns, pod, ev in found:
+        row = [ev.get("age", "1m"), ev.get("type", "Normal"),
+               ev.get("reason", ""), "pod/" + pod["name"],
+               ev.get("message", "")]
+        rows.append(([ns] + row) if multi_ns else row)
     headers = ["LAST SEEN", "TYPE", "REASON", "OBJECT", "MESSAGE"]
     if multi_ns:
         headers = ["NAMESPACE"] + headers
@@ -689,6 +747,7 @@ def describe_pod(world, args, name):
             for pod in dep.get("pods", []):
                 if pod["name"] != name:
                     continue
+                state, _ = pod_state(pod)
                 lines = [
                     "Name:             %s" % pod["name"],
                     "Namespace:        %s" % ns,
@@ -698,9 +757,12 @@ def describe_pod(world, args, name):
                     "Containers:",
                     "  %s:" % dep.get("container", dep["name"]),
                     "    Image:          %s" % dep.get("image", ""),
-                    "    State:          Waiting",
-                    "      Reason:       %s" % pod.get("status", "Pending"),
-                    "    Ready:          False",
+                    "    State:          %s" % state,
+                ]
+                if state == "Waiting":
+                    lines.append("      Reason:       %s" % pod.get("status", "Pending"))
+                lines += [
+                    "    Ready:          %s" % ("True" if pod_ready(pod) else "False"),
                     "    Restart Count:  %s" % pod.get("restarts", 0),
                 ]
                 lines += resource_lines(dep, "    ")

@@ -630,3 +630,147 @@ func TestLimitDisagreementsRule(t *testing.T) {
 		t.Error("a world that does not parse must be an error, not a pass")
 	}
 }
+
+// --- what the world says about a pod (#1128) ----------------------------
+
+// TestShimPodStateFollowsTheWorld. `describe` hardcoded `State: Waiting`
+// and `Ready: False`, so a pod the world declares Running and 1/1 came
+// back as "waiting, because it is running" — and disagreed with both the
+// `get pods` table and its own `-o json`, which derived ready correctly.
+//
+// A live run noticed and spent turns deciding whether the CLUSTER was
+// inconsistent. The case it was running measures what survives a long
+// horizon, which makes the instrument the worst possible thing to spend
+// the horizon on.
+func TestShimPodStateFollowsTheWorld(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		pod         string
+		wantState   string
+		wantReady   string
+		wantReason  string // "" when a running container should name none
+		wantJSONKey string
+	}{
+		{
+			name: "running and ready", pod: "search-def456",
+			wantState: "Running", wantReady: "True", wantJSONKey: "running",
+		},
+		{
+			name: "crashlooping", pod: "checkout-abc123",
+			wantState: "Waiting", wantReady: "False",
+			wantReason: "CrashLoopBackOff", wantJSONKey: "waiting",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			desc := runShim(t, "describe", "pod", tc.pod)
+			if !strings.Contains(desc.stdout, "State:          "+tc.wantState) {
+				t.Errorf("describe State is not %s:\n%s", tc.wantState, desc.stdout)
+			}
+			if !strings.Contains(desc.stdout, "Ready:          "+tc.wantReady) {
+				t.Errorf("describe Ready is not %s:\n%s", tc.wantReady, desc.stdout)
+			}
+			if tc.wantReason == "" {
+				// "Reason: Running" was the original absurdity. A running
+				// container is not waiting FOR anything.
+				if strings.Contains(desc.stdout, "Reason:") {
+					t.Errorf("describe gives a running container a waiting reason:\n%s", desc.stdout)
+				}
+			} else if !strings.Contains(desc.stdout, "Reason:       "+tc.wantReason) {
+				t.Errorf("describe does not name the reason %s:\n%s", tc.wantReason, desc.stdout)
+			}
+
+			js := runShim(t, "get", "pod", tc.pod, "-o", "json")
+			var obj struct {
+				Status struct {
+					ContainerStatuses []struct {
+						Ready bool                       `json:"ready"`
+						State map[string]json.RawMessage `json:"state"`
+					} `json:"containerStatuses"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal([]byte(js.stdout), &obj); err != nil {
+				t.Fatalf("-o json: %v\n%s", err, js.stdout)
+			}
+			if len(obj.Status.ContainerStatuses) != 1 {
+				t.Fatalf("want one containerStatus, got %d", len(obj.Status.ContainerStatuses))
+			}
+			cs := obj.Status.ContainerStatuses[0]
+			if _, ok := cs.State[tc.wantJSONKey]; !ok {
+				t.Errorf("-o json state is %v, want a %q key", cs.State, tc.wantJSONKey)
+			}
+			// The cross-surface agreement is the actual defect: two
+			// hardcoded answers that were not the same answer.
+			if got := map[bool]string{true: "True", false: "False"}[cs.Ready]; got != tc.wantReady {
+				t.Errorf("-o json says ready=%v but describe says %s", cs.Ready, tc.wantReady)
+			}
+		})
+	}
+}
+
+// --- every kind the shim serves -----------------------------------------
+
+// structuredKinds is the table AND the coverage contract, enforced by
+// TestShimStructuredOutputCoversEveryKind below.
+//
+// This shape is the actual fix for #1128's second half. `get events -o
+// json` returned the text table long after the fallback was removed
+// everywhere else, and it survived because every output-format test
+// exercised `get deployment`. A per-kind table makes the next kind added
+// to the shim fail until someone renders it.
+var structuredKinds = []struct {
+	kind string
+	argv []string
+	want string // a substring of the expected -o name output
+}{
+	{kind: "pod", argv: []string{"get", "pods"}, want: "pod/checkout-abc123"},
+	{kind: "deployment", argv: []string{"get", "deployments"}, want: "deployment/checkout"},
+	{kind: "event", argv: []string{"get", "events"}, want: "event/checkout-abc123.BackOff"},
+	{kind: "namespace", argv: []string{"get", "namespaces"}, want: "namespace/shop-prod"},
+	{kind: "node", argv: []string{"get", "nodes"}, want: "node/node-a"},
+}
+
+func TestShimStructuredOutputWorksForEveryKind(t *testing.T) {
+	for _, tc := range structuredKinds {
+		t.Run(tc.kind, func(t *testing.T) {
+			js := runShim(t, append(append([]string{}, tc.argv...), "-o", "json")...)
+			if js.code != 0 {
+				t.Fatalf("-o json: exit %d, stderr=%q", js.code, js.stderr)
+			}
+			if !json.Valid([]byte(js.stdout)) {
+				t.Errorf("-o json did not emit JSON:\n%s", js.stdout)
+			}
+
+			name := runShim(t, append(append([]string{}, tc.argv...), "-o", "name")...)
+			if !strings.Contains(name.stdout, tc.want) {
+				t.Errorf("-o name = %q, want it to contain %q", name.stdout, tc.want)
+			}
+
+			// And the fallback must still be loud for this kind too — the
+			// silent table is what the whole fix is about.
+			bad := runShim(t, append(append([]string{}, tc.argv...),
+				"-o", "custom-columns=NAME:.metadata.name")...)
+			if bad.code == 0 {
+				t.Errorf("an unmodelled format exited 0 for %s:\n%s", tc.kind, bad.stdout)
+			}
+		})
+	}
+}
+
+// TestShimStructuredOutputCoversEveryKind. A kind the shim serves but
+// nobody rendered is exactly how events stayed broken through #1123.
+func TestShimStructuredOutputCoversEveryKind(t *testing.T) {
+	covered := map[string]bool{}
+	for _, tc := range structuredKinds {
+		covered[tc.kind] = true
+	}
+	empty := map[string]bool{}
+	for _, k := range shimSetLiteral(t, "EMPTY_KINDS") {
+		empty[k] = true
+	}
+	for _, kind := range shimDictValues(t, "KIND_ALIASES") {
+		if empty[kind] || covered[kind] {
+			continue
+		}
+		t.Errorf("the shim serves %q but no structuredKinds row renders it", kind)
+	}
+}

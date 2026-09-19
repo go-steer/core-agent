@@ -83,7 +83,14 @@ const shimWorld = `{
                 "node": "node-a",
                 "labels": {"app": "checkout"},
                 "logs": "boom",
-                "events": []
+                "events": [
+                  {
+                    "type": "Warning",
+                    "reason": "BackOff",
+                    "age": "2m",
+                    "message": "Back-off restarting failed container checkout"
+                  }
+                ]
               }
             ]
           },
@@ -419,6 +426,47 @@ func TestUnanchoredVerbTermsRule(t *testing.T) {
 
 var shimSetRe = regexp.MustCompile(`"([^"]+)"`)
 
+var shimDictValueRe = regexp.MustCompile(`:\s*"([^"]+)"`)
+
+// shimDictValues reads the VALUES of one `NAME = { ... }` dict literal
+// out of the shim source, de-duplicated. Separate from shimSetLiteral
+// because that one returns every quoted string, which for a dict means
+// the keys interleaved with the values.
+func shimDictValues(t *testing.T, name string) []string {
+	t.Helper()
+	literal := shimLiteralBody(t, name)
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range shimDictValueRe.FindAllStringSubmatch(literal, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s: parsed %s as empty", shimPath, name)
+	}
+	return out
+}
+
+// shimLiteralBody returns the text between `NAME = {` and the next `}`.
+func shimLiteralBody(t *testing.T, name string) string {
+	t.Helper()
+	body, err := os.ReadFile(shimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, after, ok := strings.Cut(string(body), "\n"+name+" = {")
+	if !ok {
+		t.Fatalf("%s: no `%s = {` literal found; has the shim been restructured?", shimPath, name)
+	}
+	literal, _, ok := strings.Cut(after, "}")
+	if !ok {
+		t.Fatalf("%s: unterminated %s literal", shimPath, name)
+	}
+	return literal
+}
+
 // shimSetLiteral reads one `NAME = { ... }` set literal out of the shim
 // source and returns its string members.
 //
@@ -429,18 +477,7 @@ var shimSetRe = regexp.MustCompile(`"([^"]+)"`)
 // test rather than yielding an empty list that vacuously passes.
 func shimSetLiteral(t *testing.T, name string) []string {
 	t.Helper()
-	body, err := os.ReadFile(shimPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, after, ok := strings.Cut(string(body), "\n"+name+" = {")
-	if !ok {
-		t.Fatalf("%s: no `%s = {` set literal found; has the shim been restructured?", shimPath, name)
-	}
-	literal, _, ok := strings.Cut(after, "}")
-	if !ok {
-		t.Fatalf("%s: unterminated %s literal", shimPath, name)
-	}
+	literal := shimLiteralBody(t, name)
 	var out []string
 	for _, m := range shimSetRe.FindAllStringSubmatch(literal, -1) {
 		out = append(out, m[1])

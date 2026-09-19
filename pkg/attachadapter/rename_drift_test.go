@@ -22,6 +22,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/go-steer/core-agent/v2/internal/testutil"
 )
 
 // #388 phase 4 moved nine provider options off *agent.Agent and into
@@ -62,12 +64,11 @@ const (
 	renameGlob    = "WithAttach*"
 )
 
-// skipDirs are pruned wherever they appear. `.claude` is gitignored and
-// is where this repo's git worktrees live, so walking it would parse a
-// second copy of the whole tree and report every finding twice — the
-// same reason internal/testutil's coverage walk prunes it.
-var skipDirs = map[string]bool{".git": true, ".claude": true, "node_modules": true, "vendor": true}
-
+// Dot-directories and the two non-source names are pruned by the shared
+// testutil.PruneWalkDir: `.claude` is where this repo's git worktrees
+// live, so walking it would parse a second copy of the whole tree and
+// report every finding twice.
+//
 // CHANGELOG.md:804 is deliberately not in scope. It records what
 // shipped in #87 under the name it shipped with, which is what a
 // changelog is for. This walks Go comments only, so it never sees it.
@@ -86,7 +87,7 @@ func TestNoCommentNamesARenamedAttachOption(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if skipDirs[d.Name()] {
+			if testutil.PruneWalkDir(root, path, d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -162,15 +163,9 @@ func repoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller(0) failed: cannot locate the source tree")
 	}
-	dir := filepath.Dir(self)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("no go.mod above %s", filepath.Dir(self))
-		}
-		dir = parent
+	root, err := testutil.RepoRoot(self)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return root
 }

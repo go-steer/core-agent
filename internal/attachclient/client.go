@@ -844,8 +844,9 @@ func parseStreamFrame(eventType, raw string) (attach.Frame, bool) {
 // PromptStream subscribes to <base><sessionPath>/perms/stream and
 // returns a channel of PromptFrames. Closes the channel on ctx
 // cancel, stream error, or upstream EOF. 501 (capability not
-// registered — agent wasn't constructed with WithAttachPromptBroker)
-// is returned synchronously so callers can fall back gracefully.
+// registered — agent wasn't constructed with
+// attachadapter.WithPromptBroker) is returned synchronously so
+// callers can fall back gracefully.
 func (c *Client) PromptStream(ctx context.Context, sessionPath string) (<-chan attach.PromptFrame, error) {
 	url := c.URL.BaseURL + sessionPath + "/perms/stream"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

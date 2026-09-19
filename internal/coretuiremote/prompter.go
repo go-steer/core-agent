@@ -37,9 +37,9 @@ import (
 // handed to prompter.AskApproval (which blocks until the operator
 // picks a decision in the modal), then the decision is POSTed back
 // via /perms/respond. If the remote daemon wasn't constructed with
-// WithAttachPromptBroker the initial GET returns 501; the bridge
-// logs once and returns (the returned prompter sits idle and the
-// daemon's gate then surfaces its usual "no prompter configured"
+// attachadapter.WithPromptBroker the initial GET returns 501; the
+// bridge logs once and returns (the returned prompter sits idle and
+// the daemon's gate then surfaces its usual "no prompter configured"
 // error, which is the correct headless-mode behavior).
 //
 // errOut receives one-line diagnostics about the bridge's network

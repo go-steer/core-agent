@@ -40,7 +40,7 @@ import (
 // AskApproval would block subsequent tool calls.
 //
 // One broker per daemon process. Wire via
-// agent.WithAttachPromptBroker so the agent surfaces it through the
+// attachadapter.WithPromptBroker so the agent surfaces it through the
 // PromptBrokerProvider capability the attach server consults.
 type PromptBroker struct {
 	mu      sync.Mutex

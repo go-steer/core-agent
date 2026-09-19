@@ -17,6 +17,7 @@ set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 require_env GOOGLE_CLOUD_PROJECT
 build_core_agent
+pristine_config
 unset GEMINI_API_KEY GOOGLE_API_KEY
 
 log_step "headless-gate: bash call without --yolo surfaces helpful error"
@@ -39,7 +40,7 @@ output=$(
     echo "" | (
         GOOGLE_GENAI_USE_VERTEXAI=true \
         GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-global}" \
-        timeout 60 "${CORE_AGENT}" --provider=vertex \
+        timeout 60 "${CORE_AGENT}" -c "${SMOKE_CONFIG}" --provider=vertex \
             -p "Use bash to print hello world. If bash refuses, tell me exactly what error it returned." 2>&1
     )
 )

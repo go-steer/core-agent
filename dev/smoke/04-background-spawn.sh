@@ -19,13 +19,14 @@ set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 require_env GOOGLE_CLOUD_PROJECT
 build_core_agent
+pristine_config
 unset GEMINI_API_KEY GOOGLE_API_KEY
 
 log_step "background-spawn: parent spawns two subagents with wait:true, both complete inline"
 output=$(
     GOOGLE_GENAI_USE_VERTEXAI=true \
     GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-global}" \
-    timeout 180 "${CORE_AGENT}" --provider=vertex --yolo -p "
+    timeout 180 "${CORE_AGENT}" -c "${SMOKE_CONFIG}" --provider=vertex --yolo -p "
 You're an orchestrator. Use spawn_agent with wait: true to launch two
 background subagents, one at a time (each call blocks until that
 subagent finishes and returns its output inline):

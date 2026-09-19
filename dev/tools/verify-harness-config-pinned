@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Every harness script that runs the core-agent binary pins its config
+# with -c.
+#
+# The hazard (#1116/D3): config.Find walks UP from the process cwd and
+# returns the FIRST .agents/ it meets. A .agents/ at the repo root —
+# committed with a recipe, or just left behind by a local run — is
+# therefore inherited by every unpinned invocation anywhere under the
+# checkout. The scripts keep passing, against an agent nobody chose: a
+# different model, a different permission mode, a tools.disable list
+# that removes the tool under test.
+#
+# The pin has to be -c and not --agents-dir. loadConfig() reads
+# config.json by walking up from cwd BEFORE resolveAgentsDir() applies
+# the flag, so --agents-dir moves the skills, MCP servers and sessions
+# and leaves the model, permissions and budgets behind. cmd/core-agent's
+# splitTreeWarning() exists to warn about exactly that split.
+#
+# Modes:
+#
+#   verify-harness-config-pinned           # verify (this is what CI runs)
+#   verify-harness-config-pinned --print   # dump every site and its pin
+#
+# --print is the half a violation scanner cannot do for itself: it says
+# which sites the scanner still recognises. A site that silently stops
+# being recognised — a script renames its binary variable, say — would
+# otherwise drop out of the check with no output at all.
+#
+# Deliberately not a unit test: it reads dev/** as source, and the point
+# is to fail the build before those scripts ever run.
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+exec go run ./dev/harness-config-check "$@"

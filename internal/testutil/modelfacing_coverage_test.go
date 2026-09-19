@@ -52,7 +52,12 @@ var unsweptRoots = []string{"examples"}
 
 // skipDirs are pruned wherever they appear: not source, and one of them
 // (docs/site/node_modules) is large enough to be worth not walking.
-var skipDirs = map[string]bool{".git": true, "node_modules": true, "vendor": true}
+// `.claude` is gitignored and is where this repo's git worktrees live —
+// walking it reports a *second copy* of the tree, so every unswept
+// package in a checked-out branch fails the test on a developer machine
+// and on nobody's CI. dev/coretui-guard-check prunes it for the same
+// reason.
+var skipDirs = map[string]bool{".git": true, ".claude": true, "node_modules": true, "vendor": true}
 
 // #909 shipped a ban list, swept four packages, and wrote "the four
 // packages that register model-facing tools" in a comment. The comment

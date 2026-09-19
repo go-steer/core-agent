@@ -9,10 +9,11 @@ set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 require_one_of GEMINI_API_KEY GOOGLE_API_KEY
 build_core_agent
+pristine_config
 
 log_step "gemini-basic: single turn against the direct Gemini API"
 output=$(
-    "${CORE_AGENT}" --provider=gemini --yolo \
+    "${CORE_AGENT}" -c "${SMOKE_CONFIG}" --provider=gemini --yolo \
         -p "Say hello in exactly one word." 2>&1
 )
 echo "${output}"

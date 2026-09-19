@@ -92,9 +92,14 @@ spawn_agent() {
     local name="$1"; shift
     local extra_flags="$*"
     local agent_dir="${UAT_ROOT}/agents/${name}"
-    mkdir -p "${agent_dir}"
+    mkdir -p "${agent_dir}/.agents"
+    # This agent runs on pristine defaults plus whatever extra_flags
+    # says — so pin an empty config rather than leaving it to discovery.
+    # UAT_ROOT under /tmp makes the walk-up miss the repo today, which
+    # is an accident of one variable's value, not a property (#1116/D3).
+    printf '{"version": 1}\n' > "${agent_dir}/.agents/config.json"
     local db="${UAT_ROOT}/db/${name}.db"
-    local cmd="cd ${agent_dir} && ATTACH_TOKEN='${ATTACH_TOKEN}' '${BIN}' --provider=${MODEL_PROVIDER} --session-db --session-db-path='${db}' --attach-token=ATTACH_TOKEN ${extra_flags}"
+    local cmd="cd ${agent_dir} && ATTACH_TOKEN='${ATTACH_TOKEN}' '${BIN}' -c '${agent_dir}/.agents/config.json' --provider=${MODEL_PROVIDER} --session-db --session-db-path='${db}' --attach-token=ATTACH_TOKEN ${extra_flags}"
     log "spawn ${name}: ${extra_flags}"
     tmux_new_window "${name}" "${cmd}"
 }
@@ -165,7 +170,7 @@ cmd_config_hub() {
     # not in the committed fixture.
     local cmd="cd ${agent_dir} && \
         POD_IP=127.0.0.1 HOSTNAME_OVERRIDE=config-hub-pod ATTACH_TOKEN='${ATTACH_TOKEN}' \
-        '${BIN}' --session-db --session-db-path='${db}'"
+        '${BIN}' -c '${agent_dir}/.agents/config.json' --session-db --session-db-path='${db}'"
     tmux_new_window "config-hub" "${cmd}"
     sleep 1
     log "config-hub up — verify with:  ./run.sh ls"

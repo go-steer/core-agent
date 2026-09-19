@@ -159,6 +159,66 @@ type-check of the host, not a comparison of two lists; the gate catches
 the after-effect — a decline left in place once the guard lands — as a
 contradiction.
 
+## The harness config-pin gate
+
+`dev/tools/verify-harness-config-pinned` (tool: `dev/harness-config-check`)
+reads every script under `dev/smoke`, `dev/uat`, `dev/tools` and `dev/ci`,
+finds the places that **execute** the `core-agent` binary, and requires
+each one to pin its config with `-c`.
+
+Why it exists (#1116): `config.Find` walks *up* from the process cwd and
+returns the first `.agents/` it meets, so a `.agents/` at the repo root —
+committed with a recipe, or just left behind by a local run — is inherited
+by every unpinned invocation anywhere under the checkout. Nothing fails.
+The scripts keep passing, against an agent nobody chose: a different model,
+a different permission mode, a `tools.disable` list that removes the tool
+under test. `dev/smoke/05-headless-gate.sh` tests bash gating, and a root
+config disabling `bash` would have it testing nothing.
+
+**`--agents-dir` is not a pin.** `loadConfig()` reads `config.json` by
+discovery from the cwd before `resolveAgentsDir()` applies the flag, so
+`--agents-dir` moves the skills, MCP servers and sessions and leaves the
+model, permissions and budgets behind — the split `splitTreeWarning()` in
+`cmd/core-agent/agents_dir.go` warns about. Only `-c` closes it.
+
+```bash
+dev/tools/verify-harness-config-pinned           # the gate
+dev/tools/verify-harness-config-pinned --print   # every site and its pin
+```
+
+Two shapes are exempt, structurally rather than by grant: `attach` and `ls`
+are dispatched before `flag.Parse`, read no config, and reject `-c`
+outright. Everything else is a violation until pinned.
+
+The scanner's soundness runs the opposite way to most checks here: it fails
+when it *finds* something, so a miss is fatal and a false positive is merely
+loud, and every ambiguity resolves towards "treat it as code". That is why
+it descends into quoted strings and `$(…)` rather than blanking them —
+`dev/uat/attach/run.sh` builds real invocations as double-quoted strings and
+dispatches them through tmux, and a lexer that blanks quoted spans cannot
+see them. Deciding a site is *pinned* takes the opposite bias, because a
+`-c` credited in error is also a silent pass: a `-c` the quote scan places
+inside an argument does not count (`-p 'explain the -c flag'` is prose), and
+the value has to look like a config path. `--print` is the third leg: a
+violation scanner cannot report the site it has stopped recognising, so the
+site list is worth reading whenever a harness script renames its binary
+variable.
+
+What it does **not** claim:
+
+- **That a pinned run is hermetic.** `-c` fixes the config and the content
+  root. Instruction discovery still reaches `~/.core-agent/AGENTS.md` and
+  `~/.agents/AGENTS.md`, so a personal instruction file in `$HOME` still
+  steers a pinned smoke run.
+- **That every way of executing a binary is recognised.** Command position,
+  assignment prefixes, `exec`/`env`/`sudo`, brace groups, the
+  `timeout`/`nice`/`stdbuf` family and `go run ./cmd/core-agent` are. `eval`,
+  `xargs`, `find -exec`, `set -- … ; "$@"`, variable indirection and a binary
+  held in a variable the tool does not know are not — the last of those is
+  why `binaryVars` and `--print` exist rather than a glob.
+- **That the pinned path is right.** It checks that a script says which
+  config it wants, not that the file is the one the test needs.
+
 ## CI on PRs
 
 Open a PR against `main` from a short-lived feature branch (e.g.

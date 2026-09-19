@@ -15,6 +15,7 @@ set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 require_env GOOGLE_CLOUD_PROJECT
 build_core_agent
+pristine_config
 unset GEMINI_API_KEY GOOGLE_API_KEY
 
 db="$(mktemp -t smoke-grounding-XXXXXX.db)"
@@ -24,7 +25,7 @@ log_step "vertex-grounding: GoogleSearch + ↪ display + eventlog projection"
 output=$(
     GOOGLE_GENAI_USE_VERTEXAI=true \
     GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-global}" \
-    timeout 90 "${CORE_AGENT}" --provider=vertex --yolo \
+    timeout 90 "${CORE_AGENT}" -c "${SMOKE_CONFIG}" --provider=vertex --yolo \
         --session-db --session-db-path="${db}" \
         -p "Use Google Search to give me one San Francisco news headline from today." 2>&1
 )

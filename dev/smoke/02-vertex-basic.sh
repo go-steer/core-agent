@@ -16,6 +16,7 @@ set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 require_env GOOGLE_CLOUD_PROJECT
 build_core_agent
+pristine_config
 
 # Clear API-key env vars to keep the Vertex auth path clean. genai's
 # precedence logic will fall back to ADC; if it doesn't, the 401 we
@@ -26,7 +27,7 @@ log_step "vertex-basic: single turn against Vertex Gemini"
 output=$(
     GOOGLE_GENAI_USE_VERTEXAI=true \
     GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-global}" \
-    "${CORE_AGENT}" --provider=vertex --yolo \
+    "${CORE_AGENT}" -c "${SMOKE_CONFIG}" --provider=vertex --yolo \
         -p "Say hello in exactly one word." 2>&1
 )
 echo "${output}"

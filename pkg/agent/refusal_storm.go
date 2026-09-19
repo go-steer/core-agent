@@ -67,11 +67,19 @@
 // row, and the model's own history already carries the refusals that
 // caused it. The metric gets attach.TurnErrorRefusalStorm so a backend
 // can still tell this stop from an operator pressing stop.
+//
+// It does, since #1131, write a log line. That is not a reversal of the
+// paragraph above: a log line has no reset vocabulary to misuse, and
+// this arm is the one that most needs it. The other two at least reach
+// an attach client; this one reaches nobody live, so before #1131 an
+// operator watching a gated run saw the turn die with a bare
+// `context canceled` and no record anywhere but the eventlog.
 
 package agent
 
 import (
 	"context"
+	"fmt"
 
 	"google.golang.org/adk/session"
 
@@ -143,6 +151,18 @@ func (a *Agent) enforceRefusalStormInTurn(ctx context.Context) {
 	if !a.pendingRefusalStorm.CompareAndSwap(0, int64(repeats)) {
 		return
 	}
+	// Say so in the log before cutting (#1131). This arm emits no
+	// operator event by design (see the file docstring), so without this
+	// line the metric label below is the only record outside the
+	// eventlog and the operator's whole output is the `context canceled`
+	// the Interrupt produces. The reason text deliberately states that
+	// nothing needs resetting — the thing the event was withheld to
+	// avoid implying.
+	logGuardrailCut(attach.TurnErrorRefusalStorm, fmt.Sprintf(
+		"the approval gate refused %d tool calls in this turn and the model kept "+
+			"re-issuing them. The turn was stopped; nothing is tripped, no operator "+
+			"reset is needed, and the next turn starts with an empty refusal map.",
+		repeats))
 	// Label the metric point before cutting, for the reason
 	// guardrail_halt.go exists: the turn error is a bare
 	// context.Canceled and nothing downstream could otherwise tell this

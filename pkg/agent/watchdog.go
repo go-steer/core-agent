@@ -720,7 +720,10 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert, haltedTurn bool) bool
 		} else {
 			halt = false
 			reason = fmt.Sprintf(
-				"watchdog cut the turn (%s): %s The turn was stopped; the session is NOT halted and the next turn starts clean. %d in a row now — at %d the session halts and needs an operator reset.",
+				"watchdog cut the turn (%s): %s "+
+					"The turn was stopped with its work unfinished; the session is NOT halted, "+
+					"and a further turn would start clean. "+turnCutNoNextTurn+
+					" %d in a row now — at %d the session halts and needs an operator reset.",
 				trigger.Signal, trigger.Reason, streak, maxConsecutiveWatchdogTurnCuts,
 			)
 			// Scrub the signals' accumulated evidence, exactly as the

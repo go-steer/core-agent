@@ -196,6 +196,43 @@ func joinLayers(layers []string) string {
 	return strings.Join(out, "\n\n")
 }
 
+// literalInstruction wraps an assembled system prompt so ADK treats it
+// as text rather than as a template (#1139).
+//
+// llmagent.Config has two instruction fields and they are not two
+// spellings of one thing. Instruction is documented as a template:
+// ADK's instructionsRequestProcessor runs InjectSessionState over it on
+// every request, `{key_name}` matching `^[a-zA-Z_][a-zA-Z0-9_]*$` is
+// looked up in session state, and a key that does not exist is an
+// ERROR, not a passthrough. InstructionProvider takes precedence when
+// both are set and substitutes nothing.
+//
+// Layer 4 of what we assemble is an operator's AGENTS.md / CLAUDE.md /
+// GEMINI.md, read off disk and never written as a template. A bare
+// `{word}` in that prose therefore killed every turn of the session
+// before a token was sent, with an error naming no file and no token —
+// and the shape that triggers it is exactly how a shell variable gets
+// written in documentation: `"${CORE_AGENT}"` trims to a valid state
+// name. `{word?}` is quieter and no better, silently substituting the
+// empty string. `{1,64}` and `{ return y }` are safe only because they
+// fail the identifier regex.
+//
+// Nothing is lost by refusing the templating. No instruction file in
+// the tree used it, and nothing in pkg/ or cmd/ ever writes session
+// state, so no placeholder could have resolved. Deliberate templating
+// in operator prose would need to be an opt-in with syntax someone
+// chose, not a property of every markdown file we read.
+//
+// The closure ignores its context on purpose: the prompt is assembled
+// once at construction and the provider exists to DISABLE per-request
+// rewriting, not to enable it. Anything that genuinely varies per
+// request belongs in a layer, not in a placeholder — and see
+// docs/anthropic-prompt-caching-design.md, where a system prefix that
+// changes per request also costs every prompt-cache hit.
+func literalInstruction(s string) llmagent.InstructionProvider {
+	return func(adkagent.ReadonlyContext) (string, error) { return s, nil }
+}
+
 // DefaultSchedulingInstruction is the composable system-instruction
 // constant for autonomous loops that have a tools.Scheduler installed
 // (via RunAutonomous's WithScheduler option, or per-subagent via
@@ -1062,14 +1099,24 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		instruction = assembleInstruction(model.Name(), o.mode, o.noQuirks, o.userInstruction, o.extraInstructions)
 	}
 
-	inner, err := llmagent.New(llmagent.Config{
+	cfg := llmagent.Config{
 		Name:        o.name,
 		Model:       model,
 		Description: o.description,
-		Instruction: instruction,
 		Tools:       o.tools,
 		Toolsets:    o.toolsets,
-	})
+	}
+	// Left nil when there is no prompt, which is not the same as a
+	// provider that returns "". ADK's Instruction branch skips an empty
+	// string; the provider branch does not, so setting it
+	// unconditionally would append an empty system part where a
+	// consumer previously got no system instruction at all — reachable
+	// via WithInstruction("") or a whitespace-only --system-prompt-file.
+	// The Anthropic adapter drops empty parts; Gemini forwards them.
+	if instruction != "" {
+		cfg.InstructionProvider = literalInstruction(instruction)
+	}
+	inner, err := llmagent.New(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build llmagent: %w", err)
 	}

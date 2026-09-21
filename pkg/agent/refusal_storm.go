@@ -160,8 +160,9 @@ func (a *Agent) enforceRefusalStormInTurn(ctx context.Context) {
 	// avoid implying.
 	a.logGuardrailCut(attach.TurnErrorRefusalStorm, fmt.Sprintf(
 		"the approval gate refused %d tool calls in this turn and the model kept "+
-			"re-issuing them. The turn was stopped; nothing is tripped, no operator "+
-			"reset is needed, and the next turn starts with an empty refusal map.",
+			"re-issuing them. The turn was stopped with its work unfinished; nothing "+
+			"is tripped, no operator reset is needed, and a further turn would start "+
+			"with an empty refusal map. "+turnCutNoNextTurn,
 		repeats))
 	// Label the metric point before cutting, for the reason
 	// guardrail_halt.go exists: the turn error is a bare

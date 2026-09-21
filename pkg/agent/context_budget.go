@@ -203,7 +203,7 @@ func (a *Agent) cutTurnForContextBudget(used, size int) {
 
 	detail := fmt.Sprintf(
 		"a tool result took the estimated context to %d of %d tokens (%.0f%%, including %d unmeasured bytes); "+
-			"cut the turn before building a request the provider would reject, and compaction will run first on the next turn.",
+			"cut the turn before building a request the provider would reject, and compaction runs first on any further turn.",
 		used, size, 100*float64(used)/float64(size), pending)
 	// The session goes on the log line only, not into detail (#1136).
 	// detail is also the durable degraded row's text, and that row is
@@ -212,7 +212,16 @@ func (a *Agent) cutTurnForContextBudget(used, size int) {
 	// mid-sentence because detail is a whole sentence of its own; the
 	// guardrail lines can splice theirs in after the guardrail's name
 	// because they build the sentence around it.
-	log.Printf("agent:%s %s", a.logSessionSuffix(), detail)
+	//
+	// turnCutNoNextTurn rides the log line for the same reason and not
+	// the same one (#1140). "Compaction will run first on the next
+	// turn" promised a turn a one-shot never takes — that half is fixed
+	// in detail itself, in the subjunctive, because a stale promise is
+	// wrong in the durable row too. Naming the one-shot is the half
+	// that is log-only: the row is read by a surface that queried the
+	// session, so it has a caller by construction and is exactly the
+	// reader for whom "a -p run ends here" is noise.
+	log.Printf("agent:%s %s %s", a.logSessionSuffix(), detail, turnCutNoNextTurn)
 	a.recordContextReductionDegraded(attach.ContextReductionTurnCut, detail)
 	a.Interrupt()
 }

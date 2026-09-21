@@ -344,7 +344,10 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		Name:        "subtask_" + spec.Name,
 		Model:       subModel,
 		Description: "core-agent subtask: " + spec.Name,
-		Instruction: subInstruction,
+		// Provider, not Instruction — spec.SystemPrompt is caller text
+		// and assembleInstruction may have folded operator layers in
+		// beside it. See literalInstruction (#1139).
+		InstructionProvider: literalInstruction(subInstruction),
 		// Timed outside the serializer, same as the parent's tools in
 		// New — subtask tool calls land in the shared
 		// gen_ai.tool.execution.duration histogram (#338).

@@ -135,6 +135,15 @@ runner: agent run: failed to append instructions: failed to inject session
 Recipes under `examples/*` that carry their own `.agents/` are safe, because
 Find stops at the first hit — but that safety is incidental, not designed.
 
+**Update (#1139): that run no longer fails, and the argument is stronger for
+it.** The instruction file was being run through the model runtime's
+placeholder templating, so `${…}` in prose was fatal; instruction text is now
+literal, and the same unpinned invocation succeeds — quietly, against
+somebody else's model and permission mode. The loud half of the evidence
+above is gone and only the dangerous half remains, which is the case for the
+pin rather than against it: a mitigation whose failure mode is silence is
+exactly what `verify-harness-config-pinned` exists to catch.
+
 **The pin has to be `-c`, not `--agents-dir`.** This section originally
 prescribed `--agents-dir` and was wrong. `loadConfig()`
 (`cmd/core-agent/main.go:507`) reads `config.json` by discovery from the

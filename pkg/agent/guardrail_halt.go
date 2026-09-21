@@ -87,6 +87,34 @@ func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn bool) {
 	})
 }
 
+// turnCutNoNextTurn is the clause every turn-scoped cut ends its
+// aftermath sentence with (#1140).
+//
+// A turn-scoped trip leaves the session available, and both cut
+// messages used to report that as "the next turn starts clean" — a
+// promise, in the present tense, about a turn that may never exist.
+// Nothing inside pkg/agent starts a turn. Under a driver the claim is
+// true and useful; in a `-p` one-shot there is no next turn at all, the
+// process exits 1, and the operator has just been told the opposite of
+// what happened by the only line that explained it. That reader is the
+// likely one: a one-shot is the run with no client attached, so this
+// log line IS the report.
+//
+// The fix is wording, not plumbing. Whether a caller will start another
+// turn is not knowable here and is deliberately not knowable — a
+// per-turn trip does not raise the session fence (#1049), so there is
+// no signal to consult and inventing one would couple the guardrail to
+// its driver. A sentence true in both worlds costs nothing, and naming
+// the two worlds is what turns "the session is not halted" from
+// reassurance into something the reader can act on.
+//
+// Shared rather than duplicated so the two guardrails cannot drift on
+// the half that is identical, in the file that already exists because
+// they were meant to be mirror images.
+const turnCutNoNextTurn = "Nothing starts that turn on its own, though: " +
+	"under a driver (TUI, attach, auto-continue) the run goes on, and a " +
+	"one-shot (-p) run ends here with exit 1."
+
 // logGuardrailCut writes the one line an unattended operator gets when a
 // guardrail cuts the turn in flight (#1131).
 //

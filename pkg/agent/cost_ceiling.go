@@ -400,7 +400,10 @@ func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) bool {
 		}
 		halt = false
 		reason = fmt.Sprintf(
-			"per-turn cost ceiling exceeded: this turn cost $%.4f, ceiling is $%.4f. The turn was stopped; the session is NOT halted and the next turn starts from a fresh per-turn budget. %d in a row now — at %d the session halts and needs an operator reset.",
+			"per-turn cost ceiling exceeded: this turn cost $%.4f, ceiling is $%.4f. "+
+				"The turn was stopped with its work unfinished; the session is NOT halted, "+
+				"and a further turn would start from a fresh per-turn budget. "+turnCutNoNextTurn+
+				" %d in a row now — at %d the session halts and needs an operator reset.",
 			turnCost, ceiling.MaxTurnUSD, streak, maxConsecutiveTurnCeilingTrips,
 		)
 	case ceiling.MaxSessionUSD > 0 && sessionCost >= ceiling.MaxSessionUSD:

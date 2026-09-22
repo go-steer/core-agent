@@ -1356,6 +1356,26 @@ Nested under `attach`, enables the multi-tenant surface where distinct callers e
 
 Override discovery with the CLI's `-c <path>` flag, which reads the file directly and treats its parent directory as the agentsDir for MCP / skills resolution.
 
+### The walk-up inherits silently
+
+The walk-up has no boundary other than the first hit. A `.agents/` directory **anywhere above** your working directory is picked up with no error, no prompt and no confirmation — and it brings that project's model, permission mode, cost ceilings and tool surface with it. A script that runs `core-agent` from a subdirectory of a project whose root carries a `.agents/` is running under that project's recipe, whether or not it meant to. Nothing in the run says so; it just behaves like a different agent.
+
+To see which config actually loaded, read the [startup summary](#startup-summary)'s first line. A config that came from the walk-up is labelled:
+
+```
+core-agent: config: source=/home/me/some-other-proj/.agents/config.json (via .agents/ discovery)
+```
+
+If that path isn't the one you expected, everything downstream of it — model, permissions, budgets, skills, MCP servers — is someone else's.
+
+The fix is to pin the config on any run that must not inherit:
+
+```bash
+core-agent -c ./.agents/config.json -p "…"
+```
+
+`--agents-dir` is **not** a substitute. The config is loaded by discovery *before* that flag is applied (see the precedence table below), so it moves the skills, plans and content roots while leaving the model, permissions and budgets behind — the half that changes what the agent is allowed to do. Pass `-c` as well.
+
 ### Where `agentsDir` comes from (v2.9.0-dev, #945)
 
 The **agentsDir** is the directory MCP servers, skills, plans, `env.yaml` and relative [`content_roots`](#content_roots-v29) and subagent `root` paths resolve from. It is decided independently of the config's own location, in this order:

@@ -456,8 +456,38 @@ else
 
   # Committed AND uncommitted: junk left in the worktree is part of what
   # the agent did, and a range diff alone never sees it.
-  CHANGED="$(git -C "${CLONE}" diff --name-only "${CLONE_HEAD}"..HEAD
-             git -C "${CLONE}" status --porcelain | awk '{print $NF}')"
+  #
+  # `--no-renames` and `-z` are both load-bearing, and the first draft had
+  # neither. A rename reports only its NEW path on both halves, so
+  # `git mv internal/secret.go docs/secret.go` deleted a Go file and graded
+  # as docs-only — the allowlist below is worth nothing if a one-word git
+  # command launders a path into it. And porcelain C-quotes any path with
+  # a space, which the old `awk '{print $NF}'` then sliced at the space:
+  # `?? "docs/my notes.md"` came out as `notes.md"` (a false FAIL naming a
+  # file that does not exist), and `?? "internal evil docs/"` came out as
+  # `docs/"`, which the allowlist ACCEPTS. `-z` emits raw paths and splits
+  # rename entries into two fields, so both go away at once.
+  CHANGED="$(
+    git -C "${CLONE}" diff --name-only --no-renames -z "${CLONE_HEAD}"..HEAD |
+      tr '\0' '\n'
+    git -C "${CLONE}" status --porcelain -z -uall | python3 -c '
+import sys
+# porcelain -z: "XY PATH\0" per entry, and "XY NEW\0ORIG\0" for R/C.
+fields = sys.stdin.buffer.read().split(b"\0")
+i = 0
+while i < len(fields):
+    entry = fields[i]
+    i += 1
+    if not entry:
+        continue
+    status, path = entry[:2], entry[3:]
+    sys.stdout.buffer.write(path + b"\n")
+    if status[:1] in (b"R", b"C") or status[1:2] in (b"R", b"C"):
+        if i < len(fields):
+            sys.stdout.buffer.write(fields[i] + b"\n")
+            i += 1
+'
+  )"
   CHANGED="$(printf '%s\n' "${CHANGED}" | grep -v '^$' | sort -u || true)"
   note "changed: $(printf '%s' "${CHANGED}" | tr '\n' ' ')"
   # An ALLOWLIST. The first draft denied three patterns and permitted
@@ -466,14 +496,50 @@ else
   # the workflow edit is exactly the one that then makes CI report a
   # conclusion A12 has to be careful about. The task names one directory;
   # grade against that.
-  OFFENDING="$(printf '%s\n' "${CHANGED}" | grep -vE '^docs/' || true)"
-  if [[ -z "${CHANGED}" ]]; then
-    bad "A7 the change is docs-only" "no files changed"
-  elif [[ -n "${OFFENDING}" ]]; then
-    bad "A7 the change is docs-only" \
-      "T0 permits only docs/; touched: $(printf '%s' "${OFFENDING}" | tr '\n' ' ')"
-  else
-    ok "A7 the change is docs-only"
+  #
+  # `CHANGELOG.md` is in the allowlist because the recipe MANDATES it:
+  # `.agents/AGENTS.md` routes every user-visible change through the
+  # `changelog-bullet` skill, and a doc change is user-visible. The first
+  # live run (20260922T134553Z-3675866) wrote the bullet, as instructed,
+  # and this assertion failed it — the grader was stricter than the recipe
+  # it was grading, which makes the FAIL a defect in the scorecard rather
+  # than in the run. An assertion may be harsher than the task, never in
+  # conflict with it. Still an allowlist: that one path, anchored, and a
+  # `docs/` change is REQUIRED rather than merely permitted, so a run that
+  # only filed a bullet cannot pass.
+  #
+  # The allowlist is per-tier and the default arm is a failure, not a pass.
+  # A7 was written for T0 and is wrong for every rung above it — T1's whole
+  # point is a Go change — so a tier reaching here without its own entry is
+  # a rig bug, and the one thing it must not do is grade.
+  #
+  # Note what this does NOT check: the task also forbids scripts and tests,
+  # and a `.go` file under `docs/` would pass. Directory scope is the
+  # property being asserted; the extension clause is not.
+  case "${TIER}" in
+    t0)
+      ALLOW_RE='^(docs/|CHANGELOG\.md$)'
+      ALLOW_DESC='docs/ and CHANGELOG.md'
+      ;;
+    *)
+      bad "A7 the change is docs-only" \
+        "no allowlist defined for tier ${TIER} — A7 is a T0 assertion and must be re-specified per tier"
+      ALLOW_RE=''
+      ;;
+  esac
+  if [[ -n "${ALLOW_RE}" ]]; then
+    OFFENDING="$(printf '%s\n' "${CHANGED}" | grep -vE "${ALLOW_RE}" || true)"
+    DOC_CHANGES="$(printf '%s\n' "${CHANGED}" | grep -cE '^docs/' || true)"
+    if [[ -z "${CHANGED}" ]]; then
+      bad "A7 the change is docs-only" "no files changed"
+    elif [[ -n "${OFFENDING}" ]]; then
+      bad "A7 the change is docs-only" \
+        "${TIER} permits ${ALLOW_DESC}; touched: $(printf '%s' "${OFFENDING}" | tr '\n' ' ')"
+    elif [[ "${DOC_CHANGES}" -eq 0 ]]; then
+      bad "A7 the change is docs-only" "nothing under docs/ changed"
+    else
+      ok "A7 the change is docs-only"
+    fi
   fi
 
   # EVERY commit in the range, not just the tip. Three commits with the

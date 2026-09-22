@@ -578,7 +578,12 @@ all three are shipped.
   fourteen assertions, `README.md`), with two corrections to this doc: D3's
   exit 2 is a portability bug rather than a fourth mitigation (see the
   correction in D3), and the Recipe-shape sketch must not give the reviewer
-  subagent a `model` block. The live T0 run is the remaining half.
+  subagent a `model` block. **Complete** — the live T0 run
+  (`20260922T134553Z-3675866`, 23 turns, $3.13) opened
+  [PR #1146](https://github.com/go-steer/core-agent/pull/1146) with 13 of
+  the 14 assertions green, and the one FAIL was a defect in A7's allowlist
+  rather than in the run: the grader forbade the `CHANGELOG.md` bullet the
+  recipe requires. Recorded in `dev/uat/self-dev/README.md`.
 - **P5** — T1, with the pre-fix-failure verification as a scored step.
 - T2/T3 gated on T1's evidence.
 

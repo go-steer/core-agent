@@ -108,7 +108,7 @@ that it ran the presubmits; it cannot fabricate a green check run.
 | A4b | the reviewer declares **no** model of its own (see below) |
 | A5 | a plan artifact exists — `plan_mode: required` was honoured |
 | A6 | a real branch exists, committed, and present on the remote |
-| A7 | every changed path is under `docs/`, committed or not |
+| A7 | every changed path is under `docs/` or is `CHANGELOG.md`, committed or not, and at least one is under `docs/` |
 | A8 | **every** commit carries the `Self-Development-Run: <RUN_ID>` trailer |
 | A8b | **every** commit is DCO signed off |
 | A9 | the real checkout did not move — tracked, ignored, or under `.git/` |
@@ -127,14 +127,67 @@ A4b is the same property observed at run time.
 
 **What A12 is and is not.** `ci.yml` skips markdown-only changes and
 `ci-docs.yml` emits matching green stubs so the required checks stay
-satisfied, so the green a T0 run earns is docs-lint plus a set of stubs
-— not the full pipeline. It is a correct pass and a real witness that
-the PR is mergeable; it is not evidence that CI exercised agent-authored
-code. That only starts being true at T1, where the change is Go.
+satisfied, so four of the checks a T0 run turns green (`test`, `lint`,
+`go mod tidy is clean`, `govulncheck`) are no-ops that ran nothing. The
+rest are real — `docs-lint`, the Astro site build, `review-gate`, `go
+toolchain`, `version fallback` — so this is a correct pass and a real
+witness that
+the PR is mergeable. What it is not is evidence that CI **compiled or
+tested agent-authored code**. That only starts being true at T1, where
+the change is Go.
 
 A8's trailer answers open question 1 on #1116 — how a human later tells
 an agent-authored PR from a hand-written one. It is required by the task
 file and verified here, which makes it a witness rather than a hope.
+
+## The first live run — T0, 2026-09-22
+
+Run `20260922T134553Z-3675866`, `--tier t0 --provider anthropic-vertex`,
+on `main` at `83ed64a8`. 23 turns, ~2.1M input tokens, **$3.13**, and
+**3m 45s** end to end against a 3600s budget. It produced
+**[PR #1146](https://github.com/go-steer/core-agent/pull/1146)** — a
+branch, a signed-off commit carrying the run-id trailer, a pushed PR with
+green checks, and no merge. **13 of the 14 assertions passed** (17 of the
+18 scorecard lines, the other four being preflight and boot).
+
+The answer to #1116's question is therefore yes at T0: unsupervised, from
+a task file, with no human in the loop between the prompt and the pull
+request.
+
+The one FAIL was **A7**, and it was the scorecard's fault rather than the
+run's. The agent wrote a `CHANGELOG.md` bullet alongside its docs change;
+A7's allowlist was `^docs/` and failed it. But `.agents/AGENTS.md` routes
+every user-visible change through the `changelog-bullet` skill, and this
+task file itself mentions running `verify-release-notes` "if you touched
+`CHANGELOG.md`" — so the recipe required the exact file the grader
+forbade. The agent obeyed the recipe and the grader contradicted it. A7
+now permits that one path, still *requires* a `docs/` change so a run
+that only filed a bullet cannot pass, and refuses every other path git
+reports as changed. **An assertion may be harsher than the task it
+grades; it may not be in conflict with it** — and a rig whose own
+scorecard disagrees with its own recipe will keep reporting the agent's
+best behaviour as a failure.
+
+Reviewing that fix turned up two older holes in the same assertion, both
+in how the changed-path list was *built* rather than in the allowlist
+that reads it. A **rename** reports only its new path — on the range diff
+and on `status --porcelain` alike — so `git mv internal/secret.go
+docs/secret.go` deleted a Go file and graded as docs-only. And porcelain
+**C-quotes any path containing a space**, which the old `awk '{print
+$NF}'` then sliced at that space: an untracked `internal evil docs/` full
+of Go files came out as the single token `docs/"` and was *accepted*,
+while a legitimate `docs/my notes.md` came out as `notes.md"` and was
+rejected with a message naming a file that does not exist. Fail-open and
+fail-wrong from one line of parsing. Both are gone: `--no-renames -z` on
+the diff, and `-z -uall` through a real parser that splits rename entries
+into both of their paths. An allowlist is only as good as the list it is
+handed.
+
+Two things the run is *not* evidence for. A12's green is docs-lint plus
+`ci-docs.yml` stubs (see above), so no agent-authored code was compiled
+by CI — that starts at T1. And T0 by construction has no test to make
+fail first, so nothing here says the agent can do the pre-fix
+verification the repo's review gate demands.
 
 ## Reading a result
 

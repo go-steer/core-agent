@@ -78,7 +78,7 @@ func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn bool) {
 	if haltedTurn {
 		a.logGuardrailCut(guardrail, reason)
 	} else {
-		log.Printf("agent: %s guardrail tripped%s: %s", guardrail, a.logSessionSuffix(), reason)
+		log.Printf("agent:%s %s guardrail tripped: %s", a.logSessionSuffix(), guardrail, reason)
 	}
 	a.emit(attach.EventGuardrailTrip, attach.GuardrailTrip{
 		Guardrail:  guardrail,
@@ -142,26 +142,37 @@ const turnCutNoNextTurn = "Nothing starts that turn on its own, though: " +
 // them to reset it with additional budget, which is a request that takes
 // the id.
 func (a *Agent) logGuardrailCut(guardrail, reason string) {
-	log.Printf("agent: %s guardrail cut the turn in flight%s — the cancellation "+
+	log.Printf("agent:%s %s guardrail cut the turn in flight — the cancellation "+
 		"error that follows is this cut, not a provider failure: %s",
-		guardrail, a.logSessionSuffix(), reason)
+		a.logSessionSuffix(), guardrail, reason)
 }
 
 // logSessionSuffix names the session a log line is about.
 //
+// **It goes immediately after the `agent:` prefix — `log.Printf("agent:%s
+// …", a.logSessionSuffix(), …)` — and nowhere else.** Every
+// operator-facing line in this package that is about one session carries
+// it (#1137); the tail-repair notice names its session its own way
+// because it writes to os.Stderr under the CLI's prefix, and the inbox
+// is handed a copy because push has no *Agent to ask.
+//
 // Bracketed, where the daemon's own lines write a bare `session %s:`
 // prefix (pkg/compose/auto_continue.go, pkg/runner/wakeloop.go). Those
-// lead with it and can punctuate it with a colon; these two splice it
-// into the middle of a sentence, where an unbracketed `session s-7`
-// would read as prose. A grep for `session <id>` still finds both.
+// lead with it and punctuate it with a colon; an unbracketed `session
+// s-7` spliced into a sentence would read as prose. A grep for `session
+// <id>` finds both forms.
 //
-// Splicing costs one anchor and saves the other. `agent: <guardrail>
-// guardrail cut the turn in flight` survives byte-for-byte, because the
-// suffix lands after "in flight"; `<guardrail> guardrail tripped:` does
-// NOT, because the suffix lands between the word and the colon. That is
-// a real break and it is taken knowingly — #1131 is days old and in no
-// tag, and a sweep of the tree found nothing matching on either string.
-// Drop the colon from any grep that has one.
+// The fixed front position is the point, and it was not free: #1136
+// spliced the id into the middle of the two guardrail sentences and
+// knowingly broke `<guardrail> guardrail tripped:` as a grep anchor to
+// do it. Moving to the front restores that anchor and keeps the other,
+// because the id now precedes both message bodies instead of landing
+// inside one of them — `cost_ceiling guardrail cut the turn in flight`
+// and `cost_ceiling guardrail tripped:` are contiguous substrings
+// again. Every future edit to a message body is anchor-stable for the
+// same reason, which is what turns "name the session" from a per-site
+// judgement call into a rule. #1137 exists because the judgement call
+// missed nine sites.
 //
 // It does not special-case the single-session run, even though its id is
 // the unglamorous `default` that New fills in when nothing passes

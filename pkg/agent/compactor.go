@@ -487,8 +487,8 @@ func (a *Agent) runPendingCompaction(ctx context.Context) {
 		failures := a.compactionFailures
 		cooldown := a.compactionCooldown
 		a.mu.Unlock()
-		log.Printf("agent: auto-compaction failed (consecutive failures=%d, backing off %d turns): %v",
-			failures, cooldown, err)
+		log.Printf("agent:%s auto-compaction failed (consecutive failures=%d, backing off %d turns): %v",
+			a.logSessionSuffix(), failures, cooldown, err)
 		// …and to anyone attached, not just to whoever can read the
 		// daemon's stderr (#908). A compaction that silently stops
 		// happening is the failure an operator most needs told about,

@@ -247,7 +247,12 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 			// scored by the string the OTHER assertion is about — the
 			// check would stay green with the name dropped from the
 			// format entirely.
-			if want := "agent: " + tc.label + " guardrail cut the turn in flight"; !strings.Contains(got, want) {
+			//
+			// Contiguous again as of #1137: the session id moved to a
+			// fixed slot ahead of the message body, so this sentence is
+			// one substring rather than two halves either side of the
+			// suffix. That is the anchor #1136 had to give up.
+			if want := tc.label + " guardrail cut the turn in flight"; !strings.Contains(got, want) {
 				t.Errorf("cut line does not open with %q:\n%s\n\n"+
 					"The name has to be the token error.type carries on "+
 					"gen_ai.agent.invocation.duration, or the log and the metric "+
@@ -258,11 +263,16 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 					"Naming the guardrail says which one; the reason is the half that "+
 					"says why, and it is what the operator acts on", tc.reason, got)
 			}
-			// #1136. Distinct ids per arm, so this cannot pass on a
-			// constant: each case asserts the session ITS agent was
-			// built with, and any single hardcoded suffix fails at
-			// least two of the three.
-			if want := "[session " + tc.session + "]"; !strings.Contains(got, want) {
+			// #1136, in the fixed slot #1137 settled on: directly after
+			// the `agent:` prefix and directly before this arm's name.
+			// Distinct ids per arm, so it cannot pass on a constant —
+			// each case asserts the session ITS agent was built with,
+			// and any single hardcoded suffix fails at least two of the
+			// three. Pinning the position and not merely the presence
+			// is the point of asserting it joined to tc.label: the slot
+			// is what lets every other line in the package keep its own
+			// body anchors.
+			if want := "agent: [session " + tc.session + "] " + tc.label; !strings.Contains(got, want) {
 				t.Errorf("cut line does not name %q:\n%s\n\n"+
 					"A daemon interleaves several sessions into one log, and the "+
 					"operator's next move — resetting the guardrail — takes the id", want, got)
@@ -355,7 +365,7 @@ func TestGuardrailTripAtTheTurnBoundaryIsLoggedWithoutClaimingACut(t *testing.T)
 	// #1136: and it says which session stopped accepting them. This is
 	// the branch that needs the id most — the reason text ends by asking
 	// the operator to reset the guardrail, and the reset takes an id.
-	if !strings.Contains(out, "watchdog guardrail tripped [session s-1131-post]:") {
+	if !strings.Contains(out, "agent: [session s-1131-post] watchdog guardrail tripped:") {
 		t.Errorf("the boundary trip does not name the session an operator must reset:\n%s", out)
 	}
 	if !strings.Contains(out, "looping on read_file 5x.") {
@@ -399,7 +409,7 @@ func TestGuardrailTripNamesTheDefaultSessionToo(t *testing.T) {
 		}
 	}
 
-	if out := sink.String(); !strings.Contains(out, "watchdog guardrail tripped [session "+defaultSessionID+"]:") {
+	if out := sink.String(); !strings.Contains(out, "agent: [session "+defaultSessionID+"] watchdog guardrail tripped:") {
 		t.Errorf("a trip on the default session names no session:\n%s\n\n"+
 			"An operator on a one-shot run still resets by id, and %q is the id",
 			out, defaultSessionID)

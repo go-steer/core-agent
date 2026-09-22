@@ -164,7 +164,7 @@ func (a *Agent) fireWakeFenced() {
 		return
 	}
 	if newHalt {
-		log.Printf("agent: wake fenced while the guardrail is tripped (%s); input stays queued and will drive the first turn after a reset (#1040)", reason)
+		log.Printf("agent:%s wake fenced while the guardrail is tripped (%s); input stays queued and will drive the first turn after a reset (#1040)", a.logSessionSuffix(), reason)
 	}
 	a.wake.fireExceptDefault()
 }

@@ -169,8 +169,54 @@ Mitigations, all three required:
    thirteen sites live inside a double-quoted command string handed to tmux,
    which a file-text grep for `-c` on the same line gets wrong in both
    directions.
-3. The recipe's `display_name` is `core-agent-selfdev`, so the startup
-   summary makes an accidental inheritance visible on line one.
+3. The recipe's `display_name` is `core-agent-selfdev`, so an interactive
+   session shows whose recipe it is in the TUI status line.
+
+**Correction (P3): mitigation 3 does not do what this said.** It claimed the
+`display_name` "makes an accidental inheritance visible on line one" of the
+startup summary. It does not — `cfg.Agent.DisplayName` is read in exactly one
+place, `agentDisplayName()` in `cmd/core-agent/coretui_enabled.go`, and it
+feeds `Branding.AgentIdentity` for the TUI status-line banner. A headless or
+`-p` run never prints it, and the headless contributor is precisely the reader
+this mitigation was for. Measured on the committed recipe twice, because the
+first measurement proves less than it looks: `core-agent --provider=echo -p hi`
+from the checkout with no `ANTHROPIC_API_KEY` **exits 2** before any turn, and
+with a dummy key set it completes the turn and exits 0. Neither run emits any
+occurrence of `core-agent-selfdev`.
+
+That exit 2 is itself worth recording, because it is a behaviour change this
+section did not anticipate:
+
+```
+core-agent: subagents: subagents[0] "reviewer": model: resolve provider:
+  anthropic: api key is required (set ANTHROPIC_API_KEY or
+  model.anthropic.api_key in .agents/config.json)
+```
+
+The reviewer subagent pins `model.provider: anthropic`, and a subagent's
+explicit provider is **not** overridden by the parent's `--provider`. So an
+unpinned run from anywhere under the checkout, by a contributor who has only
+Vertex or Gemini credentials, now fails loudly at startup instead of running
+with the wrong recipe. That is a fourth D3 mitigation and the strongest one —
+inheritance that refuses to boot cannot be inherited silently — but it arrived
+as a side effect rather than a decision, and it is the first thing such a
+contributor will hit. Naming it here so the next person reads it as intended
+rather than as a bug.
+
+What actually makes the inheritance visible is already unconditional and was
+not credited here:
+
+```
+core-agent: config: source=<repo>/.agents/config.json (via .agents/ discovery)
+core-agent: agentsDir: <repo>/.agents (via .agents/ discovery)
+core-agent: instruction: loaded 2 file(s): <repo>/.agents/AGENTS.md, <repo>/AGENTS.md
+```
+
+Those three lines name the file, the directory and the instruction set, on
+every run including `-p`, and the `(via .agents/ discovery)` parenthetical is
+exactly the "you did not pin this" signal. So the mitigation holds and the
+stated mechanism was wrong — the same shape as this section's `--agents-dir`
+correction, and recorded the same way rather than quietly fixed.
 
 Two exemptions are structural rather than granted: `attach` and `ls` are
 dispatched in `main()` before `flag.Parse` and **reject** `-c` outright
@@ -501,7 +547,9 @@ all three are shipped.
   **Shipped**, with one correction to this doc: the pin is `-c`, not
   `--agents-dir` (see D3).
 - **P3** — the recipe: `/.agents/`, the `reviewer` subagent, the skills, the
-  `.gitignore` additions, `internal/selfrecipe/` test.
+  `.gitignore` additions, `internal/selfrecipe/` test. **Shipped**, with one
+  correction to this doc: D3's mitigation 3 does not work by the mechanism it
+  claimed (see the correction in D3).
 - **P4** — `dev/uat/self-dev/` driver + T0 executed, with the resulting PR
   linked from the UAT record.
 - **P5** — T1, with the pre-fix-failure verification as a scored step.

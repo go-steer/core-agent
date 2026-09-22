@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-opus-5"
+  },
+  "permissions": {
+    "mode": "ask",
+    "plan_mode": "required"
+  },
+  "safety": {
+    "watchdog": "enforce"
+  },
+  "agent": {
+    "display_name": "core-agent-selfdev",
+    "max_steps": 300,
+    "max_turn_cost_usd": 10.0,
+    "max_session_cost_usd": 50.0
+  },
+  "subagents": [
+    {
+      "name": "reviewer",
+      "description": "Adversarial reviewer for a staged diff. Delegate here after `git add` and before `gh pr create`, once per change. It reads the staged diff and the surrounding source, hunts for correctness defects, races, API misuse and guard gaps, and returns ranked findings with a concrete failure scenario for each plus whether it confirmed the finding by running something or is merely reasoning. It is read-only: it never edits, stages, commits or pushes, and it does not fix what it finds. Give it the issue number and what the change is meant to do, because a reviewer that has to infer intent grades style instead of correctness.",
+      "root": "reviewer",
+      "model": { "provider": "anthropic", "name": "claude-opus-5" },
+      "tools": ["read_file", "read_many_files", "grep", "glob", "list_dir", "bash", "todo"]
+    }
+  ]
+}

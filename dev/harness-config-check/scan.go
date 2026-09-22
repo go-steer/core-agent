@@ -53,8 +53,20 @@ var commandPrefixes = map[string]bool{
 }
 
 // wrapperCommands run the command named in their own arguments. After
-// one of these, the flags and the bare numbers belonging to the wrapper
-// are skipped and the next ordinary word is back in command position.
+// one of these, the flags, the bare numbers and the variable references
+// belonging to the wrapper are skipped and the next ordinary word is
+// back in command position.
+//
+// Variable references have to be skipped because a wrapper's own
+// argument is routinely parameterised — `timeout "${TIMEOUT_SECS}"
+// "${BIN}"` is the idiomatic form, and isDuration cannot see a duration
+// through the variable. Skipping stops at a known binary reference, so
+// the word the wrapper is going to run is never swallowed. The cost of
+// being wrong here is asymmetric in the safe direction: skipping one
+// word too many can only turn a site the scanner already misses into a
+// site it still misses, whereas *not* skipping loses command position
+// altogether and makes the invocation invisible to --print's census as
+// well as to the check.
 var wrapperCommands = map[string]bool{
 	"timeout": true, "nice": true, "ionice": true, "stdbuf": true,
 	"setsid": true, "chrt": true,
@@ -160,8 +172,9 @@ func analyze(file string, toks []tok, out *[]Invocation) {
 				inWrapperArgs = true
 				continue
 			}
-			if inWrapperArgs && (strings.HasPrefix(bare, "-") || isDuration(bare)) {
-				continue // the wrapper's own flags, and timeout's duration
+			if inWrapperArgs && !isBinaryRef(bare) &&
+				(strings.HasPrefix(bare, "-") || isDuration(bare) || isVarRef(bare)) {
+				continue // the wrapper's own flags, duration and variables
 			}
 			// `go run ./cmd/core-agent …` builds and runs the same
 			// binary, and inherits config discovery from the same cwd.
@@ -314,6 +327,30 @@ func isAssignment(w string) bool {
 		ok := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
 			(i > 0 && c >= '0' && c <= '9')
 		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// isVarRef reports whether a word is nothing but a parameter expansion.
+// A word that merely contains one (`--timeout=${N}`, `${DIR}/bin/x`) is
+// not one: only a whole-word reference can be a wrapper's own argument
+// standing in for a literal.
+func isVarRef(w string) bool {
+	if strings.HasPrefix(w, "${") && strings.HasSuffix(w, "}") {
+		return !strings.ContainsAny(w[2:len(w)-1], "${}")
+	}
+	// The unbraced spelling is at least as idiomatic, and isBinaryRef
+	// already handles it on the other side. Missing it here left
+	// `timeout $SECS "${BIN}"` invisible to the check AND to --print's
+	// census, which is the exact failure the braced case was fixed for.
+	if !strings.HasPrefix(w, "$") || len(w) < 2 {
+		return false
+	}
+	for _, r := range w[1:] {
+		alnum := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+		if r != '_' && !alnum {
 			return false
 		}
 	}

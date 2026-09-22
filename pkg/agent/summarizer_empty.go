@@ -224,8 +224,8 @@ func (a *Agent) summarizeWithRetry(ctx context.Context, operation string, req *a
 		}
 		if at.text != "" {
 			if attempts > 1 {
-				log.Printf("agent: %s: empty summary recovered on retry (attempt %d/%d)",
-					operation, attempts, maxAttempts)
+				log.Printf("agent:%s %s: empty summary recovered on retry (attempt %d/%d)",
+					a.logSessionSuffix(), operation, attempts, maxAttempts)
 			}
 			return at.text, nil
 		}
@@ -233,8 +233,8 @@ func (a *Agent) summarizeWithRetry(ctx context.Context, operation string, req *a
 		if attempts >= maxAttempts || ctx.Err() != nil || !retryableEmptySummary(at) {
 			break
 		}
-		log.Printf("agent: %s: model returned no summary text (%s) — retrying once",
-			operation, emptyDetailOrUnknown(at.detail))
+		log.Printf("agent:%s %s: model returned no summary text (%s) — retrying once",
+			a.logSessionSuffix(), operation, emptyDetailOrUnknown(at.detail))
 	}
 	return "", &EmptySummaryError{Operation: operation, Detail: last.detail, Attempts: attempts}
 }

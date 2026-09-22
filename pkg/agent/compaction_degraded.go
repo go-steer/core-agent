@@ -166,7 +166,10 @@ func (a *Agent) noteAssumedContextWindow(modelID string) {
 		"model %q is not in the context-window table; compacting against an assumed %d-token window. "+
 			"Pin a catalogued model id for an exact threshold.",
 		modelID, AssumedContextWindowSize)
-	log.Printf("agent: %s", detail)
+	// The id rides the log line and stays out of detail, which is also
+	// the durable degraded row's text and is already stored against its
+	// session (#1136's split, #1137's sweep).
+	log.Printf("agent:%s %s", a.logSessionSuffix(), detail)
 	a.recordContextReductionDegraded(attach.ContextReductionWindowUnknown, detail)
 }
 
@@ -257,7 +260,7 @@ func (a *Agent) fallBackToMechanicalCompaction(ctx context.Context, summarizerEr
 		// Both strategies are down. This is the one case with no
 		// remaining defence against context growth, so it is reported
 		// as a failure rather than as a degradation.
-		log.Printf("agent: mechanical compaction fallback also failed: %v", err)
+		log.Printf("agent:%s mechanical compaction fallback also failed: %v", a.logSessionSuffix(), err)
 		a.recordContextReductionFailure(attach.ContextReductionCompaction, err, 0, 0)
 		return
 	}
@@ -281,7 +284,9 @@ func (a *Agent) noteMechanicalCompaction(detail string) {
 	}
 	a.warnedMechanical = true
 	a.mu.Unlock()
-	log.Printf("agent: %s", detail)
+	// Log line only; detail is the durable row's text. See
+	// noteAssumedContextWindow.
+	log.Printf("agent:%s %s", a.logSessionSuffix(), detail)
 	a.recordContextReductionDegraded(attach.ContextReductionMechanical, detail)
 }
 

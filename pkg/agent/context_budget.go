@@ -209,9 +209,11 @@ func (a *Agent) cutTurnForContextBudget(used, size int) {
 	// detail is also the durable degraded row's text, and that row is
 	// already filed under its session — repeating the id inside it would
 	// be noise in the one place it is redundant. Leading rather than
-	// mid-sentence because detail is a whole sentence of its own; the
-	// guardrail lines can splice theirs in after the guardrail's name
-	// because they build the sentence around it.
+	// mid-sentence, which every operator line in this package now is
+	// (#1137): this one always was, and the guardrail lines that used to
+	// splice theirs in after the guardrail's name were moved to match.
+	// The fixed slot is a rule, not a per-site judgement — see
+	// logSessionSuffix.
 	//
 	// turnCutNoNextTurn rides the log line for the same reason and not
 	// the same one (#1140). "Compaction will run first on the next

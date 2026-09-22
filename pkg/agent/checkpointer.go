@@ -419,7 +419,7 @@ func (a *Agent) runPendingCheckpoint(ctx context.Context) {
 		// don't loop. Surface the failure so it isn't silent (#356):
 		// a checkpoint drops a task boundary the operator expected,
 		// so a swallowed failure is materially misleading.
-		log.Printf("agent: pending checkpoint failed: %v", err)
+		log.Printf("agent:%s pending checkpoint failed: %v", a.logSessionSuffix(), err)
 		// The daemon log reaches nobody who is attached, so also write
 		// the durable row (#908). No backoff counters to report here —
 		// the checkpoint path has none; the cleared flag is what stops

@@ -1187,6 +1187,9 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		titleModel:           o.titleModel,
 		titleDisabled:        o.titleDisabled,
 	}
+	// Before anything can publish `a` (AttachParent, agentRef,
+	// postConstruct) and therefore before any push can race the read.
+	a.inbox.logSuffix = a.logSessionSuffix()
 	if a.bgMgr != nil {
 		a.bgMgr.AttachParent(a)
 	}

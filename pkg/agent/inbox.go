@@ -99,6 +99,15 @@ type inbox struct {
 	messages []inboxMessage
 	notify   chan struct{} // 1-buffer signal; non-blocking send on append
 	closed   bool
+
+	// logSuffix names the session this inbox belongs to, for the one
+	// line push can write (#1137). A copy of Agent.logSessionSuffix()
+	// rather than a back-pointer to the Agent: an inbox is reachable
+	// from the agent's own locked paths, and a child that can call back
+	// into its parent is a lock-ordering hazard for one log line. Set
+	// once by New before the agent escapes and never written again, so
+	// push reads it under its own mutex without a race.
+	logSuffix string
 }
 
 // newInbox returns an empty inbox ready to accept Inject calls.
@@ -150,8 +159,8 @@ func (q *inbox) push(msg string, caller auth.Caller, spanCtx trace.SpanContext, 
 		// can't deadlock the agent.
 		dropped := q.messages[0]
 		q.messages = q.messages[1:]
-		log.Printf("agent: inbox cap exceeded, dropped oldest message (id=%s head=%q)",
-			dropped.id, truncateForLog(dropped.text))
+		log.Printf("agent:%s inbox cap exceeded, dropped oldest message (id=%s head=%q)",
+			q.logSuffix, dropped.id, truncateForLog(dropped.text))
 	}
 	q.mu.Unlock()
 	if quiet {

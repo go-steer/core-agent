@@ -46,9 +46,23 @@ profile.cov
 # check.)
 .claude/
 
-# Per-user .agents/ state.
+# Per-user .agents/ state. The recipe itself (config.json, AGENTS.md,
+# skills/, reviewer/) IS committed — see docs/self-development-design.md
+# D2. What a run produces is not: record_plan writes plan-N.md into
+# plans/, and the eventlog and session stores land here too when they are
+# pointed at the agents dir. Without these the first self-development run
+# dirties the tree it is trying to open a clean PR against.
 /.agents/sessions/
 /.agents/logs/
+/.agents/plans/
+# Both manifest spellings — agentenv reads env.yaml OR env.json
+# (pkg/agentenv.ManifestFileYAML/JSON), so ignoring one of them leaves the
+# other as a per-user file that a `git add -A` commits.
+/.agents/env.yaml
+/.agents/env.json
+/.agents/*.db
+/.agents/*.db-shm
+/.agents/*.db-wal
 
 # Local environment overrides.
 .env

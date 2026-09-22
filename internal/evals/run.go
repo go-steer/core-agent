@@ -176,6 +176,21 @@ func sourceFor(ck Check, world *World, art RunArtifacts) Source {
 	return Source{Text: art.Stdout, Present: true}
 }
 
+// writePinnedConfig drops a minimal config beside the materialized world
+// and returns its path, for `-c`. Minimal is the point: the eval wants the
+// binary's defaults and the flags it passes explicitly, not a recipe.
+//
+// It goes in the world root rather than the workdir because `-c` also
+// fixes the agents dir to the config's directory, and the workdir is
+// fixture content the case may assert over.
+func writePinnedConfig(root string) (string, error) {
+	path := filepath.Join(root, "eval-pin-config.json")
+	if err := os.WriteFile(path, []byte("{\"version\": 1}\n"), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func (r *Runner) exec(ctx context.Context, c *Case, world *World, tier Tier) RunArtifacts {
 	timeout := r.Timeout
 	if timeout <= 0 {
@@ -196,6 +211,26 @@ func (r *Runner) exec(ctx context.Context, c *Case, world *World, tier Tier) Run
 	// fixture being out of reach. Off on both sides, the one flag below
 	// remains the whole of the difference.
 	args = append(args, "--agentic-tools=false", "--yolo", "-p", c.Prompt)
+	// Pin the config, for the same reason every harness shell script does
+	// (dev/ci/presubmits/verify-harness-config-pinned): config.Find walks
+	// *up* from the process cwd and takes the first .agents/ it meets, so
+	// an unpinned run inherits whatever recipe happens to be above it —
+	// another model, another permission mode, a tools.disable that removes
+	// the tool under test — silently, and the eval reports it as a score.
+	//
+	// Today the world is a tempdir and the walk finds nothing, so this is
+	// belt and braces. It is worth having anyway: that immunity is a
+	// property of TMPDIR's value rather than of anything this code says,
+	// and it disappears the moment someone points TMPDIR inside a
+	// checkout. The pin-check scanner cannot cover this site — it reads
+	// shell (dev/harness-config-check isShell), so a Go exec site is
+	// invisible to it in both directions and its census would never notice
+	// this going missing.
+	if pin, err := writePinnedConfig(world.Root); err != nil {
+		r.logf("warning: could not pin config (%v); the run inherits config.Find's walk-up", err)
+	} else {
+		args = append(args, "-c", pin)
+	}
 	if tier == TierNoAccess {
 		// The whole baseline, in one flag. Same binary, same prompt,
 		// same fixture on disk — the agent simply has no way to reach

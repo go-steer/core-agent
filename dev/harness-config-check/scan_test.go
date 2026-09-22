@@ -128,6 +128,12 @@ func TestWrappersAndGoRunAreInvocations(t *testing.T) {
 		`stdbuf -o0 "${CORE_AGENT}" -p hi`,
 		`setsid "${CORE_AGENT}" -p hi`,
 		`timeout 30s nice -n 5 "${CORE_AGENT}" -p hi`,
+		// The wrapper's own argument as a variable rather than a literal.
+		`timeout "${TIMEOUT_SECS}" "${CORE_AGENT}" -p hi`,
+		`timeout -k "${GRACE}" "${LIMIT}" "${AGENT_BIN}" -p hi`,
+		// The unbraced spelling of the same thing.
+		`timeout $SECS "${CORE_AGENT}" -p hi`,
+		`timeout "$SECS" "${CORE_AGENT}" -p hi`,
 		`go run ./cmd/core-agent -p hi`,
 		`go run "${REPO_ROOT}/cmd/core-agent" -p hi`,
 	} {

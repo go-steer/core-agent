@@ -149,28 +149,61 @@ func TestModelIsOneTheSpikeValidated(t *testing.T) {
 	t.Parallel()
 	cfg := loadRecipe(t)
 
-	// Resolved through modelName rather than read inline: SubagentSpec.Model
-	// is a *ModelConfig and omitting `model` from a subagent is a legal
-	// config (Validate only checks Model.Name when Model is set). An inline
-	// `.Model.Name` panics on exactly the input the tc.name == "" branch
-	// below exists to report, and the panic takes every other test in the
-	// package down with it.
-	for _, tc := range []struct{ what, name string }{
-		{"parent", cfg.Model.Name},
-		{"reviewer subagent", modelName(subagentByName(t, cfg, "reviewer").Model)},
-	} {
-		if tc.name == "" {
-			t.Errorf("%s has no model name pinned; it would inherit, and the "+
-				"model is a requirement rather than a default here", tc.what)
-			continue
-		}
-		if !spikeValidatedModels[tc.name] {
-			t.Errorf("%s model is %q, which no graded self-development run has "+
-				"passed on. Run the task and add it to spikeValidatedModels, or "+
-				"use one that is there. Note %q classifies as %v — the tier is "+
-				"not the evidence, and claude-opus-4-5 is frontier-tier and "+
-				"scored 1/6.", tc.what, tc.name, tc.name, modeltier.Classify(tc.name))
-		}
+	if name := cfg.Model.Name; !spikeValidatedModels[name] {
+		t.Errorf("parent model is %q, which no graded self-development run has "+
+			"passed on. Run the task and add it to spikeValidatedModels, or "+
+			"use one that is there. Note %q classifies as %v — the tier is "+
+			"not the evidence, and claude-opus-4-5 is frontier-tier and "+
+			"scored 1/6.", name, name, modeltier.Classify(name))
+	}
+}
+
+// TestReviewerInheritsTheParentModel is the other half, and it asserts an
+// *absence* — which is the opposite of what the first version of this
+// recipe did, for a reason worth keeping.
+//
+// The reviewer originally carried its own
+// `{"provider": "anthropic", "name": "claude-opus-5"}`. P4 found that
+// makes the recipe unbootable for anyone who is not on first-party
+// Anthropic: `--provider` overrides the *parent* only, and
+// resolveSubagentProvider shallow-copies cfg and overwrites Model
+// wholesale with the spec's, so a subagent's pinned provider survives the
+// flag and a Vertex-only operator gets exit 2 at startup before any turn:
+//
+//	subagents[0] "reviewer": model: resolve provider: anthropic:
+//	api key is required
+//
+// Naming the model without the provider does not fix it — the same
+// wholesale overwrite leaves Provider empty, and auto-detection does not
+// see the parent's flag either. Only `spec.Model == nil` takes the
+// `return parentProvider, cfg.Model.Name` path, which is what the
+// reviewer wants anyway: the same frontier model as the parent, on
+// whatever provider the operator actually has.
+//
+// So the guard is "declares no model of its own", and the spike-validated
+// check above covers the reviewer transitively, because inheriting means
+// inheriting the name the parent just had checked.
+//
+// The wider lesson, recorded because the first draft of the design doc
+// got it backwards and called this behaviour a *mitigation*: a startup
+// failure is only a safety property if it fires on the axis you meant. On
+// "is this recipe being inherited by accident?" it fires for the maintainer
+// who configured it deliberately and stays silent for the contributor on
+// first-party Anthropic who did not — exactly inverted. D3's three real
+// mitigations do that job.
+func TestReviewerInheritsTheParentModel(t *testing.T) {
+	t.Parallel()
+	spec := subagentByName(t, loadRecipe(t), "reviewer")
+
+	if spec.Model != nil {
+		t.Errorf("reviewer declares model %+v; it must declare none. A "+
+			"subagent's own model block survives --provider (the parent's "+
+			"cfg is shallow-copied and Model overwritten wholesale), so "+
+			"pinning one here makes the whole recipe exit 2 at startup for "+
+			"every operator who is not on first-party Anthropic — including "+
+			"Vertex, which is what this repo's own maintainer runs. Inheriting "+
+			"gets the parent's model, which is checked above.",
+			*spec.Model)
 	}
 }
 
@@ -582,14 +615,4 @@ func subagentByName(t *testing.T, cfg *config.Config, name string) config.Subage
 	}
 	t.Fatalf("recipe declares no %q subagent", name)
 	return config.SubagentSpec{}
-}
-
-// modelName reads a possibly-absent model block. An unset *ModelConfig
-// means "inherit the parent's model", which is a legal config and a
-// finding, not a crash.
-func modelName(m *config.ModelConfig) string {
-	if m == nil {
-		return ""
-	}
-	return m.Name
 }

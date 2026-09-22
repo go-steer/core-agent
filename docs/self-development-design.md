@@ -184,8 +184,11 @@ from the checkout with no `ANTHROPIC_API_KEY` **exits 2** before any turn, and
 with a dummy key set it completes the turn and exits 0. Neither run emits any
 occurrence of `core-agent-selfdev`.
 
-That exit 2 is itself worth recording, because it is a behaviour change this
-section did not anticipate:
+**Correction (P4): that exit 2 was a portability bug, not a fourth
+mitigation.** The paragraph here previously recorded it as one — "inheritance
+that refuses to boot cannot be inherited silently", called the strongest of
+the four. That reading is wrong, and P4 found out the hard way by trying to
+run the driver on the maintainer's own machine, which is Vertex-only:
 
 ```
 core-agent: subagents: subagents[0] "reviewer": model: resolve provider:
@@ -193,15 +196,26 @@ core-agent: subagents: subagents[0] "reviewer": model: resolve provider:
   model.anthropic.api_key in .agents/config.json)
 ```
 
-The reviewer subagent pins `model.provider: anthropic`, and a subagent's
-explicit provider is **not** overridden by the parent's `--provider`. So an
-unpinned run from anywhere under the checkout, by a contributor who has only
-Vertex or Gemini credentials, now fails loudly at startup instead of running
-with the wrong recipe. That is a fourth D3 mitigation and the strongest one —
-inheritance that refuses to boot cannot be inherited silently — but it arrived
-as a side effect rather than a decision, and it is the first thing such a
-contributor will hit. Naming it here so the next person reads it as intended
-rather than as a bug.
+The reviewer subagent pinned `model.provider: anthropic`, and `--provider`
+overrides the **parent only** — `resolveSubagentProvider` shallow-copies
+`cfg` and overwrites `Model` wholesale with the spec's, so a subagent's
+pinned provider survives the flag. The committed recipe therefore could not
+boot for the person who owns it. Naming the model without the provider does
+not help either: the same wholesale overwrite leaves `Provider` empty and
+auto-detection cannot see the parent's flag. Only `spec.Model == nil` takes
+the `return parentProvider, cfg.Model.Name` path.
+
+So the reviewer now declares **no model block at all** and inherits, which is
+what it wanted anyway: the same frontier model as the parent, on whatever
+provider the operator actually has. `internal/selfrecipe` asserts the
+absence, and the spike-validated check covers the reviewer transitively.
+
+The general lesson, which is why this is a correction rather than an edit:
+**a startup failure is a safety property only if it fires on the axis you
+meant.** On "is this recipe being inherited by accident?" this one fired for
+the maintainer who configured it deliberately and stayed silent for the
+first-party-Anthropic contributor who did not — exactly inverted. The three
+mitigations above do that job; there is no fourth.
 
 What actually makes the inheritance visible is already unconditional and was
 not credited here:
@@ -326,7 +340,11 @@ Sketch, following `examples/gke-platform-agent/.agents/config.json`:
       "name": "reviewer",
       "description": "Adversarial reviewer for a staged diff. ...",
       "root": "reviewer",
-      "model": { "provider": "anthropic", "name": "claude-opus-5" },
+      // No model block: a subagent that declares one keeps its provider
+      // through --provider and makes the recipe unbootable off
+      // first-party Anthropic. Omitting it inherits the parent's
+      // provider AND model name, which is what we want. See D3's P4
+      // correction.
       "tools": ["read_file", "read_many_files", "grep", "glob", "bash"]
     }
   ]
@@ -523,12 +541,17 @@ all three are shipped.
 
 ## Open questions
 
-1. **How do we tell an agent-authored PR from a human one?** The agent runs
-   locally under the maintainer's `gh` auth, so its PRs are authored by the
-   maintainer and are indistinguishable from hand-written ones. That is fine
-   for merge policy and wrong for grading — the ladder's evidence depends on
-   knowing which PRs came from a run. Cheapest option is a trailer or label
-   the driver stamps; the run ID is already in the scratch path.
+1. ~~**How do we tell an agent-authored PR from a human one?**~~ *Resolved
+   in P4, in the trailer's direction.* The agent runs locally under the
+   maintainer's `gh` auth, so its PRs are authored by the maintainer and are
+   indistinguishable from hand-written ones — fine for merge policy, wrong
+   for grading. Every task file now requires a `Self-Development-Run:
+   <RUN_ID>` commit trailer, and the driver's assertion A8 reads it back off
+   the pushed commit. A label would have been cheaper to stamp and is
+   editable after the fact by anyone with write access; a trailer is part of
+   the commit the PR points at. Requiring it in the task and *verifying* it
+   in the driver is what makes it a witness rather than a hope: a run where
+   the agent forgot fails rather than quietly grading as human-authored.
 2. **Does T0 need its own `dev/smoke/NN-*.sh`?** The hermetic scripts run on
    mock providers; a self-development run needs a real model and a real
    remote, which points at `dev/uat/`. But a scripted-provider T0 that
@@ -551,7 +574,11 @@ all three are shipped.
   correction to this doc: D3's mitigation 3 does not work by the mechanism it
   claimed (see the correction in D3).
 - **P4** — `dev/uat/self-dev/` driver + T0 executed, with the resulting PR
-  linked from the UAT record.
+  linked from the UAT record. **Driver shipped** (`dev/uat/self-dev/run.sh`,
+  fourteen assertions, `README.md`), with two corrections to this doc: D3's
+  exit 2 is a portability bug rather than a fourth mitigation (see the
+  correction in D3), and the Recipe-shape sketch must not give the reviewer
+  subagent a `model` block. The live T0 run is the remaining half.
 - **P5** — T1, with the pre-fix-failure verification as a scored step.
 - T2/T3 gated on T1's evidence.
 

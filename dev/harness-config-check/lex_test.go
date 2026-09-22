@@ -50,6 +50,13 @@ var oracleCases = []oracleCase{
 	{name: "plain", script: `"${CORE_AGENT}" -p hi`},
 	{name: "timeout wrapper", script: `timeout 5 "${CORE_AGENT}" -p hi`},
 	{name: "timeout with flags", script: `timeout --signal=INT 5s "${CORE_AGENT}" -p hi`},
+	// A wrapper argument that is a variable, not a literal. isDuration
+	// cannot see a duration through `${TIMEOUT_SECS}`, so before the
+	// variable-skip rule this lost command position and the invocation
+	// went missing from the check AND from --print's census. It is the
+	// shape dev/uat/self-dev/run.sh actually runs the agent with.
+	{name: "timeout with a variable duration", script: "TIMEOUT_SECS=5\n" + `timeout "${TIMEOUT_SECS}" "${CORE_AGENT}" -p hi`},
+	{name: "timeout with an unbraced variable duration", script: "SECS=5\n" + `timeout $SECS "${CORE_AGENT}" -p hi`},
 	{name: "after cd &&", script: `cd /tmp && "${CORE_AGENT}" -p hi`},
 	{name: "env assignment prefix", script: `FOO=1 BAR=2 "${CORE_AGENT}" -p hi`},
 	{name: "exec in subshell", script: `( exec "${CORE_AGENT}" -p hi )`},
@@ -228,9 +235,9 @@ func TestPositiveCasesActuallyExecute(t *testing.T) {
 			executed++
 		}
 	}
-	// 18 positives plus the divergent third-level case, which executes
+	// 20 positives plus the divergent third-level case, which executes
 	// under bash and is exactly why it is divergent.
-	if want := 19; executed != want {
+	if want := 21; executed != want {
 		t.Errorf("%d oracle cases reached the stub, want %d — a case stopped executing and is now agreeing with the scanner for the wrong reason", executed, want)
 	}
 }

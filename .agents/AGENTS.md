@@ -53,8 +53,10 @@ consequences, all of which have already bitten:
 - Weaken or delete a test to make a change pass. A test that is wrong gets
   an argument in the PR body, not a quiet edit.
 - Write "Jetski" anywhere. The codename is **Antigravity**.
-- Add Claude attribution — no `Co-Authored-By`, no "Generated with" footers —
-  to commits, PR bodies, or any committed artifact.
+- Add agent attribution — no `Co-Authored-By` naming an agent, no "Generated
+  with" footers, no trailer marking the work as agent-authored — to commits,
+  PR titles or bodies, or any committed artifact. The required `agent
+  attribution` check fails the PR otherwise.
 
 ## Rituals
 

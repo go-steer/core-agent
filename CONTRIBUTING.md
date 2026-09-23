@@ -60,6 +60,10 @@ Signed-off-by: Your Name <you@example.com>
 
 The name and email must match your `git config user.name` / `user.email`. If you forget, amend with `git commit --amend -s` (single commit) or rebase with `-x 'git commit --amend -s --no-edit'` (multiple).
 
+### No AI-agent attribution
+
+Commits and PRs carry no AI-agent attribution: no `Co-authored-by:` naming an AI tool, no "Generated with" footer, no agent as commit author, and no trailer marking the work as agent-authored. Author the work under your own name. The required `agent attribution` check (`dev/ci/presubmits/verify-no-agent-attribution`) scans every commit on your branch plus the PR title and body. It checks every commit, not just the last one, because a squash merge copies each branch commit's co-authors into `main`. Many AI coding tools add a co-author trailer by default, so turn that off in your tool's settings. A human co-author is fine.
+
 ### License headers
 
 Every source file carries the full Apache 2.0 header attributed to Google LLC:

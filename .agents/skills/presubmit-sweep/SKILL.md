@@ -16,8 +16,8 @@ Run them before every push. Not before every commit — before every push.
 
 **Run everything in `dev/ci/presubmits/` except the two `e2e-*` scripts.**
 That is the whole rule, and it is simpler than the conditional table you
-might expect because CI has no conditional table either: of the seventeen
-scripts, fifteen run on every pull request and only `e2e-real-provider` and
+might expect because CI has no conditional table either: of the eighteen
+scripts, sixteen run on every pull request and only `e2e-real-provider` and
 `e2e-recipe-gke-troubleshoot-agent` are gated on credentials.
 
 ```bash
@@ -49,6 +49,9 @@ Three of them are the ones most often wrongly assumed to be conditional:
 - **`verify-docs-lint`** and **`verify-version-fallback`** live in their own
   workflows with **no** `paths:` filter, precisely because `ci.yml` skips
   markdown-only changes and these two guard markdown drift.
+- **`verify-no-agent-attribution`** also has its own unfiltered workflow. It
+  scans the commits in `origin/main..HEAD`, so run it after you commit. CI
+  also scans the PR title and body, which a local run can't see.
 
 `e2e-real-provider` and `e2e-recipe-gke-troubleshoot-agent` need credentials
 or a live cluster. Run them only when asked, and never assume their absence

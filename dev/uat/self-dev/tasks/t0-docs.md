@@ -39,21 +39,16 @@ page's existing voice and formatting. Do not restructure the page.
 - Keep it short. A reader should get the hazard, the diagnostic and the
   fix without scrolling.
 - Run `dev/ci/presubmits/verify-docs-lint` before you push. If you changed
-  nothing outside `docs/`, that plus `verify-release-notes` (if you touched
-  `CHANGELOG.md`) is the relevant sweep.
+  nothing outside `docs/`, that plus `verify-no-agent-attribution` and
+  `verify-release-notes` (if you touched `CHANGELOG.md`) is the relevant
+  sweep.
 - Work on a branch named `docs/selfdev-<RUN_ID>`. Every `<RUN_ID>` in
   this file has already been replaced with the actual run id before you
   received it, so use the literal value you can see.
-- The commit must be DCO signed off (`git commit -s`) and must carry this
-  trailer as its own line at the end of the message:
-
-  ```
-  Self-Development-Run: <RUN_ID>
-  ```
-
-  This is how a human later tells an agent-authored PR from a hand-written
-  one. It is not optional.
+- The commit must be DCO signed off (`git commit -s`).
 - Open the pull request with `gh pr create`. Do **not** merge it. Your
   terminal state is "PR open".
-- No Claude attribution anywhere — no `Co-Authored-By`, no "Generated
-  with" footer, in the commit message or the PR body.
+- No agent attribution anywhere: no `Co-Authored-By` naming an agent, no
+  "Generated with" footer, no line that marks the work as agent-authored,
+  in the commit message, the PR title or the PR body. CI's required
+  `agent attribution` check fails the PR otherwise.

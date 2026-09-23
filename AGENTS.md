@@ -102,8 +102,16 @@ needs no network and no API keys.
   lines follow Conventional Commits (`feat:`, `fix:`, `docs:`,
   `chore:`, `refactor:`, `test:`, `ci:`, `build:`). Bodies explain
   *why* and call out the verification done.
-- **No Co-Authored-By trailer.** Maintainer preference — author the
-  work under your own name. DCO sign-off (`git commit -s`) is the
+- **No Co-Authored-By trailer, and no agent attribution of any kind.**
+  Maintainer preference — author the work under your own name. That
+  rules out an agent co-author, a "Generated with" footer, an agent as
+  commit author or committer, and any trailer that marks work as
+  agent-authored, in commits and in the PR title and body.
+  `dev/ci/presubmits/verify-no-agent-attribution` enforces it as the
+  required `agent attribution` check. It scans *every* commit on the
+  branch, because a squash merge copies each branch commit's co-authors
+  into `main`. One such commit (#931) is how Claude ended up on this
+  repository's contributor list. DCO sign-off (`git commit -s`) is the
   expected practice; see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 - **Tests before merging.** Every new package ships with unit tests.
   A new feature without a test is not done. A new bug fix without a
@@ -261,7 +269,7 @@ Conventions worth knowing at agent prompt time:
 - **Run presubmits before every push.** `dev/ci/presubmits/*` are the
   same scripts CI runs. A green local run is the same green run as
   remote CI — skipping them ships preventable red builds. Full sweep:
-  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain,verify-coretui-guards,verify-harness-config-pinned,examples-smoke}`.
+  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain,verify-coretui-guards,verify-harness-config-pinned,verify-no-agent-attribution,examples-smoke}`.
 - **A harness script that runs the binary pins its config with `-c`.**
   `config.Find` walks *up* from the process cwd, so an unpinned run
   anywhere under the checkout silently inherits the first `.agents/`

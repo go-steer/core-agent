@@ -260,8 +260,8 @@ CLONE_HEAD="$(git -C "${CLONE}" rev-parse HEAD)"
 CLONE_REAL="$(cd "${CLONE}" && pwd -P)"
 note "cloned ${REMOTE} @ ${BASE_REF} (${CLONE_HEAD:0:8})"
 
-# The agent authors commits as the operator — the open question #1116
-# raised and the trailer answers. Set the identity explicitly rather than
+# The agent authors commits as the operator, and nothing in the commit
+# marks it as agent work (A8). Set the identity explicitly rather than
 # inheriting, so a machine with no global git identity does not fail at
 # commit time three hundred steps in.
 git -C "${CLONE}" config user.name  "$(git -C "${REPO_ROOT}" config user.name)"
@@ -429,9 +429,9 @@ head2 "A6–A8  what the agent actually produced"
 if [[ ${DRY_RUN} -eq 1 ]]; then
   skip "A6 a branch was committed and pushed" "dry run"
   skip "A7 the change is docs-only" "dry run"
-  skip "A8 every commit carries the run-id trailer" "dry run"
+  skip "A8 no commit carries agent attribution" "dry run"
   skip "A8b every commit is DCO signed off" "dry run"
-  skip "A10 no Claude attribution in the commit or the PR body" "dry run"
+  skip "A10 no agent attribution in the PR title or body" "dry run"
   skip "A11 a pull request is open" "dry run"
   skip "A12 CI is green on the pull request" "dry run"
 else
@@ -544,20 +544,28 @@ while i < len(fields):
   fi
 
   # EVERY commit in the range, not just the tip. Three commits with the
-  # trailer only on the last one passed both of these while the DCO check
-  # on GitHub failed the PR — a scorecard contradicting CI rather than
+  # sign-off only on the last one passed A8b while the DCO check on
+  # GitHub failed the PR — a scorecard contradicting CI rather than
   # diagnosing it.
-  MSG="$(git -C "${CLONE}" log "${CLONE_HEAD}"..HEAD --format=%B)"
+  #
+  # A8 runs the same scanner CI's required `agent attribution` check
+  # runs, so the two cannot disagree. It used to require a
+  # `Self-Development-Run:` trailer on every commit; that trailer is
+  # agent attribution under another name, and the scanner now bans it.
+  # Which PR a run opened is recorded here, in the run's own scorecard,
+  # not in the repository's history.
   N_COMMITS="$(git -C "${CLONE}" rev-list --count "${CLONE_HEAD}"..HEAD)"
-  N_TRAILER="$(git -C "${CLONE}" log "${CLONE_HEAD}"..HEAD \
-    --format="%(trailers:key=Self-Development-Run,valueonly)" | grep -cF "${RUN_ID}" || true)"
   N_DCO="$(git -C "${CLONE}" log "${CLONE_HEAD}"..HEAD \
     --format="%(trailers:key=Signed-off-by,valueonly)" | grep -c . || true)"
-  if [[ "${N_TRAILER}" == "${N_COMMITS}" && "${N_COMMITS}" != "0" ]]; then
-    ok "A8 every commit carries the run-id trailer"
+  ATTR_OUT="${RUN_DIR}/attribution-commits.txt"
+  if [[ "${N_COMMITS}" == "0" ]]; then
+    bad "A8 no commit carries agent attribution" "no commits to check"
+  elif (cd "${CLONE}" && "${REPO_ROOT}/dev/tools/verify-no-agent-attribution" \
+          --range "${CLONE_HEAD}..HEAD") >"${ATTR_OUT}" 2>&1; then
+    ok "A8 no commit carries agent attribution"
   else
-    bad "A8 every commit carries the run-id trailer" \
-      "${N_TRAILER}/${N_COMMITS} commits carry 'Self-Development-Run: ${RUN_ID}'; without it an agent-authored PR is indistinguishable from a hand-written one (#1116 open question 1)"
+    bad "A8 no commit carries agent attribution" \
+      "$(grep -m1 '^commit ' "${ATTR_OUT}" || echo "see ${ATTR_OUT}")"
   fi
 
   if [[ "${N_DCO}" == "${N_COMMITS}" && "${N_COMMITS}" != "0" ]]; then
@@ -609,33 +617,27 @@ if [[ ${DRY_RUN} -eq 0 ]]; then
     PR_URL=""
   fi
 
-  # Attribution is checked on BOTH artifacts, because they are written by
-  # different calls and a run that gets one right routinely gets the
-  # other wrong.
-  ATTR_RE="co-authored-by:.*(claude|anthropic)|generated with.*claude|🤖"
-  ATTR_HITS=""
-  grep -qiE "${ATTR_RE}" <<<"${MSG}" && ATTR_HITS="commit message"
-  grep -qiE "${ATTR_RE}" <<<"${BRANCH}" && ATTR_HITS="${ATTR_HITS:+${ATTR_HITS} and }branch name"
+  # The PR half of the attribution check, with the same scanner as A8.
+  # Title as well as body: they are written by the same call and a run
+  # that gets one right routinely gets the other wrong.
   if [[ -n "${PR_NUM}" ]]; then
-    # Title as well as body: they are written by the same call and a run
-    # that gets one right routinely gets the other wrong.
-    PR_TEXT="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print((d.get("title") or "")+"\n"+(d.get("body") or ""))' "${PR_JSON}")"
-    if grep -qiE "${ATTR_RE}" <<<"${PR_TEXT}"; then
-      ATTR_HITS="${ATTR_HITS:+${ATTR_HITS} and }PR title/body"
-    fi
-    if [[ -z "${ATTR_HITS}" ]]; then
-      ok "A10 no Claude attribution in the commit or the PR body"
+    PR_TEXT="${RUN_DIR}/pr-text.txt"
+    ATTR_PR_OUT="${RUN_DIR}/attribution-pr.txt"
+    python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print((d.get("title") or "")+"\n"+(d.get("body") or ""))' \
+      "${PR_JSON}" >"${PR_TEXT}"
+    # An empty range: the commits are A8's, this is the text only.
+    if (cd "${CLONE}" && "${REPO_ROOT}/dev/tools/verify-no-agent-attribution" \
+          --range HEAD..HEAD --text-file "${PR_TEXT}") >"${ATTR_PR_OUT}" 2>&1; then
+      ok "A10 no agent attribution in the PR title or body"
     else
-      bad "A10 no Claude attribution in the commit or the PR body" "found in ${ATTR_HITS}"
+      bad "A10 no agent attribution in the PR title or body" \
+        "$(grep -m1 '^PR title/body' "${ATTR_PR_OUT}" || echo "see ${ATTR_PR_OUT}")"
     fi
-  elif [[ -n "${ATTR_HITS}" ]]; then
-    bad "A10 no Claude attribution in the commit or the PR body" "found in ${ATTR_HITS}"
   else
-    # Half the assertion could not be evaluated. Reporting PASS on a PR
-    # body that was never read is the fail-open shape this whole review
-    # pass was about.
-    skip "A10 no Claude attribution in the commit or the PR body" \
-      "commit is clean, but no PR could be read to check its title and body"
+    # Reporting PASS on a PR body that was never read is the fail-open
+    # shape this whole review pass was about.
+    skip "A10 no agent attribution in the PR title or body" \
+      "no PR could be read to check its title and body"
   fi
 
   if [[ -n "${PR_NUM}" ]]; then

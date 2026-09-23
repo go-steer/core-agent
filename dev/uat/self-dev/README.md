@@ -157,18 +157,43 @@ request.
 The one FAIL was **A7**, and it was the scorecard's fault rather than the
 run's. The agent wrote a `CHANGELOG.md` bullet alongside its docs change;
 A7's allowlist was `^docs/` and failed it. But `.agents/AGENTS.md` routes
-every user-visible change through the `changelog-bullet` skill, and this
-task file itself mentions running `verify-release-notes` "if you touched
-`CHANGELOG.md`" — so the recipe required the exact file the grader
-forbade. The agent obeyed the recipe and the grader contradicted it. A7
-now permits that one path, still *requires* a `docs/` change so a run
+every user-visible change through the `changelog-bullet` skill, and the
+task file itself mentioned running `verify-release-notes` "if you touched
+`CHANGELOG.md`". And `AGENTS.md` listed "doc" among the user-visible
+changes, with no qualifier. Read literally, the recipe required the exact
+file the grader forbade.
+
+"Read literally" matters, because practice said otherwise: only 7 of the
+99 docs-only commits on main had ever carried a bullet. The text required
+it, the practice skipped it, and nothing reconciled the two. The agent
+followed the text. The grader had quietly encoded the practice. Neither
+is wrong on its own evidence, and that's the defect: a task graded
+against a rule the recipe and the repo's history disagree about is
+testing whether the agent guesses the way the grader did.
+
+The fix was to decide the rule and write it down, in `AGENTS.md`'s "Which
+doc changes are user-visible": the published site, `README.md`, the
+`examples/` READMEs and contributor-rule changes get a bullet, and
+everything else under `docs/` and `dev/` doesn't. For internal docs that
+narrows the old text. For the published site it changes practice.
+
+A7 now permits that one path, still *requires* a `docs/` change so a run
 that only filed a bullet cannot pass, and refuses every other path git
 reports as changed. **An assertion may be harsher than the task it
 grades; it may not be in conflict with it** — and a rig whose own
 scorecard disagrees with its own recipe will keep reporting the agent's
 best behaviour as a failure.
 
-Reviewing that fix turned up two older holes in the same assertion, both
+Reading #1146 as a reviewer found one more gap in the task, not in the
+work. The agent's CHANGELOG bullet cites #1116, the self-development epic,
+because the recipe says to cite the issue and the task named no issue
+except the epic. A reader who follows that link six months from now
+lands somewhere unrelated to the walk-up hazard. The agent did what it
+was told with what it had, so the fix belongs in the task: **every task
+from T1 up names the issue it resolves**. A bug fix has one by
+definition.
+
+Reviewing the A7 fix turned up two older holes in the same assertion, both
 in how the changed-path list was *built* rather than in the allowlist
 that reads it. A **rename** reports only its new path — on the range diff
 and on `status --porcelain` alike — so `git mv internal/secret.go

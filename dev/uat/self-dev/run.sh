@@ -497,16 +497,17 @@ while i < len(fields):
   # conclusion A12 has to be careful about. The task names one directory;
   # grade against that.
   #
-  # `CHANGELOG.md` is in the allowlist because the recipe MANDATES it:
-  # `.agents/AGENTS.md` routes every user-visible change through the
-  # `changelog-bullet` skill, and a doc change is user-visible. The first
-  # live run (20260922T134553Z-3675866) wrote the bullet, as instructed,
-  # and this assertion failed it — the grader was stricter than the recipe
-  # it was grading, which makes the FAIL a defect in the scorecard rather
-  # than in the run. An assertion may be harsher than the task, never in
-  # conflict with it. Still an allowlist: that one path, anchored, and a
-  # `docs/` change is REQUIRED rather than merely permitted, so a run that
-  # only filed a bullet cannot pass.
+  # `CHANGELOG.md` is in the allowlist because the recipe asks for it.
+  # AGENTS.md's "Which doc changes are user-visible" rule gives an edit to
+  # the published site a bullet, and T0's target is a site page. When the
+  # first live run (20260922T134553Z-3675866) happened, AGENTS.md said
+  # *every* doc change gets a bullet, while practice almost never did it.
+  # The agent followed the text and wrote the bullet. This assertion had
+  # encoded the practice, and it failed the run. So the FAIL was a defect
+  # in the scorecard, not the run. An assertion may be harsher than the
+  # task, never in conflict with it. Still an allowlist: that one path,
+  # anchored, and a `docs/` change is REQUIRED rather than merely
+  # permitted, so a run that only filed a bullet cannot pass.
   #
   # The allowlist is per-tier and the default arm is a failure, not a pass.
   # A7 was written for T0 and is wrong for every rung above it — T1's whole

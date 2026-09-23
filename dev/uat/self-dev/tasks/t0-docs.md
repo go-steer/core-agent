@@ -33,9 +33,9 @@ page's existing voice and formatting. Do not restructure the page.
 ## Constraints
 
 - **Docs only.** Do not change any `.go` file, any script, or any test.
-  `CHANGELOG.md` is the one path outside `docs/` you may touch, and the
-  repo's own conventions require you to: a documentation change is
-  user-visible, so it gets a bullet.
+  `CHANGELOG.md` is the one path outside `docs/` you may touch. The
+  page you are editing is on the published site, and `AGENTS.md`'s
+  "Which doc changes are user-visible" rule gives that a bullet.
 - Keep it short. A reader should get the hazard, the diagnostic and the
   fix without scrolling.
 - Run `dev/ci/presubmits/verify-docs-lint` before you push. If you changed

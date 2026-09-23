@@ -1,6 +1,6 @@
 ---
 name: changelog-bullet
-description: Write the CHANGELOG entry for a core-agent PR. Use whenever a change is user-visible — a feature, bug fix, doc change, breaking change or cleanup. Covers which subsection, citing the issue rather than the PR, what a bullet has to contain, and the stacked-release-branch hazard that silently files a bullet under a shipped version.
+description: Write the CHANGELOG entry for a core-agent PR. Use whenever a change is user-visible — a feature, bug fix, published-doc or contributor-rule change, breaking change or cleanup. Covers which subsection, citing the issue rather than the PR, what a bullet has to contain, and the stacked-release-branch hazard that silently files a bullet under a shipped version.
 ---
 
 # The CHANGELOG bullet
@@ -10,6 +10,22 @@ Every merged PR with a user-visible change adds one bullet under
 release scripts assume `[Unreleased]` is current; if it is stale at tag time
 someone has to backfill it from `git log`, which produces a worse entry than
 the person who made the change would have.
+
+## Does a doc change need one?
+
+Yes for three kinds: the published site under `docs/site/src/content/docs/`;
+`README.md` and the READMEs under `examples/`; and a change to a *rule* in
+`AGENTS.md`, `CONTRIBUTING.md`, `docs/release-process.md` or a skill under
+`.agents/`. All three go under `#### Documentation`.
+
+No for everything else under `docs/` and `dev/`. Design docs, assessments,
+UAT write-ups and friction logs are internal. When an internal doc records a
+user-visible change, the bullet belongs to that change, not to the doc.
+
+This is `AGENTS.md`'s "Which doc changes are user-visible" rule, and if the
+two ever disagree, `AGENTS.md` wins. Don't infer the rule from
+`CHANGELOG.md`'s history. Before the rule, docs-only PRs almost never
+carried a bullet, even though the text said they should.
 
 ## Which subsection
 

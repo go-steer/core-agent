@@ -1,0 +1,68 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Agent attribution
+
+# No agent attribution in anything this repository merges (AGENTS.md).
+# Scans every commit on the PR branch, because a squash merge carries
+# the co-authors of every branch commit into main (that is how #931 put
+# Claude on the contributor list), plus the PR title and body, because
+# a squash message can be built from them.
+#
+# No `paths:` filter: attribution rides on docs-only PRs as easily as
+# on code PRs. `edited` re-runs it when the title or body changes, and
+# no bot is exempt, since a bot is how an agent footer would get in.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  attribution:
+    name: agent attribution
+    runs-on: ubuntu-latest
+    steps:
+      # The default pull_request checkout is the PR's merge commit:
+      # HEAD^1 is the base branch as it is NOW and HEAD^2 is the PR head.
+      # pull_request.base.sha can lag the base branch, and a stale base
+      # would drag main's own history into the range. fetch-depth: 0 so
+      # both parents and everything between them are present.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify no agent attribution
+        env:
+          # Title and body via env, never interpolated into the script:
+          # PR text is attacker-controlled on a public repo.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          printf '%s\n%s\n' "$PR_TITLE" "${PR_BODY:-}" >"$RUNNER_TEMP/pr.txt"
+          # Run the BASE branch's copy of the scanner, so a PR cannot
+          # pass by editing it. The PR's own copy runs only while the
+          # base has none (the PR that adds it). A PR that changes the
+          # scanner is therefore judged by the old one until it merges.
+          tool="$RUNNER_TEMP/verify-no-agent-attribution"
+          if ! git show "HEAD^1:dev/tools/verify-no-agent-attribution" >"$tool" 2>/dev/null; then
+            cp dev/tools/verify-no-agent-attribution "$tool"
+          fi
+          bash "$tool" --range "HEAD^1..HEAD^2" --text-file "$RUNNER_TEMP/pr.txt"

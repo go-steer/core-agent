@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# No agent attribution in anything this repository merges: no AI
+# co-author trailer, no "Generated with" footer, no agent author or
+# committer identity, and no Self-Development-Run: trailer.
+#
+# Why every commit on the branch and not just the PR body: when a PR is
+# squash-merged, GitHub collects the co-authors of every commit on the
+# branch and appends them to the squash commit as trailers. That is how
+# `e385fb04` (#931) put Claude on the repository's contributor list — one
+# branch commit carried the trailer, and the squash repeated it. Cleaning
+# the PR body does nothing about that.
+#
+# Why every LINE and not `%(trailers)`: git only reads the last paragraph
+# of a message as trailers. A squash that moves the sign-off into its own
+# closing paragraph turns an attribution line above it into body text,
+# and a trailer parser stops seeing it. GitHub still counts it.
+#
+# Why a denylist and not "no Co-authored-by at all": a human co-author is
+# legitimate. A credit trailer fails when the IDENTITY it credits is an
+# agent (its email is an agent's noreply or bot address, or its whole name
+# is an agent product name), never on a substring, because this
+# repository's commit bodies talk about Claude and Gemini models all day
+# and humans are called Devin and Jules. Footers fail only when the line
+# IS the footer ("Generated with Claude Code", with any markdown prefix),
+# not when a sentence mentions a model.
+#
+# Modes:
+#
+#   verify-no-agent-attribution                      # self-test, then <main>..HEAD
+#   verify-no-agent-attribution --range BASE..HEAD   # an explicit commit range
+#   verify-no-agent-attribution --text-file F        # also scan F (a PR title + body)
+#   verify-no-agent-attribution --self-test          # the scanner itself, on fixtures
+#
+# CI passes both --range and --text-file, and runs the BASE branch's copy
+# of this script, so a PR cannot switch the check off by editing it
+# (.github/workflows/agent-attribution.yml).
+
+set -euo pipefail
+
+# Keys that credit an identity. The value is checked with ident_is_agent.
+CREDIT_KEY_RE='^[[:space:]]*(co-authored-by|co-developed-by|assisted-by|generated-by|authored-by|helped-by|suggested-by|reviewed-by|reported-by|tested-by|acked-by|signed-off-by)[[:space:]]*:'
+
+# Keys banned whatever their value. Self-Development-Run: is the
+# self-development rig's old run-id trailer, agent attribution by another
+# name.
+BANNED_KEY_RE='^[[:space:]]*(self-development-run|ai-assisted|ai-generated|ai-model|generated-with)[[:space:]]*:'
+
+# An agent by email: GitHub App bots, the noreply handles agents commit
+# under, and vendor-domain automation addresses. Matched on the whole
+# address, case-insensitively.
+AGENT_EMAIL_RE='^([0-9]+\+)?[^@]*\[bot\]@users\.noreply\.github\.com$|^([0-9]+\+)?(copilot|claude|devin-ai-integration|openhands-agent|codex)@users\.noreply\.github\.com$|^copilot@github\.com$|^[^@]*(noreply|no-reply|bot|agent|codex|copilot|assistant)[^@]*@(anthropic\.com|openai\.com|cursor\.com|cursor\.sh|all-hands\.dev|cognition\.ai|codeium\.com|windsurf\.com|tabnine\.com|coderabbit\.ai|qodo\.ai|kiro\.dev|cline\.bot)$|@all-hands\.dev$'
+
+# Bots that are this repository's own automation, not agent attribution.
+BOT_ALLOW_RE='^([0-9]+\+)?(go-steer-bot|dependabot|github-actions)\[bot\]'
+
+# An agent by name: the WHOLE display name, so "Devin Smith" and
+# "Claude Dupont" pass and "Claude Opus 5" does not.
+AGENT_NAME_RE='^(claude( (code|opus|sonnet|haiku|[0-9.]+))*|(github )?copilot( (agent|swe agent))?|chatgpt|(openai )?codex|gemini( (code assist|cli))?|cursor( ?agent)?|devin(-ai| ai)[a-z-]*|aider|windsurf|codeium|amazon[ -]?q( developer)?|kiro( agent)?|openhands( agent)?|cline|tabnine|coderabbit( ?ai)?|qodo|antigravity|core-agent)$'
+
+# Agent products, for footers.
+FOOTER_AGENT='(claude|github copilot|copilot|chatgpt|openai codex|codex|cursor|devin|aider|windsurf|gemini|amazon[ -]?q|kiro|openhands|cline|antigravity)([^[:alnum:]_]|$)'
+# Markdown/HTML prefix a footer may hide behind: "- ", "*", "> ", "<sub>".
+MARKUP='([^[:alnum:]]|<[a-z]+>)*'
+FOOTER_RE="^${MARKUP}(this (pr|pull request|commit|change|patch) (was|is) )?(generated|created|written|drafted|built|authored|produced|made|powered|assisted|co-authored)[[:space:]]+(with|by|using|via|in)[[:space:]:]+${MARKUP}${FOOTER_AGENT}"
+ROBOT_RE="🤖${MARKUP}(generated|${FOOTER_AGENT})"
+
+# ident_is_agent "Name <email>" — true when the identity is an agent.
+# Callers set nocasematch.
+ident_is_agent() {
+  local v="$1" name email=""
+  if [[ "$v" =~ ^(.*)\<([^\>]*)\> ]]; then
+    name="${BASH_REMATCH[1]}"
+    email="${BASH_REMATCH[2]}"
+  else
+    name="$v"
+  fi
+  name="${name#"${name%%[![:space:]]*}"}"
+  name="${name%"${name##*[![:space:]]}"}"
+  email="${email// /}"
+  if [[ "$email" =~ $BOT_ALLOW_RE || "$name" =~ $BOT_ALLOW_RE ]]; then
+    return 1
+  fi
+  [[ -n "$email" && "$email" =~ $AGENT_EMAIL_RE ]] && return 0
+  [[ "$name" =~ \[bot\]$ ]] && return 0
+  [[ "${name%\[bot\]}" =~ $AGENT_NAME_RE ]] && return 0
+  return 1
+}
+
+# check_line LABEL N LINE — print and return 1 if LINE is attribution.
+check_line() {
+  local line="$3" hit=0
+  if [[ "$line" =~ $BANNED_KEY_RE ]]; then
+    hit=1
+  elif [[ "$line" =~ $CREDIT_KEY_RE ]]; then
+    ident_is_agent "${line#*:}" && hit=1
+  elif [[ "$line" =~ $FOOTER_RE || "$line" =~ $ROBOT_RE ]]; then
+    hit=1
+  fi
+  if [[ $hit -eq 1 ]]; then
+    printf '%s: line %d: %s\n' "$1" "$2" "$line"
+    return 1
+  fi
+  return 0
+}
+
+# scan_text LABEL — read text on stdin, print "LABEL: line N: TEXT" for
+# every offending line, return 1 if there was any. Pure bash, no forks
+# per line: a PR body can carry thousands of lines of pasted notes.
+#
+# A credit trailer can be folded onto an indented continuation line, and
+# git unfolds it, so a continuation is joined onto its key line before
+# the identity is checked.
+scan_text() {
+  local label="$1" n=0 line pend="" pend_n=0 found=0 restore
+  restore="$(shopt -p nocasematch)"
+  shopt -s nocasematch
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    line="${line%$'\r'}" # GitHub stores web-edited PR bodies with CRLF.
+    if [[ -n "$pend" && "$line" =~ ^[[:space:]]+[^[:space:]] ]]; then
+      pend+=" ${line#"${line%%[![:space:]]*}"}"
+      continue
+    fi
+    if [[ -n "$pend" ]]; then
+      check_line "$label" "$pend_n" "$pend" || found=1
+      pend=""
+    fi
+    if [[ "$line" =~ $CREDIT_KEY_RE ]]; then
+      pend="$line"
+      pend_n=$n
+      continue
+    fi
+    check_line "$label" "$n" "$line" || found=1
+  done
+  if [[ -n "$pend" ]]; then
+    check_line "$label" "$pend_n" "$pend" || found=1
+  fi
+  eval "$restore"
+  return $((found))
+}
+
+# scan_range RANGE — every commit in RANGE: its message, line by line,
+# and its author and committer identities. Returns 2 if RANGE does not
+# resolve: an unresolvable range must fail, never scan nothing and pass.
+scan_range() {
+  local range="$1" sha subject found=0 shas restore
+  if ! shas="$(git rev-list "$range" --)"; then
+    echo "cannot resolve commit range '$range'" >&2
+    return 2
+  fi
+  restore="$(shopt -p nocasematch)"
+  shopt -s nocasematch
+  for sha in $shas; do
+    subject="$(git log -1 --format=%s "$sha")"
+    git log -1 --format=%B "$sha" | scan_text "commit ${sha:0:8} (${subject})" || found=1
+    while IFS= read -r line; do
+      if ident_is_agent "$line"; then
+        printf 'commit %s (%s): author/committer: %s\n' "${sha:0:8}" "$subject" "$line"
+        found=1
+      fi
+    done < <(git log -1 --format='%an <%ae>%n%cn <%ce>' "$sha")
+  done
+  eval "$restore"
+  return $((found))
+}
+
+fail_hint() {
+  cat >&2 <<'EOF'
+
+✗ Agent attribution found. AGENTS.md: no Co-Authored-By trailer, no
+  "Generated with" footer, no agent identity, no Self-Development-Run:
+  trailer, in commits or the PR body. To fix a commit, reword it
+  (`git commit --amend`, or `git rebase` with `reword` for an older one)
+  and force-push the branch. To fix the PR, edit its title or body; this
+  check re-runs on the edit. If a flagged commit is already on main,
+  your main is stale: `git fetch` and re-run.
+EOF
+}
+
+self_test() {
+  local dir failures=0
+  dir="$(mktemp -d)"
+  trap 'rm -rf "$dir"' RETURN
+  git -C "$dir" init -q -b main
+  git -C "$dir" config user.name "Pat Maintainer"
+  git -C "$dir" config user.email "pat@example.com"
+  git -C "$dir" config commit.gpgsign false
+  git -C "$dir" commit -q --allow-empty -m "base"
+
+  # expect NAME WANT(pass|fail) MESSAGE [AUTHOR]
+  expect() {
+    local name="$1" want="$2" msg="$3" author="${4:-}" base got
+    base="$(git -C "$dir" rev-parse HEAD)"
+    if [[ -n "$author" ]]; then
+      git -C "$dir" commit -q --allow-empty --author="$author" -F - <<<"$msg"
+    else
+      git -C "$dir" commit -q --allow-empty -F - <<<"$msg"
+    fi
+    if (cd "$dir" && scan_range "$base..HEAD" >/dev/null); then got=pass; else got=fail; fi
+    if [[ "$got" != "$want" ]]; then
+      echo "self-test: $name: want $want, got $got" >&2
+      failures=$((failures + 1))
+    fi
+  }
+  # expect_text NAME WANT TEXT
+  expect_text() {
+    local got
+    if printf '%s' "$3" | scan_text "text" >/dev/null; then got=pass; else got=fail; fi
+    if [[ "$got" != "$2" ]]; then
+      echo "self-test: $1: want $2, got $got" >&2
+      failures=$((failures + 1))
+    fi
+  }
+
+  # Must pass: humans, prose, and this repository's own automation.
+  expect "clean commit" pass $'fix: a thing\n\nSigned-off-by: Pat Maintainer <pat@example.com>'
+  expect "prose about the rule" pass $'docs: ban it\n\nNo Claude attribution; a Co-authored-by: Claude line is banned.'
+  expect "prose about a model" pass $'feat: price it\n\nModel: claude-opus-5 bills thinking tokens.\nProvider: anthropic'
+  expect "prose, generated by a model" pass $'fix: x\n\nThe summary generated by Claude was wrong, and Gemini agreed.'
+  expect "human co-author" pass $'fix: pair\n\nCo-authored-by: Jane Doe <jane@example.com>'
+  expect "human named Devin" pass $'fix: pair\n\nCo-authored-by: Devin Smith <devin@example.com>'
+  expect "human named Jules" pass $'fix: pair\n\nCo-authored-by: Jules Verne <jules@example.com>'
+  expect "human named Claude" pass $'fix: pair\n\nCo-authored-by: Claude Dupont <claude@example.fr>'
+  expect "human at a vendor" pass $'fix: x\n\nSigned-off-by: Maya Chen <maya@anthropic.com>'
+  expect "human author named Devin" pass $'fix: x' "Devin Lee <dl@example.com>"
+  expect "repo bot author" pass $'chore: regen pricing' "go-steer-bot[bot] <317684643+go-steer-bot[bot]@users.noreply.github.com>"
+  expect "repo bot co-author" pass $'chore: x\n\nCo-authored-by: go-steer-bot[bot] <317684643+go-steer-bot[bot]@users.noreply.github.com>'
+  expect "this repo's product in a line" pass $'test: x\n\nGenerated with core-agent 2.10 against Vertex; output below.'
+  expect "a tool that generated a file" pass $'chore: x\n\nGenerated by `go run ./dev/pricing-regen` from the Anthropic price sheet.'
+  expect "fixtures for a provider" pass $'test: x\n\nWritten using the Gemini provider fixtures.'
+
+  # Must fail: co-authors, by email or by whole name.
+  expect "Claude co-author" fail $'fix: x\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>'
+  expect "agent email, innocuous name" fail $'fix: x\n\nCo-authored-by: Helper <noreply@anthropic.com>'
+  expect "lowercase Copilot co-author" fail $'fix: x\n\nco-authored-by: GitHub Copilot <copilot@github.com>'
+  expect "Copilot noreply handle" fail $'fix: x\n\nCo-authored-by: Copilot <198982749+Copilot@users.noreply.github.com>'
+  expect "agent GitHub App" fail $'fix: x\n\nCo-authored-by: amazon-q-developer[bot] <208079219+amazon-q-developer[bot]@users.noreply.github.com>'
+  expect "OpenHands" fail $'fix: x\n\nCo-authored-by: openhands <openhands@all-hands.dev>'
+  expect "agent name, human-looking email" fail $'fix: x\n\nCo-authored-by: Claude Code <someone@example.com>'
+  expect "indented co-author" fail $'fix: x\n\n  Co-authored-by: Claude <noreply@anthropic.com>'
+  expect "folded co-author" fail $'fix: x\n\nCo-authored-by: Helper\n <noreply@anthropic.com>'
+  expect "spaced key" fail $'fix: x\n\nCo-Authored-By : Claude <noreply@anthropic.com>'
+  expect "other credit key" fail $'fix: x\n\nSuggested-by: Copilot'
+  expect "agent author" fail $'fix: x' "Claude <noreply@anthropic.com>"
+
+  # Must fail: marker trailers and footers.
+  expect "run-id trailer" fail $'docs: x\n\nSelf-Development-Run: 20260922T134553Z-3675866'
+  # The squash shape that hid the trailer from %(trailers) on main.
+  expect "trailer outside the last paragraph" fail $'docs: x\n\nSelf-Development-Run: 1\n\nSigned-off-by: Pat Maintainer <pat@example.com>'
+  expect "generated footer" fail $'fix: x\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+  expect "generated footer, no emoji" fail $'fix: x\n\nGenerated with Claude Code'
+
+  expect_text "clean PR body" pass $'## Summary\r\nAdds a check.\r\n- `Co-authored-by: Claude` lines are now rejected.\r\n'
+  expect_text "bot PR body" pass $'Generated by the pricing-regen workflow.\n'
+  expect_text "PR footer, CRLF" fail $'## Summary\r\nx\r\n\r\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\r\n'
+  expect_text "PR footer, no trailing newline" fail $'x\n\nCo-Authored-By: Claude <noreply@anthropic.com>'
+  expect_text "list-item footer" fail $'- Generated with Claude Code\n'
+  expect_text "italic footer" fail $'*Generated with [Claude Code](https://claude.com/claude-code)*\n'
+  expect_text "html footer" fail $'<sub>Generated with Claude Code</sub>\n'
+  expect_text "sentence footer" fail $'This PR was generated with Claude Code.\n'
+  expect_text "colon footer" fail $'Generated with: Claude Code\n'
+  expect_text "bare robot" fail $'🤖 Claude Code\n'
+
+  # An unresolvable range must fail, never scan nothing and pass.
+  if (cd "$dir" && scan_range "no-such-ref..HEAD" >/dev/null 2>&1); then
+    echo "self-test: unresolvable range: want fail, got pass" >&2
+    failures=$((failures + 1))
+  fi
+
+  if [[ $failures -gt 0 ]]; then
+    echo "✗ verify-no-agent-attribution --self-test: $failures case(s) failed" >&2
+    return 1
+  fi
+  trap - RETURN
+  rm -rf "$dir"
+  echo "✓ verify-no-agent-attribution self-test"
+}
+
+RANGE=""
+TEXT_FILE=""
+SELF_TEST_ONLY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --range) RANGE="${2:?--range needs BASE..HEAD}"; shift 2 ;;
+    --text-file) TEXT_FILE="${2:?--text-file needs a path}"; shift 2 ;;
+    --self-test) SELF_TEST_ONLY=1; shift ;;
+    -h|--help) sed -n '/^# Modes:/,/^# CI passes/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+self_test
+[[ $SELF_TEST_ONLY -eq 1 ]] && exit 0
+
+if [[ -z "$RANGE" ]]; then
+  # Locally: everything not yet on main. Prefer an `upstream` remote, the
+  # usual name for the canonical repo in a fork's clone. With neither,
+  # skip the commit scan: CI is authoritative and always passes --range.
+  BASE=""
+  for ref in upstream/main origin/main; do
+    if git rev-parse -q --verify "$ref" >/dev/null; then BASE="$ref"; break; fi
+  done
+  if [[ -z "$BASE" ]]; then
+    echo "no upstream/main or origin/main to compare against; commit scan skipped (pass --range BASE..HEAD)"
+    exit 0
+  fi
+  RANGE="$BASE..HEAD"
+fi
+
+rc=0
+scan_range "$RANGE" || rc=$?
+if [[ $rc -eq 2 ]]; then
+  exit 2
+fi
+if [[ -n "$TEXT_FILE" ]]; then
+  scan_text "PR title/body" <"$TEXT_FILE" || rc=1
+fi
+if [[ $rc -ne 0 ]]; then
+  fail_hint
+  exit 1
+fi
+echo "✓ no agent attribution in $(git rev-list --count "$RANGE") commit(s)${TEXT_FILE:+ or the PR title/body}"

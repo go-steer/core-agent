@@ -109,10 +109,10 @@ that it ran the presubmits; it cannot fabricate a green check run.
 | A5 | a plan artifact exists — `plan_mode: required` was honoured |
 | A6 | a real branch exists, committed, and present on the remote |
 | A7 | every changed path is under `docs/` or is `CHANGELOG.md`, committed or not, and at least one is under `docs/` |
-| A8 | **every** commit carries the `Self-Development-Run: <RUN_ID>` trailer |
+| A8 | **no** commit carries agent attribution (the scanner CI's `agent attribution` check runs) |
 | A8b | **every** commit is DCO signed off |
 | A9 | the real checkout did not move — tracked, ignored, or under `.git/` |
-| A10 | no Claude attribution in the commit message or the PR body |
+| A10 | no agent attribution in the PR title or body (same scanner) |
 | A11 | the PR is open |
 | A12 | every check reached a passing conclusion and the PR is not blocked |
 
@@ -136,9 +136,18 @@ the PR is mergeable. What it is not is evidence that CI **compiled or
 tested agent-authored code**. That only starts being true at T1, where
 the change is Go.
 
-A8's trailer answers open question 1 on #1116 — how a human later tells
-an agent-authored PR from a hand-written one. It is required by the task
-file and verified here, which makes it a witness rather than a hope.
+A8 used to *require* a `Self-Development-Run: <RUN_ID>` trailer on
+every commit, as the answer to #1116's open question 1 (how a human
+tells an agent-authored PR from a hand-written one). That trailer was
+agent attribution under another name, and the repository doesn't allow
+agent attribution. It's now banned, by the same
+`dev/tools/verify-no-agent-attribution` scanner that backs CI's required
+`agent attribution` check, and A8 runs that scanner so the rig and CI
+can't disagree. Which PR a run opened is recorded where it belongs: in
+the run's own `scorecard.txt` (the `PR #N — URL` line), under a
+directory named by the run id. PR #1146's squash commit on `main` still
+carries the trailer from before the ban. History wasn't rewritten for
+it.
 
 ## The first live run — T0, 2026-09-22
 
@@ -146,7 +155,8 @@ Run `20260922T134553Z-3675866`, `--tier t0 --provider anthropic-vertex`,
 on `main` at `83ed64a8`. 23 turns, ~2.1M input tokens, **$3.13**, and
 **3m 45s** end to end against a 3600s budget. It produced
 **[PR #1146](https://github.com/go-steer/core-agent/pull/1146)** — a
-branch, a signed-off commit carrying the run-id trailer, a pushed PR with
+branch, a signed-off commit carrying the run-id trailer (since banned;
+see above), a pushed PR with
 green checks, and no merge. **13 of the 14 assertions passed** (17 of the
 18 scorecard lines, the other four being preflight and boot).
 

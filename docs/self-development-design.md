@@ -541,17 +541,17 @@ all three are shipped.
 
 ## Open questions
 
-1. ~~**How do we tell an agent-authored PR from a human one?**~~ *Resolved
-   in P4, in the trailer's direction.* The agent runs locally under the
-   maintainer's `gh` auth, so its PRs are authored by the maintainer and are
-   indistinguishable from hand-written ones — fine for merge policy, wrong
-   for grading. Every task file now requires a `Self-Development-Run:
-   <RUN_ID>` commit trailer, and the driver's assertion A8 reads it back off
-   the pushed commit. A label would have been cheaper to stamp and is
-   editable after the fact by anyone with write access; a trailer is part of
-   the commit the PR points at. Requiring it in the task and *verifying* it
-   in the driver is what makes it a witness rather than a hope: a run where
-   the agent forgot fails rather than quietly grading as human-authored.
+1. ~~**How do we tell an agent-authored PR from a human one?**~~ *Resolved:
+   the rig knows, and the repository doesn't record it.* The agent runs
+   locally under the maintainer's `gh` auth, so its PRs are authored by the
+   maintainer and look like hand-written ones. That's fine for merge
+   policy. For grading, the driver records which PR a run opened in the
+   run's own scorecard, under a directory named by the run id. P4 first
+   answered this with a `Self-Development-Run: <RUN_ID>` commit trailer
+   that every task required and A8 verified. That was agent attribution,
+   which the repository doesn't allow, and it's now banned by the scanner
+   behind CI's required `agent attribution` check. A8 runs the same
+   scanner, so it now requires the *absence* of any agent marker.
 2. **Does T0 need its own `dev/smoke/NN-*.sh`?** The hermetic scripts run on
    mock providers; a self-development run needs a real model and a real
    remote, which points at `dev/uat/`. But a scripted-provider T0 that

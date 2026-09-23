@@ -583,8 +583,15 @@ all three are shipped.
   [PR #1146](https://github.com/go-steer/core-agent/pull/1146) with 13 of
   the 14 assertions green, and the one FAIL was a defect in A7's allowlist
   rather than in the run: the grader forbade the `CHANGELOG.md` bullet the
-  recipe requires. Recorded in `dev/uat/self-dev/README.md`.
+  recipe's text asked for. That text said every doc change gets a bullet,
+  and practice almost never did (7 of 99 docs-only commits). `AGENTS.md`
+  now decides which doc changes are user-visible. Recorded in
+  `dev/uat/self-dev/README.md`. #1146 is agent-authored, and a human (the
+  maintainer) makes the merge decision.
 - **P5** — T1, with the pre-fix-failure verification as a scored step.
+  Every task file from T1 up names the issue it resolves. T0 named only
+  this epic, so the agent's CHANGELOG bullet cited #1116, the only issue
+  number it had.
 - T2/T3 gated on T1's evidence.
 
 P2 before P3 is the load-bearing ordering. Everything else can reorder.

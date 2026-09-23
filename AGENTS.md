@@ -412,17 +412,37 @@ Conventions worth knowing at agent prompt time:
   bitten us before (numeric tool counts, spelled-out image-variant
   counts, pinned `@vX.Y.Z` in install snippets, wrong-major prose
   version pins).
-- **`[Unreleased]` grows on every merged PR.** Any user-visible
-  change (new feature, bugfix, doc, breaking change) adds one
+- **`[Unreleased]` grows on every merged PR.** Any user-visible change
+  (new feature, bugfix, breaking change, or one of the doc changes
+  listed under "Which doc changes are user-visible" below) adds one
   bullet under the appropriate `#### Feature` / `#### Bug or
   Regression` / `#### Documentation` / `#### Other (Cleanup)` /
-  `#### Security` subsection of `## [Unreleased]` in `CHANGELOG.md`
-  as part of the PR itself. Breaking changes get a `**BREAKING:**`
-  prefix under `#### Changed` so the release scripts can hoist them
+  `#### Security` subsection of `## [Unreleased]` in `CHANGELOG.md` as
+  part of the PR itself. Breaking changes get a `**BREAKING:**` prefix
+  under `#### Changed` so the release scripts can hoist them
   automatically into a `### Breaking Changes` section at tag time.
   Both `dev/release/cut-dev-tag.sh` and `dev/release/cut-ga-tag.sh`
   assume `[Unreleased]` is current — if it's stale at tag time,
   backfill from `git log` before tagging.
+- **Which doc changes are user-visible.** Three kinds get a bullet
+  under `#### Documentation`: the published site under
+  `docs/site/src/content/docs/`; `README.md` and the READMEs under
+  `examples/`; and a change to a *rule* in `AGENTS.md`,
+  `CONTRIBUTING.md`, `docs/release-process.md` or a skill under
+  `.agents/`, because contributors and agents both work from those.
+  Everything else under `docs/` and `dev/` is internal and needs no
+  bullet of its own. That includes design docs, assessments, UAT
+  write-ups and friction logs; `docs/README.md` already calls that
+  tree contributor reference. When an internal doc records a
+  user-visible change, the bullet belongs to that change, not to the
+  doc. Before this rule, `AGENTS.md` said every doc change gets a
+  bullet, and practice almost never did that: 7 of 99 docs-only
+  commits on main carried one. So this narrows the text for internal
+  docs and changes practice for the published site. The first
+  self-development run
+  ([#1116](https://github.com/go-steer/core-agent/issues/1116)) is
+  what exposed the gap. It followed the text, and its grader had
+  encoded the practice.
 
 ## How we release
 

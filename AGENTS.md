@@ -111,8 +111,13 @@ needs no network and no API keys.
   required `agent attribution` check. It scans *every* commit on the
   branch, because a squash merge copies each branch commit's co-authors
   into `main`. One such commit (#931) is how Claude ended up on this
-  repository's contributor list. DCO sign-off (`git commit -s`) is the
-  expected practice; see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+  repository's contributor list. An `--admin` merge, a direct push and
+  an edited squash message can all land a commit that check never
+  judged, so `agent-attribution-main.yml` re-scans each push to `main`,
+  plus a daily sweep of the last three days for pushes that skipped CI,
+  and opens an issue on a hit. It can't block, only make the hit loud,
+  so don't count on it: the PR check is the gate. DCO sign-off
+  (`git commit -s`) is the expected practice; see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 - **Tests before merging.** Every new package ships with unit tests.
   A new feature without a test is not done. A new bug fix without a
   regression test makes it easy for the bug to come back.

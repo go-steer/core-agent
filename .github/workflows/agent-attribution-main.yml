@@ -1,0 +1,131 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Agent attribution (main)
+
+# Backstop for agent-attribution.yml. That workflow is the gate: a
+# required check on every PR. But some routes put a commit on main
+# without that check having judged it:
+#
+#   - an `--admin` merge (enforce_admins is off, so an admin can merge
+#     before the check has finished, or while it is red);
+#   - a direct push to main by an admin;
+#   - the squash message, which the merger can edit at merge time and
+#     which GitHub builds after every PR check has run.
+#
+# This workflow can't block any of those, since the commit has already
+# landed. It makes them loud: it scans what the push added and, on a
+# hit, fails red on main and opens an issue. Rewriting main's history
+# to remove it stays a maintainer decision.
+#
+# The push trigger alone has holes. A `[skip ci]` in the head commit
+# message, or a push made with a workflow's GITHUB_TOKEN, never starts
+# it, and the next push's `before` is already past that commit. So a
+# daily run also scans the last three days of main.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  attribution:
+    name: agent attribution on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify no agent attribution in the pushed commits
+        id: scan
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          FLOOR: 69ce6fc1376906f6292689b085b9e49b87e6762c
+        run: |
+          set -euo pipefail
+          tool="$RUNNER_TEMP/verify-no-agent-attribution"
+          if [[ "$EVENT" != push ]]; then
+            # Everything main gained in the trailing window, but never
+            # before FLOOR, the commit that added the PR check. The two
+            # attributed commits older than it are known and accepted.
+            base=$(git rev-list -1 --first-parent --before="3 days ago" "$AFTER" || true)
+            if [[ -z "$base" ]] || git merge-base --is-ancestor "$base" "$FLOOR"; then
+              base="$FLOOR"
+            fi
+            range="${base}..${AFTER}"
+            cp dev/tools/verify-no-agent-attribution "$tool"
+          elif [[ "$BEFORE" =~ ^0+$ ]]; then
+            # A push that creates the ref: scan just the tip.
+            range="${AFTER}^!"
+            cp dev/tools/verify-no-agent-attribution "$tool"
+          else
+            # After a force-push the old tip is unreachable from any
+            # ref, so the checkout lacks it. GitHub serves it by SHA.
+            # If even that fails the scanner exits 2: an unscannable
+            # push fails loudly instead of passing silently.
+            git cat-file -e "${BEFORE}^{commit}" 2>/dev/null ||
+              git fetch --no-tags origin "$BEFORE" || true
+            range="${BEFORE}..${AFTER}"
+            # Judge the push with the scanner as it was before it, as
+            # the PR check does, so a push can't weaken its own check.
+            if ! git show "${BEFORE}:dev/tools/verify-no-agent-attribution" >"$tool" 2>/dev/null; then
+              cp dev/tools/verify-no-agent-attribution "$tool"
+            fi
+          fi
+          echo "scanning ${range}"
+          bash "$tool" --range "$range"
+      - name: Open an issue
+        # Only when the scan itself failed, not a checkout outage.
+        if: failure() && steps.scan.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          title="agent attribution scan failed on main"
+          # The daily window re-scans a hit for three days; one open
+          # issue is enough.
+          if [[ -n "$(gh issue list --state open --search "\"${title}\" in:title" --json number --jq '.[].number')" ]]; then
+            echo "an open issue already tracks this"
+            exit 0
+          fi
+          gh issue create \
+            --title "${title} (${AFTER:0:8})" \
+            --body "$(cat <<EOF
+          The ${EVENT} attribution scan of \`main\` at \`${AFTER:0:8}\` failed.
+
+          Run: ${RUN_URL}
+
+          Either the scan found agent attribution in a commit that reached
+          \`main\` without the required \`agent attribution\` PR check passing
+          (an \`--admin\` merge, a direct push, an edited squash message, or a
+          push that skipped CI), or it couldn't resolve the pushed range, or
+          the scanner's own self-test failed. The run log says which, and
+          names the commit and the line.
+
+          The commit is already on \`main\`. Removing it means rewriting history
+          and moving any tag at or after it, which is a maintainer decision.
+          See AGENTS.md, "No Co-Authored-By trailer, and no agent attribution
+          of any kind".
+          EOF
+          )"

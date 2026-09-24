@@ -263,6 +263,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		}
 
 		if turnErr != nil {
+			bankReturn(&result, turnRes)
 			if errors.Is(turnErr, context.Canceled) && ctx.Err() != nil {
 				result.Reason = StopReasonContextCancelled
 				result.Duration = time.Since(startedAt)
@@ -290,12 +291,12 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 
 		if turnRes.doneSignaled {
 			result.Reason = StopReasonCompleted
-			result.DoneDetail = turnRes.doneDetail
-			// Same as Run: only an explicit return counts (#710). A
-			// resumed run offers the identical termination gesture, so
-			// it has to report the identical fact about which one was
-			// used.
-			result.Returned = true
+			// Same as Run, through the same helper: a resumed run
+			// offers the identical termination gesture, so it has to
+			// report the identical fact about which one was used
+			// (#710), and record it the same way on the error path
+			// too (#1002).
+			bankReturn(&result, turnRes)
 			break
 		}
 
@@ -311,7 +312,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		// Natural end of a bounded delegation (#730); see Run.
 		if cfg.stopOnNaturalEnd && !turnRes.requestedTools && !turnRes.scheduleSignaled {
 			result.Reason = StopReasonCompleted
-			result.DoneDetail = turnRes.text
+			bankNaturalEnd(&result, turnRes)
 			break
 		}
 

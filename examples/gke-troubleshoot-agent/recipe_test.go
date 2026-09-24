@@ -611,7 +611,7 @@ func lineAt(text string, idx int) string {
 // deploy/base/, the `sa:lookout-watch` proxy identity, and the e2e's
 // `lookout_*` metric assertion all assume it. Bump this constant and
 // the four sites below together.
-const wantWatcherTag = "v0.25.0"
+const wantWatcherTag = "v0.26.0"
 
 // watcherImage is the sentinel this recipe deploys.
 var watcherImage = imagepin.Lookout.Family.Names()[0]

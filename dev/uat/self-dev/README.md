@@ -60,6 +60,9 @@ dev/uat/self-dev/run.sh --dry-run
 
 # The real thing. Spends money and opens a pull request.
 dev/uat/self-dev/run.sh --tier t0 --provider anthropic-vertex
+
+# T1: a Go bug fix (#1002) with a regression test that must fail first.
+dev/uat/self-dev/run.sh --tier t1 --provider anthropic-vertex
 ```
 
 | flag | env | default | what it does |
@@ -81,9 +84,10 @@ read is the wrong default.
 
 ## The tiers
 
-From the design doc's ladder. Only T0 has a task file today; each rung
-is gated on the one below producing a PR that CI passed and a human
-merged.
+From the design doc's ladder. T0 and T1 have task files; each rung is
+gated on the one below producing a PR that CI passed and a human merged.
+From T1 up, every task names the issue it resolves (T1's is #1002), so
+the agent's CHANGELOG bullet has something to cite.
 
 | tier | the work | why it is the rung it is |
 |---|---|---|
@@ -94,10 +98,19 @@ merged.
 
 ## What is graded
 
-Fourteen assertions, written against artifacts the agent does not author —
+Fourteen assertions at T0 and nineteen at T1, written against artifacts
+the agent does not author —
 the clone's git history, the PR as GitHub sees it, the plan file on
 disk, and the real checkout's fingerprint. An agent can claim in prose
-that it ran the presubmits; it cannot fabricate a green check run.
+that it ran the presubmits; it cannot fabricate a green check run. There
+is one exception, and it's named on its line: when the rig can't re-run
+the pre-fix test itself, A13 falls back to a file the agent saved. A15
+exists so that fallback is never the only thing standing between a
+broken fix and a PASS.
+
+Everything from A7 on grades from the commit the branch grew from, not
+the one the rig cloned. An agent that rebases onto a newer `main`
+mid-run isn't charged with the PRs that landed meanwhile.
 
 | # | assertion |
 |---|---|
@@ -108,13 +121,79 @@ that it ran the presubmits; it cannot fabricate a green check run.
 | A4b | the reviewer declares **no** model of its own (see below) |
 | A5 | a plan artifact exists — `plan_mode: required` was honoured |
 | A6 | a real branch exists, committed, and present on the remote |
-| A7 | every changed path is under `docs/` or is `CHANGELOG.md`, committed or not, and at least one is under `docs/` |
+| A7 | every changed path, committed or not, is inside the tier's scope, and the tier's required paths are there. T0: only `docs/` and `CHANGELOG.md`, with at least one `docs/` change. T1: only `pkg/agent/`, `docs/` and `CHANGELOG.md`, with both a Go test and Go production code changed under `pkg/agent/` |
 | A8 | **no** commit carries agent attribution (the scanner CI's `agent attribution` check runs) |
 | A8b | **every** commit is DCO signed off |
 | A9 | the real checkout did not move — tracked, ignored, or under `.git/` |
 | A10 | no agent attribution in the PR title or body (same scanner) |
 | A11 | the PR is open |
 | A12 | every check reached a passing conclusion and the PR is not blocked |
+| A13 | *(T1)* the new `Test…` functions fail on the pre-fix production code (see below) |
+| A13b | *(T1)* the same functions pass on the agent's branch |
+| A13c | *(T1)* no `PREFIX BEHAVIOUR` marker survives in any `.go` file, committed or not |
+| A14 | *(T1)* an added `CHANGELOG.md` line links the issue the task names |
+| A15 | *(T1)* the rig's own test for the issue fails on the base and passes on the branch |
+
+**How A13 grades the pre-fix failure.** The design doc makes it "a
+graded step, not a claim in the PR body", so the rig checks it rather
+than reading the body. The new test functions are the `func Test…` names
+that exist at the branch tip and not at the base. In a worktree of the
+branch tip, the rig puts every production `.go` file the branch touched
+back to its base content, removing any the branch added. Tests,
+`testdata/` (including `.go` files there) and embedded fixtures stay at
+the tip, so a new test that
+reads a new fixture doesn't fail merely because the fixture is missing.
+Then the rig runs just the new functions and wants a `--- FAIL` naming
+one. If they pass there, the run fails: that's a regression test that
+passes on the buggy code. The scorecard names each new function's
+outcome, so one that passes both ways isn't hidden behind one that
+failed.
+
+That witness has one blind spot, and it's the common case. If the fix
+adds a field, const or signature, the new test doesn't compile against
+the pre-fix sources, and a build failure says nothing about an
+assertion. That's why `AGENTS.md` prescribes patching the behaviour back
+(the `prefix-failure-verification` skill) instead of reverting. There
+the rig falls back to the agent's own saved run of that method,
+`.agents/logs/prefix-failure.txt` in the clone (gitignored). It accepts
+the file only if a real `--- FAIL` names a new test and the run isn't
+itself a build failure. The PASS line says which witness it rests on,
+because a re-run by the rig and a file the agent wrote are not equally
+strong. Either way, A13b re-runs the same functions at the committed
+tip, so a test that fails before *and* after can't pass as a regression
+test.
+
+**A15 is the rig's own witness.** `run.sh` carries a small Go test for
+#1002 in a heredoc. It builds a handle whose subagent returned a result
+and then failed, and requires both the result and the error text in the
+`spawn_agent` result. The rig drops it into worktrees at the base and at
+the tip. It must fail at the base, which proves it still detects the
+bug, and pass at the tip. It is written against the package's internals
+rather than the agent's test, so it doesn't care what the fix names its
+new field. If the fix reshapes `Handle` or `completionResult` enough that
+the oracle no longer compiles, that's its own failure line for a human
+to read. It can't live as a `_test.go` file in the tree, because `main`
+still has the bug and CI would fail.
+
+Every rig git command that can fire a hook (worktree add, checkout,
+rm, fetch) runs with `core.hooksPath=/dev/null`, since the agent controls
+the clone's hooks. A13b wants a `--- PASS` line for every new function,
+because `go test` also exits 0 for a skipped test.
+
+The block was exercised offline before it graded anything live: eleven
+agent-shaped branches on shared clones of this repository, each with a
+predicted result for A13 through A15. All eleven came back as predicted:
+- a fix plus a test that fails pre-fix: all PASS, rig witness;
+- a test that passes pre-fix: A13 FAIL, and the test is named;
+- a fix adding a field, with a saved `--- FAIL`: A13 PASS, evidence witness;
+- the same with no saved run and no changelog: A13 FAIL, A14 FAIL;
+- the same with a saved build failure: A13 FAIL;
+- a test reading a `testdata/` fixture the branch adds: A13 PASS, rig witness;
+- a test with no fix: A13 PASS, A13b FAIL, A15 FAIL;
+- an untracked leftover marker: A13c FAIL;
+- a skipped test with a hand-written saved `--- FAIL`: A13b FAIL;
+- a fix that drops the run's error text: A15 FAIL;
+- a failing subtest: A13 PASS on the parent's `--- FAIL`.
 
 A4b looks like a nitpick and is not. A subagent's own `model` block
 survives `--provider`, because `resolveSubagentProvider` shallow-copies

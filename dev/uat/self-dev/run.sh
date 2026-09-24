@@ -95,9 +95,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# TASK_ISSUE is the issue the task resolves. From T1 up every task names
+# one, and A14 checks that the CHANGELOG bullet cites it: T0 named only
+# the epic, so its bullet cited #1116, the one number it had.
 case "${TIER}" in
-  t0) TASK_FILE="${SELF_DIR}/tasks/t0-docs.md" ;;
-  *)  echo "tier ${TIER} has no task file yet; T1 is #1116 P5" >&2; exit 2 ;;
+  t0) TASK_FILE="${SELF_DIR}/tasks/t0-docs.md";   TASK_ISSUE="" ;;
+  t1) TASK_FILE="${SELF_DIR}/tasks/t1-bugfix.md"; TASK_ISSUE="1002" ;;
+  *)  echo "tier ${TIER} has no task file yet" >&2; exit 2 ;;
 esac
 [[ -f "${TASK_FILE}" ]] || { echo "missing task file: ${TASK_FILE}" >&2; exit 2; }
 
@@ -255,6 +259,7 @@ head2 "Clone (D4: /tmp, never the real checkout)"
 
 git clone --quiet --branch "${BASE_REF}" "${REMOTE}" "${CLONE}"
 CLONE_HEAD="$(git -C "${CLONE}" rev-parse HEAD)"
+FORK="${CLONE_HEAD}"
 # The path the agent's own loader will record, symlinks resolved. A2
 # compares against this rather than ${CLONE}.
 CLONE_REAL="$(cd "${CLONE}" && pwd -P)"
@@ -428,7 +433,7 @@ head2 "A6–A8  what the agent actually produced"
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
   skip "A6 a branch was committed and pushed" "dry run"
-  skip "A7 the change is docs-only" "dry run"
+  skip "A7 the change stays in the task's scope" "dry run"
   skip "A8 no commit carries agent attribution" "dry run"
   skip "A8b every commit is DCO signed off" "dry run"
   skip "A10 no agent attribution in the PR title or body" "dry run"
@@ -437,6 +442,26 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
 else
   BRANCH="$(git -C "${CLONE}" rev-parse --abbrev-ref HEAD)"
   note "branch ${BRANCH}"
+
+  # Grade from the commit the branch grew from, not the one the rig
+  # cloned. An agent that rebases onto a newer main mid-run would
+  # otherwise be charged with every PR that landed meanwhile: their
+  # files fail A7, their commits A8, their tests A13, and a rebase with
+  # nothing on top would pass A6. The base is
+  # fetched from the rig's own REMOTE into a rig-owned ref, not read off
+  # refs/remotes/origin: the agent controls both that ref and the
+  # clone's idea of where origin is.
+  if git -C "${CLONE}" -c core.hooksPath=/dev/null fetch --quiet "${REMOTE}" "+refs/heads/${BASE_REF}:refs/selfdev/base" 2>/dev/null &&
+     mb="$(git -C "${CLONE}" merge-base HEAD refs/selfdev/base 2>/dev/null)" &&
+     git -C "${CLONE}" merge-base --is-ancestor "${CLONE_HEAD}" "${mb}"; then
+    # Only ever forward from the clone: a base that went backwards
+    # (a force-pushed main) would widen the graded range, not narrow it.
+    FORK="${mb}"
+  else
+    note "could not resolve ${BASE_REF}'s fork point from ${REMOTE}; grading from the cloned ${CLONE_HEAD:0:8}"
+  fi
+  [[ "${FORK}" == "${CLONE_HEAD}" ]] || note "branch forked from ${FORK:0:8}, not the cloned ${CLONE_HEAD:0:8}; grading from the fork"
+
   if [[ "${BRANCH}" == "HEAD" ]]; then
     # `rev-parse --abbrev-ref` prints the literal "HEAD" when detached, and
     # every clone has a refs/remotes/origin/HEAD — so without this arm a
@@ -444,7 +469,7 @@ else
     bad "A6 a branch was committed and pushed" "detached HEAD; the agent committed without branching"
   elif [[ "${BRANCH}" == "${BASE_REF}" ]]; then
     bad "A6 a branch was committed and pushed" "still on ${BASE_REF}; the agent never branched"
-  elif [[ "$(git -C "${CLONE}" rev-parse HEAD)" == "${CLONE_HEAD}" ]]; then
+  elif [[ "$(git -C "${CLONE}" rev-parse HEAD)" == "${FORK}" ]]; then
     bad "A6 a branch was committed and pushed" "HEAD never moved; nothing was committed"
   # Ask the REMOTE, not the remote-tracking ref: refs/remotes lives inside
   # the directory the agent controls, so it is not evidence of a push.
@@ -453,6 +478,7 @@ else
   else
     ok "A6 a branch was committed and pushed"
   fi
+
 
   # Committed AND uncommitted: junk left in the worktree is part of what
   # the agent did, and a range diff alone never sees it.
@@ -468,7 +494,7 @@ else
   # `docs/"`, which the allowlist ACCEPTS. `-z` emits raw paths and splits
   # rename entries into two fields, so both go away at once.
   CHANGED="$(
-    git -C "${CLONE}" diff --name-only --no-renames -z "${CLONE_HEAD}"..HEAD |
+    git -C "${CLONE}" diff --name-only --no-renames -z "${FORK}"..HEAD |
       tr '\0' '\n'
     git -C "${CLONE}" status --porcelain -z -uall | python3 -c '
 import sys
@@ -510,36 +536,63 @@ while i < len(fields):
   # permitted, so a run that only filed a bullet cannot pass.
   #
   # The allowlist is per-tier and the default arm is a failure, not a pass.
-  # A7 was written for T0 and is wrong for every rung above it — T1's whole
-  # point is a Go change — so a tier reaching here without its own entry is
+  # A7 was written for T0 and was wrong for every rung above it (T1's whole
+  # point is a Go change), so a tier reaching here without its own entry is
   # a rig bug, and the one thing it must not do is grade.
   #
-  # Note what this does NOT check: the task also forbids scripts and tests,
-  # and a `.go` file under `docs/` would pass. Directory scope is the
-  # property being asserted; the extension clause is not.
+  # Each tier also REQUIRES some paths, as triples: a path the change must
+  # include, a pattern that disqualifies a match ('' for none), and the
+  # message to fail on. T0 must touch docs/. T1 must change both a Go test
+  # and Go production code, so a run that only added a test, or only
+  # patched the code, cannot pass.
+  #
+  # Note what this does NOT check: T0's task also forbids scripts and
+  # tests, and a `.go` file under `docs/` would pass. Directory scope is
+  # the property being asserted; the extension clause is not.
+  A7="A7 the change stays in the task's scope"
+  REQUIRE=()
   case "${TIER}" in
     t0)
       ALLOW_RE='^(docs/|CHANGELOG\.md$)'
       ALLOW_DESC='docs/ and CHANGELOG.md'
+      REQUIRE=( '^docs/' '' 'nothing under docs/ changed' )
+      ;;
+    t1)
+      # docs/ because the task tells the agent to update the site page
+      # that documents spawn_agent's result if the fix changes it.
+      ALLOW_RE='^(pkg/agent/|docs/|CHANGELOG\.md$)'
+      ALLOW_DESC='pkg/agent/, docs/ and CHANGELOG.md'
+      REQUIRE=( '^pkg/agent/.*_test\.go$' '' 'no Go test under pkg/agent/ changed'
+                '^pkg/agent/.*\.go$' '_test\.go$' 'no Go production file under pkg/agent/ changed' )
       ;;
     *)
-      bad "A7 the change is docs-only" \
-        "no allowlist defined for tier ${TIER} — A7 is a T0 assertion and must be re-specified per tier"
+      bad "${A7}" \
+        "no allowlist defined for tier ${TIER} — A7 must be re-specified per tier"
       ALLOW_RE=''
       ;;
   esac
   if [[ -n "${ALLOW_RE}" ]]; then
     OFFENDING="$(printf '%s\n' "${CHANGED}" | grep -vE "${ALLOW_RE}" || true)"
-    DOC_CHANGES="$(printf '%s\n' "${CHANGED}" | grep -cE '^docs/' || true)"
+    MISSING=""
+    for ((i = 0; i < ${#REQUIRE[@]}; i += 3)); do
+      HITS="$(printf '%s\n' "${CHANGED}" | grep -E "${REQUIRE[i]}" || true)"
+      if [[ -n "${HITS}" && -n "${REQUIRE[i+1]}" ]]; then
+        HITS="$(printf '%s\n' "${HITS}" | grep -vE "${REQUIRE[i+1]}" || true)"
+      fi
+      if [[ -z "${HITS}" ]]; then
+        MISSING="${REQUIRE[i+2]}"
+        break
+      fi
+    done
     if [[ -z "${CHANGED}" ]]; then
-      bad "A7 the change is docs-only" "no files changed"
+      bad "${A7}" "no files changed"
     elif [[ -n "${OFFENDING}" ]]; then
-      bad "A7 the change is docs-only" \
+      bad "${A7}" \
         "${TIER} permits ${ALLOW_DESC}; touched: $(printf '%s' "${OFFENDING}" | tr '\n' ' ')"
-    elif [[ "${DOC_CHANGES}" -eq 0 ]]; then
-      bad "A7 the change is docs-only" "nothing under docs/ changed"
+    elif [[ -n "${MISSING}" ]]; then
+      bad "${A7}" "${MISSING}"
     else
-      ok "A7 the change is docs-only"
+      ok "${A7}"
     fi
   fi
 
@@ -554,14 +607,14 @@ while i < len(fields):
   # agent attribution under another name, and the scanner now bans it.
   # Which PR a run opened is recorded here, in the run's own scorecard,
   # not in the repository's history.
-  N_COMMITS="$(git -C "${CLONE}" rev-list --count "${CLONE_HEAD}"..HEAD)"
-  N_DCO="$(git -C "${CLONE}" log "${CLONE_HEAD}"..HEAD \
+  N_COMMITS="$(git -C "${CLONE}" rev-list --count "${FORK}"..HEAD)"
+  N_DCO="$(git -C "${CLONE}" log "${FORK}"..HEAD \
     --format="%(trailers:key=Signed-off-by,valueonly)" | grep -c . || true)"
   ATTR_OUT="${RUN_DIR}/attribution-commits.txt"
   if [[ "${N_COMMITS}" == "0" ]]; then
     bad "A8 no commit carries agent attribution" "no commits to check"
   elif (cd "${CLONE}" && "${REPO_ROOT}/dev/tools/verify-no-agent-attribution" \
-          --range "${CLONE_HEAD}..HEAD") >"${ATTR_OUT}" 2>&1; then
+          --range "${FORK}..HEAD") >"${ATTR_OUT}" 2>&1; then
     ok "A8 no commit carries agent attribution"
   else
     bad "A8 no commit carries agent attribution" \
@@ -573,6 +626,304 @@ while i < len(fields):
   else
     bad "A8b every commit is DCO signed off" "${N_DCO}/${N_COMMITS} signed off; the DCO check will fail"
   fi
+fi
+
+# ── The regression test ──────────────────────────────────────────────
+#
+# T1's hard part, graded rather than claimed (#1116 P5). The PR body will
+# say the new test failed on the pre-fix code; this checks it against
+# FORK, the commit the branch grew from.
+#
+# A13's first witness is the rig itself. It builds the pre-fix tree from
+# the branch tip with only the production .go files put back to FORK.
+# Test files, testdata and embedded fixtures all stay at the tip, so a new
+# test that reads a new fixture does not fail pre-fix merely because the
+# fixture is missing. Then it runs just the new Test functions. A FAIL
+# naming one is the evidence. A clean pass is the defect this rung exists
+# to catch: a regression test that passes on the buggy code is
+# documentation, not a gate.
+#
+# That witness is blind to the common case. A fix that adds a field,
+# const or signature leaves the new test uncompilable against pre-fix
+# sources, and a build failure says nothing about an assertion, which is
+# why AGENTS.md prescribes patching the behaviour back instead of
+# reverting. There the rig falls back to the agent's own saved run of that
+# method (.agents/logs/prefix-failure.txt, gitignored). The PASS line
+# says which witness it rests on, because a re-run by the rig and a file
+# the agent wrote are not equally strong.
+#
+# A15 is why the weaker witness is acceptable: an oracle the rig owns,
+# written against the bug rather than against the agent's test, run at
+# FORK and at the tip. It doesn't care what the fix calls its new field,
+# only that the banked result and the run error both reach the parent.
+#
+# Every git and go step here is guarded rather than left to `set -e`, so
+# a failure grades the assertion instead of aborting before the
+# scorecard. Every worktree gets a fresh directory under RUN_DIR, so
+# nothing here deletes a path it computed.
+
+# rig_worktree DIR REV: a detached worktree of the clone with hooks off.
+# The agent controls the clone's .git/hooks, so every rig git command
+# that can fire one (worktree add, checkout, rm, fetch) sets
+# core.hooksPath=/dev/null. go test runs the agent's code regardless;
+# this keeps the rig's own bookkeeping out of the agent's hands.
+rig_worktree() {
+  git -C "${CLONE}" -c core.hooksPath=/dev/null worktree add --quiet --detach "$1" "$2" >/dev/null 2>&1
+}
+drop_worktree() {
+  git -C "${CLONE}" worktree remove --force "$1" >/dev/null 2>&1 || true
+  git -C "${CLONE}" worktree prune >/dev/null 2>&1 || true
+}
+# test_names FILE STATUS: the Test functions go test reported with that
+# status (PASS or FAIL), one per line. Plain text only; -v is fine.
+test_names() {
+  sed -nE "s/^[[:space:]]*--- $2: (Test[A-Za-z0-9_]+)( .*)?\$/\1/p" "$1" 2>/dev/null | sort -u
+}
+# among LIST NAMES: the words of LIST that appear as lines in NAMES.
+among() {
+  local t out=""
+  for t in $1; do
+    if printf '%s\n' "$2" | grep -qxF "${t}"; then out="${out} ${t}"; fi
+  done
+  printf '%s' "${out# }"
+}
+has_build_failure() {
+  grep -qE '\[build failed\]|\[setup failed\]' "$1" 2>/dev/null
+}
+
+if [[ -n "${TASK_ISSUE}" ]]; then
+  head2 "A13–A15  the regression test and the issue"
+fi
+
+if [[ -z "${TASK_ISSUE}" ]]; then
+  : # T0 has no test and names no issue; its scorecard is unchanged.
+elif [[ ${DRY_RUN} -eq 1 ]]; then
+  skip "A13 the new test fails on the pre-fix code" "dry run"
+  skip "A13b the new test passes on the branch" "dry run"
+  skip "A13c no PREFIX BEHAVIOUR marker survived" "dry run"
+  skip "A14 the CHANGELOG bullet cites #${TASK_ISSUE}" "dry run"
+  skip "A15 the rig's own #${TASK_ISSUE} oracle fails before and passes after" "dry run"
+else
+  CLONE_TIP="$(git -C "${CLONE}" rev-parse HEAD)"
+  RIG_TREES="${RUN_DIR}/rig-trees.$$"
+  mkdir -p "${RIG_TREES}"
+
+  # Test functions present at the tip and absent at FORK: the ones the
+  # agent added. The task asks for a new function for this reason: a case
+  # appended to an existing table cannot be told apart from it.
+  NEW_TESTS=""
+  PKGS=""
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] || continue
+    added="$(comm -23 \
+      <(git -C "${CLONE}" show "${CLONE_TIP}:${f}" 2>/dev/null |
+          sed -nE 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/p' | sort -u) \
+      <(git -C "${CLONE}" show "${FORK}:${f}" 2>/dev/null |
+          sed -nE 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/p' | sort -u) || true)"
+    if [[ -n "${added}" ]]; then
+      NEW_TESTS="${NEW_TESTS} $(printf '%s' "${added}" | tr '\n' ' ')"
+      PKGS="${PKGS} ./$(dirname "${f}")"
+    fi
+  done < <(git -C "${CLONE}" diff --name-only --no-renames --diff-filter=AM \
+             "${FORK}..${CLONE_TIP}" -- '*_test.go' 2>/dev/null || true)
+  # shellcheck disable=SC2086 # word lists by construction
+  NEW_TESTS="$(printf '%s\n' ${NEW_TESTS} | sort -u | tr '\n' ' ')"
+  # shellcheck disable=SC2086
+  PKGS="$(printf '%s\n' ${PKGS} | sort -u | tr '\n' ' ')"
+  NEW_TESTS="${NEW_TESTS% }"
+  PKGS="${PKGS% }"
+
+  A13="A13 the new test fails on the pre-fix code"
+  A13B="A13b the new test passes on the branch"
+  if [[ -z "${NEW_TESTS}" ]]; then
+    bad "${A13}" "no new Test function in any committed _test.go; there is nothing to prove"
+    skip "${A13B}" "no new test"
+  else
+    RUN_RE="^($(printf '%s' "${NEW_TESTS}" | tr ' ' '|'))\$"
+    note "new tests: ${NEW_TESTS} (in ${PKGS})"
+
+    # The pre-fix tree: the tip, with every production .go file the
+    # branch touched put back to its FORK content, or removed from the
+    # index and the tree if the branch added it.
+    PRE_TREE="${RIG_TREES}/prefix"
+    PREFIX_OUT="${RUN_DIR}/prefix-rig.txt"
+    : >"${PREFIX_OUT}"
+    PREFIX_RC=""
+    if rig_worktree "${PRE_TREE}" "${CLONE_TIP}"; then
+      REVERT_OK=1
+      while IFS= read -r f; do
+        [[ -n "${f}" ]] || continue
+        if git -C "${CLONE}" cat-file -e "${FORK}:${f}" 2>/dev/null; then
+          git -C "${PRE_TREE}" -c core.hooksPath=/dev/null checkout --quiet "${FORK}" -- "${f}" || REVERT_OK=0
+        else
+          git -C "${PRE_TREE}" -c core.hooksPath=/dev/null rm --quiet --force -- "${f}" || REVERT_OK=0
+        fi
+      done < <(git -C "${CLONE}" diff --name-only --no-renames "${FORK}..${CLONE_TIP}" \
+                 -- '*.go' ':!*_test.go' ':!*/testdata/*' 2>/dev/null || true)
+      if [[ ${REVERT_OK} -eq 1 ]]; then
+        PREFIX_RC=0
+        # shellcheck disable=SC2086
+        (cd "${PRE_TREE}" && go test -count=1 -timeout 5m -v -run "${RUN_RE}" ${PKGS}) \
+          >"${PREFIX_OUT}" 2>&1 || PREFIX_RC=$?
+      fi
+      drop_worktree "${PRE_TREE}"
+    fi
+
+    # Per-test outcome, so a new test that passes both ways is named
+    # rather than hidden behind the one that failed.
+    FAILED="$(among "${NEW_TESTS}" "$(test_names "${PREFIX_OUT}" FAIL)")"
+    BOTH_WAYS="$(among "${NEW_TESTS}" "$(test_names "${PREFIX_OUT}" PASS)")"
+
+    EVIDENCE="${CLONE}/.agents/logs/prefix-failure.txt"
+    if [[ -z "${PREFIX_RC}" ]]; then
+      bad "${A13}" "the rig could not build its pre-fix worktree from ${CLONE_TIP:0:8}"
+    elif [[ ${PREFIX_RC} -eq 0 ]]; then
+      bad "${A13}" "${NEW_TESTS} PASS on the unfixed code from ${FORK:0:8}; see ${PREFIX_OUT}"
+    elif [[ -n "${FAILED}" ]]; then
+      ok "${A13} (witness: the rig re-ran it on ${FORK:0:8}'s code; failed: ${FAILED})"
+    elif has_build_failure "${PREFIX_OUT}"; then
+      # The test needs the fix's new symbols. Fall back to the agent's run.
+      EV_FAILED="$(among "${NEW_TESTS}" "$(test_names "${EVIDENCE}" FAIL)")"
+      if [[ ! -f "${EVIDENCE}" ]]; then
+        bad "${A13}" \
+          "the new tests don't compile on ${FORK:0:8}'s code and there is no saved PREFIX BEHAVIOUR run at .agents/logs/prefix-failure.txt"
+      elif has_build_failure "${EVIDENCE}"; then
+        bad "${A13}" \
+          "the saved pre-fix run is a build failure, which is not evidence about an assertion; see ${EVIDENCE}"
+      elif [[ -n "${EV_FAILED}" ]]; then
+        ok "${A13} (witness: the agent's saved PREFIX BEHAVIOUR run, not a rig re-run, because the test needs the fix's new symbols; failed: ${EV_FAILED})"
+        BOTH_WAYS="$(among "${NEW_TESTS}" "$(test_names "${EVIDENCE}" PASS)")"
+      else
+        bad "${A13}" \
+          "the saved pre-fix run has no plain-text --- FAIL naming any of ${NEW_TESTS}; see ${EVIDENCE}"
+      fi
+    else
+      bad "${A13}" \
+        "go test exited ${PREFIX_RC} on the pre-fix tree with no --- FAIL naming a new test; see ${PREFIX_OUT}"
+    fi
+    if [[ -n "${BOTH_WAYS}" ]]; then
+      note "passed on the pre-fix code too (the PR should declare these): ${BOTH_WAYS}"
+    fi
+
+    # The same functions at the committed tip, not in the clone's working
+    # tree: the PR is what gets merged. CI runs the whole suite (A12);
+    # this pins the tests A13 graded, so a test that fails before AND
+    # after cannot pass as a regression test. It wants a `--- PASS` line
+    # for every new function, not just exit 0: go test also exits 0 for a
+    # skipped test and for one a build tag hides ("no tests to run").
+    POST_TREE="${RIG_TREES}/postfix"
+    POST_OUT="${RUN_DIR}/postfix-rig.txt"
+    if ! rig_worktree "${POST_TREE}" "${CLONE_TIP}"; then
+      bad "${A13B}" "the rig could not check out ${CLONE_TIP:0:8}"
+    else
+      # shellcheck disable=SC2086
+      POST_RC=0
+      (cd "${POST_TREE}" && go test -count=1 -timeout 5m -v -run "${RUN_RE}" ${PKGS}) \
+        >"${POST_OUT}" 2>&1 || POST_RC=$?
+      POST_PASSED="$(test_names "${POST_OUT}" PASS)"
+      NOT_PASSED=""
+      for t in ${NEW_TESTS}; do
+        if ! printf '%s\n' "${POST_PASSED}" | grep -qxF "${t}"; then NOT_PASSED="${NOT_PASSED} ${t}"; fi
+      done
+      NOT_PASSED="${NOT_PASSED# }"
+      if [[ ${POST_RC} -ne 0 ]]; then
+        bad "${A13B}" "go test exited ${POST_RC}; see ${POST_OUT}"
+      elif [[ -n "${NOT_PASSED}" ]]; then
+        bad "${A13B}" "no --- PASS for ${NOT_PASSED} (skipped, or never ran); see ${POST_OUT}"
+      else
+        ok "${A13B}"
+      fi
+      drop_worktree "${POST_TREE}"
+    fi
+  fi
+
+  # Committed, tracked-but-uncommitted, or untracked. The skill's own last
+  # step is this grep, and a marker left behind is the fix silently
+  # patched back out.
+  MARKERS="$(
+    git -C "${CLONE}" grep -n 'PREFIX BEHAVIOUR' "${CLONE_TIP}" -- '*.go' 2>/dev/null || true
+    git -C "${CLONE}" grep -n --untracked 'PREFIX BEHAVIOUR' -- '*.go' 2>/dev/null || true
+  )"
+  if [[ -z "${MARKERS}" ]]; then
+    ok "A13c no PREFIX BEHAVIOUR marker survived"
+  else
+    bad "A13c no PREFIX BEHAVIOUR marker survived" "$(printf '%s\n' "${MARKERS}" | sed -n 1p)"
+  fi
+
+  # Added lines only, in the link form the changelog uses. A bare "#1002"
+  # would also match "#10020".
+  if git -C "${CLONE}" diff "${FORK}..${CLONE_TIP}" -- CHANGELOG.md 2>/dev/null |
+       grep -E '^\+' | grep -qE "/issues/${TASK_ISSUE}\)"; then
+    ok "A14 the CHANGELOG bullet cites #${TASK_ISSUE}"
+  else
+    bad "A14 the CHANGELOG bullet cites #${TASK_ISSUE}" \
+      "no added CHANGELOG.md line links issues/${TASK_ISSUE}; the task names it so the bullet can cite it"
+  fi
+
+  # A15, the rig's own oracle. It must FAIL at FORK, which proves it still
+  # detects the bug, and PASS at the tip. It is written against the
+  # package's internals (Handle's fields, completionResult), not anything
+  # the agent's test defines, so it compiles on both sides unless the fix
+  # reshaped those. That case is its own failure line, not a silent pass:
+  # a fix that moves them deserves a human look.
+  #
+  # It lives here as a heredoc, not as a _test.go file in the tree, where
+  # it would fail on main, which still has the bug.
+  A15="A15 the rig's own #${TASK_ISSUE} oracle fails before and passes after"
+  ORACLE_PKG="pkg/agent/background"
+  ORACLE_FILE="zz_selfdev_oracle_${TASK_ISSUE}_test.go"
+  ORACLE_SRC="${RUN_DIR}/${ORACLE_FILE}"
+  cat >"${ORACLE_SRC}" <<'GO'
+package background
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+)
+
+// The #1002 shape: the subagent returned a result, was acked, and the
+// run then failed. Both must reach the parent in the spawn_agent result.
+func TestSelfDevOracle1002(t *testing.T) {
+	h := &Handle{Name: "oracle", Branch: "b", status: StatusFailed, done: make(chan struct{}),
+		result: &autonomous.RunResult{DoneDetail: "RIG-SENTINEL-RCA", Returned: true},
+		err:    errors.New("RIG-SENTINEL-ERR")}
+	close(h.done)
+	b, err := json.Marshal(completionResult(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"RIG-SENTINEL-RCA", "RIG-SENTINEL-ERR"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("spawn_agent result lacks %s: %s", want, b)
+		}
+	}
+}
+GO
+  # oracle_at REV TREE OUT: prints pass, fail, build or checkout.
+  oracle_at() {
+    local rc=0
+    rig_worktree "$2" "$1" || { echo checkout; return; }
+    cp "${ORACLE_SRC}" "$2/${ORACLE_PKG}/${ORACLE_FILE}" || { drop_worktree "$2"; echo checkout; return; }
+    (cd "$2" && go test -count=1 -timeout 5m -run '^TestSelfDevOracle1002$' "./${ORACLE_PKG}") >"$3" 2>&1 || rc=$?
+    drop_worktree "$2"
+    if [[ ${rc} -eq 0 ]]; then echo pass
+    elif has_build_failure "$3"; then echo build
+    else echo fail
+    fi
+  }
+  ORACLE_PRE="$(oracle_at "${FORK}" "${RIG_TREES}/oracle-pre" "${RUN_DIR}/oracle-prefix.txt")"
+  ORACLE_POST="$(oracle_at "${CLONE_TIP}" "${RIG_TREES}/oracle-post" "${RUN_DIR}/oracle-postfix.txt")"
+  case "${ORACLE_PRE}/${ORACLE_POST}" in
+    fail/pass) ok "${A15}" ;;
+    pass/*)    bad "${A15}" "the oracle passes at ${FORK:0:8}, so the base no longer has the bug it was written for; the rig is stale" ;;
+    fail/build) bad "${A15}" "the oracle doesn't compile against the fix (Handle or completionResult changed shape); a human should look, see ${RUN_DIR}/oracle-postfix.txt" ;;
+    fail/fail) bad "${A15}" "the banked result or the run error still doesn't reach the parent; see ${RUN_DIR}/oracle-postfix.txt" ;;
+    *)         bad "${A15}" "oracle ${ORACLE_PRE} at ${FORK:0:8}, ${ORACLE_POST} at the tip; see ${RUN_DIR}/oracle-*.txt" ;;
+  esac
 fi
 
 head2 "A9  D4 — the real checkout is untouched"

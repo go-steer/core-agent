@@ -7,15 +7,21 @@ task end to end and stop when the pull request is open.
 
 Issue #1002: `spawn_agent` discards an acked `return_result` when the
 subagent then errors, so the parent re-does the work. Read the issue
-first with `gh issue view 1002`. It has the ground truth from a live run,
-the cause, and a proposed fix.
+first with `gh issue view 1002`, including its comments. It has the
+ground truth from a live run and a proposed fix.
 
 In short: a subagent that has called `return_result` and been acked has
-banked a real result. If the run then fails (a provider 429, say),
-`completionResult` in `pkg/agent/background/tools.go` returns the error
-text as the output and never reads the banked result. The parent is told
-the text is incidental, so it throws the findings away and repeats the
-whole delegation.
+banked a real result. If the run then fails (a provider 429, say), the
+parent's `spawn_agent` result carries only the error text. The parent is
+told the text is incidental, so it throws the findings away and repeats
+the whole delegation.
+
+The issue body puts the cause in `completionResult`
+(`pkg/agent/background/tools.go`). A later comment shows that is only
+the last place the result is lost: the autonomous driver in
+`pkg/agent/autonomous` drops it on the error path first, so
+`completionResult` never sees it. Trace the whole path from the tool's
+ack to the parent's result before you decide where the fix goes.
 
 Fix it so the parent receives the banked result, learns that the run
 failed after returning it, receives the run's error text, and gets
@@ -26,9 +32,10 @@ The issue's proposed fix is a starting point, not a specification.
 
 ## What done looks like
 
-- **A regression test** in `pkg/agent/background` drives a handle with
-  both a returned result and a run error, and asserts that the result
-  survives. Add it as a new `Test…` function, not as extra cases inside
+- **A regression test** in `pkg/agent/background` spawns a subagent
+  that returns a result and then fails, through the real spawn path
+  rather than a hand-built handle, and asserts that the result reaches
+  the parent. Add it as a new `Test…` function, not as extra cases inside
   an existing one.
 - **The test fails on the pre-fix code, and you have proved it.** Use
   the `prefix-failure-verification` skill. Predict the failure list in

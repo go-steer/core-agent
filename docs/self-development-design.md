@@ -600,7 +600,16 @@ all three are shipped.
   test needs the fix's new symbols, and says so on the PASS line. A15 is
   why that fallback is acceptable. Grading runs from the branch's fork
   point, not the cloned commit. See `dev/uat/self-dev/README.md`.
-  The live run is next.
+  **Live run 1** (2026-09-24) scored 11 passed and 9 failed, with no PR.
+  It tripped the $10 per-turn ceiling at 45 minutes, before writing any
+  code, because a `-p` run is one turn. The rig now raises that
+  ceiling to the session ceiling. Its orientation was still worth it: a
+  probe showed #1002's stated cause is only the last hop, because the
+  autonomous driver drops the acked result first. So A15's first
+  oracle, which built that failed handle by hand, graded a state that
+  can't occur. A15 now drives a real spawn and was calibrated against
+  a `completionResult`-only fix, a driver-only fix and the full fix.
+  The live re-run is next.
 - T2/T3 gated on T1's evidence.
 
 P2 before P3 is the load-bearing ordering. Everything else can reorder.

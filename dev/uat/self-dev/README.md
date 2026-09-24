@@ -74,7 +74,7 @@ dev/uat/self-dev/run.sh --tier t1 --provider anthropic-vertex
 | — | `SELFDEV_SCRATCH` | `${TMPDIR:-/tmp}/core-agent-selfdev` | where the clone and the binary go |
 | — | `SELFDEV_REMOTE` | `origin`'s URL | what to clone |
 | — | `SELFDEV_BASE` | `main` | the branch to clone and base the PR on |
-| — | `SELFDEV_TIMEOUT` | `3600` | wallclock seconds before the run is killed |
+| — | `SELFDEV_TIMEOUT` | `3600` (t0), `14400` (t1) | wallclock seconds before the run is killed |
 
 Only a clean `--dry-run` cleans up after itself. Any failure, and any
 run that actually drove a model, **keeps its scratch dir** — the run
@@ -164,35 +164,62 @@ tip, so a test that fails before *and* after can't pass as a regression
 test.
 
 **A15 is the rig's own witness.** `run.sh` carries a small Go test for
-#1002 in a heredoc. It builds a handle whose subagent returned a result
-and then failed, and requires both the result and the error text in the
-`spawn_agent` result. The rig drops it into worktrees at the base and at
-the tip. It must fail at the base, which proves it still detects the
-bug, and pass at the tip. It is written against the package's internals
-rather than the agent's test, so it doesn't care what the fix names its
-new field. If the fix reshapes `Handle` or `completionResult` enough that
-the oracle no longer compiles, that's its own failure line for a human
-to read. It can't live as a `_test.go` file in the tree, because `main`
-still has the bug and CI would fail.
+#1002 in a heredoc. It spawns a real subagent whose model calls
+`return_result` and then errors, and requires both the result and the
+error text in the `spawn_agent` result the parent gets. The rig drops it
+into worktrees at the base and at the tip. It must fail at the base,
+which proves it still detects the bug, and pass at the tip. It is
+written against the package's test harness rather than the agent's
+test, so it doesn't care what the fix names its new field or which hop
+it lands in. If the fix reshapes `awaitResult` or the package's spawn
+test helpers enough that the oracle no longer compiles, that's its own failure line
+for a human to read. It can't live as a `_test.go` file in the tree,
+because `main` still has the bug and CI would fail.
+
+The first version of A15 built the failed handle by hand and called
+`completionResult` on it. Live run 1 showed that state is unreachable:
+the autonomous driver drops the acked result on the error path, so a fix
+confined to `completionResult` passed the oracle and fixed nothing live.
+The current oracle fails on `main`, on a `completionResult`-only fix and
+on a driver-only fix, and passes only on the fix that covers all three
+hops. An oracle has to drive the path the bug lives on, not build the
+state the issue says occurs.
+
+A live run raises the recipe's per-turn cost ceiling to its session
+ceiling, on the command line and only in the rig, as it does with
+`--yolo`. A `-p` run is one turn, so there the per-turn ceiling is just a
+smaller session cap. Live run 1 tripped it at 45 minutes, before writing
+any code. `auto_continue` can't take its place, because it only resumes
+a restart-interrupted daemon turn. The raised ceiling, the enforcing
+watchdog and `SELFDEV_TIMEOUT` still bound the run. At equal values the
+per-turn check fires first, so a stop at $50 reports as a per-turn trip.
+For the same reason T1's default timeout is four hours: run 1 spent about
+$13 an hour, so with a one-hour limit the wallclock would always trip
+before the cost ceiling.
 
 Every rig git command that can fire a hook (worktree add, checkout,
 rm, fetch) runs with `core.hooksPath=/dev/null`, since the agent controls
 the clone's hooks. A13b wants a `--- PASS` line for every new function,
 because `go test` also exits 0 for a skipped test.
 
-The block was exercised offline before it graded anything live: eleven
+The block was exercised offline before it graded anything live: twelve
 agent-shaped branches on shared clones of this repository, each with a
-predicted result for A13 through A15. All eleven came back as predicted:
-- a fix plus a test that fails pre-fix: all PASS, rig witness;
+predicted result for A13 through A15. All twelve came back as predicted.
+Every branch but the first fixes at most `completionResult`, so each of
+them also fails A15, which is the point of the current oracle:
+- the three-hop fix plus a test that fails pre-fix: all PASS, rig witness;
+- a `completionResult`-only fix plus a test that fails pre-fix: A13–A14
+  PASS, A15 FAIL;
 - a test that passes pre-fix: A13 FAIL, and the test is named;
 - a fix adding a field, with a saved `--- FAIL`: A13 PASS, evidence witness;
 - the same with no saved run and no changelog: A13 FAIL, A14 FAIL;
 - the same with a saved build failure: A13 FAIL;
 - a test reading a `testdata/` fixture the branch adds: A13 PASS, rig witness;
-- a test with no fix: A13 PASS, A13b FAIL, A15 FAIL;
+- a test with no fix: A13 PASS, A13b FAIL;
 - an untracked leftover marker: A13c FAIL;
 - a skipped test with a hand-written saved `--- FAIL`: A13b FAIL;
-- a fix that drops the run's error text: A15 FAIL;
+- a `completionResult`-only fix that also drops the run's error text:
+  A15 FAIL;
 - a failing subtest: A13 PASS on the parent's `--- FAIL`.
 
 A4b looks like a nitpick and is not. A subagent's own `model` block

@@ -591,7 +591,16 @@ all three are shipped.
 - **P5** — T1, with the pre-fix-failure verification as a scored step.
   Every task file from T1 up names the issue it resolves. T0 named only
   this epic, so the agent's CHANGELOG bullet cited #1116, the only issue
-  number it had.
+  number it had. **Rig shipped**: `tasks/t1-bugfix.md` targets #1002;
+  A7 has a T1 scope arm; A13/A13b/A13c grade the pre-fix failure; A14
+  checks the bullet cites #1002; A15 is a rig-owned #1002 oracle that
+  must fail on the base and pass on the branch. A13's witness is the rig
+  re-running the agent's new tests against the base's production code.
+  It falls back to the agent's saved PREFIX BEHAVIOUR run only when the
+  test needs the fix's new symbols, and says so on the PASS line. A15 is
+  why that fallback is acceptable. Grading runs from the branch's fork
+  point, not the cloned commit. See `dev/uat/self-dev/README.md`.
+  The live run is next.
 - T2/T3 gated on T1's evidence.
 
 P2 before P3 is the load-bearing ordering. Everything else can reorder.

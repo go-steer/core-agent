@@ -41,6 +41,7 @@ func TestStopGuidance_OnlyUnusableOutcomesDemandDisclosure(t *testing.T) {
 		why   string
 	}{
 		{StopError, true, "the measured case: the subagent died and left an error string, so the parent has nothing but its own reads"},
+		{StopReturnedThenFailed, false, "the subagent returned its deliverable before the run died, so the delegation happened and there is nothing to disclose (#1002)"},
 		{StopNoReturn, true, "its own guidance ends \"or do the work yourself\" — the same invitation, visible in the source instead of the archive"},
 		{StopMaxSteps, false, "a partial is real delegated work; finishing it is not a run that stopped being delegated"},
 		{StopBudget, false, "same as max_steps"},

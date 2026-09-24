@@ -117,7 +117,7 @@ func TestSync_ReturnedResultIsNaturalAndUnannotated(t *testing.T) {
 // silently inherits the empty string and re-opens #710 for that case.
 func TestStopGuidance_EveryNonNaturalClassSaysSomething(t *testing.T) {
 	t.Parallel()
-	for _, class := range []StopClass{StopNoReturn, StopMaxSteps, StopBudget, StopDeferred, StopStopped, StopError} {
+	for _, class := range []StopClass{StopNoReturn, StopMaxSteps, StopBudget, StopDeferred, StopStopped, StopError, StopReturnedThenFailed} {
 		if stopGuidance(class) == "" {
 			t.Errorf("stop class %q has no parent-facing guidance", class)
 		}

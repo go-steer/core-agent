@@ -255,6 +255,7 @@ func completionResult(h *Handle) spawnAgentResult {
 	res := spawnAgentResult{Name: h.Name, Branch: h.Branch, Status: status.String()}
 	runErr := h.Err()
 	r := h.Result()
+	banked := bankedResult(r)
 	if r != nil || runErr != nil {
 		var reason autonomous.StopReason
 		var returned bool
@@ -262,7 +263,7 @@ func completionResult(h *Handle) spawnAgentResult {
 			reason = r.Reason
 			returned = r.Returned
 		}
-		res.StopReason = stopClass(status, reason, runErr, returned)
+		res.StopReason = stopClass(status, reason, runErr, returned, banked)
 		res.Guidance = stopGuidance(res.StopReason)
 	}
 	if r != nil {
@@ -277,6 +278,25 @@ func completionResult(h *Handle) spawnAgentResult {
 		res.CallsNote = toolcalls.Note(len(res.Calls), res.CallsTruncated)
 	}
 	if runErr != nil {
+		// A result the subagent returned before the run died is the
+		// deliverable, and the failure is what happened to the run
+		// afterwards — so both are surfaced, under separate fields, and
+		// Output keeps its one meaning of "what the subagent produced"
+		// (#1002). Without this the error text took Output's place, the
+		// parent was told by StopError's guidance that the text was
+		// incidental, and it correctly discarded a banked root-cause
+		// analysis and re-ran the delegation.
+		//
+		// RunError rather than Error: Error is documented as a refusal
+		// of the CALL, which this launch was not.
+		if banked != "" {
+			res.Output = banked
+			res.RunError = runErr.Error()
+			if r.FinalText != "" && r.FinalText != res.Output {
+				res.FinalText = r.FinalText
+			}
+			return res
+		}
 		res.Output = runErr.Error()
 		return res
 	}
@@ -377,6 +397,18 @@ type spawnAgentResult struct {
 	// ADK's reserved key for exactly this, so populating it lights up
 	// the failure affordance every consumer already has.
 	Error string `json:"error,omitempty"`
+	// RunError is the error a launched subagent's run failed with, when
+	// it had already returned a result before failing (#1002).
+	//
+	// Separate from Error because the two are about different things:
+	// Error means the call never launched a subagent, RunError means one
+	// ran, handed something back, and then died. Separate from Output
+	// because Output is what the subagent produced and this is not —
+	// putting the error there is what made a parent discard an acked
+	// root-cause analysis and re-run a delegation it had already paid
+	// for. A failure with nothing banked still reports its error text as
+	// Output, where it is the only thing there is to report.
+	RunError string `json:"run_error,omitempty"`
 	// Output is the subagent's deliverable on a synchronous spawn
 	// (wait: true) that ran to completion: its completion report, or its
 	// final text for a run that ended without signalling completion
@@ -396,9 +428,11 @@ type spawnAgentResult struct {
 	// "natural" (the subagent returned a result), "no_return" (its loop
 	// ended without one — check the text answers the goal), "max_steps"
 	// / "budget" (it ran out of room — re-ask with what is missing),
-	// "deferred" (it will resume on its own), "stopped", or "error".
-	// Empty for a fire-and-continue spawn and for a wait that timed out,
-	// neither of which has an outcome yet. See StopClass.
+	// "deferred" (it will resume on its own), "stopped", "error", or
+	// "returned_then_failed" (it returned Output and the run then failed
+	// — see RunError). Empty for a fire-and-continue spawn and for a
+	// wait that timed out, neither of which has an outcome yet. See
+	// StopClass.
 	StopReason StopClass `json:"stop_reason,omitempty"`
 	// Guidance is one line telling the parent what a non-finished
 	// outcome means for its next move. Empty when StopReason is
@@ -520,6 +554,10 @@ func stopGuidance(class StopClass) string {
 		g = "the subagent was stopped mid-thought, so any text here was cut off."
 	case StopError:
 		g = "the subagent failed. Whatever text is here is incidental, not a result."
+	case StopReturnedThenFailed:
+		g = "the subagent returned this result and its run then failed; run_error carries what went wrong. " +
+			"The result is real — it was handed back before the failure, not scraped from a dead run — so use it rather than starting over. " +
+			"The failure may have cut work the goal still needs: check what is here covers it, and re-ask for the rest instead of for all of it."
 	default:
 		return ""
 	}
@@ -549,6 +587,10 @@ func stopGuidance(class StopClass) string {
 //     room. A parent finishing a partial is not a run that stopped
 //     being delegated, and a caveat on every partial is a caveat on
 //     none.
+//   - StopReturnedThenFailed delivered the deliverable itself, before
+//     the failure. The delegation happened; there is nothing to
+//     disclose, and its guidance tells the parent to build on the
+//     result rather than to absorb the task (#1002).
 //   - StopDeferred is not over. Absorbing is the wrong move, and the
 //     guidance says so instead.
 //   - StopStopped was the parent's own decision, so the parent already

@@ -61,8 +61,8 @@ REMOTE="${SELFDEV_REMOTE:-}"
 BASE_REF="${SELFDEV_BASE:-main}"
 # Wallclock ceiling for the agent process itself. The recipe's cost
 # ceilings bound spend; this bounds time. Both are needed: a run can be
-# cheap and stuck.
-TIMEOUT_SECS="${SELFDEV_TIMEOUT:-3600}"
+# cheap and stuck. The default is set per tier below, once --tier is read.
+TIMEOUT_SECS="${SELFDEV_TIMEOUT:-}"
 
 usage() {
   cat <<'EOF'
@@ -98,11 +98,18 @@ done
 # TASK_ISSUE is the issue the task resolves. From T1 up every task names
 # one, and A14 checks that the CHANGELOG bullet cites it: T0 named only
 # the epic, so its bullet cited #1116, the one number it had.
+#
+# The wallclock default is per tier too. T0 finished in under 4 minutes.
+# T1 live run 1 spent 45 minutes and $10 orienting before writing code,
+# about $13 an hour, so an hour-long default would kill a T1 run long
+# before its $50 cost ceiling could, and the cost ceiling would never be
+# the bound. Four hours leaves room for the ceiling to be the one that trips.
 case "${TIER}" in
-  t0) TASK_FILE="${SELF_DIR}/tasks/t0-docs.md";   TASK_ISSUE="" ;;
-  t1) TASK_FILE="${SELF_DIR}/tasks/t1-bugfix.md"; TASK_ISSUE="1002" ;;
+  t0) TASK_FILE="${SELF_DIR}/tasks/t0-docs.md";   TASK_ISSUE="";     TIER_TIMEOUT=3600 ;;
+  t1) TASK_FILE="${SELF_DIR}/tasks/t1-bugfix.md"; TASK_ISSUE="1002"; TIER_TIMEOUT=14400 ;;
   *)  echo "tier ${TIER} has no task file yet" >&2; exit 2 ;;
 esac
+TIMEOUT_SECS="${TIMEOUT_SECS:-${TIER_TIMEOUT}}"
 [[ -f "${TASK_FILE}" ]] || { echo "missing task file: ${TASK_FILE}" >&2; exit 2; }
 
 # ── Scorecard ────────────────────────────────────────────────────────
@@ -298,6 +305,31 @@ AGENT_ARGS=()
 # stays `required` — that gate is not a permission and A5 grades it.
 AGENT_ARGS+=( --yolo )
 [[ -n "${PROVIDER}" ]] && AGENT_ARGS+=( --provider="${PROVIDER}" )
+# The per-turn ceiling is raised to the session ceiling, also only here.
+# A `-p` run is ONE turn, so the recipe's max_turn_cost_usd is not a turn
+# bound in this rig; it is a second, smaller session cap. Live T1 run 1
+# tripped it at 45 minutes, before a line of code, while the $50 session
+# cap it sits under was unreachable. The committed value stays for the
+# developer at a REPL, where turns are turns. auto_continue can't do this
+# job: it resumes a restart-interrupted daemon turn and never starts a
+# new one, so it has nothing to drive in a one-shot run. What bounds the
+# run is that raised ceiling (at equal values the per-turn check trips
+# first, so a $50 stop reports as a per-turn trip), the enforcing
+# watchdog and TIMEOUT_SECS.
+# An unset or 0 session ceiling (0 means none) leaves the per-turn one in
+# place, so the run always has some cost cap.
+SESSION_CAP="$(python3 - "${CFG}" <<'PY' 2>/dev/null || true
+import json, math, sys
+v = (json.load(open(sys.argv[1])).get("agent") or {}).get("max_session_cost_usd")
+if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0:
+    print(v)
+PY
+)"
+if [[ -n "${SESSION_CAP}" ]]; then
+  AGENT_ARGS+=( --max-turn-cost-usd="${SESSION_CAP}" )
+else
+  note "recipe has no positive agent.max_session_cost_usd; its per-turn ceiling stays as the run's only cost cap"
+fi
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
   note "dry run: booting on --provider=echo with a trivial prompt"
@@ -654,8 +686,10 @@ fi
 #
 # A15 is why the weaker witness is acceptable: an oracle the rig owns,
 # written against the bug rather than against the agent's test, run at
-# FORK and at the tip. It doesn't care what the fix calls its new field,
-# only that the banked result and the run error both reach the parent.
+# FORK and at the tip. It drives a real spawn and reads what the parent
+# is handed, so it doesn't care what the fix calls its new field or
+# which hop it lands in, only that the banked result and the run error
+# both arrive.
 #
 # Every git and go step here is guarded rather than left to `set -e`, so
 # a failure grades the assertion instead of aborting before the
@@ -861,11 +895,23 @@ else
   fi
 
   # A15, the rig's own oracle. It must FAIL at FORK, which proves it still
-  # detects the bug, and PASS at the tip. It is written against the
-  # package's internals (Handle's fields, completionResult), not anything
-  # the agent's test defines, so it compiles on both sides unless the fix
-  # reshaped those. That case is its own failure line, not a silent pass:
-  # a fix that moves them deserves a human look.
+  # detects the bug, and PASS at the tip. It spawns a real subagent whose
+  # model calls return_result and then errors, and reads the spawn_agent
+  # result the parent gets. The first version built the failed Handle by
+  # hand and called completionResult on it, and live run 1 showed that
+  # state is unreachable: the driver drops the acked result on the error
+  # path (runOneTurn skips the done drain, Run returns before its
+  # doneSignaled check), so completionResult never sees it. A fix confined
+  # to completionResult passed that oracle and fixed nothing live. This
+  # one was calibrated against both: it fails on main, on a
+  # completionResult-only fix and on a driver-only fix, and passes on the
+  # fix that does all three hops.
+  #
+  # It is written against the package's test harness (newTemplateManager,
+  # recordingProvider, tmplFactory, attachEchoParent, awaitResult), not anything the agent's test
+  # defines, so it compiles on both sides unless the fix reshaped those.
+  # That case is its own failure line, not a silent pass: a fix that moves
+  # them deserves a human look.
   #
   # It lives here as a heredoc, not as a _test.go file in the tree, where
   # it would fail on main, which still has the bug.
@@ -877,22 +923,58 @@ else
 package background
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/genai"
 )
 
-// The #1002 shape: the subagent returned a result, was acked, and the
-// run then failed. Both must reach the parent in the spawn_agent result.
+// selfDevOracleLLM calls return_result on its first call and fails every
+// call after it: the #1002 shape, where the model call that follows an
+// acked return dies (a 429 in the live run).
+type selfDevOracleLLM struct{ calls atomic.Int32 }
+
+func (*selfDevOracleLLM) Name() string { return "selfdev-oracle" }
+
+func (l *selfDevOracleLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if l.calls.Add(1) == 1 {
+			fc := &genai.FunctionCall{Name: "return_result", Args: map[string]any{"result": "RIG-SENTINEL-RCA"}}
+			content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionCall: fc}}}
+			yield(&adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}, nil)
+			return
+		}
+		yield(nil, errors.New("RIG-SENTINEL-ERR"))
+	}
+}
+
+// Drives a real spawn through the autonomous driver and reads what the
+// parent is handed, so a fix confined to completionResult cannot pass
+// it: on the live path the banked result is dropped before that.
 func TestSelfDevOracle1002(t *testing.T) {
-	h := &Handle{Name: "oracle", Branch: "b", status: StatusFailed, done: make(chan struct{}),
-		result: &autonomous.RunResult{DoneDetail: "RIG-SENTINEL-RCA", Returned: true},
-		err:    errors.New("RIG-SENTINEL-ERR")}
-	close(h.done)
-	b, err := json.Marshal(completionResult(h))
+	prov := &recordingProvider{llm: &selfDevOracleLLM{}}
+	mgr := newTemplateManager(t, prov, []SubagentTemplate{{
+		Name:         "oracle",
+		Instruction:  "triage",
+		ModelFactory: tmplFactory(prov, "oracle-model"),
+		ModelID:      "oracle-model",
+		Mode:         ModeStanding,
+	}}, WithDefaultBudgets(Budgets{MaxTurns: 4}), WithSyncWaitTimeout(30*time.Second))
+	attachEchoParent(t, mgr)
+	defer mgr.Close()
+
+	h, err := mgr.SpawnTemplate(context.Background(), "", "oracle", RefOverrides{Goal: "triage"}, "")
+	if err != nil {
+		t.Fatalf("SpawnTemplate: %v", err)
+	}
+	b, err := json.Marshal(mgr.awaitResult(context.Background(), h))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -920,7 +1002,7 @@ GO
   case "${ORACLE_PRE}/${ORACLE_POST}" in
     fail/pass) ok "${A15}" ;;
     pass/*)    bad "${A15}" "the oracle passes at ${FORK:0:8}, so the base no longer has the bug it was written for; the rig is stale" ;;
-    fail/build) bad "${A15}" "the oracle doesn't compile against the fix (Handle or completionResult changed shape); a human should look, see ${RUN_DIR}/oracle-postfix.txt" ;;
+    fail/build) bad "${A15}" "the oracle doesn't compile against the fix (awaitResult or the package's spawn test helpers changed shape); a human should look, see ${RUN_DIR}/oracle-postfix.txt" ;;
     fail/fail) bad "${A15}" "the banked result or the run error still doesn't reach the parent; see ${RUN_DIR}/oracle-postfix.txt" ;;
     *)         bad "${A15}" "oracle ${ORACLE_PRE} at ${FORK:0:8}, ${ORACLE_POST} at the tip; see ${RUN_DIR}/oracle-*.txt" ;;
   esac

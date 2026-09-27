@@ -186,6 +186,45 @@ func TestResumeAutonomous_TerminalCheckpointReturnsImmediately(t *testing.T) {
 	}
 }
 
+// Resume carries the same loop shape as Run and has drifted from it
+// before — returntool.go says so in as many words, about this exact
+// termination gesture. So the #1002 bank is asserted on both drivers
+// rather than on the one the spawn path happens to use: a deferred
+// subagent that returns and then 429s on resume loses its deliverable
+// in precisely the same way, and deleting Resume's bankReturn is
+// invisible to every test that only drives Run.
+func TestResumeAutonomous_BankedReturnSurvivesALaterFailure(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+
+	// A first run that stops on its turn cap, leaving a resumable
+	// mid-run checkpoint.
+	llm1 := &stubLLM{scenarios: []scenarioFn{textTurn("looking", 1, 1)}}
+	if _, err := Run(context.Background(),
+		runBuilder(llm1, h, "app", "u", "banked"), "go", WithMaxTurns(1)); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+
+	// The resumed run returns a result and its next model call dies.
+	wantErr := errors.New("Error 429, Message: Resource exhausted")
+	llm2 := &stubLLM{scenarios: []scenarioFn{
+		doneCallTurn("the emailservice limit was squeezed to 8Mi"),
+		errTurn(wantErr),
+	}}
+	res, err := Resume(context.Background(),
+		resumeBuilder(llm2, h, "app", "u"),
+		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "banked"},
+		WithMaxTurns(10))
+	if !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want %v", err, wantErr)
+	}
+	if !res.Returned || res.DoneDetail != "the emailservice limit was squeezed to 8Mi" {
+		t.Errorf("Returned = %v, DoneDetail = %q; want the banked result to survive the failure on a resumed run too",
+			res.Returned, res.DoneDetail)
+	}
+}
+
 func TestResumeAutonomous_ContinuesFromMidRun(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestEventLog(t)

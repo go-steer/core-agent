@@ -563,6 +563,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 // rather than beside it.
 func terminalAlertText(status Status, result autonomous.RunResult, runErr error) (kind, text string) {
 	kind, text = "completed", result.DoneDetail
+	banked := bankedResult(&result)
 	switch status {
 	case StatusStopped:
 		// An explicit parent Stop: the parent asked for this and the
@@ -573,9 +574,21 @@ func terminalAlertText(status Status, result autonomous.RunResult, runErr error)
 		text = "stopped: " + string(result.Reason)
 	case StatusFailed:
 		kind = "failed"
-		if runErr != nil {
+		switch {
+		case banked != "":
+			// The subagent returned this and the run died afterwards
+			// (#1002). The deliverable leads, because it is the thing
+			// the parent asked for and the error is what happened to
+			// the run after it was handed over; the error follows under
+			// the same field name the sync tool result gives it, so the
+			// two surfaces stay one thing a model has to understand.
+			text = banked
+			if runErr != nil {
+				text += "\n\nrun_error: " + runErr.Error()
+			}
+		case runErr != nil:
 			text = runErr.Error()
-		} else {
+		default:
 			text = "stopped: " + string(result.Reason)
 		}
 	}
@@ -584,7 +597,7 @@ func terminalAlertText(status Status, result autonomous.RunResult, runErr error)
 	// return_result, so its last assistant text is the ONLY record of
 	// what it found — which is why subagentReturnContract tells it so
 	// in the instruction rather than only in that tool's description.
-	if status != StatusCompleted && result.DoneDetail != "" && result.DoneDetail != text {
+	if status != StatusCompleted && result.DoneDetail != "" && !strings.Contains(text, result.DoneDetail) {
 		text += "\n\n" + result.DoneDetail
 	}
 	if result.FinalText != "" && result.FinalText != text && !strings.Contains(text, result.FinalText) {
@@ -619,7 +632,7 @@ func terminalAlertText(status Status, result autonomous.RunResult, runErr error)
 	//
 	// The sync path (spawnAgentResult.StopReason) always populates it:
 	// a JSON field costs nothing and machine readers shouldn't infer.
-	if class := stopClass(status, result.Reason, runErr, result.Returned); class != StopNatural {
+	if class := stopClass(status, result.Reason, runErr, result.Returned, banked); class != StopNatural {
 		text += "\n\nstop_reason: " + string(class)
 		// And the disclosure requirement, for the classes that leave
 		// the parent holding nothing (#1036). The async path needs this
@@ -681,9 +694,44 @@ const (
 	// exists was cut mid-thought.
 	StopStopped StopClass = "stopped"
 	// StopError: the run failed, was cancelled, or exhausted its retry
-	// policy.
+	// policy, and it had returned nothing before it did.
 	StopError StopClass = "error"
+	// StopReturnedThenFailed: the subagent handed back a result through
+	// its return tool, and the run failed after that (#1002).
+	//
+	// Split from StopError because the two ask opposite things of the
+	// parent. StopError's guidance says the text is incidental and not a
+	// result, which is correct when a run died with nothing banked and
+	// wrong here: the deliverable was written, the tool handler acked
+	// it, and only the model call after it failed. In the run that filed
+	// this a Vertex 429 landed one call past an acked root-cause
+	// analysis; the parent read "whatever text is here is incidental",
+	// threw the analysis away and re-ran the whole delegation for seven
+	// extra cluster reads.
+	//
+	// What it does not assert is that the run finished everything. The
+	// return happened; the failure after it may still have cut work the
+	// goal needs, which is what this class tells the parent to check.
+	StopReturnedThenFailed StopClass = "returned_then_failed"
 )
+
+// bankedResult is the deliverable a run handed back through its return
+// tool before it stopped, or "" when it never handed one back.
+//
+// Both conditions are required. Returned alone is not enough: under
+// WithStopOnNaturalEnd a run that simply stopped calling tools also
+// reports a DoneDetail, and the lifecycle-style done tool — the branch
+// taken when a driver did not ask for WithReturnTool — signals whatever
+// detail it was handed, empty included (the result-style return tool
+// refuses an empty payload instead). An empty banked result is not a
+// deliverable, and reporting one as though it were would hand the
+// parent an outcome class promising findings that are not there.
+func bankedResult(r *autonomous.RunResult) string {
+	if r == nil || !r.Returned {
+		return ""
+	}
+	return r.DoneDetail
+}
 
 // stopClass classifies a terminal run. Status is consulted first,
 // because the launch goroutine has already resolved the cases where
@@ -695,10 +743,20 @@ const (
 // tool (autonomous.RunResult.Returned). It only ever distinguishes
 // StopNatural from StopNoReturn — every other class describes a stop
 // the model didn't choose, so how it would have finished is moot.
-func stopClass(status Status, reason autonomous.StopReason, runErr error, returned bool) StopClass {
+// banked is that return's payload (see bankedResult), and it is what
+// splits a failure that discarded a real deliverable from one that had
+// nothing to discard (#1002).
+func stopClass(status Status, reason autonomous.StopReason, runErr error, returned bool, banked string) StopClass {
 	natural := StopNatural
 	if !returned {
 		natural = StopNoReturn
+	}
+	// A run that failed AFTER banking a result is not the same outcome
+	// as one that failed with nothing in hand, and the difference is
+	// the whole of what the parent does next.
+	failed := StopError
+	if banked != "" {
+		failed = StopReturnedThenFailed
 	}
 	switch status {
 	case StatusStopped:
@@ -706,10 +764,10 @@ func stopClass(status Status, reason autonomous.StopReason, runErr error, return
 	case StatusCompleted:
 		return natural
 	case StatusFailed:
-		return StopError
+		return failed
 	}
 	if runErr != nil {
-		return StopError
+		return failed
 	}
 	switch reason {
 	case autonomous.StopReasonCompleted:
@@ -727,6 +785,11 @@ func stopClass(status Status, reason autonomous.StopReason, runErr error, return
 		// reason added later: the run did not reach an ending of its
 		// own. Erring toward "error" keeps a parent from treating an
 		// unrecognized outcome as a finished result.
+		//
+		// StopError rather than `failed`, deliberately: this arm is
+		// only reachable with runErr == nil and a non-terminal status,
+		// so nothing failed and "returned_then_failed" would name an
+		// event that did not happen.
 		return StopError
 	}
 }

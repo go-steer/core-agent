@@ -246,6 +246,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		}
 
 		if turnErr != nil {
+			bankReturn(&result, turnRes)
 			// Context cancellation propagates immediately regardless of
 			// retry policy — the caller asked us to stop.
 			if errors.Is(turnErr, context.Canceled) && ctx.Err() != nil {
@@ -282,10 +283,11 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 
 		if turnRes.doneSignaled {
 			result.Reason = StopReasonCompleted
-			result.DoneDetail = turnRes.doneDetail
-			// The only path that sets this: the model chose to hand
-			// something back (#710).
-			result.Returned = true
+			// The only path that sets Returned on a clean stop: the
+			// model chose to hand something back (#710). Same helper
+			// the error path uses, so a return is recorded in exactly
+			// one place whichever way the run then ends (#1002).
+			bankReturn(&result, turnRes)
 			break
 		}
 
@@ -319,7 +321,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		// woken again.
 		if cfg.stopOnNaturalEnd && !turnRes.requestedTools && !turnRes.scheduleSignaled {
 			result.Reason = StopReasonCompleted
-			result.DoneDetail = turnRes.text
+			bankNaturalEnd(&result, turnRes)
 			break
 		}
 
@@ -525,6 +527,33 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 	calls := toolcalls.Recorder{Skip: driverTools}
 	defer func() { out.calls, out.callsDropped = calls.Calls(), calls.Dropped() }()
 
+	// The done signal lives on doneCh because only a successful tool
+	// invocation (the handler fired) sets it — false positives like
+	// rejected calls from the model never reach us.
+	//
+	// Harvested through a defer for the same reason the provenance
+	// recorder above is, plus one sharper one. This drain used to sit at
+	// the bottom of the function, which the stream-error exit inside the
+	// event loop jumps straight past — so a subagent that called
+	// return_result, was acked, and then lost its next model call to a
+	// 429 came back with doneSignaled false and an empty detail. The
+	// deliverable was already banked and acknowledged, and it was
+	// discarded because the turn that banked it died; the parent then
+	// re-ran the whole delegation (#1002). Guarded on doneSignaled so
+	// the in-turn cost path, which consumes the signal itself, is not
+	// overwritten with an empty one.
+	defer func() {
+		if out.doneSignaled {
+			return
+		}
+		select {
+		case detail := <-doneCh:
+			out.doneSignaled = true
+			out.doneDetail = detail
+		default:
+		}
+	}()
+
 	// Drain any stale done signal from a previous turn (defensive —
 	// only one turn is in flight at a time, but a previous turn
 	// could have signaled done while a budget cap fired between
@@ -690,15 +719,9 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		}
 	}
 
-	// The done signal lives on doneCh because only a successful tool
-	// invocation (state="done", handler fired) sets it — false
-	// positives like rejected calls from the model never reach us.
-	select {
-	case detail := <-doneCh:
-		out.doneSignaled = true
-		out.doneDetail = detail
-	default:
-	}
+	// The done signal is drained by the defer at the top of this
+	// function, so every exit path harvests it — including the stream
+	// error inside the loop above, which is the #1002 case.
 
 	// Same idea for schedule emission. Done wins over schedule when
 	// both are emitted in the same turn (the loop check above happens
@@ -715,6 +738,49 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 
 	out.text = collectedText(&buf, &partials, sawFinals)
 	return out, nil
+}
+
+// bankReturn records a return the model made in a turn that then
+// failed, so the failure does not discard it (#1002).
+//
+// Called from the turnErr branch of both Run and Resume, before any of
+// their error exits. The model called return_result, the tool handler
+// ran and acked it, and only then did the run die — so the deliverable
+// exists and the error is what happened to the run after it. Dropping
+// it is what sent a parent an error string where an acked root-cause
+// analysis should have been; it re-ran the whole delegation.
+//
+// Kept rather than consumed: a retry or skip leaves this copy in place,
+// so a retry that lands overwrites it with the fresh return and a run
+// that never recovers still hands back the one it has.
+//
+// A no-op when the turn signalled nothing, which keeps a run that
+// failed having returned nothing reporting exactly that — the
+// distinction pkg/agent/background classifies on.
+func bankReturn(result *RunResult, turnRes turnResult) {
+	if !turnRes.doneSignaled {
+		return
+	}
+	result.DoneDetail = turnRes.doneDetail
+	result.Returned = true
+}
+
+// bankNaturalEnd records the deliverable of a run that ended because the
+// model stopped calling tools (WithStopOnNaturalEnd).
+//
+// Returned is cleared, not merely left alone. A natural end is not a
+// return — that distinction is the whole of #710, and DoneDetail and
+// Returned have to move together or they describe different turns. They
+// could not previously disagree, because nothing set Returned before
+// this point; bankReturn can now, so a run that banked a return on a
+// failed turn, retried, and then ended naturally would otherwise report
+// the retry's trailing text under Returned=true. The parent would read
+// stop_reason "natural" — an assertion that the goal was met — over
+// exactly the "let me know if you would like me to continue" shape that
+// #710 exists to catch.
+func bankNaturalEnd(result *RunResult, turnRes turnResult) {
+	result.DoneDetail = turnRes.text
+	result.Returned = false
 }
 
 // keepFinalText reports whether this turn's text should replace the

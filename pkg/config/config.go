@@ -310,8 +310,9 @@ type UIConfig struct {
 
 	// Mouse enables terminal mouse capture so the wheel scrolls the
 	// chat viewport. When enabled, plain click-drag no longer selects
-	// text — terminals route around the capture when Shift is held
-	// (Shift-drag to select, copy as usual). Pointer so unset means
+	// text. Terminals route around the capture while a modifier is
+	// held: Shift on most, Option on macOS in VS Code (behind a VS
+	// Code setting). Pointer so unset means
 	// "use the default" (true). Toggle at runtime with /mouse.
 	Mouse *bool `json:"mouse,omitempty"`
 }

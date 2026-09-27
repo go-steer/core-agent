@@ -62,7 +62,9 @@ dev/uat/self-dev/run.sh --dry-run
 dev/uat/self-dev/run.sh --tier t0 --provider anthropic-vertex
 
 # T1: a Go bug fix (#1002) with a regression test that must fail first.
-dev/uat/self-dev/run.sh --tier t1 --provider anthropic-vertex
+# #1002 is fixed on main now, so a live T1 run reports the rig as stale.
+# Replay it from the commit it was cut at instead. See "Replay" below.
+dev/uat/self-dev/run.sh --tier t1 --replay --provider anthropic-vertex
 ```
 
 | flag | env | default | what it does |
@@ -70,6 +72,7 @@ dev/uat/self-dev/run.sh --tier t1 --provider anthropic-vertex
 | `--tier` | `SELFDEV_TIER` | `t0` | which task file under `tasks/` to run |
 | `--provider` | `SELFDEV_PROVIDER` | recipe's | overrides the parent model's provider |
 | `--dry-run` | — | off | boot on `--provider=echo`, assert the recipe loads, stop |
+| `--replay` | `SELFDEV_REPLAY=1` | off | run the tier from its pinned base against a local mirror, with no GitHub (t1 only) |
 | `--keep` | — | off | keep a clean dry run's scratch dir (every other run keeps it anyway) |
 | — | `SELFDEV_SCRATCH` | `${TMPDIR:-/tmp}/core-agent-selfdev` | where the clone and the binary go |
 | — | `SELFDEV_REMOTE` | `origin`'s URL | what to clone |
@@ -329,6 +332,98 @@ Two things the run is *not* evidence for. A12's green is docs-lint plus
 by CI — that starts at T1. And T0 by construction has no test to make
 fail first, so nothing here says the agent can do the pre-fix
 verification the repo's review gate demands.
+
+## The T1 live runs, 2026-09-24
+
+**Run 1** (`20260924T113829Z-344127`) scored 11 passed, 9 failed, and
+opened no PR. It tripped the recipe's $10 per-turn ceiling at 45
+minutes, before writing any code, because a `-p` run is one turn. Its
+orientation was still worth the money. A probe showed #1002's stated
+cause is only the last hop: the autonomous driver drops the acked
+result on the error path first. So the first A15 oracle graded a state
+that can't occur. #1153 fixed both: the per-turn lift, and the real-path
+oracle described under "What is graded".
+
+**Run 2** (`20260924T125851Z-458244`, `--provider anthropic-vertex`)
+scored **23 of 23**. It took about two hours and $41.44 on
+`claude-opus-5`, over 190 tool calls, and opened
+[PR #1154](https://github.com/go-steer/core-agent/pull/1154). CI passed
+it and a human merged it on 2026-09-27. The fix covers all three hops,
+including `Resume`, which the issue never mentioned. The PR declared the
+tests that pass before and after by design. The agent's own review
+caught a defect the fix had introduced before the PR was opened.
+
+The blockers between run 1 and run 2 were all in the rig: the per-turn
+cap, the wallclock limit and an oracle grading an unreachable state. The
+recipe and the model didn't change.
+
+## Replay
+
+A live run of a tier is only valid while its base still has the bug.
+When upstream fixes it, as #1154 fixed #1002, A15 fails the run as
+"the rig is stale". That's correct, but it retires the tier. `--replay`
+keeps the tier usable as a benchmark, for comparing models, recipes or
+harness changes on a task with a known answer:
+
+- **The base is pinned** per tier in `run.sh` (`REPLAY_BASE`). T1's is
+  `2cf7c230`, the commit run 2 cloned.
+- **The remote is a local bare mirror** under the run's scratch dir,
+  holding that commit's history and nothing later. The fix is in no
+  object the clone's own history can reach, and the agent's push lands in
+  the mirror, not on GitHub.
+- **The issue comes from a snapshot**, `tasks/t1-issue-1002.md`: the body
+  and the one comment that existed when run 2 started. The live issue is
+  closed and links the fix. `tasks/replay.md` is appended to the task and
+  tells the agent where the issue text is, not to look up the fix, and to
+  write its PR to `.agents/logs/pr.md` instead of opening one.
+- **`gh` has no credentials** in the run (`GH_CONFIG_DIR` points at an
+  empty dir, and the token variables are unset).
+
+The PR half is graded without GitHub. A11 wants `.agents/logs/pr.md` with
+a title line. A10 runs the attribution scanner over it. A10b checks its
+body has the section CI's `review-gate` requires. A12 checks out what
+the agent *pushed* in a fresh rig worktree and runs `build`, `vet`,
+`verify-go-format`, `test-unit`, `lint-go` and `verify-mod-tidy` there.
+It skips when nothing was pushed past the base, because a clean base
+passes all six. That's the core of `main`'s required checks, not all of
+them. `verify-vuln` is left out because its verdict follows the live
+vulnerability database, so it would change a replay's grade over time
+with no change to the agent's work. The tree-shape gates
+(`examples-smoke`, the core-tui guards, the harness config pin, the
+release-notes fixtures) are left out because a change the size of #1002
+doesn't reach them. Everything else grades exactly as in a live run.
+A15 included, and it now has to fail at the pinned base. The fork point
+is the pinned commit itself, not the mirror's `main`, which the agent
+could push to.
+
+A replay also gives the agent and A12 a golangci-lint cache of the run's
+own. The shared cache hands back findings recorded against other
+checkouts' paths. The first rehearsal of this mode failed `lint-go` on
+the clean base with a line quoted from the real checkout's fixed copy of
+the file, which would have shown the agent the answer during its own
+sweep.
+
+**What a replay can't promise is that the agent never saw the answer.**
+The mirror, the snapshot and the stripped `gh` credentials keep the fix
+out of the agent's *way*. They don't put it out of *reach*. The agent
+runs under `--yolo` with a shell, as the operator's user, on the
+operator's machine:
+
+- the real checkout has the fix in its history and its working tree;
+- the operator's `gh` login is still on disk, so `env -u GH_CONFIG_DIR gh`
+  works;
+- the repository is public, so `curl` reaches it;
+- other checkouts and notes elsewhere in the home directory can describe it.
+
+The rig closes what it cheaply can. It runs from the scratch dir, so the
+agent's inherited `OLDPWD` doesn't name the real checkout, and it builds
+the binary with `-trimpath`, so the binary doesn't embed that path
+either. Closing the rest needs a sandbox, which is out of scope here.
+A16 fails the run if the log mentions `#1154` or the fix's commit. The
+headless log cuts each tool call's arguments and results to 80
+characters, though, so a clean log earns only a note, never a PASS. Read
+a replay's score with that caveat, and read the log before trusting a
+fast one.
 
 ## Reading a result
 

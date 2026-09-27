@@ -609,7 +609,15 @@ all three are shipped.
   oracle, which built that failed handle by hand, graded a state that
   can't occur. A15 now drives a real spawn and was calibrated against
   a `completionResult`-only fix, a driver-only fix and the full fix.
-  The live re-run is next.
+  **Complete.** Live run 2 (2026-09-24) scored 23 of 23 in about two
+  hours, $41.44, and opened
+  [PR #1154](https://github.com/go-steer/core-agent/pull/1154), which CI
+  passed and a human merged on 2026-09-27. Nothing about the recipe or
+  the model changed between the runs; every blocker was in the rig.
+  Merging the fix makes T1's base stale, so `run.sh --replay` now reruns
+  a tier from the commit it was cut at, against a local mirror and an
+  issue snapshot, with no GitHub. That keeps T1 as a benchmark. See
+  "Replay" in `dev/uat/self-dev/README.md`.
 - T2/T3 gated on T1's evidence.
 
 P2 before P3 is the load-bearing ordering. Everything else can reorder.

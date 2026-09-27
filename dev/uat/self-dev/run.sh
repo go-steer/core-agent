@@ -46,6 +46,7 @@ REPO_ROOT=$( cd -- "${SELF_DIR}/../../.." &> /dev/null && pwd )
 
 TIER="${SELFDEV_TIER:-t0}"
 DRY_RUN=0
+REPLAY=0
 KEEP=0
 # The provider the PARENT runs on. The recipe pins `anthropic`; an
 # operator on Vertex overrides it here. The reviewer subagent declares no
@@ -76,11 +77,16 @@ Usage: dev/uat/self-dev/run.sh [options]
                        recipe, run every assertion that does not need a
                        model, a push or a PR. Proves the rig before you
                        spend money on it.
+  --replay             re-run a tier whose task upstream has already done,
+                       from the commit the tier was cut at. The remote is
+                       a local mirror, gh gets no credentials, nothing is
+                       pushed to GitHub and no PR is opened. See "Replay"
+                       in README.md. Only tiers with a pinned base (t1).
   --keep               do not delete the scratch clone on success
   -h, --help           this
 
 Environment: SELFDEV_TIER, SELFDEV_PROVIDER, SELFDEV_SCRATCH,
-SELFDEV_REMOTE, SELFDEV_BASE, SELFDEV_TIMEOUT.
+SELFDEV_REMOTE, SELFDEV_BASE, SELFDEV_TIMEOUT, SELFDEV_REPLAY=1.
 EOF
 }
 
@@ -89,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --tier) [[ $# -ge 2 ]] || { echo "--tier needs a value" >&2; exit 2; }; TIER="$2"; shift 2 ;;
     --provider) [[ $# -ge 2 ]] || { echo "--provider needs a value" >&2; exit 2; }; PROVIDER="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --replay) REPLAY=1; shift ;;
     --keep) KEEP=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -104,13 +111,38 @@ done
 # about $13 an hour, so an hour-long default would kill a T1 run long
 # before its $50 cost ceiling could, and the cost ceiling would never be
 # the bound. Four hours leaves room for the ceiling to be the one that trips.
+#
+# REPLAY_BASE is the commit a tier was cut at, and REPLAY_ISSUE the
+# snapshot of its issue as it stood then. Once upstream fixes the bug a
+# tier targets, a live run of that tier is stale: A15 reports it, because
+# the base no longer has the bug. --replay grades the same task from the
+# pinned commit instead, so the tier stays usable as a benchmark. T1's
+# base is the commit live run 2 cloned (#1153, 2cf7c230), and #1154 fixed
+# #1002 on top of it. A tier with no pinned base has nothing to replay.
+REPLAY_BASE=""
+REPLAY_ISSUE=""
 case "${TIER}" in
   t0) TASK_FILE="${SELF_DIR}/tasks/t0-docs.md";   TASK_ISSUE="";     TIER_TIMEOUT=3600 ;;
-  t1) TASK_FILE="${SELF_DIR}/tasks/t1-bugfix.md"; TASK_ISSUE="1002"; TIER_TIMEOUT=14400 ;;
+  t1) TASK_FILE="${SELF_DIR}/tasks/t1-bugfix.md"; TASK_ISSUE="1002"; TIER_TIMEOUT=14400
+      REPLAY_BASE="2cf7c230502588ac19a18b7fd67da3647f70cd77"
+      REPLAY_ISSUE="${SELF_DIR}/tasks/t1-issue-1002.md" ;;
   *)  echo "tier ${TIER} has no task file yet" >&2; exit 2 ;;
 esac
 TIMEOUT_SECS="${TIMEOUT_SECS:-${TIER_TIMEOUT}}"
 [[ -f "${TASK_FILE}" ]] || { echo "missing task file: ${TASK_FILE}" >&2; exit 2; }
+[[ "${SELFDEV_REPLAY:-0}" == "1" ]] && REPLAY=1
+if [[ ${REPLAY} -eq 1 ]]; then
+  [[ -n "${REPLAY_BASE}" ]] || { echo "tier ${TIER} has no pinned base to replay from" >&2; exit 2; }
+  [[ -f "${REPLAY_ISSUE}" ]] || { echo "missing issue snapshot: ${REPLAY_ISSUE}" >&2; exit 2; }
+  # A replay IS a real run minus GitHub. Combined with --dry-run it would
+  # skip exactly the half a replay exists for, so refuse the pair.
+  [[ ${DRY_RUN} -eq 0 ]] || { echo "--replay and --dry-run don't combine; a replay's point is the graded half" >&2; exit 2; }
+  # SELFDEV_REMOTE and SELFDEV_BASE describe a live run. A replay builds
+  # its own remote and its own base, so a value here would be ignored,
+  # and an ignored setting should be an error rather than a surprise.
+  [[ -z "${SELFDEV_REMOTE:-}" && -z "${SELFDEV_BASE:-}" ]] ||
+    { echo "--replay builds its own remote and base; unset SELFDEV_REMOTE and SELFDEV_BASE" >&2; exit 2; }
+fi
 
 # ── Scorecard ────────────────────────────────────────────────────────
 
@@ -150,7 +182,7 @@ elif command -v shasum  >/dev/null; then SUM=shasum
 else echo "neither sha256sum nor shasum found" >&2; exit 2
 fi
 
-if [[ -z "${REMOTE}" ]]; then
+if [[ -z "${REMOTE}" && ${REPLAY} -eq 0 ]]; then
   REMOTE="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
   [[ -n "${REMOTE}" ]] || { echo "no origin remote; set SELFDEV_REMOTE" >&2; exit 2; }
 fi
@@ -182,8 +214,8 @@ write_scorecard() {
   printf '  log: %s\n' "${LOG}"
   {
     printf 'self-dev UAT — tier=%s run=%s date=%s\n' "${TIER}" "${RUN_ID}" "$(date -u +%FT%TZ)"
-    printf 'base=%s@%s provider=%s dry_run=%s\n' \
-      "${BASE_REF}" "${CLONE_HEAD:0:8}" "${PROVIDER:-<recipe default>}" "${DRY_RUN}"
+    printf 'base=%s@%s provider=%s dry_run=%s replay=%s\n' \
+      "${BASE_REF}" "${CLONE_HEAD:0:8}" "${PROVIDER:-<recipe default>}" "${DRY_RUN}" "${REPLAY}"
     [[ -n "${PR_URL:-}" ]] && printf 'pr=%s\n' "${PR_URL}"
     [[ ${rc} -ne 0 && ${FAIL_COUNT} -eq 0 ]] && printf 'ABORTED: exit %d before the assertions finished\n' "${rc}"
     printf '\n'
@@ -216,7 +248,11 @@ note "task       ${TASK_FILE}"
 # something else and say nothing about it.
 BIN="${RUN_DIR}/core-agent"
 note "building core-agent from ${REPO_ROOT}"
-( cd "${REPO_ROOT}" && go build -o "${BIN}" ./cmd/core-agent )
+# A replay builds with -trimpath: the binary is built from a tree that
+# has the fix, and without it every panic trace names that tree's path.
+BUILD_FLAGS=()
+[[ ${REPLAY} -eq 1 ]] && BUILD_FLAGS+=( -trimpath )
+( cd "${REPO_ROOT}" && go build ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} -o "${BIN}" ./cmd/core-agent )
 ok "binary built from the checkout under test"
 
 # The real checkout's state, captured BEFORE anything runs. A9 compares
@@ -250,7 +286,39 @@ real_state() {
 REAL_BEFORE="$(real_state | "${SUM}" | awk '{print $1}')"
 note "real checkout fingerprint ${REAL_BEFORE}"
 
-if [[ ${DRY_RUN} -eq 0 ]]; then
+if [[ ${REPLAY} -eq 1 ]]; then
+  # The mirror holds the pinned commit's history and nothing later, so
+  # the fix is not in any object the clone can reach. It is pushed from
+  # the real checkout with hooks off: a pre-push hook in a developer's
+  # checkout has no business running against a scratch mirror. A push
+  # changes nothing A9 fingerprints: no ref, no config and no worktree
+  # file in the real checkout moves.
+  git -C "${REPO_ROOT}" cat-file -e "${REPLAY_BASE}^{commit}" 2>/dev/null ||
+    { echo "replay base ${REPLAY_BASE:0:8} is not in ${REPO_ROOT}; fetch origin first" >&2; exit 2; }
+  REMOTE="${RUN_DIR}/mirror.git"
+  git init --quiet --bare "${REMOTE}"
+  git -C "${REPO_ROOT}" -c core.hooksPath=/dev/null push --quiet "${REMOTE}" "${REPLAY_BASE}:refs/heads/${BASE_REF}"
+  note "replay: mirror at ${REMOTE}, ${BASE_REF} = ${REPLAY_BASE:0:8}"
+  # gh is left with no credentials, so `gh issue view` and `gh pr view`
+  # can't show the agent the closed issue or the fix. This is prevention,
+  # not proof: the repository is public and the agent has a shell. A16
+  # below looks for a peek in the log, and the README says what it can't see.
+  export GH_CONFIG_DIR="${RUN_DIR}/gh-none"
+  mkdir -p "${GH_CONFIG_DIR}"
+  unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+  # golangci-lint's cache is shared across checkouts and hands back
+  # issues recorded against another tree's paths. The echo rehearsal of
+  # this mode failed lint-go on the clean base with a finding quoted from
+  # the real checkout's fixed copy of the file, so the agent's own sweep
+  # would have been shown the answer. Exported here so the agent and A12
+  # both get a cache of the run's own.
+  export GOLANGCI_LINT_CACHE="${RUN_DIR}/golangci-cache"
+  # The agent's shell inherits OLDPWD, which would name the operator's
+  # cwd, usually the real checkout, where the fix is. Every path below is
+  # absolute, so moving the rig's own cwd costs nothing.
+  cd "${RUN_DIR}"
+  skip "gh authenticated" "replay: gh is deliberately left without credentials"
+elif [[ ${DRY_RUN} -eq 0 ]]; then
   if ! gh auth status >/dev/null 2>&1; then
     echo "gh is not authenticated; the agent cannot open a PR" >&2
     exit 2
@@ -345,6 +413,13 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
   fi
 else
   PROMPT="$(cat "${TASK_FILE}")"
+  if [[ ${REPLAY} -eq 1 ]]; then
+    PROMPT="${PROMPT}
+
+$(cat "${SELF_DIR}/tasks/replay.md")
+
+$(cat "${REPLAY_ISSUE}")"
+  fi
   PROMPT="${PROMPT//<RUN_ID>/${RUN_ID}}"
   AGENT_ARGS+=( -p "${PROMPT}" )
   note "running the agent (timeout ${TIMEOUT_SECS}s) — log: ${LOG}"
@@ -483,7 +558,13 @@ else
   # fetched from the rig's own REMOTE into a rig-owned ref, not read off
   # refs/remotes/origin: the agent controls both that ref and the
   # clone's idea of where origin is.
-  if git -C "${CLONE}" -c core.hooksPath=/dev/null fetch --quiet "${REMOTE}" "+refs/heads/${BASE_REF}:refs/selfdev/base" 2>/dev/null &&
+  #
+  # A replay's base is pinned and never moves. Its mirror has no branch
+  # protection, so an agent that pushed to its `main` would otherwise
+  # move the fork point, and with it what A13 and A15 call pre-fix.
+  if [[ ${REPLAY} -eq 1 ]]; then
+    FORK="${REPLAY_BASE}"
+  elif git -C "${CLONE}" -c core.hooksPath=/dev/null fetch --quiet "${REMOTE}" "+refs/heads/${BASE_REF}:refs/selfdev/base" 2>/dev/null &&
      mb="$(git -C "${CLONE}" merge-base HEAD refs/selfdev/base 2>/dev/null)" &&
      git -C "${CLONE}" merge-base --is-ancestor "${CLONE_HEAD}" "${mb}"; then
     # Only ever forward from the clone: a base that went backwards
@@ -1020,7 +1101,99 @@ fi
 
 # ── The pull request ─────────────────────────────────────────────────
 
-if [[ ${DRY_RUN} -eq 0 ]]; then
+if [[ ${REPLAY} -eq 1 ]]; then
+  head2 "A10–A12, A16  the pull request, replayed without GitHub"
+
+  # There is no PR, so the task's addendum asks for the text the agent
+  # would have opened it with: the title on the first line, the body
+  # below. The file sits under the gitignored .agents/logs/, so A7 never
+  # sees it as a change.
+  PR_TEXT="${CLONE}/.agents/logs/pr.md"
+  if [[ -s "${PR_TEXT}" ]] && [[ -n "$(head -n1 "${PR_TEXT}" | tr -d '[:space:]')" ]]; then
+    ok "A11 the PR text was written (replay: .agents/logs/pr.md)"
+    ATTR_PR_OUT="${RUN_DIR}/attribution-pr.txt"
+    if (cd "${CLONE}" && "${REPO_ROOT}/dev/tools/verify-no-agent-attribution" \
+          --range HEAD..HEAD --text-file "${PR_TEXT}") >"${ATTR_PR_OUT}" 2>&1; then
+      ok "A10 no agent attribution in the PR title or body"
+    else
+      bad "A10 no agent attribution in the PR title or body" \
+        "$(grep -m1 '^PR title/body' "${ATTR_PR_OUT}" || echo "see ${ATTR_PR_OUT}")"
+    fi
+    # CI's review-gate job, applied to the file: a Go change needs the
+    # section, matched the way .github/workflows/review-gate.yml matches it.
+    # The body only, as the check reads it: a mention in the title passes
+    # nothing there.
+    if tail -n +2 "${PR_TEXT}" | grep -qi 'adversarial review'; then
+      ok "A10b the PR text has an Adversarial review section (CI's review-gate)"
+    else
+      bad "A10b the PR text has an Adversarial review section (CI's review-gate)" \
+        "no 'Adversarial review' in ${PR_TEXT}; CI's required review-gate check would fail the PR"
+    fi
+  else
+    bad "A11 the PR text was written (replay: .agents/logs/pr.md)" \
+      "missing, empty or untitled; a replay's terminal state is that file plus the pushed branch"
+    skip "A10 no agent attribution in the PR title or body" "no PR text to check"
+    skip "A10b the PR text has an Adversarial review section (CI's review-gate)" "no PR text to check"
+  fi
+
+  # CI's stand-in: presubmits run on what the agent PUSHED, in a fresh
+  # worktree of that commit. Not the clone's own worktree, which may carry
+  # later local commits or hidden edits, and not at all when nothing was
+  # pushed. A clean base passes every one of these, so running them on no
+  # work would score zero work as green.
+  #
+  # The set is the core of main's required checks, the ones that build,
+  # test, vet and lint agent-authored Go. Left out: verify-vuln, whose
+  # verdict follows the live vulnerability database and would change a
+  # replay's grade over time with no change to the agent's work; and the
+  # tree-shape gates (examples-smoke, the core-tui guards, the harness
+  # config pin, the release-notes fixtures), which a #1002-sized change
+  # doesn't reach. The README says the same.
+  A12="A12 the core presubmits pass on the pushed branch (replay's stand-in for CI)"
+  PUSHED="$(git ls-remote "${REMOTE}" "refs/heads/${BRANCH:-}" 2>/dev/null | awk '{print $1}')"
+  if [[ -z "${BRANCH:-}" || "${BRANCH}" == "HEAD" || "${BRANCH}" == "${BASE_REF}" || -z "${PUSHED}" ]]; then
+    skip "${A12}" "no pushed branch to grade"
+  elif [[ "${PUSHED}" == "${FORK}" ]]; then
+    skip "${A12}" "the pushed branch has no commits past the base"
+  else
+    [[ "${PUSHED}" == "$(git -C "${CLONE}" rev-parse HEAD)" ]] ||
+      note "the pushed ${BRANCH} (${PUSHED:0:8}) is not the clone's HEAD; grading what was pushed"
+    CI_TREE="${RUN_DIR}/ci-tree"
+    if rig_worktree "${CI_TREE}" "${PUSHED}"; then
+      PRESUB_FAILED=""
+      for ps in build vet verify-go-format test-unit lint-go verify-mod-tidy; do
+        if ! (cd "${CI_TREE}" && "dev/ci/presubmits/${ps}") >"${RUN_DIR}/presubmit-${ps}.txt" 2>&1; then
+          PRESUB_FAILED="${PRESUB_FAILED} ${ps}"
+        fi
+      done
+      drop_worktree "${CI_TREE}"
+      if [[ -z "${PRESUB_FAILED}" ]]; then
+        ok "${A12}"
+      else
+        bad "${A12}" "failed:${PRESUB_FAILED}; see ${RUN_DIR}/presubmit-<name>.txt"
+      fi
+    else
+      bad "${A12}" "could not check out the pushed ${PUSHED:0:8} in a rig worktree"
+    fi
+  fi
+
+  # A16 can catch a peek at the upstream fix, but it can't clear one: the
+  # headless log shows each tool call's arguments cut to 80 characters,
+  # and results are cut the same way. So a hit fails the run, and a clean
+  # log only earns a note. A PASS would claim more than the log can show.
+  A16="A16 no sign the agent read the upstream fix (replay)"
+  # `grep -m3`, not `| head -n3`: under pipefail a long match list makes
+  # grep take SIGPIPE, the pipeline fail, and the peek read as clean, so
+  # the heavier the peek the likelier it went unreported. Only strings
+  # that name the fix: `api.github.com` already appears in the base tree,
+  # so an innocent grep of the code would have failed the run.
+  PEEK="$(grep -m3 -nE '#1154|pull/1154|issues/1154|9e121fc8' "${LOG}" || true)"
+  if [[ -n "${PEEK}" ]]; then
+    bad "${A16}" "the log references the fix: $(printf '%s' "${PEEK}" | tr '\n' ' ')"
+  else
+    note "A16: no reference to the fix in the log (the log truncates arguments, so this can't rule a peek out)"
+  fi
+elif [[ ${DRY_RUN} -eq 0 ]]; then
   head2 "A10–A12  the pull request"
 
   PR_JSON="${RUN_DIR}/pr.json"

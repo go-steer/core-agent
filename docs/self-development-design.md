@@ -618,6 +618,17 @@ all three are shipped.
   a tier from the commit it was cut at, against a local mirror and an
   issue snapshot, with no GitHub. That keeps T1 as a benchmark. See
   "Replay" in `dev/uat/self-dev/README.md`.
-- T2/T3 gated on T1's evidence.
+- **P6** — T2, a feature (#954 `view_file_outline`), attended. **Rig
+  shipped**: `tasks/t2-feature.md`; a worktree of the real checkout
+  instead of a clone; no `--yolo`, so the recipe's `ask` gate stands and
+  an operator approves the plan and each mutating call over
+  `core-agent-tui`; `approval_notify` pointed at `dev/webhook-sink`, so
+  A17 grades a prompt nobody watched by what the sink received. A9
+  becomes a structured diff that permits only the agent's new branch,
+  its upstream config and the rig's worktree. A13 doesn't apply to a
+  feature; A15 is a rig-owned #954 oracle, calibrated against `main`, a
+  full stub and five mutants. Live run pending. See "T2" in
+  `dev/uat/self-dev/README.md`.
+- T3 gated on T2's evidence.
 
 P2 before P3 is the load-bearing ordering. Everything else can reorder.

@@ -37,6 +37,18 @@
 #
 # D5 is why it stops at "PR open": CI is the ground truth and the agent
 # never merges.
+#
+# T2 is the exception to the clone, by design: it is the first tier that
+# works in a git worktree of the real checkout, attended. There is no
+# --yolo. The agent runs as a daemon under the committed recipe's `ask`
+# gate, and an operator attaches with core-agent-tui to approve the plan
+# and each mutating call. permissions.approval_notify points at a local
+# webhook sink (dev/webhook-sink), so a prompt nobody is watching is
+# graded by what the sink received, not by what the daemon said it sent
+# (A17). A9 cannot be a hash any more, because the agent legitimately adds
+# a branch to the shared repository. It becomes a structured diff that
+# permits exactly that branch, its upstream config and the rig's own
+# worktree, and nothing else.
 set -euo pipefail
 
 SELF_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -69,14 +81,18 @@ usage() {
   cat <<'EOF'
 Usage: dev/uat/self-dev/run.sh [options]
 
-  --tier t0            which rung of the #1116 ladder to run (default: t0)
+  --tier t0            which rung of the #1116 ladder to run (default: t0).
+                       t2 is attended: it runs a daemon in a worktree of
+                       this checkout and waits for you at core-agent-tui.
   --provider NAME      parent provider override (gemini|vertex|anthropic|
                        anthropic-vertex|echo|scripted). Default: leave the
                        recipe's own, which is first-party anthropic.
   --dry-run            do everything that costs nothing: clone, boot the
                        recipe, run every assertion that does not need a
                        model, a push or a PR. Proves the rig before you
-                       spend money on it.
+                       spend money on it. For t2 it also drives a scripted
+                       plan and write through the daemon, so the approval
+                       notification reaches the sink and is answered.
   --replay             re-run a tier whose task upstream has already done,
                        from the commit the tier was cut at. The remote is
                        a local mirror, gh gets no credentials, nothing is
@@ -126,9 +142,14 @@ case "${TIER}" in
   t1) TASK_FILE="${SELF_DIR}/tasks/t1-bugfix.md"; TASK_ISSUE="1002"; TIER_TIMEOUT=14400
       REPLAY_BASE="2cf7c230502588ac19a18b7fd67da3647f70cd77"
       REPLAY_ISSUE="${SELF_DIR}/tasks/t1-issue-1002.md" ;;
+  t2) TASK_FILE="${SELF_DIR}/tasks/t2-feature.md"; TASK_ISSUE="954";  TIER_TIMEOUT=14400 ;;
   *)  echo "tier ${TIER} has no task file yet" >&2; exit 2 ;;
 esac
 TIMEOUT_SECS="${TIMEOUT_SECS:-${TIER_TIMEOUT}}"
+# ATTENDED: the tier runs as a daemon in a worktree of the real checkout,
+# with an operator at the TUI, instead of `-p` in a /tmp clone.
+ATTENDED=0
+[[ "${TIER}" == "t2" ]] && ATTENDED=1
 [[ -f "${TASK_FILE}" ]] || { echo "missing task file: ${TASK_FILE}" >&2; exit 2; }
 [[ "${SELFDEV_REPLAY:-0}" == "1" ]] && REPLAY=1
 if [[ ${REPLAY} -eq 1 ]]; then
@@ -142,6 +163,11 @@ if [[ ${REPLAY} -eq 1 ]]; then
   # and an ignored setting should be an error rather than a surprise.
   [[ -z "${SELFDEV_REMOTE:-}" && -z "${SELFDEV_BASE:-}" ]] ||
     { echo "--replay builds its own remote and base; unset SELFDEV_REMOTE and SELFDEV_BASE" >&2; exit 2; }
+fi
+# An attended tier works in a worktree of this checkout and pushes to its
+# origin, so a different remote would grade a push the agent never made.
+if [[ ${ATTENDED} -eq 1 && -n "${SELFDEV_REMOTE:-}" ]]; then
+  echo "${TIER} pushes to this checkout's origin; unset SELFDEV_REMOTE" >&2; exit 2
 fi
 
 # ── Scorecard ────────────────────────────────────────────────────────
@@ -181,6 +207,19 @@ if command -v sha256sum >/dev/null; then SUM=sha256sum
 elif command -v shasum  >/dev/null; then SUM=shasum
 else echo "neither sha256sum nor shasum found" >&2; exit 2
 fi
+if [[ ${ATTENDED} -eq 1 ]]; then
+  command -v curl >/dev/null || { echo "curl not found; ${TIER} drives the daemon over its attach API" >&2; exit 2; }
+  # A live attended run waits for "done" typed at this terminal. Without
+  # one it would sit out the whole wallclock and then fail, so say so now.
+  if [[ ${DRY_RUN} -eq 0 ]] && ! { : </dev/tty; } 2>/dev/null; then
+    echo "${TIER} is attended and needs a terminal; run it from an interactive shell" >&2; exit 2
+  fi
+  # The worktree shares this checkout's config, so the agent commits as
+  # whoever this checkout commits as. The rig sets no identity of its own
+  # here: that would be a config change A9 has to forbid the agent.
+  git -C "${REPO_ROOT}" config user.name >/dev/null && git -C "${REPO_ROOT}" config user.email >/dev/null ||
+    { echo "this checkout has no git identity; the agent's commits would fail" >&2; exit 2; }
+fi
 
 if [[ -z "${REMOTE}" && ${REPLAY} -eq 0 ]]; then
   REMOTE="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
@@ -204,6 +243,8 @@ RECORD="${RUN_DIR}/scorecard.txt"
 write_scorecard() {
   local rc=$?
   trap - EXIT
+  # An attended run's daemon and sink outlive any abort unless stopped here.
+  declare -F stop_procs >/dev/null && stop_procs
   head2 "Scorecard — ${TIER}, run ${RUN_ID}"
   printf '  %d passed, %d failed, %d skipped\n' "${PASS_COUNT}" "${FAIL_COUNT}" "${SKIP_COUNT}"
   if [[ ${rc} -ne 0 && ${FAIL_COUNT} -eq 0 ]]; then
@@ -227,11 +268,30 @@ write_scorecard() {
   # to diagnose is the one cleanup nobody wants. Only a clean dry run —
   # which produced nothing but a boot log — cleans up after itself, and it
   # says so rather than printing a path about to stop existing.
-  if [[ ${rc} -eq 0 && ${FAIL_COUNT} -eq 0 && ${KEEP} -eq 0 && ${DRY_RUN} -eq 1 ]]; then
+  #
+  # An attended run's CLONE is a worktree registered in the real checkout,
+  # so it is removed through git, never by deleting its directory, which
+  # would leave a dangling entry only `git worktree prune` clears. The rig
+  # never prunes: that would also clear entries it didn't make.
+  # A worktree's `.git` file counts as well as the list entry, so a path
+  # git spells differently still goes through `worktree remove`.
+  local wt_live=0
+  if [[ ${ATTENDED} -eq 1 ]]; then
+    if [[ -e "${CLONE}/.git" ]] ||
+       git -C "${REPO_ROOT}" worktree list --porcelain 2>/dev/null | grep -qxF "worktree ${CLONE_REAL:-${CLONE}}"; then
+      wt_live=1
+    fi
+  fi
+  if [[ ${rc} -eq 0 && ${FAIL_COUNT} -eq 0 && ${KEEP} -eq 0 && ${DRY_RUN} -eq 1 ]] &&
+     { [[ ${wt_live} -eq 0 ]] || git -C "${REPO_ROOT}" worktree remove --force "${CLONE}" >/dev/null 2>&1; }; then
     rm -rf "${RUN_DIR}"
     printf '  scratch removed (clean dry run; --keep to retain it)\n\n'
   else
-    printf '  scorecard: %s\n\n' "${RECORD}"
+    printf '  scorecard: %s\n' "${RECORD}"
+    if [[ ${wt_live} -eq 1 ]]; then
+      printf '  worktree kept; remove it with: git -C %s worktree remove --force %s\n' "${REPO_ROOT}" "${CLONE}"
+    fi
+    printf '\n'
   fi
   exit $(( rc != 0 ? rc : (FAIL_COUNT > 0 ? 1 : 0) ))
 }
@@ -254,6 +314,12 @@ BUILD_FLAGS=()
 [[ ${REPLAY} -eq 1 ]] && BUILD_FLAGS+=( -trimpath )
 ( cd "${REPO_ROOT}" && go build ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} -o "${BIN}" ./cmd/core-agent )
 ok "binary built from the checkout under test"
+if [[ ${ATTENDED} -eq 1 ]]; then
+  TUI_BIN="${RUN_DIR}/core-agent-tui"
+  SINK_BIN="${RUN_DIR}/webhook-sink"
+  ( cd "${REPO_ROOT}" && go build -o "${TUI_BIN}" ./cmd/core-agent-tui && go build -o "${SINK_BIN}" ./dev/webhook-sink )
+  ok "core-agent-tui and webhook-sink built from the checkout under test"
+fi
 
 # The real checkout's state, captured BEFORE anything runs. A9 compares
 # against this.
@@ -283,8 +349,156 @@ real_state() {
     xargs -0 -r "${SUM}" 2>/dev/null
   "${SUM}" "${REPO_ROOT}/.git/packed-refs" "${REPO_ROOT}/.git/config" 2>/dev/null || true
 }
-REAL_BEFORE="$(real_state | "${SUM}" | awk '{print $1}')"
-note "real checkout fingerprint ${REAL_BEFORE}"
+
+# real_snapshot: the attended tier's fingerprint, as structured JSON. A
+# hash can only say "something moved", and in T2 something is supposed to:
+# the agent creates its branch in this repository, `git push -u` records
+# its upstream, and the rig adds a worktree. So each part is kept apart
+# and A9 compares them rule by rule. It covers more than the hash does:
+# HEAD, the content of every path status lists (ignored ones by size and
+# mtime), the index, .agents/ by content, every ref, the local config, the
+# shared .git's hooks/, info/ and config.worktree files, the global git
+# config, and every other worktree's HEAD, branch and files. An agent
+# with a shell in a worktree reaches all of these through
+# `git rev-parse --git-common-dir`; a hook it plants there runs in the
+# developer's next commit.
+real_snapshot() {
+  python3 - "${REPO_ROOT}" <<'PY'
+import hashlib, json, os, subprocess, sys
+root = sys.argv[1]
+def git(*a, check=True, cwd=root, text=True):
+    r = subprocess.run(["git", "-C", cwd, *a], capture_output=True, text=text)
+    if check and r.returncode != 0:
+        sys.exit("git %s: %s" % (" ".join(a), (r.stderr if text else r.stderr.decode(errors="replace")).strip()))
+    return r.stdout if r.returncode == 0 else ("" if text else b"")
+def sha(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return "unreadable"
+def stamp(path):
+    try:
+        st = os.lstat(path)
+        return "stat:%d:%d" % (st.st_size, st.st_mtime_ns)
+    except OSError:
+        return "gone"
+def tree(base, rel, out, how, skip=()):
+    # Every file under base/rel, keyed by its path relative to base.
+    top = os.path.join(base, rel)
+    if os.path.islink(top):
+        # Stamped, never followed: the target may be anywhere.
+        out[rel] = stamp(top)
+        return
+    if not os.path.isdir(top):
+        out[rel] = how(top) if os.path.lexists(top) else "absent"
+        return
+    for dp, dns, fns in os.walk(top):
+        # os.walk lists a symlink to a directory under dns and never
+        # descends it, so it would otherwise go unrecorded.
+        for d in dns:
+            if os.path.islink(os.path.join(dp, d)):
+                out[os.path.relpath(os.path.join(dp, d), base)] = stamp(os.path.join(dp, d))
+        dns[:] = [d for d in dns if not os.path.islink(os.path.join(dp, d))
+                  and os.path.realpath(os.path.join(dp, d)) not in skip]
+        for fn in fns:
+            p = os.path.join(dp, fn)
+            out[os.path.relpath(p, base)] = how(p)
+wtl = []
+for block in git("worktree", "list", "--porcelain").split("\n\n"):
+    kv = {}
+    for l in block.splitlines():
+        k, _, v = l.partition(" ")
+        kv[k] = v
+    if "worktree" in kv:
+        wtl.append(kv)
+others = {os.path.realpath(w["worktree"]) for w in wtl} - {os.path.realpath(root)}
+def files(wroot, ignored):
+    # Content, not just status: a second edit to a file that is already
+    # modified, or a new file inside an untracked directory, leaves every
+    # porcelain line as it was. Tracked and untracked paths are hashed.
+    # Ignored ones get size and mtime, because node_modules is thousands
+    # of files; a write that restores both is out of reach of this check.
+    args = ["status", "--porcelain", "-z", "-uall"] + (["--ignored=matching"] if ignored else [])
+    out = {}
+    ents = iter(git(*args, cwd=wroot).split("\0"))
+    for ent in ents:
+        if len(ent) < 4:
+            continue
+        code, rel = ent[:2], ent[3:]
+        if "R" in code or "C" in code:
+            next(ents, None)  # a rename's source path is its own field
+        if code == "!!":
+            tree(wroot, rel.rstrip("/"), out, stamp, others)
+        else:
+            tree(wroot, rel.rstrip("/"), out, sha, others)
+    return out
+common = os.path.realpath(os.path.join(root, git("rev-parse", "--git-common-dir").strip()))
+gitdir = {}
+for rel in ("hooks", "info", "config.worktree"):
+    tree(common, rel, gitdir, sha)
+admin = sorted(os.listdir(os.path.join(common, "worktrees"))) if os.path.isdir(os.path.join(common, "worktrees")) else []
+for d in admin:
+    tree(common, os.path.join("worktrees", d, "config.worktree"), gitdir, sha)
+gitdir = {k: v for k, v in gitdir.items() if v != "absent"}
+home = os.path.expanduser("~")
+xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+glob = {}
+for p in (os.path.join(home, ".gitconfig"), os.path.join(xdg, "git", "config")):
+    glob[p] = sha(p) if os.path.lexists(p) else "absent"
+agents = {}
+tree(root, ".agents", agents, sha)
+refs = {}
+for line in git("for-each-ref", "--format=%(objectname) %(refname)").splitlines():
+    s, name = line.split(" ", 1)
+    refs[name] = s
+worktrees = {}
+for w in wtl:
+    p = os.path.realpath(w["worktree"])
+    if p == os.path.realpath(root):
+        continue
+    ent = {"head": w.get("HEAD", ""), "branch": w.get("branch", "detached" if "detached" in w else "")}
+    if os.path.isdir(p):
+        ent["status"] = git("status", "--porcelain", "-uall", cwd=p, check=False)
+        ent["files"] = files(p, False)
+    else:
+        ent["status"] = "missing"
+    worktrees[p] = ent
+json.dump({
+    "head": git("rev-parse", "HEAD").strip(),
+    "symref": git("symbolic-ref", "-q", "HEAD", check=False).strip(),
+    "status": git("status", "--porcelain", "--ignored=matching"),
+    "files": files(root, True),
+    "index": hashlib.sha256(git("ls-files", "--stage", "-z", text=False)).hexdigest(),
+    "agents": agents,
+    "refs": refs,
+    # --local can exit 1 on an empty config; that is not an error here.
+    "config": sorted(git("config", "--local", "--list", check=False).splitlines()),
+    "gitdir": gitdir,
+    "gitdir_admin": admin,
+    "global_config": glob,
+    "worktrees": worktrees,
+}, sys.stdout, indent=1, sort_keys=True)
+PY
+}
+
+if [[ ${ATTENDED} -eq 1 ]]; then
+  # The base is fetched BEFORE the snapshot, by URL rather than by remote
+  # name, so it moves only FETCH_HEAD and no ref the snapshot records.
+  # Auto gc is off for it, as for every rig fetch into the shared
+  # repository: gc runs `worktree prune` and expires reflogs, and both
+  # belong to the developer.
+  git -C "${REPO_ROOT}" -c core.hooksPath=/dev/null -c gc.auto=0 -c maintenance.auto=false \
+    fetch --quiet "${REMOTE}" "${BASE_REF}" ||
+    { echo "could not fetch ${BASE_REF} from ${REMOTE}" >&2; exit 2; }
+  WT_BASE="$(git -C "${REPO_ROOT}" rev-parse 'FETCH_HEAD^{commit}')"
+  REAL_BEFORE_JSON="${RUN_DIR}/real-before.json"
+  real_snapshot >"${REAL_BEFORE_JSON}"
+  note "real checkout snapshot ${REAL_BEFORE_JSON}"
+else
+  REAL_BEFORE="$(real_state | "${SUM}" | awk '{print $1}')"
+  note "real checkout fingerprint ${REAL_BEFORE}"
+fi
 
 if [[ ${REPLAY} -eq 1 ]]; then
   # The mirror holds the pinned commit's history and nothing later, so
@@ -330,22 +544,33 @@ fi
 
 # ── Clone ────────────────────────────────────────────────────────────
 
-head2 "Clone (D4: /tmp, never the real checkout)"
-
-git clone --quiet --branch "${BASE_REF}" "${REMOTE}" "${CLONE}"
+if [[ ${ATTENDED} -eq 1 ]]; then
+  head2 "Worktree (T2: a worktree of the real checkout, under /tmp)"
+  # Detached at the fetched base, so the agent's branch is the only branch
+  # this run adds. The worktree lives under RUN_DIR, not inside the
+  # checkout, so the checkout's own status never sees it.
+  git -C "${REPO_ROOT}" -c core.hooksPath=/dev/null worktree add --quiet --detach "${CLONE}" "${WT_BASE}"
+  note "worktree of ${REPO_ROOT} @ ${BASE_REF} (${WT_BASE:0:8})"
+else
+  head2 "Clone (D4: /tmp, never the real checkout)"
+  git clone --quiet --branch "${BASE_REF}" "${REMOTE}" "${CLONE}"
+  note "cloned ${REMOTE} @ ${BASE_REF}"
+fi
 CLONE_HEAD="$(git -C "${CLONE}" rev-parse HEAD)"
 FORK="${CLONE_HEAD}"
 # The path the agent's own loader will record, symlinks resolved. A2
 # compares against this rather than ${CLONE}.
 CLONE_REAL="$(cd "${CLONE}" && pwd -P)"
-note "cloned ${REMOTE} @ ${BASE_REF} (${CLONE_HEAD:0:8})"
 
 # The agent authors commits as the operator, and nothing in the commit
 # marks it as agent work (A8). Set the identity explicitly rather than
 # inheriting, so a machine with no global git identity does not fail at
-# commit time three hundred steps in.
-git -C "${CLONE}" config user.name  "$(git -C "${REPO_ROOT}" config user.name)"
-git -C "${CLONE}" config user.email "$(git -C "${REPO_ROOT}" config user.email)"
+# commit time three hundred steps in. Not in a worktree, whose config is
+# the real checkout's; the preflight checked that one has an identity.
+if [[ ${ATTENDED} -eq 0 ]]; then
+  git -C "${CLONE}" config user.name  "$(git -C "${REPO_ROOT}" config user.name)"
+  git -C "${CLONE}" config user.email "$(git -C "${REPO_ROOT}" config user.email)"
+fi
 
 CFG="${CLONE}/.agents/config.json"
 if [[ ! -f "${CFG}" ]]; then
@@ -353,6 +578,284 @@ if [[ ! -f "${CFG}" ]]; then
   exit 1
 fi
 ok "recipe present in the clone"
+
+if [[ ${ATTENDED} -eq 1 ]]; then
+  # The daemon runs on a DERIVED copy of the worktree's recipe: the same
+  # file plus one alert target and approval_notify pointing at it. The
+  # committed recipe stays as it is; a developer's own run must not start
+  # posting to a sink that isn't there. The copy is pinned with -c and the
+  # worktree's .agents/ with --agents-dir, so skills, the reviewer and the
+  # plans directory still resolve against the worktree. The `alert` tool
+  # is turned off in the copy; see the comment in the script below.
+  DERIVED="${RUN_DIR}/config.json"
+  RECIPE_MODE="$(python3 - "${CFG}" "${DERIVED}" <<'PY' || echo error
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+alerts = cfg.setdefault("alerts", {})
+targets = [t for t in (alerts.get("targets") or []) if t.get("name") != "selfdev-sink"]
+targets.append({"name": "selfdev-sink", "url_env": "SELFDEV_SINK_URL", "template": "generic",
+                "auth": {"bearer_env": "SELFDEV_SINK_TOKEN"}})
+alerts["targets"] = targets
+perms = cfg.setdefault("permissions", {})
+perms["approval_notify"] = "selfdev-sink"
+# The target also arms the model-facing `alert` tool, which would give
+# the agent a way to post to the sink itself. approval_notify sends
+# through alert.NewSender directly, not the tool, so turning the tool off
+# leaves the notifications alone and keeps the sink the notifier's alone.
+tools = cfg.setdefault("tools", {})
+tools["disable"] = sorted(set(tools.get("disable") or []) | {"alert"})
+with open(sys.argv[2], "w") as f:
+    json.dump(cfg, f, indent=2)
+print(perms.get("mode") or "ask")
+PY
+)"
+  # The tier's premise is an operator approving each mutating call. A
+  # recipe that no longer asks would pass every assertion with nobody
+  # having approved anything.
+  if [[ "${RECIPE_MODE}" == "ask" ]]; then
+    ok "the recipe gates in ask mode (the operator approves each mutating call)"
+  else
+    bad "the recipe gates in ask mode (the operator approves each mutating call)" \
+      "permissions.mode is ${RECIPE_MODE}; an attended tier with no prompts grades nothing"
+    exit 1
+  fi
+  CFG="${DERIVED}"
+fi
+
+# ── The attended daemon (T2) ─────────────────────────────────────────
+#
+# T2 runs the agent the way a developer would run it unattended-but-
+# watched: a daemon with no REPL, an attach listener, and an operator who
+# attaches with core-agent-tui to approve the plan and each mutating call.
+# Two secrets, both random per run: the attach token and the sink's
+# bearer token. Each reaches its process as a prefix assignment on the
+# exec, never as an argument (`env VAR=...` would put it in argv, readable
+# in `ps` until env execs), and neither is exported into the rig's own
+# environment.
+
+DAEMON_PID=""
+SINK_PID=""
+SINK_OUT="${RUN_DIR}/sink.jsonl"
+
+rand_token() { python3 -c 'import secrets; print(secrets.token_hex(24))'; }
+free_port() {
+  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+# attach_api METHOD PATH [JSON]: one call to the daemon's attach API. The
+# token goes in on stdin as curl config, not on the command line, where
+# any local process could read it off `ps`.
+attach_api() {
+  local args=( -fsS --max-time 10 -X "$1" )
+  [[ $# -ge 3 ]] && args+=( -H 'Content-Type: application/json' --data "$3" )
+  curl "${args[@]}" -K - "${ATTACH_URL}$2" <<<"header = \"Authorization: Bearer ${ATTACH_TOKEN}\""
+}
+
+# sink_rows [SKIP]: "request_id<TAB>tool<TAB>summary" for each delivery
+# the sink recorded, after the first SKIP.
+sink_rows() {
+  python3 - "${SINK_OUT}" "${1:-0}" <<'PY'
+import json, sys
+try:
+    lines = [l for l in open(sys.argv[1]) if l.strip()]
+except FileNotFoundError:
+    lines = []
+for l in lines[int(sys.argv[2]):]:
+    try:
+        b = json.loads(l).get("body") or {}
+    except ValueError:
+        print("?\t?\tunparseable delivery"); continue
+    d = b.get("details") or {}
+    print("%s\t%s\t%s" % (d.get("request_id") or "?", d.get("tool") or "?", b.get("summary") or ""))
+PY
+}
+
+# stop_procs: the daemon first, so nothing posts to a sink that is gone.
+stop_procs() {
+  local p
+  for p in ${DAEMON_PID} ${SINK_PID}; do
+    kill -TERM "${p}" 2>/dev/null || continue
+    for _ in $(seq 1 60); do kill -0 "${p}" 2>/dev/null || break; sleep 0.5; done
+    kill -KILL "${p}" 2>/dev/null || true
+    wait "${p}" 2>/dev/null || true
+  done
+  DAEMON_PID=""
+  SINK_PID=""
+}
+
+# start_attended EXTRA_ARGS...: the sink, then the daemon, then a wait for
+# /healthz. Returns non-zero, with the reason on stderr, if either dies.
+start_attended() {
+  local sink_url_file="${RUN_DIR}/sink.url"
+  SINK_TOKEN="$(rand_token)"
+  ATTACH_TOKEN="$(rand_token)"
+  SELFDEV_SINK_TOKEN="${SINK_TOKEN}" "${SINK_BIN}" --url-file "${sink_url_file}" --out "${SINK_OUT}" \
+    --bearer-env SELFDEV_SINK_TOKEN >"${RUN_DIR}/sink.log" 2>&1 &
+  SINK_PID=$!
+  for _ in $(seq 1 100); do
+    [[ -s "${sink_url_file}" ]] && break
+    kill -0 "${SINK_PID}" 2>/dev/null || { echo "the sink exited; see ${RUN_DIR}/sink.log" >&2; return 1; }
+    sleep 0.1
+  done
+  SINK_URL="$(tr -d '[:space:]' <"${sink_url_file}" 2>/dev/null || true)"
+  [[ -n "${SINK_URL}" ]] || { echo "the sink never wrote its URL" >&2; return 1; }
+
+  ATTACH_PORT="$(free_port)"
+  ATTACH_URL="http://127.0.0.1:${ATTACH_PORT}"
+  # cwd is the worktree, as for every tier: the path scope and the plans
+  # directory hang off it.
+  ( cd "${CLONE}" && SELFDEV_ATTACH_TOKEN="${ATTACH_TOKEN}" SELFDEV_SINK_URL="${SINK_URL}" \
+      SELFDEV_SINK_TOKEN="${SINK_TOKEN}" exec "${BIN}" -c "${CFG}" --agents-dir "${CLONE_REAL}/.agents" \
+      --no-repl --attach-listen "127.0.0.1:${ATTACH_PORT}" --attach-token=SELFDEV_ATTACH_TOKEN \
+      --session-db-path="${RUN_DIR}/sessions.db" "$@" ) >"${LOG}" 2>&1 &
+  DAEMON_PID=$!
+  for _ in $(seq 1 120); do
+    attach_api GET /healthz >/dev/null 2>&1 && return 0
+    kill -0 "${DAEMON_PID}" 2>/dev/null || { echo "the daemon exited at boot; see ${LOG}" >&2; return 1; }
+    sleep 0.5
+  done
+  echo "the daemon never answered /healthz; see ${LOG}" >&2
+  return 1
+}
+
+# wake_with PROMPT: hand the daemon its task, as an operator's first
+# message would.
+wake_with() {
+  # A heredoc, not `python3 -c '...'` inside "$(...)": the harness pin
+  # gate's lexer pairs the double quotes inside that single-quoted script
+  # with the outer ones and then reads every later -c pin as quoted.
+  local body
+  body="$(python3 - "$1" <<'PY'
+import json, sys
+print(json.dumps({"prompt": sys.argv[1]}))
+PY
+)"
+  attach_api POST /sessions/default/wake "${body}" >/dev/null
+}
+
+# turn_idle: the session exists, is idle, and has no turn in flight.
+# turn_in_flight is omitempty, so false arrives as an absent key; the
+# state field is what proves the status was read at all.
+turn_idle() {
+  attach_api GET /sessions/default/status 2>/dev/null |
+    python3 -c 'import json, sys; d = json.load(sys.stdin); sys.exit(0 if d.get("state") == "idle" and not d.get("turn_in_flight") else 1)' 2>/dev/null
+}
+
+# attended_dry_run: the daemon on the scripted provider, with nobody
+# attached. The script records a plan, then writes one file, which opens a
+# prompt; the prompt reaches nobody, so the notifier posts to the sink;
+# the rig answers it with the request id the SINK received. So a PASS
+# proves prompt → notification → delivery → answer end to end, offline.
+attended_dry_run() {
+  local script="${RUN_DIR}/script.jsonl" answered="" rid tool summary deadline
+  cat >"${script}" <<'JSONL'
+{"request":null,"responses":[{"content":{"role":"model","parts":[{"functionCall":{"id":"c1","name":"record_plan","args":{"plan":"# dry-run plan\n\nWrite DRYRUN.txt, then stop."}}}]},"finishReason":"STOP","turnComplete":true}]}
+{"request":null,"responses":[{"content":{"role":"model","parts":[{"functionCall":{"id":"c2","name":"write_file","args":{"path":"DRYRUN.txt","content":"dry run\n"}}}]},"finishReason":"STOP","turnComplete":true}]}
+{"request":null,"responses":[{"content":{"role":"model","parts":[{"text":"DRYRUN-DONE"}]},"finishReason":"STOP","turnComplete":true}]}
+JSONL
+  note "dry run: the daemon on --provider=scripted, nobody attached"
+  if ! start_attended --provider=scripted --script "${script}"; then
+    bad "the daemon boots and serves the attach API" "see ${LOG}"
+    return
+  fi
+  ok "the daemon boots and serves the attach API"
+  if ! wake_with "dry run: record a plan, then write DRYRUN.txt"; then
+    bad "the daemon takes a task over the attach API" "POST /sessions/default/wake failed; see ${LOG}"
+    return
+  fi
+  ok "the daemon takes a task over the attach API"
+
+  deadline=$((SECONDS + 120))
+  while (( SECONDS < deadline )); do
+    while IFS=$'\t' read -r rid tool summary; do
+      [[ -n "${rid}" && "${rid}" != "?" ]] || continue
+      [[ " ${answered} " == *" ${rid} "* ]] && continue
+      if attach_api POST /sessions/default/perms/respond \
+           "{\"id\":\"${rid}\",\"decision\":\"allow-once\"}" >/dev/null 2>&1; then
+        answered="${answered} ${rid}"
+        note "answered ${tool} (${rid}) from the sink's record: ${summary}"
+      fi
+    done < <(sink_rows)
+    [[ -n "${answered}" && -f "${CLONE}/DRYRUN.txt" ]] && turn_idle && break
+    kill -0 "${DAEMON_PID}" 2>/dev/null || break
+    sleep 1
+  done
+  if [[ -z "${answered}" ]]; then
+    bad "dry run: a prompt nobody watched was answered from the sink" \
+      "no delivery reached the sink within 120s, so there was nothing to answer; see ${LOG}"
+  elif [[ ! -f "${CLONE}/DRYRUN.txt" ]]; then
+    bad "dry run: a prompt nobody watched was answered from the sink" \
+      "answered${answered}, but write_file never wrote DRYRUN.txt; see ${LOG}"
+  elif ! turn_idle; then
+    bad "dry run: a prompt nobody watched was answered from the sink" \
+      "DRYRUN.txt was written, but the scripted turn never went idle; see ${LOG}"
+  else
+    ok "dry run: a prompt nobody watched was answered from the sink"
+  fi
+}
+
+# attended_live: the task, then the operator. The rig waits at this
+# terminal for "done" (the PR is open) or "abort", and prints each
+# notification the sink receives, so the operator can see A17 happen.
+attended_live() {
+  local seen=0 n ans rid tool summary start
+  if ! start_attended ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}; then
+    bad "the daemon boots and serves the attach API" "see ${LOG}"
+    return
+  fi
+  ok "the daemon boots and serves the attach API"
+  PROMPT="$(cat "${TASK_FILE}")"
+  PROMPT="${PROMPT//<RUN_ID>/${RUN_ID}}"
+  if ! wake_with "${PROMPT}"; then
+    bad "the daemon takes a task over the attach API" "POST /sessions/default/wake failed; see ${LOG}"
+    return
+  fi
+  ok "the daemon takes a task over the attach API"
+
+  ( umask 077 && printf 'export SELFDEV_ATTACH_TOKEN=%q\n' "${ATTACH_TOKEN}" >"${RUN_DIR}/attach.env" )
+  head2 "Operator"
+  cat <<EOF
+  The agent is working in ${CLONE}
+  Attach from another terminal:
+
+    source ${RUN_DIR}/attach.env && ${TUI_BIN} ${ATTACH_URL} --token-env=SELFDEV_ATTACH_TOKEN
+
+  Approve the plan and each call you agree with; deny the rest, with a
+  reason. At least once, DETACH before the agent's next mutating call, so
+  the prompt opens with nobody attached and the notification goes out
+  (A17). Re-attach to answer it.
+
+  Type "done" here once the PR is open, or "abort" to stop.
+  Wallclock limit ${TIMEOUT_SECS}s. Daemon log: ${LOG}
+EOF
+  start=${SECONDS}
+  RUN_END=""
+  while [[ -z "${RUN_END}" ]]; do
+    if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then RUN_END=died; break; fi
+    if (( SECONDS - start >= TIMEOUT_SECS )); then RUN_END=timeout; break; fi
+    n="$(grep -c . "${SINK_OUT}" 2>/dev/null || true)"
+    if [[ -n "${n}" && "${n}" -gt "${seen}" ]]; then
+      while IFS=$'\t' read -r rid tool summary; do
+        note "sink: ${summary} (request ${rid})"
+      done < <(sink_rows "${seen}")
+      seen="${n}"
+    fi
+    ans=""
+    read -r -t 15 ans </dev/tty || true
+    case "${ans}" in
+      done)  RUN_END=done ;;
+      abort) RUN_END=abort ;;
+      "")    ;;
+      *)     note "type done or abort" ;;
+    esac
+  done
+  case "${RUN_END}" in
+    done)    ok "the operator ended the run" ;;
+    abort)   bad "the operator ended the run" "aborted by the operator" ;;
+    died)    bad "the operator ended the run" "the daemon exited before the operator said done; see ${LOG}" ;;
+    timeout) bad "the operator ended the run" "wallclock timeout after ${TIMEOUT_SECS}s; see ${LOG}" ;;
+  esac
+}
 
 # ── Boot ─────────────────────────────────────────────────────────────
 
@@ -371,10 +874,13 @@ AGENT_ARGS=()
 # and must not be the thing that disarms a developer's gate. D4 scopes
 # yolo to the throwaway clone, which is exactly where we are. plan_mode
 # stays `required` — that gate is not a permission and A5 grades it.
-AGENT_ARGS+=( --yolo )
+# T2 is the exception, and the reason it is attended: no --yolo, so the
+# recipe's `ask` gate stands and every mutating call waits for the operator.
+[[ ${ATTENDED} -eq 0 ]] && AGENT_ARGS+=( --yolo )
 [[ -n "${PROVIDER}" ]] && AGENT_ARGS+=( --provider="${PROVIDER}" )
 # The per-turn ceiling is raised to the session ceiling, also only here.
-# A `-p` run is ONE turn, so the recipe's max_turn_cost_usd is not a turn
+# A `-p` run is ONE turn, and so is the single wake of T2: approvals happen
+# inside it. So the recipe's max_turn_cost_usd is not a turn
 # bound in this rig; it is a second, smaller session cap. Live T1 run 1
 # tripped it at 45 minutes, before a line of code, while the $50 session
 # cap it sits under was unreachable. The committed value stays for the
@@ -399,7 +905,12 @@ else
   note "recipe has no positive agent.max_session_cost_usd; its per-turn ceiling stays as the run's only cost cap"
 fi
 
-if [[ ${DRY_RUN} -eq 1 ]]; then
+if [[ ${ATTENDED} -eq 1 ]]; then
+  if [[ ${DRY_RUN} -eq 1 ]]; then attended_dry_run; else attended_live; fi
+  # Stopped before any assertion reads the worktree, so nothing moves
+  # under the grade.
+  stop_procs
+elif [[ ${DRY_RUN} -eq 1 ]]; then
   note "dry run: booting on --provider=echo with a trivial prompt"
   BOOT_ARGS=( --yolo --provider=echo -p "reply with exactly: BOOT" )
   set +e
@@ -445,11 +956,25 @@ fi
 
 head2 "A1–A4  the recipe took effect"
 
+A1="A1 config came from the clone, not the real checkout"
+[[ ${ATTENDED} -eq 1 ]] && A1="A1 config is the rig's copy of the worktree's recipe"
 if grep -qF "config: source=${CFG}" "${LOG}"; then
-  ok "A1 config came from the clone, not the real checkout"
+  ok "${A1}"
 else
-  bad "A1 config came from the clone, not the real checkout" \
+  bad "${A1}" \
     "the startup summary does not name ${CFG}; the walk-up may have found another .agents/ first"
+fi
+# The derived config sits in RUN_DIR, so without --agents-dir the recipe's
+# skills, reviewer and plans would resolve there, next to it, and not in
+# the worktree.
+if [[ ${ATTENDED} -eq 1 ]]; then
+  # grep -F, as A1 and A2 do: a scratch path can hold regex metacharacters.
+  if grep -qF "agentsDir: ${CLONE_REAL}/.agents" "${LOG}"; then
+    ok "A1b skills, subagents and plans resolve against the worktree's .agents/"
+  else
+    bad "A1b skills, subagents and plans resolve against the worktree's .agents/" \
+      "the startup summary does not name ${CLONE_REAL}/.agents as agentsDir"
+  fi
 fi
 
 # Assert the two paths, NOT the count. A count is wrong in both
@@ -524,7 +1049,8 @@ esac
 head2 "A5  the plan gate did its job"
 
 PLAN_DIR="${CLONE}/.agents/plans"
-if [[ ${DRY_RUN} -eq 1 ]]; then
+# An attended dry run records a plan (its script does), so it is graded.
+if [[ ${DRY_RUN} -eq 1 && ${ATTENDED} -eq 0 ]]; then
   skip "A5 a plan artifact exists (plan_mode: required honoured)" "dry run makes no changes"
 elif compgen -G "${PLAN_DIR}/*.md" >/dev/null; then
   ok "A5 a plan artifact exists (plan_mode: required honoured)"
@@ -532,6 +1058,86 @@ elif compgen -G "${PLAN_DIR}/*.md" >/dev/null; then
 else
   bad "A5 a plan artifact exists (plan_mode: required honoured)" \
     "no plan artifact in ${PLAN_DIR}; plan_mode=required should have denied every mutating call until record_plan ran"
+fi
+
+# ── The notification (T2) ────────────────────────────────────────────
+#
+# A17 grades approval_notify by what the sink RECEIVED, not by what the
+# daemon says it sent: its "approval notification sent" line is the
+# sender's own claim, and the sink's file is the recipient's record. The
+# two are held to each other both ways. A sent line with no delivery is a
+# notification that never arrived; a delivery with no sent line is
+# something other than the daemon posting to the sink.
+if [[ ${ATTENDED} -eq 1 ]]; then
+  head2 "A17  a prompt nobody watched reached the operator"
+  assert_contains "${LOG}" 'unanswered permission prompts will be announced on alert target "selfdev-sink"' \
+    "A17 approval_notify is armed at boot" \
+    "the startup summary does not announce the selfdev-sink target; the derived config did not take"
+  A17_OUT="$(python3 - "${SINK_OUT}" "${LOG}" <<'PY' 2>/dev/null || echo error=1
+import json, re, sys
+sink = []
+try:
+    for line in open(sys.argv[1]):
+        if line.strip():
+            d = json.loads(line)
+            # A delivery with no request id is not an approval
+            # notification. It gets a name no sent line can carry, so it
+            # fails A17c instead of vanishing as an empty string.
+            sink.append((((d.get("body") or {}).get("details")) or {}).get("request_id") or "<no-request-id>")
+except FileNotFoundError:
+    pass
+sent, failed = [], 0
+for line in open(sys.argv[2], errors="replace"):
+    if "approval notification sent" in line and "target=selfdev-sink" in line:
+        m = re.search(r'request_id="?([^\s"]+)', line)
+        sent.append(m.group(1) if m else "<sent-without-id>")
+    elif "approval notification failed" in line:
+        failed += 1
+print("delivered=%d" % len(sink))
+# A17a counts only deliveries the daemon also logged as sent, so the
+# sink receiving *something* is not enough.
+print("matched=%d" % len(set(sink) & set(sent)))
+print("sent=%d" % len(sent))
+print("failed=%d" % failed)
+print("unreceived=" + " ".join(sorted(set(sent) - set(sink))))
+print("unsent=" + " ".join(sorted(set(sink) - set(sent))))
+PY
+)"
+  a17() { printf '%s\n' "${A17_OUT}" | sed -n "s/^$1=//p"; }
+  if [[ -n "$(a17 error)" ]]; then
+    bad "A17a a notification reached the sink" "could not read ${SINK_OUT} or ${LOG}; failed closed"
+  else
+    note "sink received $(a17 delivered), daemon logged $(a17 sent) sent and $(a17 failed) failed"
+    if [[ "$(a17 matched)" -gt 0 ]]; then
+      ok "A17a a notification reached the sink"
+    elif [[ "$(a17 delivered)" -gt 0 ]]; then
+      bad "A17a a notification reached the sink" \
+        "the sink received $(a17 delivered), but none matches a notification the daemon logged as sent"
+    elif [[ ${DRY_RUN} -eq 1 ]]; then
+      bad "A17a a notification reached the sink" "the dry run's write_file prompt was never delivered"
+    else
+      bad "A17a a notification reached the sink" \
+        "no prompt ever opened with nobody attached; detach before a mutating call at least once (README, T2)"
+    fi
+    if [[ "$(a17 sent)" -eq 0 && "$(a17 failed)" -eq 0 ]]; then
+      skip "A17b every notification the daemon sent was received" "the daemon sent none"
+    elif [[ "$(a17 failed)" -gt 0 ]]; then
+      bad "A17b every notification the daemon sent was received" \
+        "$(a17 failed) 'approval notification failed' line(s) in ${LOG}"
+    elif [[ -n "$(a17 unreceived)" ]]; then
+      bad "A17b every notification the daemon sent was received" "logged as sent, never received: $(a17 unreceived)"
+    else
+      ok "A17b every notification the daemon sent was received"
+    fi
+    if [[ "$(a17 delivered)" -eq 0 ]]; then
+      skip "A17c every delivery matches a notification the daemon sent" "no deliveries"
+    elif [[ -n "$(a17 unsent)" ]]; then
+      bad "A17c every delivery matches a notification the daemon sent" \
+        "received with no matching sent line: $(a17 unsent); something other than the daemon posted"
+    else
+      ok "A17c every delivery matches a notification the daemon sent"
+    fi
+  fi
 fi
 
 # ── Assertions on the artifacts ──────────────────────────────────────
@@ -562,10 +1168,15 @@ else
   # A replay's base is pinned and never moves. Its mirror has no branch
   # protection, so an agent that pushed to its `main` would otherwise
   # move the fork point, and with it what A13 and A15 call pre-fix.
+  #
+  # In a worktree the rig's ref is refs/worktree/: per-worktree, so it
+  # lands in neither the real checkout's ref list nor A9's snapshot.
+  BASE_TRACK="refs/selfdev/base"
+  [[ ${ATTENDED} -eq 1 ]] && BASE_TRACK="refs/worktree/selfdev-base"
   if [[ ${REPLAY} -eq 1 ]]; then
     FORK="${REPLAY_BASE}"
-  elif git -C "${CLONE}" -c core.hooksPath=/dev/null fetch --quiet "${REMOTE}" "+refs/heads/${BASE_REF}:refs/selfdev/base" 2>/dev/null &&
-     mb="$(git -C "${CLONE}" merge-base HEAD refs/selfdev/base 2>/dev/null)" &&
+  elif git -C "${CLONE}" -c core.hooksPath=/dev/null -c gc.auto=0 -c maintenance.auto=false fetch --quiet "${REMOTE}" "+refs/heads/${BASE_REF}:${BASE_TRACK}" 2>/dev/null &&
+     mb="$(git -C "${CLONE}" merge-base HEAD "${BASE_TRACK}" 2>/dev/null)" &&
      git -C "${CLONE}" merge-base --is-ancestor "${CLONE_HEAD}" "${mb}"; then
     # Only ever forward from the clone: a base that went backwards
     # (a force-pushed main) would widen the graded range, not narrow it.
@@ -678,6 +1289,16 @@ while i < len(fields):
       REQUIRE=( '^pkg/agent/.*_test\.go$' '' 'no Go test under pkg/agent/ changed'
                 '^pkg/agent/.*\.go$' '_test\.go$' 'no Go production file under pkg/agent/ changed' )
       ;;
+    t2)
+      # The task's own scope list. pkg/permissions/ and pkg/config/ are
+      # where a read tool's plan exemption and output cap live; docs/ and
+      # README.md are the site page and tool list it asks for.
+      ALLOW_RE='^(pkg/tools/|pkg/permissions/|pkg/config/|docs/|README\.md$|CHANGELOG\.md$)'
+      ALLOW_DESC='pkg/tools/, pkg/permissions/, pkg/config/, docs/, README.md and CHANGELOG.md'
+      REQUIRE=( '^pkg/tools/.*_test\.go$' '' 'no Go test under pkg/tools/ changed'
+                '^pkg/tools/.*\.go$' '_test\.go$' 'no Go production file under pkg/tools/ changed'
+                '^docs/site/' '' 'the published site was not updated' )
+      ;;
     *)
       bad "${A7}" \
         "no allowlist defined for tier ${TIER} — A7 must be re-specified per tier"
@@ -787,7 +1408,9 @@ rig_worktree() {
 }
 drop_worktree() {
   git -C "${CLONE}" worktree remove --force "$1" >/dev/null 2>&1 || true
-  git -C "${CLONE}" worktree prune >/dev/null 2>&1 || true
+  # Never in T2: CLONE is a worktree of the real checkout, and a prune
+  # there clears entries the rig didn't make.
+  [[ ${ATTENDED} -eq 1 ]] || git -C "${CLONE}" worktree prune >/dev/null 2>&1 || true
 }
 # test_names FILE STATUS: the Test functions go test reported with that
 # status (PASS or FAIL), one per line. Plain text only; -v is fine.
@@ -850,74 +1473,87 @@ else
 
   A13="A13 the new test fails on the pre-fix code"
   A13B="A13b the new test passes on the branch"
-  if [[ -z "${NEW_TESTS}" ]]; then
+  # T2 is a feature. Its new tests fail before the change because the
+  # tool doesn't exist yet, which proves nothing, so A13 does not grade
+  # it. A15 does that job from outside, and A13b still pins that the new
+  # tests pass at the tip.
+  FEATURE=0
+  [[ "${TIER}" == "t2" ]] && FEATURE=1
+  if [[ -z "${NEW_TESTS}" && ${FEATURE} -eq 1 ]]; then
+    skip "${A13}" "a feature has no pre-fix behaviour to fail against; A15 grades it instead"
+    bad "${A13B}" "no new Test function in any committed _test.go; the task asks for tests"
+  elif [[ -z "${NEW_TESTS}" ]]; then
     bad "${A13}" "no new Test function in any committed _test.go; there is nothing to prove"
     skip "${A13B}" "no new test"
   else
     RUN_RE="^($(printf '%s' "${NEW_TESTS}" | tr ' ' '|'))\$"
     note "new tests: ${NEW_TESTS} (in ${PKGS})"
 
-    # The pre-fix tree: the tip, with every production .go file the
-    # branch touched put back to its FORK content, or removed from the
-    # index and the tree if the branch added it.
-    PRE_TREE="${RIG_TREES}/prefix"
-    PREFIX_OUT="${RUN_DIR}/prefix-rig.txt"
-    : >"${PREFIX_OUT}"
-    PREFIX_RC=""
-    if rig_worktree "${PRE_TREE}" "${CLONE_TIP}"; then
-      REVERT_OK=1
-      while IFS= read -r f; do
-        [[ -n "${f}" ]] || continue
-        if git -C "${CLONE}" cat-file -e "${FORK}:${f}" 2>/dev/null; then
-          git -C "${PRE_TREE}" -c core.hooksPath=/dev/null checkout --quiet "${FORK}" -- "${f}" || REVERT_OK=0
-        else
-          git -C "${PRE_TREE}" -c core.hooksPath=/dev/null rm --quiet --force -- "${f}" || REVERT_OK=0
+    if [[ ${FEATURE} -eq 1 ]]; then
+      skip "${A13}" "a feature has no pre-fix behaviour to fail against; A15 grades it instead"
+    else
+      # The pre-fix tree: the tip, with every production .go file the
+      # branch touched put back to its FORK content, or removed from the
+      # index and the tree if the branch added it.
+      PRE_TREE="${RIG_TREES}/prefix"
+      PREFIX_OUT="${RUN_DIR}/prefix-rig.txt"
+      : >"${PREFIX_OUT}"
+      PREFIX_RC=""
+      if rig_worktree "${PRE_TREE}" "${CLONE_TIP}"; then
+        REVERT_OK=1
+        while IFS= read -r f; do
+          [[ -n "${f}" ]] || continue
+          if git -C "${CLONE}" cat-file -e "${FORK}:${f}" 2>/dev/null; then
+            git -C "${PRE_TREE}" -c core.hooksPath=/dev/null checkout --quiet "${FORK}" -- "${f}" || REVERT_OK=0
+          else
+            git -C "${PRE_TREE}" -c core.hooksPath=/dev/null rm --quiet --force -- "${f}" || REVERT_OK=0
+          fi
+        done < <(git -C "${CLONE}" diff --name-only --no-renames "${FORK}..${CLONE_TIP}" \
+                   -- '*.go' ':!*_test.go' ':!*/testdata/*' 2>/dev/null || true)
+        if [[ ${REVERT_OK} -eq 1 ]]; then
+          PREFIX_RC=0
+          # shellcheck disable=SC2086
+          (cd "${PRE_TREE}" && go test -count=1 -timeout 5m -v -run "${RUN_RE}" ${PKGS}) \
+            >"${PREFIX_OUT}" 2>&1 || PREFIX_RC=$?
         fi
-      done < <(git -C "${CLONE}" diff --name-only --no-renames "${FORK}..${CLONE_TIP}" \
-                 -- '*.go' ':!*_test.go' ':!*/testdata/*' 2>/dev/null || true)
-      if [[ ${REVERT_OK} -eq 1 ]]; then
-        PREFIX_RC=0
-        # shellcheck disable=SC2086
-        (cd "${PRE_TREE}" && go test -count=1 -timeout 5m -v -run "${RUN_RE}" ${PKGS}) \
-          >"${PREFIX_OUT}" 2>&1 || PREFIX_RC=$?
+        drop_worktree "${PRE_TREE}"
       fi
-      drop_worktree "${PRE_TREE}"
-    fi
 
-    # Per-test outcome, so a new test that passes both ways is named
-    # rather than hidden behind the one that failed.
-    FAILED="$(among "${NEW_TESTS}" "$(test_names "${PREFIX_OUT}" FAIL)")"
-    BOTH_WAYS="$(among "${NEW_TESTS}" "$(test_names "${PREFIX_OUT}" PASS)")"
+      # Per-test outcome, so a new test that passes both ways is named
+      # rather than hidden behind the one that failed.
+      FAILED="$(among "${NEW_TESTS}" "$(test_names "${PREFIX_OUT}" FAIL)")"
+      BOTH_WAYS="$(among "${NEW_TESTS}" "$(test_names "${PREFIX_OUT}" PASS)")"
 
-    EVIDENCE="${CLONE}/.agents/logs/prefix-failure.txt"
-    if [[ -z "${PREFIX_RC}" ]]; then
-      bad "${A13}" "the rig could not build its pre-fix worktree from ${CLONE_TIP:0:8}"
-    elif [[ ${PREFIX_RC} -eq 0 ]]; then
-      bad "${A13}" "${NEW_TESTS} PASS on the unfixed code from ${FORK:0:8}; see ${PREFIX_OUT}"
-    elif [[ -n "${FAILED}" ]]; then
-      ok "${A13} (witness: the rig re-ran it on ${FORK:0:8}'s code; failed: ${FAILED})"
-    elif has_build_failure "${PREFIX_OUT}"; then
-      # The test needs the fix's new symbols. Fall back to the agent's run.
-      EV_FAILED="$(among "${NEW_TESTS}" "$(test_names "${EVIDENCE}" FAIL)")"
-      if [[ ! -f "${EVIDENCE}" ]]; then
-        bad "${A13}" \
-          "the new tests don't compile on ${FORK:0:8}'s code and there is no saved PREFIX BEHAVIOUR run at .agents/logs/prefix-failure.txt"
-      elif has_build_failure "${EVIDENCE}"; then
-        bad "${A13}" \
-          "the saved pre-fix run is a build failure, which is not evidence about an assertion; see ${EVIDENCE}"
-      elif [[ -n "${EV_FAILED}" ]]; then
-        ok "${A13} (witness: the agent's saved PREFIX BEHAVIOUR run, not a rig re-run, because the test needs the fix's new symbols; failed: ${EV_FAILED})"
-        BOTH_WAYS="$(among "${NEW_TESTS}" "$(test_names "${EVIDENCE}" PASS)")"
+      EVIDENCE="${CLONE}/.agents/logs/prefix-failure.txt"
+      if [[ -z "${PREFIX_RC}" ]]; then
+        bad "${A13}" "the rig could not build its pre-fix worktree from ${CLONE_TIP:0:8}"
+      elif [[ ${PREFIX_RC} -eq 0 ]]; then
+        bad "${A13}" "${NEW_TESTS} PASS on the unfixed code from ${FORK:0:8}; see ${PREFIX_OUT}"
+      elif [[ -n "${FAILED}" ]]; then
+        ok "${A13} (witness: the rig re-ran it on ${FORK:0:8}'s code; failed: ${FAILED})"
+      elif has_build_failure "${PREFIX_OUT}"; then
+        # The test needs the fix's new symbols. Fall back to the agent's run.
+        EV_FAILED="$(among "${NEW_TESTS}" "$(test_names "${EVIDENCE}" FAIL)")"
+        if [[ ! -f "${EVIDENCE}" ]]; then
+          bad "${A13}" \
+            "the new tests don't compile on ${FORK:0:8}'s code and there is no saved PREFIX BEHAVIOUR run at .agents/logs/prefix-failure.txt"
+        elif has_build_failure "${EVIDENCE}"; then
+          bad "${A13}" \
+            "the saved pre-fix run is a build failure, which is not evidence about an assertion; see ${EVIDENCE}"
+        elif [[ -n "${EV_FAILED}" ]]; then
+          ok "${A13} (witness: the agent's saved PREFIX BEHAVIOUR run, not a rig re-run, because the test needs the fix's new symbols; failed: ${EV_FAILED})"
+          BOTH_WAYS="$(among "${NEW_TESTS}" "$(test_names "${EVIDENCE}" PASS)")"
+        else
+          bad "${A13}" \
+            "the saved pre-fix run has no plain-text --- FAIL naming any of ${NEW_TESTS}; see ${EVIDENCE}"
+        fi
       else
         bad "${A13}" \
-          "the saved pre-fix run has no plain-text --- FAIL naming any of ${NEW_TESTS}; see ${EVIDENCE}"
+          "go test exited ${PREFIX_RC} on the pre-fix tree with no --- FAIL naming a new test; see ${PREFIX_OUT}"
       fi
-    else
-      bad "${A13}" \
-        "go test exited ${PREFIX_RC} on the pre-fix tree with no --- FAIL naming a new test; see ${PREFIX_OUT}"
-    fi
-    if [[ -n "${BOTH_WAYS}" ]]; then
-      note "passed on the pre-fix code too (the PR should declare these): ${BOTH_WAYS}"
+      if [[ -n "${BOTH_WAYS}" ]]; then
+        note "passed on the pre-fix code too (the PR should declare these): ${BOTH_WAYS}"
+      fi
     fi
 
     # The same functions at the committed tip, not in the clone's working
@@ -997,10 +1633,18 @@ else
   # It lives here as a heredoc, not as a _test.go file in the tree, where
   # it would fail on main, which still has the bug.
   A15="A15 the rig's own #${TASK_ISSUE} oracle fails before and passes after"
-  ORACLE_PKG="pkg/agent/background"
+  #
+  # Each tier with an issue has its own oracle, package and failure texts.
   ORACLE_FILE="zz_selfdev_oracle_${TASK_ISSUE}_test.go"
   ORACLE_SRC="${RUN_DIR}/${ORACLE_FILE}"
-  cat >"${ORACLE_SRC}" <<'GO'
+  ORACLE_TEST="TestSelfDevOracle${TASK_ISSUE}"
+  case "${TIER}" in
+    t1)
+      ORACLE_PKG="pkg/agent/background"
+      ORACLE_STALE="the base no longer has the bug it was written for"
+      ORACLE_BUILD="awaitResult or the package's spawn test helpers changed shape"
+      ORACLE_FAIL="the banked result or the run error still doesn't reach the parent"
+      cat >"${ORACLE_SRC}" <<'GO'
 package background
 
 import (
@@ -1066,12 +1710,246 @@ func TestSelfDevOracle1002(t *testing.T) {
 	}
 }
 GO
+      ;;
+    t2)
+      # The #954 oracle. It finds view_file_outline by name among the default
+      # built-ins, under plan_mode: required with no plan recorded, finds the
+      # path argument from the tool's own schema, and reads the outline of a
+      # Go fixture: every declaration named, no body text. write_file must be
+      # refused in the same state, which proves the plan gate was armed.
+      # Calibrated on main (fail: not registered), on a full stub (pass), and
+      # on five mutants of that stub, each failing with its own message: a
+      # body in the outline, not read-only, methods missing, not plan-exempt,
+      # not on by default.
+      ORACLE_PKG="pkg/tools"
+      ORACLE_STALE="the base already has view_file_outline"
+      ORACLE_BUILD="Build, Default, IsReadOnlyTool or permissions.Options changed shape"
+      ORACLE_FAIL="the tool is missing, not read-only, blocked before a plan, or its outline is wrong"
+      cat >"${ORACLE_SRC}" <<'GO'
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	adkagent "google.golang.org/adk/agent"
+	"google.golang.org/adk/session"
+	adktool "google.golang.org/adk/tool"
+	"google.golang.org/adk/tool/toolconfirmation"
+	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+)
+
+// selfDevT2Ctx is the least tool.Context a read tool can run under. The
+// embedded interface is nil: a method not overridden here panics, and
+// functiontool's Run turns that panic into an error, so a tool that needs
+// more context than a read tool should fails the oracle loudly.
+type selfDevT2Ctx struct {
+	adktool.Context
+	ctx context.Context
+}
+
+func (c selfDevT2Ctx) Deadline() (time.Time, bool)                        { return c.ctx.Deadline() }
+func (c selfDevT2Ctx) Done() <-chan struct{}                              { return c.ctx.Done() }
+func (c selfDevT2Ctx) Err() error                                         { return c.ctx.Err() }
+func (c selfDevT2Ctx) Value(k any) any                                    { return c.ctx.Value(k) }
+func (selfDevT2Ctx) UserContent() *genai.Content                          { return nil }
+func (selfDevT2Ctx) InvocationID() string                                 { return "selfdev-oracle" }
+func (selfDevT2Ctx) AgentName() string                                    { return "selfdev-oracle" }
+func (selfDevT2Ctx) SessionID() string                                    { return "selfdev-oracle" }
+func (selfDevT2Ctx) UserID() string                                       { return "selfdev-oracle" }
+func (selfDevT2Ctx) AppName() string                                      { return "selfdev-oracle" }
+func (selfDevT2Ctx) Branch() string                                       { return "" }
+func (selfDevT2Ctx) FunctionCallID() string                               { return "call-1" }
+func (selfDevT2Ctx) Artifacts() adkagent.Artifacts                        { return nil }
+func (selfDevT2Ctx) ReadonlyState() session.ReadonlyState                 { return nil }
+func (selfDevT2Ctx) State() session.State                                 { return nil }
+func (selfDevT2Ctx) Actions() *session.EventActions                       { return &session.EventActions{} }
+func (selfDevT2Ctx) ToolConfirmation() *toolconfirmation.ToolConfirmation { return nil }
+func (selfDevT2Ctx) RequestConfirmation(string, any) error                { return nil }
+
+const selfDevT2Fixture = `package oraclefixture
+
+import (
+	"strings"
+)
+
+// SentinelConst is a top-level constant.
+const SentinelConst = 7
+
+// SentinelWidget is a type declaration.
+type SentinelWidget struct {
+	Name string
+}
+
+// SentinelFunc is a function.
+func SentinelFunc(a int) string {
+	return strings.Repeat("BODY-SENTINEL-XYZ", a)
+}
+
+// SentinelMethod is a method.
+func (w *SentinelWidget) SentinelMethod() error {
+	_ = "BODY-SENTINEL-XYZ"
+	return nil
+}
+`
+
+// The #954 oracle, owned by the rig. It is written against the issue,
+// not against the agent's code: it finds the tool by its required name
+// among the default built-ins, finds the path argument from the tool's
+// own declared schema, and grades the outline by what it contains. So it
+// does not care how the tool is implemented or what its argument is
+// called, only that an outline of a Go file names every declaration and
+// carries no body.
+func TestSelfDevOracle954(t *testing.T) {
+	// plan_mode: required, the T2 recipe's own setting, with no plan
+	// recorded. A read tool is research, and research is what produces
+	// the plan, so the outline must run here. write_file must not, which
+	// is what proves the gate is armed and the check is not vacuous.
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo, RequirePlanArtifact: true})
+	reg, err := Build(config.DefaultConfig(), gate, "", Default())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var found, write adktool.Tool
+	for _, tl := range reg.Tools {
+		switch tl.Name() {
+		case "view_file_outline":
+			found = tl
+		case "write_file":
+			write = tl
+		}
+	}
+	if found == nil {
+		t.Fatal("no tool named view_file_outline is registered by Build(..., Default())")
+	}
+	if !IsReadOnlyTool(found) {
+		t.Error("view_file_outline is not classified read-only (IsReadOnlyTool); it would serialize and gate like a write")
+	}
+	rt, ok := found.(interface {
+		Declaration() *genai.FunctionDeclaration
+		Run(adktool.Context, any) (map[string]any, error)
+	})
+	if !ok {
+		t.Fatalf("view_file_outline (%T) is not a callable tool", found)
+	}
+	arg := selfDevT2PathArg(t, rt.Declaration())
+
+	// Under the package directory, not t.TempDir(): a read tool honours
+	// the path scope, and the default scope is the working directory.
+	dir, err := os.MkdirTemp(".", "zz-selfdev-oracle-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	rel := filepath.Join(dir, "fixture.go")
+	if err := os.WriteFile(rel, []byte(selfDevT2Fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	abs, err := filepath.Abs(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := selfDevT2Ctx{ctx: context.Background()}
+	out, err := rt.Run(ctx, map[string]any{arg: abs})
+	if err != nil {
+		// An absolute path is the normal form, but a tool may insist on
+		// a workspace-relative one. Either is fine; refusing both is not.
+		out, err = rt.Run(ctx, map[string]any{arg: rel})
+	}
+	if err != nil {
+		t.Fatalf("view_file_outline(%s=%q) failed before a plan was recorded: %v", arg, abs, err)
+	}
+	if w, ok := write.(interface {
+		Run(adktool.Context, any) (map[string]any, error)
+	}); !ok {
+		t.Error("write_file is not registered, so the plan gate's arming can't be shown")
+	} else if _, werr := w.Run(ctx, map[string]any{"path": filepath.Join(abs, "..", "w.txt"), "content": "x"}); werr == nil ||
+		!strings.Contains(werr.Error(), "record_plan") {
+		t.Errorf("write_file was not refused before a plan (err=%v); the check above proves nothing", werr)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, want := range []string{"oraclefixture", "strings", "SentinelConst", "SentinelWidget", "SentinelFunc", "SentinelMethod"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the outline lacks %s: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "BODY-SENTINEL-XYZ") {
+		t.Errorf("the outline carries a function body: %s", got)
+	}
+}
+
+// selfDevT2PathArg picks the argument that names the file: a string
+// property with a path-like name, else the only required string one.
+func selfDevT2PathArg(t *testing.T, d *genai.FunctionDeclaration) string {
+	t.Helper()
+	if d == nil {
+		t.Fatal("view_file_outline has no declaration")
+	}
+	props := map[string]string{}
+	var required []string
+	if s := d.Parameters; s != nil {
+		for k, v := range s.Properties {
+			if v != nil {
+				props[k] = strings.ToUpper(string(v.Type))
+			}
+		}
+		required = s.Required
+	} else if raw, err := json.Marshal(d.ParametersJsonSchema); err == nil {
+		var js struct {
+			Properties map[string]struct {
+				Type any `json:"type"`
+			} `json:"properties"`
+			Required []string `json:"required"`
+		}
+		if json.Unmarshal(raw, &js) == nil {
+			for k, v := range js.Properties {
+				props[k] = strings.ToUpper(strings.Trim(strings.TrimSpace(func() string { b, _ := json.Marshal(v.Type); return string(b) }()), `"`))
+			}
+			required = js.Required
+		}
+	}
+	for _, name := range []string{"path", "file_path", "file", "filename", "filepath"} {
+		if typ, ok := props[name]; ok && strings.Contains(typ, "STRING") {
+			return name
+		}
+	}
+	var strs []string
+	for _, r := range required {
+		if strings.Contains(props[r], "STRING") {
+			strs = append(strs, r)
+		}
+	}
+	if len(strs) != 1 {
+		t.Fatalf("cannot tell which argument names the file; properties %v, required %v", props, required)
+	}
+	return strs[0]
+}
+GO
+      ;;
+    *)
+      echo "tier ${TIER} names an issue but has no oracle" >&2
+      exit 2
+      ;;
+  esac
   # oracle_at REV TREE OUT: prints pass, fail, build or checkout.
   oracle_at() {
     local rc=0
     rig_worktree "$2" "$1" || { echo checkout; return; }
     cp "${ORACLE_SRC}" "$2/${ORACLE_PKG}/${ORACLE_FILE}" || { drop_worktree "$2"; echo checkout; return; }
-    (cd "$2" && go test -count=1 -timeout 5m -run '^TestSelfDevOracle1002$' "./${ORACLE_PKG}") >"$3" 2>&1 || rc=$?
+    (cd "$2" && go test -count=1 -timeout 5m -run "^${ORACLE_TEST}\$" "./${ORACLE_PKG}") >"$3" 2>&1 || rc=$?
     drop_worktree "$2"
     if [[ ${rc} -eq 0 ]]; then echo pass
     elif has_build_failure "$3"; then echo build
@@ -1082,21 +1960,122 @@ GO
   ORACLE_POST="$(oracle_at "${CLONE_TIP}" "${RIG_TREES}/oracle-post" "${RUN_DIR}/oracle-postfix.txt")"
   case "${ORACLE_PRE}/${ORACLE_POST}" in
     fail/pass) ok "${A15}" ;;
-    pass/*)    bad "${A15}" "the oracle passes at ${FORK:0:8}, so the base no longer has the bug it was written for; the rig is stale" ;;
-    fail/build) bad "${A15}" "the oracle doesn't compile against the fix (awaitResult or the package's spawn test helpers changed shape); a human should look, see ${RUN_DIR}/oracle-postfix.txt" ;;
-    fail/fail) bad "${A15}" "the banked result or the run error still doesn't reach the parent; see ${RUN_DIR}/oracle-postfix.txt" ;;
+    pass/*)    bad "${A15}" "the oracle passes at ${FORK:0:8}, so ${ORACLE_STALE}; the rig is stale" ;;
+    fail/build) bad "${A15}" "the oracle doesn't compile against the tip (${ORACLE_BUILD}); a human should look, see ${RUN_DIR}/oracle-postfix.txt" ;;
+    fail/fail) bad "${A15}" "${ORACLE_FAIL}; see ${RUN_DIR}/oracle-postfix.txt" ;;
     *)         bad "${A15}" "oracle ${ORACLE_PRE} at ${FORK:0:8}, ${ORACLE_POST} at the tip; see ${RUN_DIR}/oracle-*.txt" ;;
   esac
 fi
 
 head2 "A9  D4 — the real checkout is untouched"
 
-REAL_AFTER="$(real_state | "${SUM}" | awk '{print $1}')"
-if [[ "${REAL_AFTER}" == "${REAL_BEFORE}" ]]; then
-  ok "A9 the real checkout did not move"
+if [[ ${ATTENDED} -eq 1 ]]; then
+  # T2's version of the rule, and it is still an allowlist. The agent may
+  # add ONE branch, the one its worktree ends on, provided it did not
+  # exist before; record that branch's upstream (branch.<name>.*); and gh
+  # may record which remote it resolved (remote.*.gh-resolved). The rig
+  # adds one worktree, its own. Remote-tracking refs are a push and fetch
+  # cache and are not graded, but any that moved other than the agent's
+  # own are printed as notes: a push to someone else's branch shows up
+  # there and nowhere else. Anything else fails: the main checkout's HEAD,
+  # files or index, its .agents/, the shared hooks/ and info/, any other
+  # ref (a tag, a stash, someone's branch), any other config line, the
+  # global config, any other worktree or a change inside one.
+  A9="A9 the real checkout moved only where the task allows"
+  WT_BRANCH="$(git -C "${CLONE}" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  REAL_AFTER_JSON="${RUN_DIR}/real-after.json"
+  if ! real_snapshot >"${REAL_AFTER_JSON}"; then
+    bad "${A9}" "could not snapshot ${REPO_ROOT} after the run"
+  else
+    A9_OUT="$(python3 - "${REAL_BEFORE_JSON}" "${REAL_AFTER_JSON}" "${CLONE_REAL}" "${WT_BRANCH}" <<'PY' || echo "the comparator failed; compare ${REAL_BEFORE_JSON} with ${REAL_AFTER_JSON}"
+import json, os, re, sys
+b, a = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+wt, br = os.path.realpath(sys.argv[3]), sys.argv[4]
+out, notes = [], []
+def changed(x, y):
+    return sorted(k for k in set(x) | set(y) if x.get(k) != y.get(k))
+def some(ks):
+    return " ".join(ks[:5]) + (" (+%d more)" % (len(ks) - 5) if len(ks) > 5 else "")
+if (a["head"], a["symref"]) != (b["head"], b["symref"]):
+    out.append("the main checkout's HEAD moved: %s@%s -> %s@%s" % (
+        b["symref"] or "detached", b["head"][:8], a["symref"] or "detached", a["head"][:8]))
+ks = changed(b["files"], a["files"])
+if ks or a["status"] != b["status"]:
+    out.append("the main checkout's files changed: " + (some(ks) or "status --porcelain --ignored=matching differs"))
+if a["index"] != b["index"]:
+    out.append("the main checkout's index changed (git ls-files --stage differs)")
+ks = changed(b["agents"], a["agents"])
+if ks:
+    out.append("the main checkout's .agents/ changed: " + some(ks))
+# A worktree added during the run has its own admin dir; the worktree
+# rule below grades the worktree itself.
+fresh = tuple("worktrees/%s/" % d for d in set(a.get("gitdir_admin", [])) - set(b.get("gitdir_admin", [])))
+ks = [k for k in changed(b["gitdir"], a["gitdir"]) if not k.startswith(fresh)] if fresh else changed(b["gitdir"], a["gitdir"])
+if ks:
+    out.append("the shared .git changed (hooks, info or config.worktree): " + some(ks))
+ks = changed(b["global_config"], a["global_config"])
+if ks:
+    out.append("global git config changed: " + some(ks))
+allowed = "refs/heads/" + br if br else None
+for name in sorted(set(a["refs"]) | set(b["refs"])):
+    was, now = b["refs"].get(name), a["refs"].get(name)
+    if was == now:
+        continue
+    desc = "ref %s: %s -> %s" % (name, was[:8] if was else "absent", now[:8] if now else "absent")
+    if was is None and name == allowed:
+        continue
+    if name.startswith("refs/remotes/"):
+        # A fetch moves these as well as a push, so they are not graded.
+        # Only the agent's own branch appearing is expected; anything
+        # else is printed for a human, because a push to someone else's
+        # branch shows up here and nowhere else in this checkout.
+        if not (was is None and br and name.endswith("/" + br)):
+            notes.append(desc)
+        continue
+    out.append(desc)
+for line in sorted(set(b["config"]) - set(a["config"])):
+    out.append("config line removed: " + line)
+for line in sorted(set(a["config"]) - set(b["config"])):
+    if br and line.startswith("branch.%s." % br):
+        continue
+    if re.match(r"remote\.[^.=]+\.gh-resolved=", line):
+        continue
+    out.append("config line added: " + line)
+for p in sorted(set(b["worktrees"]) - set(a["worktrees"])):
+    out.append("worktree removed: " + p)
+for p in sorted(set(a["worktrees"]) - set(b["worktrees"])):
+    if os.path.realpath(p) != wt:
+        out.append("worktree added: " + p)
+for p in sorted(set(a["worktrees"]) & set(b["worktrees"])):
+    x, y = b["worktrees"][p], a["worktrees"][p]
+    what = [k for k in ("head", "branch", "status") if x.get(k) != y.get(k)]
+    if changed(x.get("files") or {}, y.get("files") or {}):
+        what.append("files")
+    if what:
+        out.append("worktree %s changed: %s" % (p, ", ".join(what)))
+print("\n".join(out + ["note: " + n for n in notes]))
+PY
+)"
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && note "A9: remote-tracking ${line#note: ref } (a fetch does this; so does a push to that branch)"
+    done < <(printf '%s\n' "${A9_OUT}" | grep '^note: ' || true)
+    A9_OUT="$(printf '%s\n' "${A9_OUT}" | grep -v '^note: ' || true)"
+    if [[ -z "${A9_OUT}" ]]; then
+      A9_NOTE=""
+      [[ -n "${WT_BRANCH}" ]] && A9_NOTE=" (its branch ${WT_BRANCH}, its upstream, the rig's worktree)"
+      ok "${A9}${A9_NOTE}"
+    else
+      bad "${A9}" "$(printf '%s' "${A9_OUT}" | head -n 3 | tr '\n' ';') full diff: ${REAL_BEFORE_JSON} vs ${REAL_AFTER_JSON}"
+    fi
+  fi
 else
-  bad "A9 the real checkout did not move" \
-    "HEAD or working tree changed during the run — D4 says tiers 0 and 1 never touch it. Inspect: git -C ${REPO_ROOT} status"
+  REAL_AFTER="$(real_state | "${SUM}" | awk '{print $1}')"
+  if [[ "${REAL_AFTER}" == "${REAL_BEFORE}" ]]; then
+    ok "A9 the real checkout did not move"
+  else
+    bad "A9 the real checkout did not move" \
+      "HEAD or working tree changed during the run — D4 says tiers 0 and 1 never touch it. Inspect: git -C ${REPO_ROOT} status"
+  fi
 fi
 
 # ── The pull request ─────────────────────────────────────────────────
@@ -1296,6 +2275,20 @@ PY
     esac
   else
     skip "A12 CI is green on the pull request" "no PR"
+  fi
+fi
+
+# A9's snapshot is taken before A12's rig worktree exists, and in T2
+# drop_worktree can't prune, so a removal that failed would leave an entry
+# in the developer's repository that nothing else reports.
+if [[ ${ATTENDED} -eq 1 ]]; then
+  LEFTOVER="$(git -C "${REPO_ROOT}" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' |
+    grep -F "$(cd "${RUN_DIR}" && pwd -P)/" | grep -vxF "${CLONE_REAL}" || true)"
+  if [[ -z "${LEFTOVER}" ]]; then
+    ok "the rig removed every worktree it added to ${REPO_ROOT} (except the run's own)"
+  else
+    bad "the rig removed every worktree it added to ${REPO_ROOT} (except the run's own)" \
+      "still registered: $(printf '%s' "${LEFTOVER}" | tr '\n' ' ')— remove each with git -C ${REPO_ROOT} worktree remove --force <path>"
   fi
 fi
 

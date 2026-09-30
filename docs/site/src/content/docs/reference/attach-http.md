@@ -129,7 +129,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | `POST` | `/resume` | `{"mode"?:"steer"\|"continue"\|"abandon", "steer"?:...}` — **body optional** (absent = `continue`) | `{"resumed":bool, "mode":..., "state":..., "session":...}`; **400** on an unknown mode or `mode=steer` with no text; **501** if no `PauseController`; **503** + `Retry-After` during daemon shutdown |
 | `POST` | `/agents/{name}/stop` | — | `{"agent":..., "stopped":bool, "status"?:..., "session":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-stop-agent-v1.json)); `stopped: false` when the subagent had already finished; **404** only when no subagent by that name was ever registered; **501** if no `AgentStopper` — see [Stopping one subagent](#stopping-one-subagent-protocol-1120) |
 | `POST` | `/perms/allow` / `/perms/deny` | `{"patterns":[...]}` (empty → **400**) | **204**; **501** if no controller |
-| `POST` | `/perms/respond` | `{"id":..., "decision":..., "approver"?:...}` | `{"acknowledged":true, "approver"?:...}`; **410** when the prompt is gone — expired, or cut down with its turn (protocol 1.14.0 — see [Answering a prompt that is gone](#answering-a-prompt-that-is-gone-protocol-1140)); **404** on an id already answered or never issued; **400** when `approver` disagrees with the caller the daemon verified, or when it verified nobody to check against. `approver` echoes what was recorded and is omitted when nothing was verified — see [Approval attribution](#approval-attribution-protocol-1100) |
+| `POST` | `/perms/respond` | `{"id":..., "decision":..., "approver"?:..., "reason"?:...}` | `{"acknowledged":true, "approver"?:...}`; **410** when the prompt is gone — expired, or cut down with its turn (protocol 1.14.0 — see [Answering a prompt that is gone](#answering-a-prompt-that-is-gone-protocol-1140)); **404** on an id already answered or never issued; **400** when `approver` disagrees with the caller the daemon verified, or when it verified nobody to check against, or when `reason` comes with anything but a deny or is over 500 bytes (see [Denying with a reason](#denying-with-a-reason-protocol-1150)). `approver` echoes what was recorded and is omitted when nothing was verified — see [Approval attribution](#approval-attribution-protocol-1100) |
 | `POST` | `/title` | `{"title":"..."}` — the key is **required**; `""` clears | `{"session":..., "title"?:..., "persisted":bool, "detail"?:...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-session-title-v1.json)); **400** on an omitted `title`; **501** if the agent can't set one — see [Renaming a session](#renaming-a-session-protocol-1100) |
 | `POST` | `/pricing/refresh` | — | `{"updated":..., "known_models":..., "last_refresh":..., "detail":...}` |
 | `POST` | `/pricing/set` | `{"model":..., "input_usd_per_mtok":..., "output_usd_per_mtok":...}` | **204** |
@@ -193,6 +193,29 @@ The request body accepts an optional `approver`, and it is **checked, never beli
 The field exists only so a client whose idea of the approver differs from the server's finds out. Accepting and silently ignoring it would let a relay believe it had attributed a decision it hadn't, which is the same invisible failure #830 reports; trusting it would let any caller that can reach `/perms/respond` sign someone else's name to an approval.
 
 Attribution reaches the embedded permission gate too — `permissions.ApprovalLog` gained a `By` field, so the same identity shows up wherever the approval log is read, not only over HTTP. Embedders extend a `permissions.Prompter` to the optional `permissions.AttributingPrompter` to supply it; a host that wires a plain prompter (an interactive terminal, where the answerer is whoever is at the keyboard) records no approver, exactly as before.
+
+### Denying with a reason (protocol 1.15.0)
+
+A deny can say why. The model reads the reason in the refused call's result, after the refusal and before the guidance not to re-issue the call:
+
+```json
+{"id": "p-17", "decision": "deny", "reason": "restart the canary first"}
+```
+
+```
+deploy denied by user: restart deploy/api. The operator's reason: "restart the canary first". This decision is final for this call — do not re-issue it. …
+```
+
+Without a reason, the model got the same sentence whatever the operator objected to, so it guessed. In practice it retried a near-identical call, or gave up on work the operator only wanted done differently ([#1165](https://github.com/go-steer/core-agent/issues/1165)).
+
+- **Deny only.** A `reason` on any other decision is a **400**. An approval that carries text would read to the model as conditions on the call it just authorized; instructions belong in a steer.
+- **One line, at most 500 bytes.** Runs of whitespace, newlines included, collapse to a single space before the length is checked. Over the limit is a **400**, not a silent cut.
+- **A 400 leaves the prompt pending.** Fix the request and send it again.
+- **Omitted, the deny is unchanged**, byte-for-byte.
+- **A reason cannot reopen the call within the turn.** An identical re-issue in the same turn is refused without asking anyone, as for any deny, so "try again in five minutes" works across turns, not inside one. The refusal the model already has carries the reason.
+- **The reason is the operator's text, quoted as such.** Unlike `approver`, it is not verified and does not need to be.
+
+A daemon older than 1.15.0 accepts the field and drops it, so the status code cannot tell you whether the reason reached the model. Check `protocol_version`. Go clients can use `attachclient.Client.DenyPrompt`. Denying with a reason from the TUI needs a core-tui release that asks for one.
 
 ### Answering a prompt that is gone (protocol 1.14.0)
 

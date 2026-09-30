@@ -1018,3 +1018,38 @@ func TestClientDo_ConnectionRefused(t *testing.T) {
 		t.Errorf("stream connection error must NOT be httpStatusError: %v", err)
 	}
 }
+
+// DenyPrompt's reason reaches the gate's Approval (#1165).
+func TestClientDenyPrompt_CarriesTheReason(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	type result struct {
+		a   permissions.Approval
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		a, err := h.broker.AskApprovalAttributed(ctx, permissions.PromptRequest{ToolName: "bash", Detail: "git push origin main"})
+		done <- result{a, err}
+	}()
+	var id string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && id == ""; time.Sleep(time.Millisecond) {
+		if p := h.broker.Pending(); len(p) == 1 {
+			id = p[0].ID
+		}
+	}
+	if id == "" {
+		t.Fatal("no prompt became pending")
+	}
+
+	if err := h.client.DenyPrompt(ctx, h.sessionPath(), id, "push to a branch and open a PR"); err != nil {
+		t.Fatalf("DenyPrompt: %v", err)
+	}
+	got := <-done
+	if got.a.Decision != permissions.DecisionDeny || got.a.Reason != "push to a branch and open a PR" {
+		t.Errorf("approval = %+v, want a deny carrying the reason", got.a)
+	}
+}

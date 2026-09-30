@@ -172,6 +172,18 @@ type Approval struct {
 	// a single operator at a local terminal has no identity to
 	// attribute, and neither does an anonymous daemon.
 	By string
+
+	// Reason is what the answerer said about a deny, or "" when they
+	// said nothing (#1165). The gate puts it in the error the tool call
+	// returns, so the model reads the objection instead of guessing at
+	// it. It is ignored on every other decision: an approval needs no
+	// explanation, and one would be read as an instruction attached to
+	// the call it just authorized.
+	//
+	// Unlike By, Reason is not verified and does not need to be. It is
+	// the operator's words about their own decision, and it is quoted
+	// to the model as exactly that.
+	Reason string
 }
 
 // AttributingPrompter is the optional extension of Prompter for hosts

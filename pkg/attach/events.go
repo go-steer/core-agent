@@ -299,7 +299,16 @@ import "time"
 // has been 410 since #647 — and the two 410 bodies differ, because
 // "expired" tells an operator to answer faster or raise
 // approval_timeout, and a cancellation says that would not have helped.
-const protocolVersion = "1.14.0"
+//
+// v1.15.0 (#1165): `POST /perms/respond` accepts an optional `reason`
+// with a deny, and the model reads it in the refused call's result as
+// "The operator's reason: …". Additive: without it a deny is
+// byte-for-byte what it was. A reason on any other decision, or over
+// MaxDenyReasonBytes, is a 400 and leaves the prompt pending. A pre-1.15.0
+// daemon ignores the field, because readJSON does not reject unknown
+// keys, so a client that wants to know whether its reason reached the
+// model must check protocol_version rather than the status code.
+const protocolVersion = "1.15.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

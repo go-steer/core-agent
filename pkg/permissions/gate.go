@@ -1078,7 +1078,7 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	}
 	if approval.Decision == DecisionDeny {
 		g.rememberTurnRefusal(toolName, detail, refusedByDeny)
-		return fmt.Errorf("%s denied by user: control-plane write to %s. %s", toolName, path, denyGuidance)
+		return fmt.Errorf("%s denied by user: control-plane write to %s.%s %s", toolName, path, operatorReason(approval), denyGuidance)
 	}
 	// Any non-deny decision authorizes exactly this write. We record
 	// the approval for the audit log but intentionally do NOT remember
@@ -1412,8 +1412,20 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		// The operator said no to this exact request. Nobody is asked
 		// about it again this turn.
 		g.rememberTurnRefusal(req.ToolName, req.Detail, refusedByDeny)
-		return fmt.Errorf("%s denied by user: %s. %s", req.ToolName, req.Detail, denyGuidance)
+		return fmt.Errorf("%s denied by user: %s.%s %s", req.ToolName, req.Detail, operatorReason(approval), denyGuidance)
 	}
+}
+
+// operatorReason renders a deny's reason for the error the model reads,
+// with its leading space, or "" when the operator gave none — so a
+// reasonless deny reads byte-for-byte as it did before #1165. The
+// reason is quoted: it is the operator's text, and the model should
+// be able to see where it starts and stops.
+func operatorReason(a Approval) string {
+	if a.Reason == "" {
+		return ""
+	}
+	return fmt.Sprintf(" The operator's reason: %q.", a.Reason)
 }
 
 func (g *Gate) sessionAllowed(toolName, key string) bool {

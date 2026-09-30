@@ -31,23 +31,24 @@ import (
 // down: TestWritesSharedFilesystem_EveryBuiltinIsClassified fails on any
 // catalog name missing from here.
 var builtinWritesSharedFilesystem = map[string]bool{
-	"read_file":        false,
-	"read_many_files":  false,
-	"stat":             false,
-	"list_dir":         false,
-	"glob":             false,
-	"grep":             false,
-	"json_query":       false,
-	"fetch_url":        false, // GET-only network read
-	"wait_and_verify":  false, // only ever calls read-only tools
-	"todo":             false, // in-memory store
-	"alert":            false, // outbound webhook
-	"write_file":       true,
-	"edit_file":        true,
-	"delete_file":      true,
-	"bash":             true, // arbitrary commands
-	"record_plan":      true, // artifact under the agents dir
-	"sciontool_status": true, // sticky status file
+	"read_file":         false,
+	"read_many_files":   false,
+	"stat":              false,
+	"list_dir":          false,
+	"glob":              false,
+	"grep":              false,
+	"json_query":        false,
+	"view_file_outline": false, // parses/scans a file; reads only
+	"fetch_url":         false, // GET-only network read
+	"wait_and_verify":   false, // only ever calls read-only tools
+	"todo":              false, // in-memory store
+	"alert":             false, // outbound webhook
+	"write_file":        true,
+	"edit_file":         true,
+	"delete_file":       true,
+	"bash":              true, // arbitrary commands
+	"record_plan":       true, // artifact under the agents dir
+	"sciontool_status":  true, // sticky status file
 }
 
 // buildEverything registers as much of the catalog as one process can:

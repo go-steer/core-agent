@@ -284,15 +284,16 @@ type Gate struct {
 // the trade-off consciously.
 var planExemptTools = map[string]bool{
 	// Read-only filesystem + research tools
-	"read_file":       true,
-	"read_many_files": true,
-	"stat":            true,
-	"list_dir":        true,
-	"glob":            true,
-	"grep":            true,
-	"json_query":      true,
-	"todo":            true,
-	"record_plan":     true,
+	"read_file":         true,
+	"read_many_files":   true,
+	"view_file_outline": true,
+	"stat":              true,
+	"list_dir":          true,
+	"glob":              true,
+	"grep":              true,
+	"json_query":        true,
+	"todo":              true,
+	"record_plan":       true,
 
 	// Read-only skill introspection, exempt at NAMESPACE level: skill
 	// tools are registered through GateToolset(ts, gate, "skill") in

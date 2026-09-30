@@ -52,14 +52,15 @@ import (
 // status file), spawn_agent / stop_agent (mutate the background-agent
 // manager's state).
 var readOnlyBuiltins = map[string]bool{
-	"read_file":       true,
-	"read_many_files": true,
-	"stat":            true,
-	"list_dir":        true,
-	"glob":            true,
-	"grep":            true,
-	"json_query":      true,
-	"fetch_url":       true, // GET-only network read; no local state
+	"read_file":         true,
+	"read_many_files":   true,
+	"view_file_outline": true,
+	"stat":              true,
+	"list_dir":          true,
+	"glob":              true,
+	"grep":              true,
+	"json_query":        true,
+	"fetch_url":         true, // GET-only network read; no local state
 	// wait_and_verify only ever calls tools that are themselves
 	// classified read-only (#648), so the waiter inherits the class.
 	// Naming it here also gets the auto-continue classifier (#624)

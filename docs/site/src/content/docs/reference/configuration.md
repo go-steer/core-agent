@@ -423,7 +423,7 @@ Library callers: read the resolved value through `cfg.Permissions.ResolvedPlanMo
 
 ### Plan-first gating (v2.3+) — `plan_mode: "required"`
 
-Setting `permissions.plan_mode: "required"` turns on **substrate-enforced plan-before-action**. The gate denies mutating tool calls (`write_file`/`edit_file`/`delete_file`/`bash`, `fetch_url`, `spawn_agent`/`spawn_remote_agent`, and all MCP tools) until the model has called the `record_plan` built-in tool. Read tools (`read_file`/`read_many_files`/`stat`/`list_dir`/`glob`/`grep`/`json_query`/`todo`) and `record_plan` itself remain allowed so research happens normally and the model has an escape valve. `fetch_url` is deliberately **plan-gated** (v2.8+): it is network egress with a model-controlled URL — an exfiltration channel — so it only unlocks once a plan is recorded, like every other action tool.
+Setting `permissions.plan_mode: "required"` turns on **substrate-enforced plan-before-action**. The gate denies mutating tool calls (`write_file`/`edit_file`/`delete_file`/`bash`, `fetch_url`, `spawn_agent`/`spawn_remote_agent`, and all MCP tools) until the model has called the `record_plan` built-in tool. Read tools (`read_file`/`read_many_files`/`view_file_outline`/`stat`/`list_dir`/`glob`/`grep`/`json_query`/`todo`) and `record_plan` itself remain allowed so research happens normally and the model has an escape valve. `fetch_url` is deliberately **plan-gated** (v2.8+): it is network egress with a model-controlled URL — an exfiltration channel — so it only unlocks once a plan is recorded, like every other action tool.
 
 **Spawning is gated as of v2.9.** Before that the plan gate governed only what a subagent went on to do, never the act of creating one — so a parent with no plan could fan out a fleet that did the acting. Note the asymmetry the fix keeps: `stop_agent` is **not** gated in any mode, because a denial there leaves running exactly what the model was trying to halt. An operator who wants delegation without cancellation withholds the tool instead (see `subagents[].tools`). A declarative subagent is also callable directly as a parent tool, not only by reference from `spawn_agent`; both routes are matched under the same `spawn_agent` policy bucket, so one rule closes both.
 
@@ -783,6 +783,7 @@ Default `per_tool` overrides (apply to the built-in tools that ship with core-ag
       "bash":      { "max_bytes": 65536,  "max_lines": 2000 },
       "read_file":       { "max_bytes": 262144, "max_lines": 5000 },
       "read_many_files": { "max_bytes": 262144, "max_lines": 5000 },
+      "view_file_outline": { "max_bytes": 65536, "max_lines": 2000 },
       "glob":            { "max_bytes": 32768,  "max_lines": 500 },
       "grep":            { "max_bytes": 262144, "max_lines": 5000 }
     }
@@ -802,7 +803,7 @@ Controls which built-in tools are wired into the bundled CLI. Defaults to the fu
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`, `glob`, `grep`, `json_query`, `fetch_url`, `alert`, `wait_and_verify`, `todo`, `record_plan`, `sciontool_status`. Unknown names cause a startup error. |
+| `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `read_many_files`, `view_file_outline`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`, `glob`, `grep`, `json_query`, `fetch_url`, `alert`, `wait_and_verify`, `todo`, `record_plan`, `sciontool_status`. Unknown names cause a startup error. |
 | `wait_and_verify` | object | `{}` | Bounds for the [`wait_and_verify`](/concepts/tools/#wait_and_verify-v29--bounded-poll-until-condition) poll loop. See below. |
 | `call_peer` | object | `{}` | Off by default. Delegation to peer agents registered with this daemon's peer hub. See below. |
 | `spawn_agent` | object | `{}` | Bounds for the `spawn_agent` built-in's blocking form. See below. |

@@ -16,6 +16,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 |---|---|---|
 | `read_file` | Read a file with optional `offset` / `limit` for large files. | `path`, `offset?`, `limit?` |
 | `read_many_files` | Read a batch in one call. Per-file failures surface as `skipped: "<reason>"` entries — the batch never aborts. **Preferred over parallel `read_file` calls when the file set is known up front.** | `paths?`, `pattern?`, `path?` |
+| `view_file_outline` | A file's declaration skeleton without the bodies — package, imports, types, top-level consts and vars, function and method signatures — each with the line it starts on. **Preferred over reading a long file whole** when the question is "what is in here": the line numbers turn straight into a narrower `read_file`. Go is parsed with `go/parser` and the result says `analysis: "parsed"`; the other extensions it knows get a line scan reported as `analysis: "heuristic"` with its caveats in `note`; anything else is refused rather than guessed at. See below. | `path` |
 | `write_file` | Atomic create-or-overwrite. Asks for confirmation in `ask` mode. | `path`, `content` |
 | `edit_file` | Replace exactly one occurrence of `old_string` with `new_string`. Fails if the string appears zero times, or more than once unless `replace_all: true` (v2.9+) — the refusal names the match count and the flag, so a rename is one call instead of a widening game. | `path`, `old_string`, `new_string`, `replace_all?` |
 | `delete_file` | Idempotent removal of a regular file. Refuses directories. **Preferred over `bash rm`** — honors the gate's `CheckFileWrite` and the path scope. | `path` |
@@ -100,6 +101,28 @@ Three properties are enforced by the runtime rather than asked for in a prompt:
 An unverified wait is **not** an error: it returns `verified: false` with `outcome` of `timeout` / `attempts_exhausted` / `canceled` plus the observation trail, because "it never became Ready in three minutes" is a finding the model should report rather than a failure it should retry. A poll that errors is treated as transient and retried; a malformed `expect_jq` aborts on the first attempt instead of burning the budget.
 
 For waits longer than a turn is worth, use [`schedule_next_turn`](#schedule_next_turn) to come back later and `wait_and_verify` to confirm cheaply on arrival. Full rationale: [`docs/wait-and-verify-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/wait-and-verify-design.md).
+
+## `view_file_outline` — the skeleton, not the file
+
+`grep` finds a string and `read_file` reads a range; neither answers "what is in this file" cheaply, so the model reads a 2,000-line file whole to discover that one method in it matters. `view_file_outline` ([#954](https://github.com/go-steer/core-agent/issues/954)) returns just the declarations — package, imports, types, top-level consts and vars, function and method signatures — each prefixed with the line it starts on, so the outline hands you the `offset` for the follow-up read.
+
+```text
+   15  package tools
+   35  type grepArgs struct {
+           Path    string `json:"path,omitempty" ...`
+           Pattern string `json:"pattern" ...`
+       }
+   70  func grepFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[grepArgs, grepResult]
+  150  func grepFile(re *regexp.Regexp, path string, maxLines int) ([]grepMatch, bool, error)
+```
+
+**It never presents a guess as a parse.** Every result carries an `analysis` field:
+
+- `"parsed"` — Go only. `go/parser` builds the AST and bodies are removed *on the AST* before printing, so the skeleton is exactly what the compiler sees and no statement text can leak. A file that doesn't parse is an error, not a partial outline. Doc comments are dropped: the caller asked for structure.
+- `"heuristic"` — a line-based scan for the extensions it knows (`.py`, `.rb`, `.rs`, `.java`, `.js`/`.mjs`/`.cjs`/`.jsx`, `.ts`/`.tsx`, `.sh`/`.bash`). The caveats travel with the result in `note`: multi-line declarations are reported by their first line only, a matching line inside a string or comment is reported as a declaration, and nothing distinguishes a declaration from a struct field, a local or a nested definition — indentation is preserved verbatim so nesting is visible, but it is the only clue there is. A declaration whose line does not begin with a known keyword (a JavaScript class method, for one) is not reported at all, so an absence proves nothing. C and C++ are refused rather than scanned: a function definition there starts with its return type, so a keyword scan would list the includes and structs and none of the functions.
+- Neither — the call is **refused**, and the refusal names the extensions that would have worked. A scan tuned for nothing finds either everything or nothing, and the model has no way to discount that.
+
+Gate, path scope and output cap are the same as every other read tool: `CheckFileRead` before the file is opened, and `tool_output.per_tool["view_file_outline"]` (default 64 KB / 2,000 lines) on the way out. It is classified read-only, so it dispatches concurrently with other reads and runs before a plan is recorded under [`plan_mode: required`](/reference/configuration/#plan-mode-v29--plan_mode).
 
 ## `call_peer` (v2.9+) — named delegation to a peer agent
 

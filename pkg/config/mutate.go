@@ -182,3 +182,20 @@ func PersistMouseChoice(agentsDir string, on bool) error {
 		return cfg.Validate()
 	})
 }
+
+// PersistPermissionLayout writes the /permissions layout switch so it
+// survives across runs (core-tui v0.27.0's
+// Options.PersistPermissionLayout). layout is PermissionLayoutInline
+// or PermissionLayoutOverlay.
+//
+// Like PersistMouseChoice it always writes the explicit value rather
+// than clearing the field when the choice matches today's default, so
+// an operator who picked overlay keeps overlay even if the default
+// ever changes. Validates before save so a bad value surfaces as an
+// error row in the TUI instead of corrupting the file.
+func PersistPermissionLayout(agentsDir, layout string) error {
+	return Mutate(agentsDir, func(cfg *Config) error {
+		cfg.UI.PermissionLayout = layout
+		return cfg.Validate()
+	})
+}

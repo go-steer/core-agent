@@ -114,3 +114,92 @@ func TestUIConfig_JSONRoundTrip(t *testing.T) {
 		t.Errorf("round-tripped JSON missing mouse: %s", out)
 	}
 }
+
+// core-agent defaults to the overlay modal even though core-tui's zero
+// value is inline, so "unset" and "overlay" must both read as overlay.
+func TestUIConfig_EffectivePermissionLayout(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want string
+	}{
+		{"", PermissionLayoutOverlay},
+		{PermissionLayoutOverlay, PermissionLayoutOverlay},
+		{PermissionLayoutInline, PermissionLayoutInline},
+	}
+	for _, tc := range cases {
+		u := UIConfig{PermissionLayout: tc.in}
+		if got := u.EffectivePermissionLayout(); got != tc.want {
+			t.Errorf("EffectivePermissionLayout() with %q = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestDefaultConfig_PermissionLayoutIsOverlay(t *testing.T) {
+	t.Parallel()
+	if got := DefaultConfig().UI.EffectivePermissionLayout(); got != PermissionLayoutOverlay {
+		t.Errorf("DefaultConfig() permission layout = %q, want %q", got, PermissionLayoutOverlay)
+	}
+}
+
+func TestValidate_UIPermissionLayout(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		layout  string
+		wantErr bool
+	}{
+		{"", false},
+		{PermissionLayoutInline, false},
+		{PermissionLayoutOverlay, false},
+		{"Overlay", true}, // case-sensitive, like ui.theme's buckets
+		{"modal", true},
+		{"popup", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.layout, func(t *testing.T) {
+			t.Parallel()
+			c := DefaultConfig()
+			c.UI.PermissionLayout = tc.layout
+			err := c.Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() with permission_layout=%q: got nil, want error", tc.layout)
+				}
+				if !strings.Contains(err.Error(), "ui.permission_layout") {
+					t.Errorf("error %q does not name ui.permission_layout", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("Validate() with permission_layout=%q: got %v, want nil", tc.layout, err)
+			}
+		})
+	}
+}
+
+func TestUIConfig_PermissionLayoutJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+	in := `{"version": 1, "model": {"name": "test"}, "ui": {"permission_layout": "inline"}}`
+	var c Config
+	if err := json.Unmarshal([]byte(in), &c); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if c.UI.PermissionLayout != PermissionLayoutInline {
+		t.Errorf("PermissionLayout = %q, want inline", c.UI.PermissionLayout)
+	}
+	out, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"permission_layout":"inline"`) {
+		t.Errorf("round-tripped JSON missing permission_layout: %s", out)
+	}
+	// Unset stays out of the file, so a config written before this key
+	// existed keeps reading as the default.
+	out, err = json.Marshal(DefaultConfig())
+	if err != nil {
+		t.Fatalf("Marshal default: %v", err)
+	}
+	if strings.Contains(string(out), "permission_layout") {
+		t.Errorf("default config serializes permission_layout: %s", out)
+	}
+}

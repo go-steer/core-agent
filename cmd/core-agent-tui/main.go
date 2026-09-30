@@ -255,10 +255,15 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 		// nil unless --no-mouse was passed; see mouseOptFromFlag. core-tui
 		// reads this every frame, so the runtime /mouse toggle still works
 		// from whichever state the flag chose.
-		Mouse:      mouse,
-		Memory:     memory,
-		Skills:     skills,
-		MCPServers: mcpServers,
+		Mouse: mouse,
+		// The overlay modal, matching cmd/core-agent's default for an
+		// unset ui.permission_layout. This client reads no config file,
+		// so /permissions layout switches for the session only — there
+		// is no PersistPermissionLayout to write it back through.
+		PermissionLayout: coretui.PermissionOverlay,
+		Memory:           memory,
+		Skills:           skills,
+		MCPServers:       mcpServers,
 		Branding: coretui.Branding{
 			Wordmark:      wordmark,
 			AgentIdentity: identity,

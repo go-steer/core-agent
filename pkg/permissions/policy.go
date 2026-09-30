@@ -16,6 +16,7 @@ package permissions
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -193,8 +194,21 @@ func formatRules(rs []rule) []string {
 // allowRules / denyRules give package-internal access to the parsed
 // rule slices so the gate can compute pre-flight tool-state without
 // the public Match() shape (which requires a candidate key).
-func (p *Policy) allowRules() []rule { return p.allow }
-func (p *Policy) denyRules() []rule  { return p.deny }
+//
+// Both return a copy taken under the read lock: AddAllow / AddDeny
+// append under the write lock, and a caller ranging over the live
+// slice would race them.
+func (p *Policy) allowRules() []rule {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return slices.Clone(p.allow)
+}
+
+func (p *Policy) denyRules() []rule {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return slices.Clone(p.deny)
+}
 
 func matchAny(rules []rule, tool, key string) bool {
 	for _, r := range rules {

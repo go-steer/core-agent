@@ -143,7 +143,7 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/mcp` | Configured MCP servers and their status. |
 | `/perms`, `/permissions` | Gate mode + active allow/deny patterns + per-session approval log. |
 | `/permissions layout [inline\|overlay]` | Switch the permission prompt between the centered modal (the default) and an inline block in the chat. Toggles with no argument; applies from the next prompt; session-only in this client. |
-| `/allow <pattern>`, `/deny <pattern>` | Add patterns to the live gate (and to `.agents/config.json` if writable on the daemon side). |
+| `/allow <pattern>`, `/deny <pattern>` | Add patterns to this session's live gate. They are dropped when the session is evicted for idleness or the daemon restarts. Nothing is written to `.agents/config.json`. On a multi-session daemon `/allow` needs the session owner or an admin. |
 | `/pricing`, `/pricing refresh`, `/pricing set <id> <in> <out>` | Inspect or override the pricing layer. |
 | `/reload` | Re-walk memory + skills + MCP config on the daemon; surfaces per-surface results (`Memory: ✓`, `Skills: ✓`, `MCP: ✗` with errors inline). |
 | `/title <name>` | Rename this session so the picker shows something you chose instead of the title the agent inferred from your first prompt. `/title --clear` drops the name and re-arms automatic titling; a bare `/title` prints usage rather than clearing, since typing a command to see what it does shouldn't destroy anything. POSTs `/sessions/<id>/title`; the reply reports the name as **stored** (the daemon trims and caps it), and warns when it couldn't be persisted durably. |

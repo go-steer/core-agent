@@ -48,7 +48,12 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 
 	// Mutation endpoints (PR A2): blocked by the ReadOnly middleware
 	// at the auth layer when ReadOnly=true (any non-GET is gated).
-	h.routeSession(mux, "POST", "perms/allow", auth.ActionSessionWrite, h.doPermsAllow)
+	// perms/allow is ActionSessionAdmin (#1176): an allow pattern
+	// widens what runs without a prompt, and "*" matches every
+	// non-bash tool call, so it is held to the same bar as perms/mode.
+	// perms/deny only narrows, so a contributor keeps it. Both change
+	// this session alone (permissions.Gate.sessionPolicy).
+	h.routeSession(mux, "POST", "perms/allow", auth.ActionSessionAdmin, h.doPermsAllow)
 	h.routeSession(mux, "POST", "perms/deny", auth.ActionSessionWrite, h.doPermsDeny)
 	// perms/mode is ActionSessionAdmin (#1168): yolo removes the gate,
 	// so switching modes is held to the ACL-editing bar. See perm_mode.go.

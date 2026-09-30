@@ -338,7 +338,12 @@ plan-first state.
 **Fix:** introduce **per-session sub-gates**. The daemon owns a
 "template gate" carrying the config-level mode + policy + scope.
 Each session gets a derived sub-gate that:
-- shares the template's mode / policy / scope (read-only reference)
+- shares the template's configured policy / scope (read-only reference)
+- has its own runtime policy layer: patterns added through
+  `/perms/allow`, `/perms/deny` or the TUI's `/allow` / `/deny` land
+  here, never in the shared policy (#1176). A deny in either layer
+  wins; a session allow cannot lift a configured deny. The layer lives
+  and dies with the sub-gate, so eviction, resume and restart drop it
 - has its own session-allow / session-tool / session-verb maps
 - has its own `planRecorded` flag
 - has its own approvals audit log

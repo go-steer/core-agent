@@ -55,8 +55,9 @@ const (
 // model-facing: the whole point is that the model can tell the
 // difference between this and a parse.
 const heuristicNote = "Line-based heuristic, not a parse: these are lines that begin with a declaration keyword for this language. " +
-	"Declarations spanning several lines are reported by their first line only, nested declarations are missed, " +
-	"and a matching line inside a string or comment is reported as if it were a declaration. Confirm anything load-bearing by reading the lines themselves."
+	"Declarations spanning several lines are reported by their first line only; a matching line inside a string or comment is reported as if it were a declaration; " +
+	"and nothing here distinguishes a declaration from a struct field, a local, or a nested definition — indentation is preserved verbatim so you can see the nesting, but it is the only clue there is. " +
+	"Confirm anything load-bearing by reading the lines themselves."
 
 type viewFileOutlineArgs struct {
 	Path string `json:"path" jsonschema:"absolute or relative path of the file to outline"`
@@ -290,14 +291,22 @@ func numberBlock(line int, rendered string) string {
 // outlineHeuristic reports the lines that look like the start of a
 // declaration in lang. It reports LINES, not parsed structure, and the
 // result that carries it says so.
+//
+// Leading whitespace is PRESERVED rather than trimmed. The scan cannot
+// tell a top-level declaration from a struct field, a local, or a
+// nested definition — `fn nested_helper()` inside another function
+// matches the same prefix as a top-level `fn` — so stripping the indent
+// would present nested things as top-level with nothing to notice it
+// by. Indentation is the only structural signal available here, and the
+// note says as much; trailing space still goes, since it carries none.
 func outlineHeuristic(data []byte, lang heuristicLang) string {
 	var b strings.Builder
 	for i, raw := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || !looksLikeDecl(trimmed, lang) {
+		line := strings.TrimRight(raw, " \t\r")
+		if strings.TrimSpace(line) == "" || !looksLikeDecl(strings.TrimSpace(line), lang) {
 			continue
 		}
-		fmt.Fprintf(&b, "%5d  %s\n", i+1, trimmed)
+		fmt.Fprintf(&b, "%5d  %s\n", i+1, line)
 	}
 	return b.String()
 }

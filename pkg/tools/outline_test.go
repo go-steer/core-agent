@@ -239,6 +239,32 @@ func TestViewFileOutline_NonGoIsLabelledHeuristic(t *testing.T) {
 	if strings.Contains(res.Outline, "secret_body_token") {
 		t.Errorf("heuristic outline leaked body text:\n%s", res.Outline)
 	}
+	// The nested `def method` must keep its indentation. The scan
+	// cannot tell nested from top-level, so the indent is the only
+	// signal that it is nested — and the note promises it is there.
+	// Trimming it would present a method as a module-level function
+	// with nothing to notice the difference by.
+	if !strings.Contains(res.Outline, "    def method(self):") {
+		t.Errorf("nested declaration lost its indentation, so it reads as top-level:\n%s", res.Outline)
+	}
+}
+
+// The note is part of the result's contract: a heuristic outline that
+// misdescribes its own limits is worse than one with no note, because
+// the caller discounts it by the wrong amount. This pins the two
+// claims that were wrong in the first draft — it said nested
+// declarations were "missed" when they are in fact reported, looking
+// top-level once indentation is stripped.
+func TestViewFileOutline_HeuristicNoteDescribesWhatItActuallyDoes(t *testing.T) {
+	t.Parallel()
+	for _, claim := range []string{"not a parse", "first line only", "nested", "indentation is preserved"} {
+		if !strings.Contains(heuristicNote, claim) {
+			t.Errorf("heuristic note no longer mentions %q:\n%s", claim, heuristicNote)
+		}
+	}
+	if strings.Contains(heuristicNote, "nested declarations are missed") {
+		t.Errorf("the note claims nested declarations are missed; they are reported:\n%s", heuristicNote)
+	}
 }
 
 // An extension with neither a parser nor a tuned scan is declined,

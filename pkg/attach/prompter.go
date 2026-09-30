@@ -167,6 +167,7 @@ type pendingPrompt struct {
 type promptResponse struct {
 	decision permissions.Decision
 	by       string
+	reason   string
 	err      error
 }
 
@@ -292,7 +293,7 @@ func (b *PromptBroker) AskApprovalAttributed(ctx context.Context, req permission
 			b.mu.Lock()
 			delete(b.pending, id)
 			b.mu.Unlock()
-			return permissions.Approval{Decision: resp.decision, By: resp.by}, resp.err
+			return permissions.Approval{Decision: resp.decision, By: resp.by, Reason: resp.reason}, resp.err
 		case <-ctx.Done():
 			return b.abandon(ctx, id)
 		}
@@ -456,6 +457,15 @@ func (b *PromptBroker) Respond(id string, decision permissions.Decision) error {
 // the request body. Pass "" when there is nothing verified to record;
 // see permissions.Approval.By.
 func (b *PromptBroker) RespondAs(id string, decision permissions.Decision, by string) error {
+	return b.RespondWith(id, permissions.Approval{Decision: decision, By: by})
+}
+
+// RespondWith is RespondAs carrying the whole answer, so a deny can
+// bring the operator's reason with it (#1165). a.By is subject to the
+// same rule as RespondAs's by: only an identity the caller verified.
+// a.Reason is passed through as given; bounding and normalizing it is
+// the caller's job, because the caller is the one that can reject it.
+func (b *PromptBroker) RespondWith(id string, a permissions.Approval) error {
 	b.mu.Lock()
 	pending, ok := b.pending[id]
 	var gone error
@@ -470,7 +480,7 @@ func (b *PromptBroker) RespondAs(id string, decision permissions.Decision, by st
 		return ErrPromptNotFound
 	}
 	select {
-	case pending.response <- promptResponse{decision: decision, by: by}:
+	case pending.response <- promptResponse{decision: a.Decision, by: a.By, reason: a.Reason}:
 		return nil
 	default:
 		// AskApproval already drained the channel (concurrent

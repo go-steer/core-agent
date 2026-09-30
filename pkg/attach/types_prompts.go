@@ -48,7 +48,22 @@ type PromptResponse struct {
 	// idea of who is approving differs from the server's, which is
 	// worth a 400 rather than a shrug. Omit it and nothing is lost.
 	Approver string `json:"approver,omitempty"`
+
+	// Reason is what the operator says about a deny, and the model
+	// reads it in the refused call's result (#1165). Optional; on any
+	// decision other than "deny" it is a 400, because an allow that
+	// carries instructions would be read as conditions on the call it
+	// just authorized. Runs of whitespace, newlines included, collapse
+	// to one space, and more than MaxDenyReasonBytes after that is a
+	// 400 rather than a silent cut. Protocol 1.15.0; an older daemon
+	// ignores the field and the model gets a bare denial.
+	Reason string `json:"reason,omitempty"`
 }
+
+// MaxDenyReasonBytes bounds PromptResponse.Reason. A reason is a
+// sentence or two for the model; anything longer is a new instruction,
+// and that belongs in a steer.
+const MaxDenyReasonBytes = 500
 
 // PromptRespondResponse is the 200 body of /perms/respond. Approver
 // echoes what the server recorded, so a relay can tell "attributed to

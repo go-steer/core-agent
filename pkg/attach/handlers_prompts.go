@@ -20,8 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 // PR D — HTTP-driven permission prompts. Two endpoints:
@@ -115,6 +117,11 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		http.Error(w, fmt.Sprintf("perms/respond: unknown decision %q (want deny|allow-once|allow-session|allow-session-verb|allow-session-tool|allow-always)", req.Decision), http.StatusBadRequest)
 		return
 	}
+	reason, rerr := denyReason(req.Reason, decision)
+	if rerr != nil {
+		http.Error(w, rerr.Error(), http.StatusBadRequest)
+		return
+	}
 	approver := verifiedApprover(r.Context())
 	if req.Approver != "" && req.Approver != approver {
 		if approver == "" {
@@ -124,7 +131,7 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		http.Error(w, fmt.Sprintf("perms/respond: approver %q does not match the verified caller %q; omit the field and the server attributes the decision itself", req.Approver, approver), http.StatusBadRequest)
 		return
 	}
-	if err := broker.RespondAs(req.ID, decision, approver); err != nil {
+	if err := broker.RespondWith(req.ID, permissions.Approval{Decision: decision, By: approver, Reason: reason}); err != nil {
 		// 410, not 404. The prompt DID exist and this caller is
 		// answering the right question — they are just late, and the
 		// distinction is the whole point of the status: 404 leaves an
@@ -147,6 +154,25 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		return
 	}
 	writeJSON(w, http.StatusOK, PromptRespondResponse{Acknowledged: true, Approver: approver})
+}
+
+// denyReason normalizes a /perms/respond reason (#1165): whitespace
+// runs collapse to one space so the model reads a single line, and the
+// result is refused, not truncated, when it is over MaxDenyReasonBytes
+// or arrives with anything but a deny. A refusal leaves the prompt
+// pending, so the operator can send it again.
+func denyReason(raw string, d permissions.Decision) (string, error) {
+	reason := strings.Join(strings.Fields(raw), " ")
+	if reason == "" {
+		return "", nil
+	}
+	if d != permissions.DecisionDeny {
+		return "", errors.New("perms/respond: reason is accepted only with decision \"deny\"; an approval that carries text would read to the model as conditions on the call it authorized. Send the approval without it, and use a steer for instructions")
+	}
+	if len(reason) > MaxDenyReasonBytes {
+		return "", fmt.Errorf("perms/respond: reason is %d bytes, over the %d-byte limit; the prompt is still pending, so shorten it and send the deny again", len(reason), MaxDenyReasonBytes)
+	}
+	return reason, nil
 }
 
 // verifiedApprover returns the identity to attribute a permission

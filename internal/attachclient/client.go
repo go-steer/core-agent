@@ -900,6 +900,14 @@ func (c *Client) RespondToPrompt(ctx context.Context, sessionPath, id, decision 
 	return c.doJSON(ctx, http.MethodPost, sessionPath+"/perms/respond", attach.PromptResponse{ID: id, Decision: decision}, nil)
 }
 
+// DenyPrompt POSTs a deny with the operator's reason, which the model
+// reads in the refused call's result (#1165). An empty reason is a
+// plain deny. A daemon older than protocol 1.15.0 accepts the call and
+// drops the reason.
+func (c *Client) DenyPrompt(ctx context.Context, sessionPath, id, reason string) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/perms/respond", attach.PromptResponse{ID: id, Decision: "deny", Reason: reason}, nil)
+}
+
 // ---- helpers ----
 
 // doJSON sends a request, optionally decodes a JSON body into out (nil

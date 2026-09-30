@@ -785,6 +785,19 @@ type PermissionsConfig struct {
 	// exists to fix: a deployment that believes it has an approval
 	// channel and finds out otherwise from a stalled agent.
 	ApprovalNotify string `json:"approval_notify,omitempty"`
+
+	// ApprovalNotifyAfter also sends a prompt that DID reach an attached
+	// client to the ApprovalNotify target, once it has gone this long
+	// without an answer (#1167). A Go duration string ("15m"); empty,
+	// the default, keeps notification to prompts that reached nobody.
+	//
+	// Being attached is not the same as watching: a TUI left attached
+	// while its operator is away absorbs every prompt, and without this
+	// the approval channel never hears about any of them. It requires
+	// ApprovalNotify, and when ApprovalTimeout is set it must be
+	// shorter, since a notification due after the prompt has expired
+	// can never be sent.
+	ApprovalNotifyAfter string `json:"approval_notify_after,omitempty"`
 }
 
 // ResolvedApprovalTimeout parses ApprovalTimeout. Empty is zero (wait
@@ -803,6 +816,44 @@ func (p PermissionsConfig) ResolvedApprovalTimeout() (time.Duration, error) {
 	}
 	if d < 0 {
 		return 0, fmt.Errorf("permissions.approval_timeout %q is negative; use a positive duration, or omit the field to wait indefinitely", p.ApprovalTimeout)
+	}
+	return d, nil
+}
+
+// validateApprovalNotifyAfter rejects a notify-after that could never
+// send anything: one with no target to send to, and one due at or after
+// the moment the prompt expires.
+func (p PermissionsConfig) validateApprovalNotifyAfter() error {
+	after, err := p.ResolvedApprovalNotifyAfter()
+	if err != nil || after == 0 {
+		return err
+	}
+	if p.ApprovalNotify == "" {
+		return fmt.Errorf("permissions.approval_notify_after=%q has no permissions.approval_notify target to send to", p.ApprovalNotifyAfter)
+	}
+	timeout, err := p.ResolvedApprovalTimeout()
+	if err != nil {
+		return err
+	}
+	if timeout > 0 && after >= timeout {
+		return fmt.Errorf("permissions.approval_notify_after=%q is not shorter than permissions.approval_timeout=%q, so the prompt would expire before the notification is due", p.ApprovalNotifyAfter, p.ApprovalTimeout)
+	}
+	return nil
+}
+
+// ResolvedApprovalNotifyAfter parses ApprovalNotifyAfter. Empty is zero
+// (off). A negative duration is an error for the reason
+// ResolvedApprovalTimeout gives.
+func (p PermissionsConfig) ResolvedApprovalNotifyAfter() (time.Duration, error) {
+	if p.ApprovalNotifyAfter == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(p.ApprovalNotifyAfter)
+	if err != nil {
+		return 0, fmt.Errorf("permissions.approval_notify_after %q: %w (want a Go duration like \"15m\")", p.ApprovalNotifyAfter, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("permissions.approval_notify_after %q is negative; use a positive duration, or omit the field", p.ApprovalNotifyAfter)
 	}
 	return d, nil
 }
@@ -1685,6 +1736,9 @@ func (c *Config) Validate() error {
 			}
 			return fmt.Errorf("config: permissions.approval_notify=%q is not a configured alert target (have: %s)", n, strings.Join(known, ", "))
 		}
+	}
+	if err := c.Permissions.validateApprovalNotifyAfter(); err != nil {
+		return fmt.Errorf("config: %w", err)
 	}
 	for i, e := range c.PathScope.AllowPaths {
 		if e.Path == "" {

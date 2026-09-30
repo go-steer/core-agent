@@ -213,3 +213,55 @@ func TestAnUnansweredPromptIsBothAnnouncedAndExpired(t *testing.T) {
 		t.Fatalf("late RespondAs err = %v, want attach.ErrPromptExpired", err)
 	}
 }
+
+// TestAnAttachedButUnansweredPromptReachesTheSink is #1167 end to end,
+// from the config field an operator writes to the webhook: a client is
+// attached and receives the prompt, nobody answers it, and after
+// approval_notify_after the approval channel hears about it anyway,
+// worded as unanswered rather than as nobody attached.
+func TestAnAttachedButUnansweredPromptReachesTheSink(t *testing.T) {
+	t.Parallel()
+	sink := newSink(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Alerts = config.AlertsConfig{Targets: []config.AlertTarget{
+		{Name: "oncall", URL: sink.URL, Template: config.AlertTemplateGeneric},
+	}}
+	cfg.Permissions.ApprovalNotify = "oncall"
+	cfg.Permissions.ApprovalNotifyAfter = "100ms"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	n, err := New(cfg, quiet())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	broker := attach.NewPromptBroker()
+	t.Cleanup(broker.Close)
+	n.AttachSession(broker, "s1")
+
+	// The TUI left attached: it receives the prompt and nobody answers.
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	frames, cleanup := broker.Subscribe(subCtx)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_, _ = broker.AskApproval(ctx, permissions.PromptRequest{ToolName: "spawn_agent", Detail: "reviewer"})
+	}()
+	select {
+	case <-frames:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the attached client never received the prompt")
+	}
+
+	details := sink.await(t)
+	if got, _ := details["unanswered_for"].(string); got != "100ms" {
+		t.Errorf("unanswered_for = %q, want 100ms", got)
+	}
+	if id, _ := details["request_id"].(string); id == "" {
+		t.Error("the notification carried no request id")
+	}
+}

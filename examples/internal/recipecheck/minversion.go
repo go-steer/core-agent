@@ -247,6 +247,13 @@ var GatedFeatures = []GatedFeature{
 			"nobody is reading the console where a warning would have gone",
 	},
 	{
+		Path: "permissions.approval_notify_after",
+		Min:  "2.10.0-dev.2",
+		Why: "also announces a prompt that reached an attached client and then went unanswered (#1167). " +
+			"An older daemon drops it, so a TUI left attached while its operator is away absorbs " +
+			"every prompt and the approval channel hears about none of them",
+	},
+	{
 		Path: "checkpoint.mode",
 		Min:  "2.9.0-dev.5",
 		Why: "which parties may declare a task boundary (#905). `operator` withholds the " +

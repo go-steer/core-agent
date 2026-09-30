@@ -27,6 +27,10 @@
 // alert target carrying what was asked, which session asked it, the
 // request id, and when it expires. That is the difference between a
 // doorbell and a door.
+//
+// permissions.approval_notify_after extends that to a prompt that did
+// reach an attached client and then went unanswered for that long
+// (#1167), because a client being attached is not somebody watching it.
 package approvalnotify
 
 import (
@@ -51,6 +55,11 @@ type sender interface {
 type Notifier struct {
 	snd sender
 	log *slog.Logger
+
+	// after is permissions.approval_notify_after: how long a prompt
+	// that reached an attached client may go unanswered before it is
+	// sent too (#1167). Zero leaves that case alone.
+	after time.Duration
 }
 
 // New builds a Notifier for cfg.Permissions.ApprovalNotify, or (nil,
@@ -69,10 +78,14 @@ func New(cfg *config.Config, log *slog.Logger) (*Notifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("permissions.approval_notify: %w", err)
 	}
+	after, err := cfg.Permissions.ResolvedApprovalNotifyAfter()
+	if err != nil {
+		return nil, err
+	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Notifier{snd: snd, log: log}, nil
+	return &Notifier{snd: snd, log: log, after: after}, nil
 }
 
 // Target reports where notifications will be sent, for a startup log
@@ -111,6 +124,7 @@ func (n *Notifier) Attach(broker *attach.PromptBroker, session func() string) {
 		}
 		n.notify(ctx, sid, p)
 	})
+	broker.SetUnansweredAfter(n.after)
 }
 
 // AttachSession is Attach for a caller that already holds the id — the
@@ -148,15 +162,28 @@ func (n *Notifier) notify(ctx context.Context, session string, p attach.Unwatche
 		details["source"] = p.Frame.Source
 	}
 
+	// Why nobody has answered. A prompt that reached no client and one
+	// that sat unanswered on an attached one ask the reader different
+	// things: the second has a terminal somewhere showing it (#1167).
+	why := "nobody is attached"
+	if p.Unanswered > 0 {
+		waited := p.Unanswered
+		if waited >= time.Second {
+			waited = waited.Round(time.Second)
+		}
+		why = fmt.Sprintf("an attached client has not answered in %s", waited)
+		details["unanswered_for"] = waited.String()
+	}
+
 	var summary string
 	if p.Deadline.IsZero() {
 		details["expires"] = "never — the agent is blocked until somebody answers"
-		summary = fmt.Sprintf("core-agent: %s is waiting for approval and nobody is attached", p.Frame.ToolName)
+		summary = fmt.Sprintf("core-agent: %s is waiting for approval and %s", p.Frame.ToolName, why)
 	} else {
 		details["expires_at"] = p.Deadline.UTC().Format(time.RFC3339)
 		details["expires_in"] = time.Until(p.Deadline).Round(time.Second).String()
-		summary = fmt.Sprintf("core-agent: %s needs approval within %s and nobody is attached",
-			p.Frame.ToolName, time.Until(p.Deadline).Round(time.Second))
+		summary = fmt.Sprintf("core-agent: %s needs approval within %s and %s",
+			p.Frame.ToolName, time.Until(p.Deadline).Round(time.Second), why)
 	}
 
 	// warning, not critical. An unattended gated run asking for one

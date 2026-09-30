@@ -15,8 +15,11 @@
 package background
 
 import (
+	"context"
+	"strings"
 	"testing"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
@@ -133,5 +136,76 @@ func TestStopSubagent_NilManagerIsNotFound(t *testing.T) {
 	}
 	if got.Found {
 		t.Errorf("got %+v, want a not-found outcome", got)
+	}
+}
+
+// TestStopTool_SaysWhenTheSubagentHadAlreadyFinished is #1164, the tool
+// half of #897. In the #1116 T2 run the parent stopped a reviewer that
+// had ended on its max-cost bound twenty seconds earlier, got back a
+// bare `"status": "deferred"` against a description promising
+// 'stopped', and read it as a stop that had not taken. The tool now
+// says which of the two happened, and why an already-finished subagent
+// finished.
+func TestStopTool_SaysWhenTheSubagentHadAlreadyFinished(t *testing.T) {
+	t.Parallel()
+	mgr, _ := newFakeManager(t)
+	register(mgr, "live", StatusRunning)
+	capped := register(mgr, "capped", StatusDeferred)
+	capped.result = &autonomous.RunResult{Reason: autonomous.StopReasonMaxCost}
+	register(mgr, "done", StatusCompleted)
+	stopTool := NewStopAgentTool(mgr)
+
+	resp := runToolJSON(t, stopTool, context.Background(), map[string]any{"name": "live"})
+	if resp["stopped"] != true || resp["status"] != "stopped" {
+		t.Errorf("live subagent: got %v, want stopped=true status=stopped", resp)
+	}
+	if note, _ := resp["note"].(string); note != "" {
+		t.Errorf("live subagent: note = %q, want none; the stop did what it says", note)
+	}
+
+	resp = runToolJSON(t, stopTool, context.Background(), map[string]any{"name": "capped"})
+	if resp["stopped"] != false {
+		t.Errorf("capped subagent: stopped = %v, want false — it had already ended on its budget", resp["stopped"])
+	}
+	if resp["status"] != "deferred" {
+		t.Errorf("capped subagent: status = %v, want the status it finished with, deferred", resp["status"])
+	}
+	note, _ := resp["note"].(string)
+	for _, want := range []string{"already finished", "max_cost_exceeded", "nothing was stopped"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("capped subagent: note = %q, want it to contain %q", note, want)
+		}
+	}
+	if got := errorText(t, resp); got != "" {
+		t.Errorf("capped subagent: error = %q, want none — finding it finished is an answer, not a failure", got)
+	}
+
+	resp = runToolJSON(t, stopTool, context.Background(), map[string]any{"name": "done"})
+	note, _ = resp["note"].(string)
+	if resp["stopped"] != false || !strings.Contains(note, "already finished") {
+		t.Errorf("completed subagent: got %v, want stopped=false with an already-finished note", resp)
+	}
+
+	// The second stop of the same subagent halted nothing: the first did.
+	resp = runToolJSON(t, stopTool, context.Background(), map[string]any{"name": "live"})
+	if resp["stopped"] != false {
+		t.Errorf("second stop: stopped = %v, want false", resp["stopped"])
+	}
+}
+
+// TestAlreadyFinishedNote_EdgeWording pins the two shapes the handler
+// cannot reach in an ordinary test: no handle left to read, where the
+// fallback status "stopping" must not be reported as how it finished,
+// and a reason that only repeats the status.
+func TestAlreadyFinishedNote_EdgeWording(t *testing.T) {
+	t.Parallel()
+
+	if got := alreadyFinishedNote("stopping", nil); strings.Contains(got, "'stopping'") {
+		t.Errorf("no handle: note = %q, reports a non-terminal status as how it finished", got)
+	}
+
+	h := &Handle{result: &autonomous.RunResult{Reason: autonomous.StopReasonCompleted}}
+	if got := alreadyFinishedNote(string(autonomous.StopReasonCompleted), h); strings.Contains(got, "(completed)") {
+		t.Errorf("reason equal to status: note = %q, repeats it", got)
 	}
 }

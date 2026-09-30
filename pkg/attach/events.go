@@ -236,9 +236,9 @@ import "time"
 // finished subagent keeps its handle — so an operator stopping a
 // subagent that completed thirty seconds earlier was told they had
 // stopped it, and /interrupt's `stopped_subagents` listed every
-// subagent that raced them to the finish. The stop_agent tool has
-// always reported the handle's real status to the model; this is the
-// operator's door catching up to the model's.
+// subagent that raced them to the finish. The stop_agent tool reported
+// the handle's status but not whether the call stopped anything, until
+// #1164 gave the model's door the same `stopped` field this one has.
 //
 // Additive in shape — `stopped` was already there and keeps its type,
 // `status` is new and omitempty — but the VALUE of `stopped` changes

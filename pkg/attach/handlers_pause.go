@@ -169,8 +169,8 @@ type StopAgentResponse struct {
 // both, telling an operator they had halted something that had
 // completed thirty seconds earlier (#897). Since 1.12.0 the already-
 // finished case is a 200 with `stopped: false` and the terminal
-// `status` — which is what the stop_agent tool has always told the
-// model, and the two doors should not disagree about the same event.
+// `status`. Since #1164 the stop_agent tool tells the model the same
+// thing, because the two doors should not disagree about the same event.
 func (h *handlers) doStopAgent(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	reporter, hasReporter := entry.Agent.(AgentStopReporter)
 	legacy, hasLegacy := entry.Agent.(AgentStopper)

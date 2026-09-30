@@ -912,9 +912,10 @@ type ReplanProvider interface {
 
 // OperatorView additions for PR A2 (mutation endpoints): three
 // func fields surface caller-held implementations of the pricing /
-// reload capabilities. PermsController is implemented directly on
-// *agent.Agent (the gate is held by the agent), so OperatorView
-// doesn't need a Perms field — embedded Registrant carries it.
+// reload capabilities. PermsController and PermModeController are
+// implemented on *attachadapter.Adapter (the gate is held by the
+// agent), so OperatorView doesn't need Perms fields; the embedded
+// Registrant carries them.
 //
 // Set these only for the binary-specific operations you want
 // exposed. nil means the corresponding POST returns 501 (capability

@@ -27,6 +27,8 @@ The permission gate is the central chokepoint consulted before every tool call. 
 
 No mode — not even `yolo` or `acceptEdits` — auto-approves a write to a **control-plane file** (see below).
 
+The mode can change while a session runs. In the TUI, Shift+Tab cycles `ask` → `acceptEdits` → `plan` → `yolo`. An attached `core-agent-tui` has the same chip, and it is backed by [`POST /perms/mode`](/core-agent/reference/attach-http/#changing-the-permission-mode-protocol-1160), which only the session owner or a daemon admin may call. Either way, on a session with a durable eventlog, each change writes an `attach-perm-mode` row. `allow` isn't on the chip; it is set in config only, and a session moved out of it can't be moved back without a restart. A restarted session comes back in its configured mode.
+
 Set via `.agents/config.json`:
 
 ```json

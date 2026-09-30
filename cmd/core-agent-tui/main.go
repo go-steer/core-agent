@@ -229,6 +229,7 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 	memory := a.FetchMemory(ctx)
 	skills := a.FetchSkills(ctx)
 	mcpServers := a.FetchMCPServers(ctx)
+	permMode := a.FetchPermissionMode(ctx)
 
 	// Remote permission prompts (PR D). The bridge subscribes to
 	// /perms/stream; if the daemon didn't wire a broker the GET
@@ -247,7 +248,7 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 		identity = displayIdentity(sessionPath)
 	}
 
-	opts := attachOptions(a, prompter, theme, mouse, memory, skills, mcpServers, coretui.Branding{
+	opts := attachOptions(a, prompter, theme, mouse, memory, skills, mcpServers, permMode, coretui.Branding{
 		Wordmark:      wordmark,
 		AgentIdentity: identity,
 	})
@@ -258,7 +259,7 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 // out of run so the host defaults this client picks — the overlay
 // permission layout, no persistence hooks because it reads no config
 // file — are pinned by a test rather than only by a comment.
-func attachOptions(a *coretuiremote.Adapter, prompter coretui.PermissionPrompter, theme string, mouse *bool, memory []coretui.MemoryFile, skills []coretui.SkillInfo, mcpServers []coretui.MCPServerInfo, branding coretui.Branding) coretui.Options {
+func attachOptions(a *coretuiremote.Adapter, prompter coretui.PermissionPrompter, theme string, mouse *bool, memory []coretui.MemoryFile, skills []coretui.SkillInfo, mcpServers []coretui.MCPServerInfo, permMode coretui.PermissionModeWiring, branding coretui.Branding) coretui.Options {
 	return coretui.Options{
 		Agent:        a,
 		UsageTracker: a,
@@ -276,7 +277,11 @@ func attachOptions(a *coretuiremote.Adapter, prompter coretui.PermissionPrompter
 		Memory:           memory,
 		Skills:           skills,
 		MCPServers:       mcpServers,
-		Branding:         branding,
+		// The mode chip (#1168). Zero, and so hidden, when the daemon's
+		// mode couldn't be read. No Persist: this client writes no
+		// config, and the daemon's config is not its to rewrite.
+		PermissionMode: permMode,
+		Branding:       branding,
 		// The attach client is the case this matters most for: the
 		// daemon runs wherever it runs, but THIS process runs on the
 		// operator's laptop, so a local helper (pbcopy / wl-copy /

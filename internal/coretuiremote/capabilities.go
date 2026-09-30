@@ -1194,6 +1194,7 @@ func (a *Adapter) branderFn() func(string) *coretui.Branding {
 // blip during /switch keeps the outgoing snapshot rather than
 // clearing it. That's the safe fallback.
 func (a *Adapter) buildSwitchTarget(next *Adapter, newPath, note string) coretui.SwitchTarget {
+	a.handOff(next)
 	ctx := context.TODO()
 	tgt := coretui.SwitchTarget{
 		Agent:        next,
@@ -1494,6 +1495,7 @@ func (a *Adapter) invokeAsyncSlash(ctx context.Context, name, args string) (core
 		// multi-daemon capabilities they had before /new.
 		next := NewWithClientFactory(a.client, newPath, a.clientFactory)
 		next.SetTrustedPeerHosts(a.trustedPeerHostsSnapshot())
+		a.handOff(next)
 		return coretui.SlashResult{
 			SwitchTo: &coretui.SwitchTarget{
 				Agent: next,
@@ -1587,6 +1589,7 @@ func (a *Adapter) dispatchAttach(ctx context.Context, args string) (coretui.Slas
 	}
 	next := NewWithClientFactory(peerClient, newPath, a.clientFactory)
 	next.SetTrustedPeerHosts(a.trustedPeerHostsSnapshot())
+	a.handOff(next)
 	return coretui.SlashResult{
 		SwitchTo: &coretui.SwitchTarget{
 			Agent: next,

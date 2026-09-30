@@ -308,7 +308,15 @@ import "time"
 // daemon ignores the field, because readJSON does not reject unknown
 // keys, so a client that wants to know whether its reason reached the
 // model must check protocol_version rather than the status code.
-const protocolVersion = "1.15.0"
+//
+// v1.16.0 (#1168): `POST /perms/mode` switches a running session's
+// permission mode to ask / acceptEdits / plan / yolo — what the local
+// TUI's Shift+Tab chip always could. ActionSessionAdmin (owner or
+// admin); each change writes an `attach-perm-mode` eventlog row. Additive.
+// A pre-1.16.0 daemon has no such route, and a caller the ACL refuses
+// gets the same not-found body, by design (authorize never reveals a
+// session to someone it refuses).
+const protocolVersion = "1.16.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

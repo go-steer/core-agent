@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -237,7 +238,9 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		deps:     deps,
 		ctxBuild: ctx,
 		wakeRel:  &wakeReleases{},
+		permAd:   &atomic.Pointer[attachadapter.Adapter]{},
 	}
+	wrapped.permAd.Store(ad)
 	// Release the session's wake subscriptions when the TUI exits, so
 	// a `--tui` session that ends doesn't leave channels registered
 	// on an agent's fan-out with nothing draining them. Covers the
@@ -302,10 +305,7 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		Mouse:            uiMouseToCoreTui(deps.Cfg),
 		PermissionMode: coretui.PermissionModeWiring{
 			Initial: translateMode(deps.Gate.Mode()),
-			Set: func(m coretui.PermissionMode) error {
-				deps.Gate.SetMode(translateModeBack(m))
-				return nil
-			},
+			Set:     wrapped.setPermMode,
 		},
 		// AutoContinueFromInbox (core-tui v0.6, issue #9) — full PR-α
 		// parity for the ADK-opaque-runner case. On turn-end, core-tui
@@ -681,6 +681,40 @@ type coreAgentAdapter struct {
 	// subscriptions. See wakeReleases. Nil in tests that build a bare
 	// adapter; every method that touches it is nil-safe.
 	wakeRel *wakeReleases
+
+	// permAd is the attach adapter of whichever agent currently runs
+	// turns, shared like wakeRel by every adapter in one TUI session
+	// and moved forward by SwitchModel. The mode chip's Set is wired
+	// once at launch, so it must read this rather than capture the
+	// launch-time adapter; see setPermMode. Nil in tests that build a
+	// bare adapter, where attachAd is used instead.
+	permAd *atomic.Pointer[attachadapter.Adapter]
+}
+
+// setPermMode is the local mode chip's Set. It goes through the attach
+// adapter rather than straight to deps.Gate (the same gate), so a
+// Shift+Tab leaves the same audit row as an attached owner's POST
+// /perms/mode (#1168). No caller: the in-process operator is whoever
+// started the process.
+//
+// The row is written by the adapter's agent, and only the current one
+// defers that write while its turn is running. After a /model swap the
+// launch-time agent never runs a turn again, so it would append
+// straight away, in the middle of the new agent's turn on the same
+// session, and fail that turn's next append as stale (the #565 shape).
+// Hence permAd.
+func (a *coreAgentAdapter) setPermMode(m coretui.PermissionMode) error {
+	_, err := a.permModeAdapter().AttachSetPermMode(attach.PermModeRequest{Mode: string(translateModeBack(m))})
+	return err
+}
+
+func (a *coreAgentAdapter) permModeAdapter() *attachadapter.Adapter {
+	if a.permAd != nil {
+		if ad := a.permAd.Load(); ad != nil {
+			return ad
+		}
+	}
+	return a.attachAd
 }
 
 // wakeReleases collects the unsubscribe funcs of every wake
@@ -996,7 +1030,18 @@ func (a *coreAgentAdapter) SwitchModel(modelID string) (coretui.Agent, error) {
 		// after the swap is the adapter below, so its subscription
 		// needs to reach launchTUIv2's teardown too (#813).
 		wakeRel: a.wakeRel,
+		permAd:  a.advancePermAd(newAd),
 	}, nil
+}
+
+// advancePermAd points the session's shared mode-chip target at the
+// agent SwitchModel just built, and returns the shared pointer for the
+// successor to carry.
+func (a *coreAgentAdapter) advancePermAd(next *attachadapter.Adapter) *atomic.Pointer[attachadapter.Adapter] {
+	if a.permAd != nil {
+		a.permAd.Store(next)
+	}
+	return a.permAd
 }
 
 // SessionApprovals satisfies coretui.PermissionController. Maps the

@@ -469,6 +469,27 @@ func (c *Client) AllowPatterns(ctx context.Context, sessionPath string, patterns
 		attach.PatternsRequest{Patterns: patterns}, nil)
 }
 
+// SetPermMode calls POST <base>/sessions/<sid>/perms/mode (#1168,
+// protocol 1.16.0) and returns the transition the daemon made.
+//
+// A 404 gets an explanation prepended, because on this route it has
+// two causes the body cannot tell apart, by design: the daemon predates
+// the route, or the ACL refused the caller (authorize answers "session
+// not found" rather than reveal the session). Mode changes need the
+// session owner or a daemon admin.
+func (c *Client) SetPermMode(ctx context.Context, sessionPath, mode string) (attach.PermModeResponse, error) {
+	var out attach.PermModeResponse
+	err := c.doJSON(ctx, http.MethodPost, sessionPath+"/perms/mode", attach.PermModeRequest{Mode: mode}, &out)
+	var se *httpStatusError
+	if errors.As(err, &se) && se.statusCode == http.StatusNotFound {
+		return attach.PermModeResponse{}, fmt.Errorf("the daemon refused the mode change: only the session owner or a daemon admin can change it, and daemons older than attach protocol 1.16.0 cannot change it remotely at all (%w)", err)
+	}
+	if err != nil {
+		return attach.PermModeResponse{}, err
+	}
+	return out, nil
+}
+
 // DenyPatterns calls POST <base>/sessions/<sid>/perms/deny. Backs
 // the remote TUI's /deny slash.
 func (c *Client) DenyPatterns(ctx context.Context, sessionPath string, patterns []string) error {

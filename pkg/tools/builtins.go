@@ -55,19 +55,23 @@ type BuiltinTools struct {
 	Bash          bool // /bin/sh -c with timeout + denylist + gate
 	ReadFile      bool // Read a file with offset/limit
 	ReadManyFiles bool // Read a batch of files (paths + pattern) in one call
-	WriteFile     bool // Atomic write/create
-	EditFile      bool // Single-occurrence string replacement
-	DeleteFile    bool // Remove a regular file (refuses directories)
-	Stat          bool // Metadata (size / mtime / mode / is_dir) for a single path
-	ListDir       bool // Sorted directory listing
-	Glob          bool // Walk + filepath.Match by basename
-	Grep          bool // Walk + RE2 regex per line
-	JSONQuery     bool // jq expression over JSON loaded from file or inline string
-	FetchURL      bool // HTTP GET against url_scope.allow; URL-allowlist enforced
-	Alert         bool // Fire an operator-registered webhook alert target
-	WaitAndVerify bool // Poll a read-only tool until a condition holds (#648)
-	Todo          bool // In-process plan tracker
-	RecordPlan    bool // Plan-first artifact + gate-flag flip (record_plan)
+	// ViewFileOutline returns a file's declaration skeleton without
+	// bodies: parsed for Go, a labelled line scan for the other
+	// languages it knows, declined otherwise (#954).
+	ViewFileOutline bool
+	WriteFile       bool // Atomic write/create
+	EditFile        bool // Single-occurrence string replacement
+	DeleteFile      bool // Remove a regular file (refuses directories)
+	Stat            bool // Metadata (size / mtime / mode / is_dir) for a single path
+	ListDir         bool // Sorted directory listing
+	Glob            bool // Walk + filepath.Match by basename
+	Grep            bool // Walk + RE2 regex per line
+	JSONQuery       bool // jq expression over JSON loaded from file or inline string
+	FetchURL        bool // HTTP GET against url_scope.allow; URL-allowlist enforced
+	Alert           bool // Fire an operator-registered webhook alert target
+	WaitAndVerify   bool // Poll a read-only tool until a condition holds (#648)
+	Todo            bool // In-process plan tracker
+	RecordPlan      bool // Plan-first artifact + gate-flag flip (record_plan)
 	// SciontoolStatus is enabled in the Default struct but Build only
 	// registers it when `sciontool` is on PATH — inside a Scion
 	// container. Outside Scion the tool would be inert (subprocess
@@ -82,6 +86,7 @@ var builtinToolNames = []string{
 	"bash",
 	"read_file",
 	"read_many_files",
+	"view_file_outline",
 	"write_file",
 	"edit_file",
 	"delete_file",
@@ -119,6 +124,8 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.ReadFile = false
 	case "read_many_files":
 		b.ReadManyFiles = false
+	case "view_file_outline":
+		b.ViewFileOutline = false
 	case "write_file":
 		b.WriteFile = false
 	case "edit_file":
@@ -158,17 +165,18 @@ func (b *BuiltinTools) Disable(name string) error {
 // workspace.
 func Default() BuiltinTools {
 	return BuiltinTools{
-		Bash:          true,
-		ReadFile:      true,
-		ReadManyFiles: true,
-		WriteFile:     true,
-		EditFile:      true,
-		DeleteFile:    true,
-		Stat:          true,
-		ListDir:       true,
-		Glob:          true,
-		Grep:          true,
-		JSONQuery:     true,
+		Bash:            true,
+		ReadFile:        true,
+		ReadManyFiles:   true,
+		ViewFileOutline: true,
+		WriteFile:       true,
+		EditFile:        true,
+		DeleteFile:      true,
+		Stat:            true,
+		ListDir:         true,
+		Glob:            true,
+		Grep:            true,
+		JSONQuery:       true,
 		// FetchURL is enabled in the Default struct, but Build only
 		// registers it when cfg.URLScope.Allow is non-empty — a binary
 		// with no allowlist gets no network-reaching tool, matching
@@ -300,6 +308,13 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 				Name: "read_many_files", Description: "Read multiple files in a single call. Pass `paths` (explicit list) and/or `pattern` (basename glob, walked from `path` root; defaults to '.'). The canonical way to fan out reads when you already know the set of files you need — saves turns. Gate denials, missing files, and directories surface as entries with `skipped: \"<reason>\"` so the batch never aborts on one bad path." +
 					whenTool(gate.HasTool("read_file"), " PREFERRED over multiple parallel `read_file` calls."),
 			}, readManyFilesFunc(gate, cfg))
+		}},
+		{b.ViewFileOutline, "view_file_outline", "Return a file's declaration skeleton without the bodies.", func() (tool.Tool, error) {
+			return functiontool.New(functiontool.Config{
+				Name: "view_file_outline", Description: "Return one file's structural skeleton without the bodies: its package, imports, type declarations, top-level constants and variables, and function and method signatures, each with the line it starts on. Answers \"what is in this file\" for a fraction of the file's tokens, and the line numbers turn straight into a narrower follow-up read." +
+					whenTool(gate.HasTool("read_file"), " Use this first on a long file, then `read_file` with offset/limit on the part that matters.") +
+					" Go files are parsed with go/parser, so the outline is exactly what the compiler sees; the result says `analysis: \"parsed\"`. Other known extensions get a line-based scan reported as `analysis: \"heuristic\"` with its caveats in `note` — believe it accordingly. An extension with neither is refused, and the refusal names the ones that work. Honors the permission gate and the path scope, and its output is capped like the other read tools'.",
+			}, viewFileOutlineFunc(gate, cfg))
 		}},
 		{b.WriteFile, "write_file", "Write or overwrite a file with the given content.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{

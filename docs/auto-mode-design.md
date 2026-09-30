@@ -118,10 +118,12 @@ still need a person.
     - A derived session gate always has the broker as its prompter, even with nobody attached. So an escalation waits instead of denying. Without a timeout it waits forever, which is the 55-minute stall from the Motivation.
     - `mode: auto` with no `approval_timeout` is a config error at startup, and a 400 on `POST /perms/mode`.
 
-13. **`auto` cannot be selected where a TUI would show it as `ask`.**
-    - Both chip translators (`translateMode` in `cmd/core-agent`, `permModeToChip` in `internal/coretuiremote`) map an unknown mode to the default chip. So an operator would think every call is being put to them while a model approves. Cycling the chip would also silently drop `auto`.
-    - The core-tui chip (a separate core-tui issue) and both translators ship before `auto` is accepted by the picker, `POST /perms/mode` or config.
-    - A test asserts neither translator maps `auto` to the default chip, and `verify-coretui-guards` covers the new capability.
+13. **core-tui gets a fifth mode chip, `auto`, and it ships before `auto` can be turned on.**
+    - The TUI's mode chip (the status-bar indicator you cycle) has four values today: `ask`, `acceptEdits`, `plan` and `yolo`. This design adds a fifth, `auto`, in core-tui. That is new core-tui work, tracked as its own core-tui issue, and it also puts `auto` in the chip's cycle order.
+    - Both core-agent translators learn to map to it: `translateMode` in `cmd/core-agent` (local TUI) and `permModeToChip` in `internal/coretuiremote` (attach TUI).
+    - Why this has to come first: today both translators show any mode they don't recognise as the default chip, `ask`. Without the new chip, an operator would see `ask` while a model approves calls. Cycling would also move on from `ask` and silently drop `auto`.
+    - So nothing lets you select `auto` (the `/permissions` picker, `POST /perms/mode`, `permissions.mode` in config) until the core-tui release with the fifth chip is pinned and both translators use it.
+    - A test fails if either translator maps `auto` to the default chip. `verify-coretui-guards` covers the new chip, like any other core-tui capability.
 
 14. **Multi-session.**
     - The approver's configuration is daemon-wide. The mode is per session (#1168; switching to it is owner or admin only).
@@ -200,7 +202,7 @@ The gating number is **zero false allows on must-deny, and zero approver calls o
 1. **`pkg/permissions`.** `ModeAuto` and every site in the list above. The `Approver` and `ApproverContext` interfaces. `PromptRequest.Args`, eligibility and the never-list. `refusedByApprover`. `ApprovalLog.Approver`. Unit tests with a stub approver cover every row of decisions 1–5, 9 and 12, and the `DeriveForSession` inheritance.
 2. **`Args` at the call sites.** Built-ins, `GateToolset` (MCP and skills), `alert`, `call_peer`, `fetch_url` and subagents.
 3. **`pkg/approver` and wiring.** Config (`permissions.auto.{model,timeout,eligible,instructions_file}`), the privilege tier for the instructions file, the turn-context stamping for task, usage and audit, and compose wiring.
-4. **Surfaces.** The core-tui chip, both translators, the picker, `/perms/mode`, the modal changes from decision 11, and the approver-specific error text.
+4. **Surfaces.** The fifth `auto` chip in core-tui (a core-tui release, then a pin bump here), both translators, the picker, `/perms/mode`, the modal changes from decision 11, and the approver-specific error text.
 5. **Evaluation.** The eval corpus and the first real-model run, before any recipe turns auto on.
 
 ## Open questions

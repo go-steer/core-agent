@@ -125,6 +125,17 @@ func (w *DefaultWatchdog) ObserveAssistantText(text string) {
 			w.alerts = append(w.alerts, *alert)
 		}
 	}
+	// A buffered alert whose condition the model's words just ended
+	// stays in the buffer for the operator log, marked so the host does
+	// not hand the model a correction that is no longer true (#1166).
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	for i := range w.alerts {
+		if w.alerts[i].ClearsOnText {
+			w.alerts[i].Cleared = true
+		}
+	}
 }
 
 // ToolsWithoutTextSignal trips when Threshold tool calls go by with no
@@ -199,8 +210,9 @@ func (s *ToolsWithoutTextSignal) ObserveToolCall(tc ToolCall) *Alert {
 	s.tripped = true
 	tools := distinctNames(s.names)
 	return &Alert{
-		Signal:   s.Name(),
-		Severity: SeverityWarn,
+		Signal:       s.Name(),
+		Severity:     SeverityWarn,
+		ClearsOnText: true,
 		Reason: fmt.Sprintf(
 			"%d tool calls in a row (%s) with no assistant text in between. Nothing is being reported to anyone: whatever the agent has learned from those %d calls, it has not said it. This is the shape every recorded runaway in this project has had, and also the shape of a long legitimate sweep — the signal cannot tell them apart, which is why it only warns.",
 			s.run, tools, s.run,

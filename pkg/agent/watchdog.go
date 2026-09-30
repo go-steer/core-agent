@@ -347,7 +347,30 @@ func (a *Agent) observeAssistantTextForWatchdog(ev *session.Event) bool {
 		observed = true
 		obs.ObserveAssistantText(p.Text)
 	}
+	if observed {
+		a.dropTextClearedFeedback()
+	}
 	return observed
+}
+
+// dropTextClearedFeedback removes queued model-facing observations that
+// the model's own words have just made false (#1166). Under enforce the
+// in-turn drain queues an alert the moment it trips, and the queue is
+// only read when the NEXT turn starts. In a turn that runs for hours,
+// tools-without-text would otherwise reach the model long after it had
+// started talking again, telling it that it had said nothing. The
+// operator log already has the alert, so only the model-facing half is
+// dropped.
+func (a *Agent) dropTextClearedFeedback() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var kept []watchdog.Alert
+	for _, al := range a.watchdogPending {
+		if !al.ClearsOnText {
+			kept = append(kept, al)
+		}
+	}
+	a.watchdogPending = kept
 }
 
 func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string]struct{}) bool {
@@ -619,13 +642,21 @@ func (a *Agent) watchdogStopped() bool {
 
 // queueWatchdogFeedback appends alerts to the pending-injection queue,
 // trimming to maxPendingWatchdogFeedback from the front.
+//
+// An alert the watchdog marked Cleared is skipped: the model spoke after
+// it tripped and before this drain, so the condition it names had
+// already ended (#1166).
 func (a *Agent) queueWatchdogFeedback(alerts []watchdog.Alert) {
 	if len(alerts) == 0 {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.watchdogPending = append(a.watchdogPending, alerts...)
+	for _, al := range alerts {
+		if !al.Cleared {
+			a.watchdogPending = append(a.watchdogPending, al)
+		}
+	}
 	if n := len(a.watchdogPending) - maxPendingWatchdogFeedback; n > 0 {
 		a.watchdogPending = a.watchdogPending[n:]
 	}

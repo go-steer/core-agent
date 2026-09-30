@@ -203,6 +203,25 @@ type Alert struct {
 	// under --watchdog=enforce, and only for Critical alerts — a Warn
 	// stops nothing either way.
 	Scope AlertScope
+
+	// ClearsOnText marks an alert whose condition ends when the model
+	// produces text, as tools-without-text's does. A host that holds the
+	// model-facing half for a later turn drops it once the model has
+	// spoken, because by then it describes something no longer true: in
+	// a turn that runs for hours, "the next turn" can be hours after the
+	// silence it names (#1166).
+	ClearsOnText bool
+
+	// Cleared is set by DefaultWatchdog on a buffered ClearsOnText alert
+	// when the model spoke before the alert was drained. Check still
+	// returns it, so the operator log and the metric count it; only the
+	// model-facing route should skip it.
+	//
+	// DefaultWatchdog does this for every Signal it runs. A custom
+	// Watchdog that buffers ClearsOnText alerts must set Cleared itself:
+	// the agent drops an alert it has already queued when the model
+	// speaks, but it cannot see inside another implementation's buffer.
+	Cleared bool
 }
 
 // ToolCall is the per-tool-call observation the watchdog needs.
@@ -556,5 +575,10 @@ func (a Alert) String() string {
 	b.WriteString(a.Signal)
 	b.WriteString(": ")
 	b.WriteString(a.Reason)
+	if a.Cleared {
+		// So an operator reading the log can tell a trip the model has
+		// already answered from one that is still true (#1166).
+		b.WriteString(" (the model has spoken since)")
+	}
 	return b.String()
 }

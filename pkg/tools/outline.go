@@ -16,10 +16,12 @@ package tools
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
+	"go/scanner"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -56,7 +58,8 @@ const (
 // difference between this and a parse.
 const heuristicNote = "Line-based heuristic, not a parse: these are lines that begin with a declaration keyword for this language. " +
 	"Declarations spanning several lines are reported by their first line only; a matching line inside a string or comment is reported as if it were a declaration; " +
-	"and nothing here distinguishes a declaration from a struct field, a local, or a nested definition — indentation is preserved verbatim so you can see the nesting, but it is the only clue there is. " +
+	"nothing here distinguishes a declaration from a struct field, a local, or a nested definition — indentation is preserved verbatim so you can see the nesting, but it is the only clue there is; " +
+	"and a declaration whose line does not begin with one of those keywords is not reported at all (a JavaScript or TypeScript class method, for one), so an absence here proves nothing. " +
 	"Confirm anything load-bearing by reading the lines themselves."
 
 type viewFileOutlineArgs struct {
@@ -92,7 +95,6 @@ type heuristicLang struct {
 var (
 	jsPrefixes = []string{"function ", "async function ", "class ", "export ", "const ", "let ", "var ", "import ", "require("}
 	tsPrefixes = append(append([]string{}, jsPrefixes...), "interface ", "type ", "enum ", "declare ", "abstract ")
-	cPrefixes  = []string{"struct ", "union ", "enum ", "class ", "typedef ", "#include ", "#define ", "namespace ", "template "}
 )
 
 // heuristicLangs maps a file extension to the line shapes worth
@@ -100,10 +102,16 @@ var (
 // is DECLINED rather than scanned with a generic guess — a scan tuned
 // for nothing finds either everything or nothing, and both are noise
 // the model has no way to discount.
+//
+// C and C++ are declined for the same reason. A C function definition
+// has no leading keyword (`static int helper(int x) {`), so a prefix
+// scan reports a file's includes and structs and none of its functions
+// — an outline that looks complete and is missing the part the caller
+// came for.
 var heuristicLangs = map[string]heuristicLang{
 	".py":   {name: "Python", prefixes: []string{"def ", "async def ", "class ", "import ", "from "}},
 	".rb":   {name: "Ruby", prefixes: []string{"def ", "class ", "module ", "require ", "require_relative "}},
-	".rs":   {name: "Rust", prefixes: []string{"fn ", "pub ", "struct ", "enum ", "trait ", "impl ", "mod ", "use ", "const ", "static ", "type "}},
+	".rs":   {name: "Rust", prefixes: []string{"fn ", "pub ", "pub(", "async fn ", "async unsafe fn ", "unsafe fn ", "unsafe impl ", "unsafe trait ", "extern ", "macro_rules!", "struct ", "enum ", "trait ", "impl ", "mod ", "use ", "const ", "static ", "type "}},
 	".java": {name: "Java", prefixes: []string{"package ", "import ", "class ", "interface ", "enum ", "record ", "public ", "protected ", "private ", "abstract ", "final ", "static "}},
 	".js":   {name: "JavaScript", prefixes: jsPrefixes},
 	".mjs":  {name: "JavaScript", prefixes: jsPrefixes},
@@ -111,11 +119,6 @@ var heuristicLangs = map[string]heuristicLang{
 	".jsx":  {name: "JavaScript", prefixes: jsPrefixes},
 	".ts":   {name: "TypeScript", prefixes: tsPrefixes},
 	".tsx":  {name: "TypeScript", prefixes: tsPrefixes},
-	".c":    {name: "C", prefixes: cPrefixes},
-	".h":    {name: "C/C++ header", prefixes: cPrefixes},
-	".cc":   {name: "C++", prefixes: cPrefixes},
-	".cpp":  {name: "C++", prefixes: cPrefixes},
-	".hpp":  {name: "C++ header", prefixes: cPrefixes},
 	".sh":   {name: "Shell", prefixes: []string{"function "}, suffixes: []string{"() {", "(){"}},
 	".bash": {name: "Shell", prefixes: []string{"function "}, suffixes: []string{"() {", "(){"}},
 }
@@ -211,20 +214,53 @@ func outlineGo(path string, data []byte) (string, error) {
 	// declaration, and the caller asked for structure.
 	file, err := parser.ParseFile(fset, filepath.Base(path), data, parser.SkipObjectResolution)
 	if err != nil {
-		return "", fmt.Errorf("view_file_outline: parse: %w", err)
+		return "", fmt.Errorf("view_file_outline: parse: %w", physicalParseError(err, filepath.Base(path), data))
 	}
 	cfg := &printer.Config{Mode: printer.TabIndent, Tabwidth: 4}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%5d  package %s\n", fset.Position(file.Package).Line, file.Name.Name)
+	fmt.Fprintf(&b, "%5d  package %s\n", sourceLine(fset, file.Package), file.Name.Name)
 	for _, decl := range file.Decls {
 		rendered, err := renderDecl(cfg, fset, decl)
 		if err != nil {
 			return "", fmt.Errorf("view_file_outline: render: %w", err)
 		}
-		b.WriteString(numberBlock(fset.Position(decl.Pos()).Line, rendered))
+		b.WriteString(numberBlock(sourceLine(fset, decl.Pos()), rendered))
 	}
 	return b.String(), nil
+}
+
+// sourceLine is the physical line pos sits on in the file that was
+// read. fset.Position honours `//line` directives even without
+// ParseComments, so generated Go (goyacc, templ) would report lines
+// in the file it was generated FROM — a number the caller then hands
+// to read_file as an offset into the wrong file.
+func sourceLine(fset *token.FileSet, pos token.Pos) int {
+	return fset.PositionFor(pos, false).Line
+}
+
+// physicalParseError rewrites a parse error's positions to physical
+// lines in the file that was read. The parser reports positions
+// remapped by `//line` directives, so a broken generated file would
+// otherwise be blamed on a line of the grammar it came from. Each
+// entry's byte Offset is unaffected by directives, so the line and
+// column are recomputed from it.
+func physicalParseError(err error, name string, data []byte) error {
+	var list scanner.ErrorList
+	if !errors.As(err, &list) {
+		return err
+	}
+	out := make(scanner.ErrorList, 0, len(list))
+	for _, e := range list {
+		pos := e.Pos
+		if off := pos.Offset; off >= 0 && off <= len(data) {
+			pos.Filename = name
+			pos.Line = 1 + bytes.Count(data[:off], []byte("\n"))
+			pos.Column = off - (bytes.LastIndexByte(data[:off], '\n') + 1) + 1
+		}
+		out = append(out, &scanner.Error{Pos: pos, Msg: e.Msg})
+	}
+	return out
 }
 
 // renderDecl prints one top-level declaration with its body (and any
@@ -233,8 +269,10 @@ func renderDecl(cfg *printer.Config, fset *token.FileSet, decl ast.Decl) (string
 	stripFuncLitBodies(decl)
 	switch d := decl.(type) {
 	case *ast.FuncDecl:
-		// Copy so the nil-ed body is local to this render: the caller
-		// owns the AST and a later pass should still see a whole file.
+		// Copy rather than nil the caller's fields. This is tidiness,
+		// not a guarantee: stripFuncLitBodies above has already
+		// emptied function literals in place, and outlineGo discards
+		// the AST after rendering.
 		shallow := *d
 		shallow.Body = nil
 		shallow.Doc = nil

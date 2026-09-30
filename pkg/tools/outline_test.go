@@ -257,7 +257,7 @@ func TestViewFileOutline_NonGoIsLabelledHeuristic(t *testing.T) {
 // top-level once indentation is stripped.
 func TestViewFileOutline_HeuristicNoteDescribesWhatItActuallyDoes(t *testing.T) {
 	t.Parallel()
-	for _, claim := range []string{"not a parse", "first line only", "nested", "indentation is preserved"} {
+	for _, claim := range []string{"not a parse", "first line only", "nested", "indentation is preserved", "not reported at all"} {
 		if !strings.Contains(heuristicNote, claim) {
 			t.Errorf("heuristic note no longer mentions %q:\n%s", claim, heuristicNote)
 		}
@@ -433,5 +433,71 @@ func TestViewFileOutline_IsAnOrdinaryReadTool(t *testing.T) {
 	}
 	if _, err := viewFileOutlineFunc(planGate, config.DefaultConfig())(tool.Context(nil), viewFileOutlineArgs{Path: outside}); err != nil {
 		t.Errorf("view_file_outline is not plan-exempt: an out-of-scope read before a plan was denied with %v", err)
+	}
+}
+
+// A `//line` directive remaps positions to the file the code was
+// generated from, and fset.Position honours it even without
+// ParseComments. The outline's line numbers are offsets for a
+// follow-up read of THIS file, so they must be physical lines.
+func TestViewFileOutline_GoLineDirectiveDoesNotShiftLines(t *testing.T) {
+	t.Parallel()
+	src := "package gen\n\n//line grammar.y:900\nfunc Generated() {\n\tprintln(1)\n}\n"
+	out, err := outlineGo("gen.go", []byte(src))
+	if err != nil {
+		t.Fatalf("outlineGo: %v", err)
+	}
+	if want := fmt.Sprintf("%5d  func Generated()", 4); !strings.Contains(out, want) {
+		t.Errorf("want Generated at physical line 4:\n%s", out)
+	}
+}
+
+// C and C++ function definitions start with a return type, not a
+// keyword, so a prefix scan would report includes and structs and no
+// functions — an outline that looks whole and is missing the part the
+// caller wanted. Declined, like any extension without a tuned scan.
+func TestViewFileOutline_CFamilyDeclines(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fn := viewFileOutlineFunc(gateFor(t, dir), config.DefaultConfig())
+	for _, name := range []string{"main.c", "util.h", "lib.cc", "lib.cpp", "lib.hpp"} {
+		path := filepath.Join(dir, name)
+		src := "#include <stdio.h>\nstatic int helper(int x) {\n  return x;\n}\n"
+		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := fn(tool.Context(nil), viewFileOutlineArgs{Path: path})
+		if err == nil || !strings.Contains(err.Error(), "no outline available for") {
+			t.Errorf("%s: want the extension refusal, got %v; a prefix scan cannot see C function definitions", name, err)
+		}
+	}
+}
+
+// Rust functions are routinely qualified before the `fn`; a scan that
+// only knows `fn ` and `pub ` drops every one of these silently.
+func TestViewFileOutline_RustQualifiedFunctionsAreReported(t *testing.T) {
+	t.Parallel()
+	src := "pub(crate) fn scoped() {}\nasync fn fetch() {}\nunsafe fn raw() {}\nextern \"C\" fn ffi() {}\n" +
+		"async unsafe fn both() {}\nunsafe impl Send for X {}\nunsafe trait Marker {}\nmacro_rules! m { () => {} }\n"
+	out := outlineHeuristic([]byte(src), heuristicLangs[".rs"])
+	for _, want := range []string{"pub(crate) fn scoped()", "async fn fetch()", "unsafe fn raw()", `extern "C" fn ffi()`, "async unsafe fn both()", "unsafe impl Send for X", "unsafe trait Marker", "macro_rules! m"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Rust outline missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A parse error in generated Go must name the physical line too: the
+// parser reports positions remapped by `//line`, which would send the
+// caller to a line of the grammar instead of the broken line here.
+func TestViewFileOutline_GoParseErrorNamesPhysicalLine(t *testing.T) {
+	t.Parallel()
+	src := "package gen\n\n//line grammar.y:900\nfunc Broken() {\n\tx := f(1\n}\n"
+	_, err := outlineGo("gen.go", []byte(src))
+	if err == nil {
+		t.Fatal("expected a parse error")
+	}
+	if strings.Contains(err.Error(), "grammar.y") || !strings.Contains(err.Error(), "gen.go:5:") {
+		t.Errorf("parse error should point at gen.go line 5, got %v", err)
 	}
 }

@@ -127,3 +127,52 @@ func TestPersistMouseChoice_OffIsExplicitNotAbsent(t *testing.T) {
 		t.Errorf("config.json has no mouse key after persisting false:\n%s", raw)
 	}
 }
+
+// TestPersistPermissionLayout_RoundTrips pins the durable half of
+// /permissions layout (core-tui v0.27.0): the switch lands in
+// ui.permission_layout, where the TUI host reads it back on launch.
+// Both directions write an explicit value, overlay included.
+func TestPersistPermissionLayout_RoundTrips(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	for _, layout := range []string{PermissionLayoutInline, PermissionLayoutOverlay} {
+		if err := PersistPermissionLayout(dir, layout); err != nil {
+			t.Fatalf("PersistPermissionLayout(%q): %v", layout, err)
+		}
+		cfg, err := Load(dir)
+		if err != nil {
+			t.Fatalf("Load after %q: %v", layout, err)
+		}
+		if cfg.UI.PermissionLayout != layout {
+			t.Errorf("ui.permission_layout = %q, want %q", cfg.UI.PermissionLayout, layout)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, ConfigFileName))
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		if !strings.Contains(string(raw), `"permission_layout": "`+layout+`"`) {
+			t.Errorf("config.json lacks explicit permission_layout %q:\n%s", layout, raw)
+		}
+	}
+}
+
+// A bad value is refused before Save, so the file on disk is untouched
+// and the TUI shows the error instead of the next launch failing.
+func TestPersistPermissionLayout_RejectsUnknown(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := PersistPermissionLayout(dir, PermissionLayoutInline); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := PersistPermissionLayout(dir, "modal"); err == nil {
+		t.Fatal("PersistPermissionLayout(\"modal\"): got nil, want error")
+	}
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.UI.PermissionLayout != PermissionLayoutInline {
+		t.Errorf("ui.permission_layout = %q after rejected write, want inline", cfg.UI.PermissionLayout)
+	}
+}

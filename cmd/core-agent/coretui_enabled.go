@@ -358,6 +358,13 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 			}
 			return config.PersistMouseChoice(deps.AgentsDir, on)
 		},
+		// PermissionLayout starts the session in the overlay modal
+		// unless ui.permission_layout says "inline" — core-agent's
+		// default, not core-tui's (whose zero value is inline).
+		// PersistPermissionLayout makes /permissions layout durable
+		// the same way PersistMouseChoice does for /mouse.
+		PermissionLayout:        uiPermissionLayoutToCoreTui(deps.Cfg),
+		PersistPermissionLayout: persistPermissionLayoutFunc(deps.AgentsDir),
 		// ClipboardWriter is the host half of a transcript copy
 		// (`y` / `c`), ADDITIVE to the OSC 52 escape core-tui already
 		// emits — never a replacement. The escape targets the machine
@@ -2048,6 +2055,42 @@ func uiMouseToCoreTui(cfg *config.Config) *bool {
 	}
 	v := *cfg.UI.Mouse
 	return &v
+}
+
+// uiPermissionLayoutToCoreTui maps cfg.UI.PermissionLayout to
+// coretui.Options.PermissionLayout. Overlay unless the operator
+// explicitly chose inline; a nil cfg (headless test paths) gets the
+// same overlay default a config without the key gets.
+func uiPermissionLayoutToCoreTui(cfg *config.Config) coretui.PermissionLayout {
+	if cfg != nil && cfg.UI.EffectivePermissionLayout() == config.PermissionLayoutInline {
+		return coretui.PermissionInline
+	}
+	return coretui.PermissionOverlay
+}
+
+// coreTuiPermissionLayoutName is the inverse of
+// uiPermissionLayoutToCoreTui: the ui.permission_layout value for a
+// core-tui layout. Anything that isn't PermissionOverlay renders
+// inline in core-tui, so it is persisted that way too.
+func coreTuiPermissionLayoutName(l coretui.PermissionLayout) string {
+	if l == coretui.PermissionOverlay {
+		return config.PermissionLayoutOverlay
+	}
+	return config.PermissionLayoutInline
+}
+
+// persistPermissionLayoutFunc returns the Options.PersistPermissionLayout
+// hook: it writes the /permissions layout switch to ui.permission_layout
+// through config.PersistPermissionLayout, the same Mutate/Save path
+// /mouse uses. With no agents dir there is nowhere to write, so the
+// switch stays session-local and the hook reports success.
+func persistPermissionLayoutFunc(agentsDir string) func(coretui.PermissionLayout) error {
+	return func(l coretui.PermissionLayout) error {
+		if agentsDir == "" {
+			return nil
+		}
+		return config.PersistPermissionLayout(agentsDir, coreTuiPermissionLayoutName(l))
+	}
 }
 
 // agentDisplayName returns cfg.Agent.DisplayName as the operator

@@ -142,6 +142,7 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/skills` | Loaded skills with trigger descriptions. |
 | `/mcp` | Configured MCP servers and their status. |
 | `/perms`, `/permissions` | Gate mode + active allow/deny patterns + per-session approval log. |
+| `/permissions layout [inline\|overlay]` | Switch the permission prompt between the centered modal (the default) and an inline block in the chat. Toggles with no argument; applies from the next prompt; session-only in this client. |
 | `/allow <pattern>`, `/deny <pattern>` | Add patterns to the live gate (and to `.agents/config.json` if writable on the daemon side). |
 | `/pricing`, `/pricing refresh`, `/pricing set <id> <in> <out>` | Inspect or override the pricing layer. |
 | `/reload` | Re-walk memory + skills + MCP config on the daemon; surfaces per-surface results (`Memory: ✓`, `Skills: ✓`, `MCP: ✗` with errors inline). |
@@ -252,7 +253,7 @@ The `Live session — your messages drive the agent; events stream as they happe
 
 ## Permission prompts
 
-If the remote agent runs in `ask` mode (the default), tool calls that aren't pre-allowed pop a modal in the TUI:
+If the remote agent runs in `ask` mode (the default), tool calls that aren't pre-allowed pop a modal in the TUI. `/permissions layout inline` switches to drawing the prompt as a block in the chat flow instead, and `/permissions layout overlay` switches back; this client reads no config file, so the switch lasts the session:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐

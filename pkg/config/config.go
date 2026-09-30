@@ -291,7 +291,7 @@ type CheckpointConfig struct {
 }
 
 // UIConfig holds presentation choices for the in-process TUI
-// (both internal/tui and the core-tui adapter). Both fields are
+// (both internal/tui and the core-tui adapter). Every field is
 // optional with sensible defaults — operators only need to set
 // what they want to override.
 type UIConfig struct {
@@ -315,6 +315,47 @@ type UIConfig struct {
 	// Code setting). Pointer so unset means
 	// "use the default" (true). Toggle at runtime with /mouse.
 	Mouse *bool `json:"mouse,omitempty"`
+
+	// PermissionLayout picks how the TUI draws a permission prompt:
+	//   - "overlay" (default) — a centered modal that dims the chat.
+	//   - "inline"            — a block in the chat flow, under the
+	//                           tool call that asked.
+	// Empty means overlay. core-tui's own default is inline; core-agent
+	// defaults to the modal because an approval that blocks the agent
+	// should not be something the operator can scroll past. Switch at
+	// runtime with /permissions layout [inline|overlay], which writes
+	// back here through PersistPermissionLayout.
+	PermissionLayout string `json:"permission_layout,omitempty"`
+}
+
+// PermissionLayout values for UIConfig.PermissionLayout.
+const (
+	PermissionLayoutInline  = "inline"
+	PermissionLayoutOverlay = "overlay"
+)
+
+// EffectivePermissionLayout returns the layout the TUI should start
+// in: PermissionLayoutInline or PermissionLayoutOverlay. Unset (and,
+// defensively, any value Validate would have rejected) maps to
+// PermissionLayoutOverlay.
+func (u UIConfig) EffectivePermissionLayout() string {
+	if u.PermissionLayout == PermissionLayoutInline {
+		return PermissionLayoutInline
+	}
+	return PermissionLayoutOverlay
+}
+
+// validatePermissionLayout rejects any ui.permission_layout other
+// than "", "inline" or "overlay". Case-sensitive, like ui.theme's
+// reserved buckets, so a typo fails loudly instead of silently
+// falling back to the default.
+func validatePermissionLayout(layout string) error {
+	switch layout {
+	case "", PermissionLayoutInline, PermissionLayoutOverlay:
+		return nil
+	default:
+		return fmt.Errorf("config: invalid ui.permission_layout %q (want %q or %q; empty means %q)", layout, PermissionLayoutInline, PermissionLayoutOverlay, PermissionLayoutOverlay)
+	}
 }
 
 // MouseEnabled reports whether mouse capture should be on at
@@ -1730,6 +1771,9 @@ func (c *Config) Validate() error {
 		if !validNamedTheme(c.UI.Theme) {
 			return fmt.Errorf("config: invalid ui.theme %q (want %q/%q/%q or a lowercase named theme [a-z0-9_-]{1,64})", c.UI.Theme, ThemeAuto, ThemeDark, ThemeLight)
 		}
+	}
+	if err := validatePermissionLayout(c.UI.PermissionLayout); err != nil {
+		return err
 	}
 	switch c.Safety.SmallTierParent {
 	case "", SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow:

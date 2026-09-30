@@ -104,3 +104,48 @@ func TestAgentDisplayName_NilCfg(t *testing.T) {
 		t.Errorf("nil cfg: got %q, want empty", got)
 	}
 }
+
+// core-agent defaults to the overlay modal; core-tui's zero value is
+// inline, so leaving Options.PermissionLayout unset would be wrong.
+func TestUIPermissionLayoutToCoreTui(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *config.Config
+		want coretui.PermissionLayout
+	}{
+		{"nil cfg", nil, coretui.PermissionOverlay},
+		{"unset", &config.Config{}, coretui.PermissionOverlay},
+		{"overlay", &config.Config{UI: config.UIConfig{PermissionLayout: config.PermissionLayoutOverlay}}, coretui.PermissionOverlay},
+		{"inline", &config.Config{UI: config.UIConfig{PermissionLayout: config.PermissionLayoutInline}}, coretui.PermissionInline},
+	}
+	for _, tc := range cases {
+		if got := uiPermissionLayoutToCoreTui(tc.cfg); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The persist hook and the launch mapping must round-trip: whatever
+// /permissions layout writes is what the next launch starts in.
+func TestPersistPermissionLayoutFunc_RoundTripsThroughConfig(t *testing.T) {
+	dir := t.TempDir()
+	persist := persistPermissionLayoutFunc(dir)
+	for _, l := range []coretui.PermissionLayout{coretui.PermissionInline, coretui.PermissionOverlay} {
+		if err := persist(l); err != nil {
+			t.Fatalf("persist(%v): %v", l, err)
+		}
+		cfg, err := config.Load(dir)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := uiPermissionLayoutToCoreTui(cfg); got != l {
+			t.Errorf("persisted %v, next launch starts in %v", l, got)
+		}
+	}
+}
+
+func TestPersistPermissionLayoutFunc_NoAgentsDirIsSessionLocal(t *testing.T) {
+	if err := persistPermissionLayoutFunc("")(coretui.PermissionInline); err != nil {
+		t.Errorf("empty agents dir: got %v, want nil (session-local switch)", err)
+	}
+}

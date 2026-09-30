@@ -180,8 +180,8 @@ A minimal viable config:
 
 ### How the file is written back
 
-Interactive flows (`/allow`, `/deny`, `/model`, `/theme`, "always allow this
-path") edit `config.json` in place. The writer is deliberately conservative:
+Interactive flows (`/allow`, `/deny`, `/model`, `/theme`, `/mouse`,
+`/permissions layout`, "always allow this path") edit `config.json` in place. The writer is deliberately conservative:
 
 - **Partial stays partial.** Only the sections you actually set are written —
   substrate defaults are never materialized into the file. This keeps a future
@@ -752,14 +752,15 @@ Set it here rather than on the command line so a recipe ships its posture with i
 
 ## `ui`
 
-Presentation choices for the in-process TUI (`core-agent`). Both `/theme` and `/mouse` write back here when used, so a choice made at the keyboard survives the next launch; either field can equally be set by hand.
+Presentation choices for the in-process TUI (`core-agent`). `/theme`, `/mouse` and `/permissions layout` write back here when used, so a choice made at the keyboard survives the next launch; any field can equally be set by hand.
 
-These fields are read by `core-agent` only. The remote attach client (`core-agent-tui`) reads no config file; its equivalent of `mouse: false` is the [`--no-mouse` flag](/reference/core-agent-tui/#flags).
+These fields are read by `core-agent` only. The remote attach client (`core-agent-tui`) reads no config file; its equivalent of `mouse: false` is the [`--no-mouse` flag](/reference/core-agent-tui/#flags). It always starts with the overlay permission prompt, and `/permissions layout` there lasts the session.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `theme` | string | `"auto"` | One of the reserved buckets `auto` / `dark` / `light`, or any named theme from core-tui's BuiltinThemes registry (e.g. `gopher`, `google`). `auto` (or empty) lets core-tui detect the terminal background via OSC-11; explicit `dark` / `light` skips that query. Validation accepts any lowercase `[a-z0-9_-]{1,64}`; unknown names fall back to the auto path at launch. |
 | `mouse` | bool | `true` | Terminal mouse capture so the wheel scrolls the chat viewport. When enabled, plain click-drag no longer selects text: the terminal never sees the drag. The bypass modifier is terminal-specific — Shift-drag on most terminals; in VS Code's integrated terminal (xterm.js), Shift-drag, or Option-drag on macOS, which needs `terminal.integrated.macOptionClickForcesSelection` on (off by default, and a workspace `.vscode/settings.json` overrides your user or remote value); and some terminals let you rebind or disable it entirely. Set this to `false` when you would rather keep native selection than wheel-scroll. `/mouse` toggles capture at runtime and writes the new state back here, always as an explicit `true` or `false` — an absent field means "no opinion", and the default is on, so a toggle-off that cleared the field would persist the opposite of what you asked for. |
+| `permission_layout` | string | `"overlay"` | How the TUI draws a permission prompt. `overlay` (or empty) is a centered modal that dims the chat until you decide; `inline` draws the prompt as a block in the chat flow, directly under the tool call that asked, so the surrounding context stays visible. Any other value fails config validation. `/permissions layout` toggles between the two at runtime and `/permissions layout inline` / `/permissions layout overlay` set one; either writes the choice back here as an explicit value. A prompt already open keeps its layout — the switch applies from the next one. |
 
 ---
 

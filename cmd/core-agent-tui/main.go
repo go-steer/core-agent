@@ -247,7 +247,19 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 		identity = displayIdentity(sessionPath)
 	}
 
-	opts := coretui.Options{
+	opts := attachOptions(a, prompter, theme, mouse, memory, skills, mcpServers, coretui.Branding{
+		Wordmark:      wordmark,
+		AgentIdentity: identity,
+	})
+	return coretui.Run(ctx, opts)
+}
+
+// attachOptions builds the coretui.Options for an attached session. Split
+// out of run so the host defaults this client picks — the overlay
+// permission layout, no persistence hooks because it reads no config
+// file — are pinned by a test rather than only by a comment.
+func attachOptions(a *coretuiremote.Adapter, prompter coretui.PermissionPrompter, theme string, mouse *bool, memory []coretui.MemoryFile, skills []coretui.SkillInfo, mcpServers []coretui.MCPServerInfo, branding coretui.Branding) coretui.Options {
+	return coretui.Options{
 		Agent:        a,
 		UsageTracker: a,
 		Prompter:     prompter,
@@ -255,14 +267,16 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 		// nil unless --no-mouse was passed; see mouseOptFromFlag. core-tui
 		// reads this every frame, so the runtime /mouse toggle still works
 		// from whichever state the flag chose.
-		Mouse:      mouse,
-		Memory:     memory,
-		Skills:     skills,
-		MCPServers: mcpServers,
-		Branding: coretui.Branding{
-			Wordmark:      wordmark,
-			AgentIdentity: identity,
-		},
+		Mouse: mouse,
+		// The overlay modal, matching cmd/core-agent's default for an
+		// unset ui.permission_layout. This client reads no config file,
+		// so /permissions layout switches for the session only — there
+		// is no PersistPermissionLayout to write it back through.
+		PermissionLayout: coretui.PermissionOverlay,
+		Memory:           memory,
+		Skills:           skills,
+		MCPServers:       mcpServers,
+		Branding:         branding,
 		// The attach client is the case this matters most for: the
 		// daemon runs wherever it runs, but THIS process runs on the
 		// operator's laptop, so a local helper (pbcopy / wl-copy /
@@ -277,7 +291,6 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 		// dependency in the module graph.
 		ClipboardWriter: coretui.SystemClipboardWriter(),
 	}
-	return coretui.Run(ctx, opts)
 }
 
 // splitCommaList splits a comma-separated flag value into trimmed,

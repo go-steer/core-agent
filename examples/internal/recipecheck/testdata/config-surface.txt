@@ -171,6 +171,7 @@ tools.wait_and_verify.max_attempts
 tools.wait_and_verify.max_timeout_seconds
 tools.wait_and_verify.poll_allow
 ui.mouse
+ui.permission_layout
 ui.theme
 url_scope.allow
 url_scope.allow_metadata_endpoints

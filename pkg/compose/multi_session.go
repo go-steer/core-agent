@@ -458,9 +458,11 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	}
 
 	// Per-session sub-gate isolates sessionAllow / planRecorded
-	// / mode / approvals from sibling sessions. Shares Policy /
-	// PathScope / requirePlanArtifact via the template (the
-	// documented limitation in docs/multi-session-design.md).
+	// / mode / approvals / runtime allow+deny patterns from
+	// sibling sessions. Shares the configured Policy / PathScope /
+	// requirePlanArtifact via the template (see
+	// docs/multi-session-design.md). A resume after idle eviction
+	// derives a fresh gate, so runtime patterns do not survive it.
 	sessionGate := deps.Template.DeriveForSession(sid, broker)
 
 	// Per-caller instruction overlay: the operator's

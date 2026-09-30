@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -102,10 +103,11 @@ const (
 // Multi-session deployments build one template Gate at daemon start
 // (typically via FromConfig) and derive a per-session sub-gate for
 // each agent via DeriveForSession. Sub-gates share the template's
-// daemon-wide configuration (policy / scope / requirePlanArtifact)
-// but carry their own per-session mutable state (sessionAllow /
-// sessionAllowTools / sessionAllowVerbs / approvals / planRecorded /
-// prompter / mode). See docs/multi-session-design.md.
+// daemon-wide configuration (configured policy / scope /
+// requirePlanArtifact) but carry their own per-session mutable state
+// (a runtime policy layer for patterns added while the session runs,
+// sessionAllow / sessionAllowTools / sessionAllowVerbs / approvals /
+// planRecorded / prompter / mode). See docs/multi-session-design.md.
 type Gate struct {
 	mu sync.Mutex
 
@@ -115,10 +117,19 @@ type Gate struct {
 	// and future audit-log threading.
 	sessionID string
 
-	mode     Mode
-	policy   *Policy
-	scope    *PathScope
-	prompter Prompter
+	mode   Mode
+	policy *Policy
+	scope  *PathScope
+
+	// sessionPolicy holds the allow / deny patterns added at runtime
+	// to this session alone (/allow, /deny, POST /perms/allow|deny),
+	// layered over the shared policy: a deny in either wins, then an
+	// allow in either. DeriveForSession gives every sub-gate its own,
+	// so a pattern added in one session doesn't reach its siblings
+	// (#1176). Nil on template gates and on gates built directly via
+	// New / FromConfig, where runtime patterns go to policy itself.
+	sessionPolicy *Policy
+	prompter      Prompter
 
 	// grants persists DecisionAllowAlways outcomes across restarts.
 	// Nil disables persistence (the grant still applies in-memory
@@ -518,19 +529,19 @@ func (g *Gate) SwapMode(m Mode) (previous Mode) {
 // sessionID is stored for diagnostics; an empty string is accepted
 // for back-compat with callers that haven't threaded it through yet.
 //
-// Limitations (documented because operators read this surface):
-//   - Policy mutations via AddAllowPatterns / AddDenyPatterns mutate
-//     the shared template Policy and therefore affect every derived
-//     sub-gate. /allow + /deny are intentionally daemon-wide today
-//     per docs/multi-session-design.md §"Per-substrate isolation
-//     rules"; per-session policy carve-outs are a follow-up.
-//   - PathScope mutations via AddAlwaysAllow (triggered by
-//     DecisionAllowAlways) similarly mutate the shared scope.
+// Patterns added at runtime through AddAllowPatterns /
+// AddDenyPatterns go to the sub-gate's own sessionPolicy, so /allow,
+// /deny and POST /perms/allow|deny change this session only (#1176).
 //
-// Both limitations are by design for v2.4 — the typical operator
-// model is "one config, many users" with per-user authorization on
-// top of a shared substrate. Per-session policy/scope isolation can
-// layer on later without changing this method's shape.
+// Limitations (documented because operators read this surface):
+//   - An "allow always" answer (DecisionAllowAlways) is still
+//     daemon-wide: a non-path grant is installed in the shared
+//     Policy, a path grant in the shared PathScope, and both persist
+//     through the shared GrantStore, which reloads them for every
+//     session after a restart. "Always" means beyond this session.
+//
+// The typical operator model is "one config, many users" with
+// per-user authorization on top of a shared substrate.
 func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gate {
 	template.mu.Lock()
 	mode := template.mode
@@ -539,6 +550,7 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		sessionID:           sessionID,
 		mode:                mode,
 		policy:              template.policy,
+		sessionPolicy:       &Policy{},
 		scope:               template.scope,
 		prompter:            prompter,
 		grants:              template.grants,
@@ -753,16 +765,43 @@ func (g *Gate) SetGrantStore(s GrantStore) { g.grants = s }
 // calls. Used by the TUI's /allow slash command to make new
 // permissions take effect immediately rather than only after a
 // restart. Returns the same error shape as NewPolicy when a pattern
-// is malformed.
+// is malformed. On a DeriveForSession sub-gate the patterns apply to
+// that session only.
 func (g *Gate) AddAllowPatterns(patterns []string) error {
-	return g.policy.AddAllow(patterns)
+	return g.runtimePolicy().AddAllow(patterns)
 }
 
 // AddDenyPatterns is the symmetric extension for deny entries, used
 // by /deny. Deny always wins in Match so adding here can override a
-// previously-allowed pattern mid-session.
+// previously-allowed pattern mid-session, including one in the shared
+// policy.
 func (g *Gate) AddDenyPatterns(patterns []string) error {
-	return g.policy.AddDeny(patterns)
+	return g.runtimePolicy().AddDeny(patterns)
+}
+
+// runtimePolicy is where runtime-added patterns go.
+func (g *Gate) runtimePolicy() *Policy {
+	if g.sessionPolicy != nil {
+		return g.sessionPolicy
+	}
+	return g.policy
+}
+
+// matchPolicy is Policy.Match over the shared policy and this
+// session's own patterns together. A deny in either wins, so a
+// session-level deny narrows a shared allow; then an allow in either.
+func (g *Gate) matchPolicy(tool, key string) Outcome {
+	shared := g.policy.Match(tool, key)
+	if g.sessionPolicy == nil || shared == OutcomeDeny {
+		return shared
+	}
+	switch g.sessionPolicy.Match(tool, key) {
+	case OutcomeDeny:
+		return OutcomeDeny
+	case OutcomeAllow:
+		return OutcomeAllow
+	}
+	return shared
 }
 
 // Scope exposes the path scope. Callers that mutate the scope should
@@ -1062,7 +1101,7 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	if err := g.planFirstDenial(toolName, false); err != nil {
 		return err
 	}
-	if g.policy.Match(toolName, path) == OutcomeDeny {
+	if g.matchPolicy(toolName, path) == OutcomeDeny {
 		return fmt.Errorf("%s denied by config policy: %q", toolName, path)
 	}
 	if g.prompter == nil {
@@ -1112,7 +1151,7 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 	if err := g.planFirstDenial(toolName, readOnly); err != nil {
 		return err
 	}
-	switch g.policy.Match(toolName, key) {
+	switch g.matchPolicy(toolName, key) {
 	case OutcomeDeny:
 		return fmt.Errorf("%s denied by config policy: %q", toolName, key)
 	case OutcomeAllow:
@@ -1523,6 +1562,11 @@ type Snapshot struct {
 // Snapshot returns the current gate configuration.
 func (g *Gate) Snapshot() Snapshot {
 	allow, deny := g.policy.RawPatterns()
+	if g.sessionPolicy != nil {
+		sa, sd := g.sessionPolicy.RawPatterns()
+		allow = appendNew(allow, sa)
+		deny = appendNew(deny, sd)
+	}
 	return Snapshot{
 		Mode:  g.Mode(),
 		Allow: allow,
@@ -1550,7 +1594,7 @@ func (g *Gate) Snapshot() Snapshot {
 // This is a pre-flight projection, not a guarantee — interactive
 // approvals at runtime can grant access that's not in the snapshot.
 func (g *Gate) ToolGateState(toolName string) string {
-	if matchAny(g.policy.denyRules(), toolName, "") {
+	if g.policyMatchesBare(toolName, (*Policy).denyRules) {
 		return ToolGateDenied
 	}
 	mode := g.Mode()
@@ -1561,7 +1605,7 @@ func (g *Gate) ToolGateState(toolName string) string {
 		// Plan mode disables every tool call regardless of policy.
 		return ToolGateDenied
 	}
-	if matchAny(g.policy.allowRules(), toolName, "") {
+	if g.policyMatchesBare(toolName, (*Policy).allowRules) {
 		return ToolGateAllowed
 	}
 	if mode == ModeAllow {
@@ -1604,4 +1648,26 @@ func expandAlwaysAllowPattern(path string) string {
 		return strings.TrimRight(path, string(filepath.Separator)) + "/..."
 	}
 	return filepath.Dir(path) + "/..."
+}
+
+// policyMatchesBare reports whether a rule set, picked from the shared
+// policy and from this session's own patterns, matches the bare tool
+// name. Used by ToolGateState's key-less projection.
+func (g *Gate) policyMatchesBare(toolName string, rules func(*Policy) []rule) bool {
+	for _, p := range []*Policy{g.policy, g.sessionPolicy} {
+		if p != nil && matchAny(rules(p), toolName, "") {
+			return true
+		}
+	}
+	return false
+}
+
+// appendNew appends each of add not already in dst.
+func appendNew(dst, add []string) []string {
+	for _, s := range add {
+		if !slices.Contains(dst, s) {
+			dst = append(dst, s)
+		}
+	}
+	return dst
 }

@@ -171,6 +171,7 @@ When multi-session is enabled, each session gets a derived sub-gate with its own
 - **Permission grants** (`sessionAllow` / `sessionAllowTools` / `sessionAllowVerbs`) — alice's `/allow write_file allow-session` doesn't grant bob's session anything.
 - **Plan-first flag** (`planRecorded`) — alice's `record_plan` doesn't unblock bob's mutating tools. `POST /sessions/{sid}/slash/replan` revokes against that session's sub-gate and archives only the plan that session recorded; alice's `/replan` names bob's newer artifact and leaves it alone, since `.agents/plans/` is process-global. (Before v2.9 the hub left this closure unwired, so every session-created `/replan` answered `501` and only the daemon's own startup session could revoke.)
 - **Approval audit** (`approvals`) — per-session interactive-decision log.
+- **Runtime allow / deny patterns**: alice's `/allow` or `/deny`, or her `POST /sessions/{sid}/perms/allow|deny`, changes her session only. Configured patterns still apply in every session, a session's deny narrows a configured allow, and a session's allow can't lift a configured deny. Adding an allow pattern takes the session owner or an admin; a contributor can add deny patterns. Runtime patterns live on the session's in-memory gate, so an idle eviction followed by a resume, or a daemon restart, drops them; a deny that must hold belongs in config. (Before [#1176](https://github.com/go-steer/core-agent/issues/1176) these went into the shared policy, so a contributor on one session could add `*` and auto-allow calls in every other session.)
 - **Permission mode**: alice switching to `yolo`, with the TUI chip or with `POST /sessions/{sid}/perms/mode` (owner or admin only), doesn't change bob's session's mode.
 - **Prompter** — each session's UI hooks (TUI broker, HTTP prompt stream) are independent.
 - **Background subagents** — each session gets its own subagent manager, so a subagent spawned from alice's session runs behind alice's sub-gate, branches off alice's session in the eventlog, and reports back into alice's turn. `GET /sessions/{sid}/subagents` returns that session's roster, and evicting the session tears its subagents down. (Before v2.9 a daemon-created session had no manager at all: `spawn_agent` was present but bound to the daemon's, so the roster read empty and spawns ran under the daemon-wide gate.)
@@ -178,10 +179,7 @@ When multi-session is enabled, each session gets a derived sub-gate with its own
 
 **What's still daemon-wide** (by design — operator model is "one config, many users"):
 - `permissions.allow` / `permissions.deny` patterns from config
-- `/allow` / `/deny` slash commands mutate the shared policy
-- `AddAlwaysAllow` decisions (DecisionAllowAlways path) mutate the shared path scope
-
-Per-session policy and path-scope carve-outs are deferred to a future release.
+- An "allow always" answer to a prompt: it installs the pattern in the shared policy (or path scope, for a path) and persists it, and persisted grants load for every session after a restart. "Always" means beyond this session. A contributor can currently give that answer too; restricting it is tracked in [#1179](https://github.com/go-steer/core-agent/issues/1179).
 
 ---
 

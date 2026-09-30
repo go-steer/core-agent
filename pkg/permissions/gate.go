@@ -485,6 +485,22 @@ func (g *Gate) SetMode(m Mode) {
 	}
 }
 
+// SwapMode is SetMode that also returns the mode it replaced, read
+// under the same lock so two concurrent changes each report the
+// transition they actually made — which is what an audit row of
+// "from → to" needs. An unknown mode changes nothing and returns the
+// current mode.
+func (g *Gate) SwapMode(m Mode) (previous Mode) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	previous = g.mode
+	switch m {
+	case ModeAsk, ModeAllow, ModeYolo, ModePlan, ModeAcceptEdits:
+		g.mode = m
+	}
+	return previous
+}
+
 // DeriveForSession returns a per-session sub-gate derived from this
 // (template) gate. The sub-gate shares the template's daemon-wide
 // configuration by reference — Policy, PathScope, requirePlanArtifact

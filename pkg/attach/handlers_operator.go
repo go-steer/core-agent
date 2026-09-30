@@ -50,6 +50,9 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	// at the auth layer when ReadOnly=true (any non-GET is gated).
 	h.routeSession(mux, "POST", "perms/allow", auth.ActionSessionWrite, h.doPermsAllow)
 	h.routeSession(mux, "POST", "perms/deny", auth.ActionSessionWrite, h.doPermsDeny)
+	// perms/mode is ActionSessionAdmin (#1168): yolo removes the gate,
+	// so switching modes is held to the ACL-editing bar. See perm_mode.go.
+	h.routeSession(mux, "POST", "perms/mode", auth.ActionSessionAdmin, h.doPermMode)
 	// guardrails/reset is ActionSessionWrite, not ActionSessionAdmin
 	// (#331): clearing a trip only lets the session accept turns
 	// again, and the very next thing the operator does is POST

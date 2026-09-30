@@ -27,7 +27,7 @@ import (
 // /permissions layout switch is session-only here.
 func TestAttachOptions_PermissionLayoutOverlaySessionOnly(t *testing.T) {
 	t.Parallel()
-	opts := attachOptions(nil, nil, "", nil, nil, nil, nil, coretui.Branding{})
+	opts := attachOptions(nil, nil, "", nil, nil, nil, nil, coretui.PermissionModeWiring{}, coretui.Branding{})
 	if opts.PermissionLayout != coretui.PermissionOverlay {
 		t.Errorf("PermissionLayout = %v, want PermissionOverlay", opts.PermissionLayout)
 	}
@@ -40,7 +40,7 @@ func TestAttachOptions_PermissionLayoutOverlaySessionOnly(t *testing.T) {
 func TestAttachOptions_PassesFlagsThrough(t *testing.T) {
 	t.Parallel()
 	mouse := mouseOptFromFlag(true)
-	opts := attachOptions(nil, nil, coretui.ThemeDark, mouse, nil, nil, nil, coretui.Branding{Wordmark: "w", AgentIdentity: "id"})
+	opts := attachOptions(nil, nil, coretui.ThemeDark, mouse, nil, nil, nil, coretui.PermissionModeWiring{}, coretui.Branding{Wordmark: "w", AgentIdentity: "id"})
 	if opts.Mouse != mouse {
 		t.Errorf("Mouse = %v, want the --no-mouse pointer", opts.Mouse)
 	}
@@ -49,5 +49,19 @@ func TestAttachOptions_PassesFlagsThrough(t *testing.T) {
 	}
 	if opts.Branding.AgentIdentity != "id" || opts.Branding.Wordmark != "w" {
 		t.Errorf("Branding = %+v, want wordmark w / identity id", opts.Branding)
+	}
+}
+
+// The mode chip (#1168) reaches Options, and carries no Persist: the
+// daemon's config is not this client's to rewrite.
+func TestAttachOptions_PermissionModeWiredWithoutPersist(t *testing.T) {
+	t.Parallel()
+	set := func(coretui.PermissionMode) error { return nil }
+	opts := attachOptions(nil, nil, "", nil, nil, nil, nil, coretui.PermissionModeWiring{Initial: coretui.PermissionModePlan, Set: set}, coretui.Branding{})
+	if opts.PermissionMode.Set == nil || opts.PermissionMode.Initial != coretui.PermissionModePlan {
+		t.Errorf("PermissionMode = %+v, want the wiring passed in", opts.PermissionMode)
+	}
+	if opts.PermissionMode.Persist != nil {
+		t.Error("PermissionMode.Persist is set, but this client has no config file to write")
 	}
 }

@@ -194,6 +194,44 @@ type Adapter struct {
 	// SetTrustedPeerHosts; protected by mu; propagated to Adapters
 	// returned from SwitchToSession.
 	trustedPeerHosts []string
+
+	// view records which Adapter core-tui is showing. It is shared by
+	// every Adapter one operator session hops through (handOff passes
+	// it on), so an option wired once at startup can tell that the
+	// operator has since switched away. See FetchPermissionMode.
+	view *viewedSession
+}
+
+// viewedSession is the Adapter core-tui currently shows.
+type viewedSession struct {
+	mu  sync.Mutex
+	cur *Adapter
+}
+
+func (v *viewedSession) get() *Adapter {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.cur
+}
+
+func (v *viewedSession) set(a *Adapter) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.cur = a
+}
+
+// handOff marks next as the session core-tui is about to show, and has
+// it carry the shared view. Every site that hands core-tui a
+// SwitchTarget calls it. It runs before core-tui applies the switch;
+// if a switch were then not applied, the view would name a session the
+// operator is not looking at, and FetchPermissionMode's chip would
+// refuse rather than act, which is the safe direction.
+func (a *Adapter) handOff(next *Adapter) {
+	if a.view == nil { // a bare &Adapter{} literal, test-only
+		return
+	}
+	next.view = a.view
+	a.view.set(next)
 }
 
 // ClientFactory constructs a fresh *attachclient.Client pointing at
@@ -228,14 +266,17 @@ const replayGrace = 2 * time.Second
 // are disabled. Use NewWithClientFactory to enable multi-daemon
 // support.
 func New(client *attachclient.Client, sessionPath string) *Adapter {
-	return &Adapter{
+	a := &Adapter{
 		client:        client,
 		sessionPath:   sessionPath,
 		connectedAt:   time.Now(),
 		reconnectKick: make(chan struct{}, 1),
 		injectErrs:    make(chan error, 8),
 		wakeCh:        make(chan struct{}, 1),
+		view:          &viewedSession{},
 	}
+	a.view.set(a)
+	return a
 }
 
 // SetBrander wires the brander closure the Adapter uses when it

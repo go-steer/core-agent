@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -88,6 +89,8 @@ func newEchoAdapter(t *testing.T, handle *eventlog.Handle, userID, sid string, o
 // harnessConfig tweaks optional server wiring per test.
 type harnessConfig struct {
 	withFactory bool
+	// gate, when set, is the registered agent's permission gate.
+	gate *permissions.Gate
 }
 
 // newRPCHarness stands up a real attach.Server on 127.0.0.1:0 with a
@@ -108,6 +111,17 @@ func newRPCHarness(t *testing.T, cfg harnessConfig) *rpcHarness {
 	t.Cleanup(broker.Close)
 
 	adapter := newEchoAdapter(t, handle, testUserID, testSID, attachadapter.WithPromptBroker(broker))
+	if cfg.gate != nil {
+		m, err := mock.NewEcho().Model(context.Background(), "echo")
+		if err != nil {
+			t.Fatalf("echo model: %v", err)
+		}
+		a, err := agent.New(m, agent.WithSession(testUserID, testSID), agent.WithEventLog(handle), agent.WithGate(cfg.gate))
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		adapter = attachadapter.New(a, attachadapter.WithPromptBroker(broker))
+	}
 	reg := attach.NewSessionRegistry()
 	if _, err := reg.Register(adapter); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -1051,5 +1065,53 @@ func TestClientDenyPrompt_CarriesTheReason(t *testing.T) {
 	got := <-done
 	if got.a.Decision != permissions.DecisionDeny || got.a.Reason != "push to a branch and open a PR" {
 		t.Errorf("approval = %+v, want a deny carrying the reason", got.a)
+	}
+}
+
+// SetPermMode end to end against a real server (#1168): the daemon's
+// gate moves and the client gets the transition back. This harness runs
+// without --multi-session, so there is no ACL and the bearer token is
+// the gate.
+func TestClientSetPermMode_ChangesTheDaemonsGate(t *testing.T) {
+	t.Parallel()
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeAsk})
+	h := newRPCHarness(t, harnessConfig{gate: gate})
+	resp, err := h.client.SetPermMode(context.Background(), h.sessionPath(), "acceptEdits")
+	if err != nil {
+		t.Fatalf("SetPermMode: %v", err)
+	}
+	if resp.Previous != "ask" || resp.Mode != "acceptEdits" {
+		t.Errorf("response = %+v, want ask → acceptEdits", resp)
+	}
+	if gate.Mode() != permissions.ModeAcceptEdits {
+		t.Errorf("daemon gate = %q, want acceptEdits", gate.Mode())
+	}
+	if _, err := h.client.SetPermMode(context.Background(), h.sessionPath(), "allow"); err == nil || !strings.Contains(err.Error(), "config.json") {
+		t.Errorf("allow: err = %v, want the daemon's config-only refusal", err)
+	}
+}
+
+// On this route a 404 means either a refused caller or a pre-1.16.0
+// daemon, and the body cannot say which. The client must say both
+// rather than pass on "session not found" about a session the operator
+// is looking at.
+func TestClientSetPermMode_404IsExplained(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "session not found", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	p, err := ParseURL(srv.URL)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	_, err = New(p, "", 0).SetPermMode(context.Background(), "/sessions/s", "yolo")
+	if err == nil {
+		t.Fatal("SetPermMode against a 404: err = nil")
+	}
+	for _, want := range []string{"session owner", "1.16.0", "session not found"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to mention %q", err, want)
+		}
 	}
 }

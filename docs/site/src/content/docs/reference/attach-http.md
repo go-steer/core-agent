@@ -113,7 +113,7 @@ Every path suffix below appears under both `/sessions/{sid}/...` and `/sessions/
 | `/skills` | `{"skills":[{"name":..., "description":...}]}`. |
 | `/mcp` | `MCPInfo{servers:[...]}` — configured servers + status. |
 | `/pricing` | `PricingInfo{rate, last_refresh, ...}`. |
-| `/perms` | `PermsInfo{mode, allow:[...], deny:[...], approvals:[...]}` — the live mode plus the session's approval log. Each `approvals` row is `{tool, key?, decision, at, by?}`; `by` names the principal that answered the prompt and is **omitted** when the daemon verified nobody (protocol 1.10.0, [#830](https://github.com/go-steer/core-agent/issues/830)) — see [Approval attribution](#approval-attribution-protocol-1100). |
+| `/perms` | `PermsInfo{mode, allow:[...], deny:[...], approvals:[...]}` — the live mode (the owner changes it with [`POST /perms/mode`](#changing-the-permission-mode-protocol-1160)) plus the session's approval log. Each `approvals` row is `{tool, key?, decision, at, by?}`; `by` names the principal that answered the prompt and is **omitted** when the daemon verified nobody (protocol 1.10.0, [#830](https://github.com/go-steer/core-agent/issues/830)) — see [Approval attribution](#approval-attribution-protocol-1100). |
 | `/guardrails` | `GuardrailInfo{watchdog:{mode,tripped,reason}, cost_ceiling:{max_turn_usd,max_session_usd,session_cost_usd,tripped,reason,would_retrip}, halted}` — why the session is refusing turns, and whether a bare reset would re-trip ([#666](https://github.com/go-steer/core-agent/issues/666)). |
 
 ### Session write (`SessionWrite` — owner + contributor + admin)
@@ -216,6 +216,24 @@ Without a reason, the model got the same sentence whatever the operator objected
 - **The reason is the operator's text, quoted as such.** Unlike `approver`, it is not verified and does not need to be.
 
 A daemon older than 1.15.0 accepts the field and drops it, so the status code cannot tell you whether the reason reached the model. Check `protocol_version`. Go clients can use `attachclient.Client.DenyPrompt`. Denying with a reason from the TUI needs a core-tui release that asks for one.
+
+### Changing the permission mode (protocol 1.16.0)
+
+`POST /sessions/{sid}/perms/mode` switches a running session's [permission mode](/core-agent/concepts/permissions/#modes), the change the local TUI makes with Shift+Tab ([#1168](https://github.com/go-steer/core-agent/issues/1168)).
+
+| Method | Path suffix | Request | Response |
+|---|---|---|---|
+| `POST` | `/perms/mode` | `{"mode":"ask"\|"acceptEdits"\|"plan"\|"yolo"}` | `{"previous":..., "mode":...}`; **400** on any other mode, including `allow`, which is set in `.agents/config.json` only; **501** if the session has no permission gate |
+
+- **Who.** This route needs `SessionAdmin`: the session owner or a daemon admin, the same bar as [editing the ACL](#session-acls-protocol-1100). A contributor can answer prompts and inject, but can't change the mode, in either direction. A refused caller gets the same **404** as a session that doesn't exist, like every ACL refusal. Without `--multi-session` there is no ACL, and the attach token is the only gate, as it is for every route.
+- **Widening is allowed.** The owner can move to `yolo` as well as to `plan`. There is no separate opt-in, which matches the local chip.
+- **One session.** On a multi-session daemon each session has its own gate, so the change doesn't touch any other session.
+- **Audit.** On a session with a durable eventlog, each change that moves the mode appends an `attach-perm-mode` event (`Author=attach/perm-mode`, carrying `from`, `to` and `caller`). The local TUI's Shift+Tab writes the same row, without `caller`. `caller` is the identity the daemon verified; it is omitted when it verified none, and a `caller` field in the request body is ignored. Asking for the mode the session is already in returns 200 with `previous == mode` and writes nothing. The row is written outside a turn, like the guardrail rows. A change made while a turn is running lands when that turn ends, which can be well after the response.
+- **Not persisted.** A restarted or resumed session comes back in its configured mode. The audit rows are a record, not state.
+- **`allow` is one-way.** A session configured with `allow` can be moved to a chip mode, but only a restart brings it back to `allow`. The chip shows `allow` as `ask`.
+- **Other clients don't see it.** No frame announces the change, so another attached client's chip keeps showing the old mode until it reads `/perms` again.
+
+`core-agent-tui` shows the mode chip when it can read the daemon's mode, and Shift+Tab posts here. A refusal rolls the chip back and shows the error. The chip belongs to the session `core-agent-tui` attached to. After `/switch`, `/attach` or `/new` it refuses rather than change the session you left, until you switch back to it on the same daemon or re-attach. On this route a 404 means either a refused caller or a pre-1.16.0 daemon, and the client says both.
 
 ### Answering a prompt that is gone (protocol 1.14.0)
 

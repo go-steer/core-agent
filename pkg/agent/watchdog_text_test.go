@@ -264,3 +264,97 @@ func TestSilenceIsBrokenOnlyByTheAgentsOwnWords(t *testing.T) {
 		t.Fatalf("the agent reported mid-run and the watchdog alerted anyway: %+v", alerts)
 	}
 }
+
+// tripToolsWithoutText drives a silent run long enough to trip
+// tools-without-text through the agent's own tool-call tap.
+func tripToolsWithoutText(a *Agent, idPrefix rune) {
+	for i := range watchdog.DefaultToolsWithoutText {
+		a.observeToolCallsForWatchdog(&session.Event{
+			Author: wdAgentName,
+			LLMResponse: model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{
+				{FunctionCall: &genai.FunctionCall{
+					ID: string(idPrefix) + string(rune('a'+i)), Name: "gke_get_k8s_resource",
+					Args: map[string]any{"i": i},
+				}},
+			}}},
+		}, map[string]struct{}{})
+	}
+}
+
+func pendingSignals(a *Agent) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []string
+	for _, al := range a.watchdogPending {
+		out = append(out, al.Signal)
+	}
+	return out
+}
+
+// TestToolsWithoutTextFeedbackIsDroppedOnceTheAgentSpeaks is #1166. The
+// T2 self-development run was one turn from start to finish, so a
+// tools-without-text note queued early in it would have reached the
+// model hours after it had resumed talking, telling it that it had said
+// nothing. Under enforce the in-turn drain queues the note the moment
+// it trips, so the agent's next words must take it back out.
+//
+// Only the agent's own words count, by the same filter as the signal.
+// An unrelated queued observation is left alone, and silence to the end
+// of the turn still delivers the note, which is the #655 behaviour.
+func TestToolsWithoutTextFeedbackIsDroppedOnceTheAgentSpeaks(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{watchdog: watchdog.NewDefaultWatchdog(), agentName: wdAgentName, watchdogFeedback: true}
+	a.watchdogPending = []watchdog.Alert{{Signal: "restored-watchdog-halt", Severity: watchdog.SeverityCritical}}
+
+	tripToolsWithoutText(a, 'x')
+	a.drainWatchdogAlerts(false) // the in-turn drain, before anyone speaks
+	if got := strings.Join(pendingSignals(a), ","); got != "restored-watchdog-halt,tools-without-text" {
+		t.Fatalf("after the trip, pending = %q, want the halt note and tools-without-text", got)
+	}
+
+	a.observeAssistantTextForWatchdog(wdTextEvent("user", &genai.Part{Text: "any update?"}))
+	a.observeAssistantTextForWatchdog(wdTextEvent(wdAgentName, &genai.Part{Text: "thinking", Thought: true}))
+	if got := strings.Join(pendingSignals(a), ","); got != "restored-watchdog-halt,tools-without-text" {
+		t.Fatalf("a user message or a thought took the note back out: pending = %q", got)
+	}
+
+	a.observeAssistantTextForWatchdog(wdTextEvent(wdAgentName,
+		&genai.Part{Text: "So far: the deployment is failing its image pull."}))
+	if got := strings.Join(pendingSignals(a), ","); got != "restored-watchdog-halt" {
+		t.Fatalf("the agent spoke and pending = %q, want only the unrelated halt note", got)
+	}
+}
+
+// TestToolsWithoutTextClearedBeforeTheDrainReachesTheLogNotTheModel is
+// the post-turn shape of #1166: the trip and the agent's next words both
+// land before the drain. The operator callback still sees the alert;
+// the model is not told about a silence that had already ended.
+func TestToolsWithoutTextClearedBeforeTheDrainReachesTheLogNotTheModel(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	a := &Agent{
+		watchdog: watchdog.NewDefaultWatchdog(), agentName: wdAgentName, watchdogFeedback: true,
+		onWatchdogAlert: func(al watchdog.Alert) { logged = append(logged, al.Signal) },
+	}
+
+	tripToolsWithoutText(a, 'y')
+	a.observeAssistantTextForWatchdog(wdTextEvent(wdAgentName, &genai.Part{Text: "Done: the tag was wrong."}))
+	a.drainWatchdogAlerts(false)
+
+	if strings.Join(logged, ",") != "tools-without-text" {
+		t.Fatalf("operator log = %q, want the tools-without-text trip", logged)
+	}
+	if got := pendingSignals(a); len(got) != 0 {
+		t.Fatalf("pending model feedback = %q, want none: the agent had already spoken", got)
+	}
+
+	// Control: with no words before the drain, the note is delivered.
+	b := &Agent{watchdog: watchdog.NewDefaultWatchdog(), agentName: wdAgentName, watchdogFeedback: true}
+	tripToolsWithoutText(b, 'z')
+	b.drainWatchdogAlerts(false)
+	if got := strings.Join(pendingSignals(b), ","); got != "tools-without-text" {
+		t.Fatalf("silence to the drain: pending = %q, want tools-without-text", got)
+	}
+}

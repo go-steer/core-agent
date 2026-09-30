@@ -227,3 +227,47 @@ func TestToolsWithoutTextIsWiredIntoTheDefaultSet(t *testing.T) {
 		t.Fatalf("the model spoke mid-run and the watchdog alerted anyway: %+v", alerts)
 	}
 }
+
+// TestToolsWithoutText_ClearedWhenTheModelSpeaksBeforeTheDrain is #1166
+// at the watchdog layer. An alert that tripped and then sat in the
+// buffer while the model started talking again describes a silence that
+// has ended. Check must still return it, because the operator log and
+// the metric count every trip, but marked Cleared so the host does not
+// hand the model a correction that is no longer true.
+func TestToolsWithoutText_ClearedWhenTheModelSpeaksBeforeTheDrain(t *testing.T) {
+	t.Parallel()
+
+	trip := func() *watchdog.DefaultWatchdog {
+		w := watchdog.NewDefaultWatchdog()
+		for i := range watchdog.DefaultToolsWithoutText {
+			w.ObserveToolCall(call(fmt.Sprintf("tool_%d", i), i))
+		}
+		return w
+	}
+
+	silent := trip()
+	alerts := silent.Check()
+	if len(alerts) != 1 || !alerts[0].ClearsOnText || alerts[0].Cleared {
+		t.Fatalf("silence to the drain: alerts = %+v, want one ClearsOnText alert, not Cleared", alerts)
+	}
+
+	spoke := trip()
+	spoke.ObserveAssistantText("   ")
+	if alerts := spoke.Check(); len(alerts) != 1 || alerts[0].Cleared {
+		t.Fatalf("whitespace is not speech, but it cleared the alert: %+v", alerts)
+	}
+
+	spoke = trip()
+	spoke.ObserveAssistantText("Found it: the image tag does not exist.")
+	alerts = spoke.Check()
+	if len(alerts) != 1 {
+		t.Fatalf("the model spoke after the trip and the alert vanished from Check: %+v; "+
+			"the operator log must still see it", alerts)
+	}
+	if !alerts[0].Cleared {
+		t.Fatalf("the model spoke after the trip and the alert is not marked Cleared: %+v", alerts[0])
+	}
+	if !strings.Contains(alerts[0].String(), "the model has spoken since") {
+		t.Errorf("operator line %q does not say the model has spoken since the trip", alerts[0].String())
+	}
+}

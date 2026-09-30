@@ -348,17 +348,29 @@ func (b *PromptBroker) Subscribe(ctx context.Context) (<-chan PromptFrame, func(
 	return sub.frames, func() { b.unsubscribe(sub) }
 }
 
+// unsubscribe removes sub from the roster and ends its stream.
+//
+// Only a subscription still on the roster has its channel closed here.
+// Close empties the roster and closes every channel itself, so a stream
+// handler whose cleanup runs after Close (the handler saw its channel
+// close and returned) would otherwise close it a second time and panic
+// the daemon on its way down (#1169).
 func (b *PromptBroker) unsubscribe(sub *subscription) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := b.subs[:0]
+	found := false
 	for _, s := range b.subs {
-		if s != sub {
-			out = append(out, s)
+		if s == sub {
+			found = true
+			continue
 		}
+		out = append(out, s)
 	}
 	b.subs = out
-	close(sub.frames)
+	if found {
+		close(sub.frames)
+	}
 }
 
 // Respond delivers the operator's decision to the blocked AskApproval

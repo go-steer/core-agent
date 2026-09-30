@@ -705,6 +705,13 @@ type stopAgentArgs struct {
 type stopAgentResult struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// Stopped is true only when this call halted a running subagent.
+	// False with no Error means it had already finished, and Note says
+	// how (#1164). Status alone can't carry that: an already-finished
+	// subagent's status is its own terminal one, which read as the
+	// outcome of the stop.
+	Stopped bool   `json:"stopped"`
+	Note    string `json:"note,omitempty"`
 	// Error mirrors spawnAgentResult.Error: a stop that didn't happen
 	// (unknown name) is a failed call, and saying so under the reserved
 	// key is what keeps it from rendering as a stop that did (#746).
@@ -729,7 +736,8 @@ type stopAgentResult struct {
 // spawn_agent instead of the family.
 func NewStopAgentTool(mgr *Manager) tool.Tool {
 	handler := func(_ tool.Context, args stopAgentArgs) (stopAgentResult, error) {
-		if err := mgr.Stop(args.Name); err != nil {
+		stopped, err := mgr.StopAndReport(args.Name)
+		if err != nil {
 			return stopAgentResult{
 				Name:   args.Name,
 				Status: "error: " + err.Error(),
@@ -741,16 +749,38 @@ func NewStopAgentTool(mgr *Manager) tool.Tool {
 		if h != nil {
 			st = h.Status().String()
 		}
-		return stopAgentResult{Name: args.Name, Status: st}, nil
+		res := stopAgentResult{Name: args.Name, Status: st, Stopped: stopped}
+		if !stopped {
+			res.Note = alreadyFinishedNote(st, h)
+		}
+		return res, nil
 	}
 	t, err := functiontool.New(functiontool.Config{
 		Name:        StopAgentToolName,
-		Description: "Stop a running background subagent. The subagent's goroutine exits at its next checkpoint; its terminal status becomes 'stopped'.",
+		Description: "Stop a running background subagent. The subagent's goroutine exits at its next checkpoint and its terminal status becomes 'stopped'. If it had already finished, nothing changes: the result has stopped=false, the status it finished with, and a note naming that status and, where one was recorded, the reason it finished.",
 	}, handler)
 	if err != nil {
 		panic("background: NewStopAgentTool: " + err.Error())
 	}
 	return t
+}
+
+// alreadyFinishedNote words the stop_agent result for a subagent that
+// was terminal before the call (#1164). The reason is the one the run
+// ended on, e.g. max_cost_exceeded, when the handle recorded one.
+//
+// With no handle left to read (a same-name respawn evicted it between the
+// stop and the lookup) the fallback status is "stopping", which is not a
+// terminal status, so the note says only that nothing was stopped.
+func alreadyFinishedNote(status string, h *Handle) string {
+	if h == nil {
+		return "It was no longer running when this call arrived, so nothing was stopped."
+	}
+	how := "'" + status + "'"
+	if r := h.Result(); r != nil && r.Reason != "" && string(r.Reason) != status {
+		how += " (" + string(r.Reason) + ")"
+	}
+	return "It had already finished as " + how + " before this call, so nothing was stopped."
 }
 
 // The model-facing names of the two delegation tools. Exported because

@@ -76,3 +76,74 @@ func TestApprovalNotifyMustNameARegisteredTarget(t *testing.T) {
 		}
 	})
 }
+
+// approval_notify_after is validated eagerly for the reason the other
+// approval fields are: each rejected shape is a notification that can
+// never be sent, found out from the prompt nobody answered (#1167).
+func TestApprovalNotifyAfterIsValidated(t *testing.T) {
+	t.Parallel()
+
+	withTarget := func() *Config {
+		c := DefaultConfig()
+		c.Alerts = AlertsConfig{Targets: []AlertTarget{
+			{Name: "oncall", URL: "https://example.test/hook", Template: AlertTemplateGeneric},
+		}}
+		c.Permissions.ApprovalNotify = "oncall"
+		return c
+	}
+
+	cases := []struct {
+		name    string
+		cfg     func() *Config
+		wantErr string
+	}{
+		{"unset is fine", withTarget, ""},
+		{"shorter than the timeout", func() *Config {
+			c := withTarget()
+			c.Permissions.ApprovalNotifyAfter = "5m"
+			c.Permissions.ApprovalTimeout = "10m"
+			return c
+		}, ""},
+		{"no timeout at all", func() *Config {
+			c := withTarget()
+			c.Permissions.ApprovalNotifyAfter = "15m"
+			return c
+		}, ""},
+		{"not a duration", func() *Config {
+			c := withTarget()
+			c.Permissions.ApprovalNotifyAfter = "fifteen minutes"
+			return c
+		}, "approval_notify_after"},
+		{"negative", func() *Config {
+			c := withTarget()
+			c.Permissions.ApprovalNotifyAfter = "-5m"
+			return c
+		}, "negative"},
+		{"no target to send to", func() *Config {
+			c := DefaultConfig()
+			c.Permissions.ApprovalNotifyAfter = "5m"
+			return c
+		}, "no permissions.approval_notify target"},
+		{"not shorter than the timeout", func() *Config {
+			c := withTarget()
+			c.Permissions.ApprovalNotifyAfter = "10m"
+			c.Permissions.ApprovalTimeout = "10m"
+			return c
+		}, "would expire before"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := tc.cfg().Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

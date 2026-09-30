@@ -56,8 +56,15 @@ type PromptBroker struct {
 	gone []gonePrompt
 
 	// unwatched, when set, is called for a prompt the fan-out reached
-	// nobody with. See SetUnwatchedNotifier.
+	// nobody with, and — when unansweredAfter is positive — for one it
+	// reached that has gone unanswered that long. See
+	// SetUnwatchedNotifier.
 	unwatched func(context.Context, UnwatchedPrompt)
+
+	// unansweredAfter, when positive, also sends a prompt that WAS
+	// delivered to the unwatched callback once it has gone that long
+	// without an answer. See SetUnansweredAfter.
+	unansweredAfter time.Duration
 }
 
 // UnwatchedPrompt describes a prompt that opened with nobody listening,
@@ -76,11 +83,22 @@ type UnwatchedPrompt struct {
 	// responses, and the zero case is the one that actually needs
 	// them, because nothing else will ever escalate it.
 	Deadline time.Time
+
+	// Unanswered is zero when the fan-out reached nobody. When it is
+	// set, the prompt did reach an attached client and has gone this
+	// long without an answer (#1167): a client being attached is not
+	// somebody watching it.
+	Unanswered time.Duration
 }
 
 // SetUnwatchedNotifier installs fn as the out-of-band escalation for
 // prompts that open with nobody to see them. Pass nil to remove it. One
 // notifier per broker; the last call wins.
+//
+// With SetUnansweredAfter, fn is also called for a prompt that WAS
+// delivered and has gone that long without an answer. Either way it is
+// called at most once per prompt: a prompt announced on opening is not
+// announced again when the delay passes.
 //
 // fn is invoked on its own goroutine, exactly once per such prompt, with
 // a context that does NOT inherit the prompt's cancellation — only a
@@ -99,11 +117,43 @@ func (b *PromptBroker) SetUnwatchedNotifier(fn func(context.Context, UnwatchedPr
 	b.unwatched = fn
 }
 
+// SetUnansweredAfter makes the unwatched callback also cover a prompt
+// that reached an attached client and then went d without an answer
+// (#1167). Zero or negative, the default, turns it off.
+//
+// Being attached is not the same as watching. In the #1116 T2 run an
+// operator left the TUI attached and walked away, and a spawn_agent
+// prompt sat for 55 minutes while the configured approval channel heard
+// nothing, because the fan-out had delivered it to a terminal nobody was
+// looking at.
+//
+// Each prompt still produces at most one notification: one the fan-out
+// reached nobody with is sent at once, as before, and never again.
+func (b *PromptBroker) SetUnansweredAfter(d time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.unansweredAfter = d
+}
+
 // notifyTimeout bounds one out-of-band notification. Generous next to
 // the alert sender's own 10s HTTP timeout, because this budget also
 // covers DNS and connection setup on a daemon that may not have talked
 // to the destination since it started.
 const notifyTimeout = 30 * time.Second
+
+// notifyUnwatched sends info to fn on its own goroutine, filling in the
+// prompt's deadline from ctx. Detached from ctx on purpose; see
+// SetUnwatchedNotifier.
+func notifyUnwatched(ctx context.Context, fn func(context.Context, UnwatchedPrompt), info UnwatchedPrompt) {
+	if dl, ok := ctx.Deadline(); ok {
+		info.Deadline = dl
+	}
+	nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
+	go func() {
+		defer cancel()
+		fn(nctx, info)
+	}()
+}
 
 // pendingPrompt is one in-flight AskApproval call. response is
 // closed (or written to) when Respond delivers the operator's
@@ -179,6 +229,7 @@ func (b *PromptBroker) AskApprovalAttributed(ctx context.Context, req permission
 	}
 	b.pending[id] = pending
 	unwatched := b.unwatched
+	unansweredAfter := b.unansweredAfter
 
 	// Best-effort fan-out, and it happens UNDER b.mu rather than off a
 	// snapshot taken under it.
@@ -219,48 +270,60 @@ func (b *PromptBroker) AskApprovalAttributed(ctx context.Context, req permission
 	// is not there, indistinguishable from one waiting on a human who
 	// is thinking.
 	if delivered == 0 && unwatched != nil {
-		info := UnwatchedPrompt{Frame: frame}
-		if dl, ok := ctx.Deadline(); ok {
-			info.Deadline = dl
-		}
-		// Detached from ctx on purpose — see SetUnwatchedNotifier.
-		nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
-		go func() {
-			defer cancel()
-			unwatched(nctx, info)
-		}()
+		notifyUnwatched(ctx, unwatched, UnwatchedPrompt{Frame: frame})
 	}
 
-	select {
-	case resp := <-pending.response:
-		b.mu.Lock()
-		delete(b.pending, id)
-		b.mu.Unlock()
-		return permissions.Approval{Decision: resp.decision, By: resp.by}, resp.err
-	case <-ctx.Done():
-		b.mu.Lock()
-		delete(b.pending, id)
-		// Every departure through this branch is remembered, with the
-		// reason (#1088). Out-of-band approval means SLOW humans:
-		// somebody reads the notification, thinks about it, and posts an
-		// approval at minute eleven of a ten-minute window. Answering
-		// that with "unknown request id" tells them nothing about
-		// whether the write happened, and whether it happened is the
-		// only question they have. It did not — not for an expiry and
-		// not for a cancellation — and the broker is the last thing that
-		// still knows the prompt was ever here.
-		//
-		// The reason is not interchangeable, which is why the tombstone
-		// carries it rather than the ring meaning one thing. The gate
-		// marks the timeout it imposed as the context's cause (see
-		// permissions.ErrPromptExpired); anything else that closes this
-		// context ended the turn out from under a prompt nobody had
-		// answered yet, and telling that operator the clock ran out
-		// would be a guess dressed as a fact.
-		b.rememberGone(id, context.Cause(ctx))
-		b.mu.Unlock()
-		return permissions.Approval{Decision: permissions.DecisionDeny}, ctx.Err()
+	// It reached somebody's terminal. Whether anybody is looking at it
+	// is a different question, and the timer asks it (#1167).
+	var unanswered <-chan time.Time
+	if delivered > 0 && unwatched != nil && unansweredAfter > 0 {
+		t := time.NewTimer(unansweredAfter)
+		defer t.Stop()
+		unanswered = t.C
 	}
+
+	for {
+		select {
+		case <-unanswered:
+			// A nil channel never fires again, so this is once per prompt.
+			unanswered = nil
+			notifyUnwatched(ctx, unwatched, UnwatchedPrompt{Frame: frame, Unanswered: unansweredAfter})
+		case resp := <-pending.response:
+			b.mu.Lock()
+			delete(b.pending, id)
+			b.mu.Unlock()
+			return permissions.Approval{Decision: resp.decision, By: resp.by}, resp.err
+		case <-ctx.Done():
+			return b.abandon(ctx, id)
+		}
+	}
+}
+
+// abandon drops a prompt whose wait ended without an answer and reports
+// the denial AskApprovalAttributed returns for it.
+func (b *PromptBroker) abandon(ctx context.Context, id string) (permissions.Approval, error) {
+	b.mu.Lock()
+	delete(b.pending, id)
+	// Every departure through this branch is remembered, with the
+	// reason (#1088). Out-of-band approval means SLOW humans:
+	// somebody reads the notification, thinks about it, and posts an
+	// approval at minute eleven of a ten-minute window. Answering
+	// that with "unknown request id" tells them nothing about
+	// whether the write happened, and whether it happened is the
+	// only question they have. It did not — not for an expiry and
+	// not for a cancellation — and the broker is the last thing that
+	// still knows the prompt was ever here.
+	//
+	// The reason is not interchangeable, which is why the tombstone
+	// carries it rather than the ring meaning one thing. The gate
+	// marks the timeout it imposed as the context's cause (see
+	// permissions.ErrPromptExpired); anything else that closes this
+	// context ended the turn out from under a prompt nobody had
+	// answered yet, and telling that operator the clock ran out
+	// would be a guess dressed as a fact.
+	b.rememberGone(id, context.Cause(ctx))
+	b.mu.Unlock()
+	return permissions.Approval{Decision: permissions.DecisionDeny}, ctx.Err()
 }
 
 // gonePrompt is the tombstone left behind by a prompt whose wait ended
@@ -348,17 +411,29 @@ func (b *PromptBroker) Subscribe(ctx context.Context) (<-chan PromptFrame, func(
 	return sub.frames, func() { b.unsubscribe(sub) }
 }
 
+// unsubscribe removes sub from the roster and ends its stream.
+//
+// Only a subscription still on the roster has its channel closed here.
+// Close empties the roster and closes every channel itself, so a stream
+// handler whose cleanup runs after Close (the handler saw its channel
+// close and returned) would otherwise close it a second time and panic
+// the daemon on its way down (#1169).
 func (b *PromptBroker) unsubscribe(sub *subscription) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := b.subs[:0]
+	found := false
 	for _, s := range b.subs {
-		if s != sub {
-			out = append(out, s)
+		if s == sub {
+			found = true
+			continue
 		}
+		out = append(out, s)
 	}
 	b.subs = out
-	close(sub.frames)
+	if found {
+		close(sub.frames)
+	}
 }
 
 // Respond delivers the operator's decision to the blocked AskApproval

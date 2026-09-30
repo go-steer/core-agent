@@ -314,3 +314,36 @@ func TestADeliveryFailureDoesNotBreakThePrompt(t *testing.T) {
 		t.Fatal("the prompt never resolved after a failed notification")
 	}
 }
+
+// A prompt that reached no client and one that sat unanswered on an
+// attached client ask the reader different things, so the summary says
+// which (#1167).
+func TestNotificationSaysWhyNobodyHasAnswered(t *testing.T) {
+	t.Parallel()
+
+	f := newFake()
+	n := &Notifier{snd: f, log: quiet()}
+	n.notify(context.Background(), "s", attach.UnwatchedPrompt{Frame: attach.PromptFrame{ToolName: "bash"}})
+	f.await(t)
+	f.mu.Lock()
+	if !strings.Contains(f.summary, "nobody is attached") {
+		t.Errorf("unwatched summary = %q, want it to say nobody is attached", f.summary)
+	}
+	if _, ok := f.details["unanswered_for"]; ok {
+		t.Error("an unwatched prompt carried unanswered_for")
+	}
+	f.mu.Unlock()
+
+	n.notify(context.Background(), "s", attach.UnwatchedPrompt{
+		Frame: attach.PromptFrame{ToolName: "bash"}, Unanswered: 15 * time.Minute,
+	})
+	f.await(t)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !strings.Contains(f.summary, "has not answered in 15m0s") || strings.Contains(f.summary, "nobody is attached") {
+		t.Errorf("unanswered summary = %q, want it to say an attached client has not answered in 15m0s", f.summary)
+	}
+	if got, _ := f.details["unanswered_for"].(string); got != "15m0s" {
+		t.Errorf("unanswered_for = %q, want 15m0s", got)
+	}
+}

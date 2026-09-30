@@ -263,6 +263,7 @@ Configures the permission gate that consults every tool call. See [Permissions](
 | `require_plan_artifact` | bool | `false` | **Deprecated** (v2.9) — the two-state spelling of `plan_mode`; `true` == `plan_mode: "required"`. Cannot express `advisory`. Removed in the next major. |
 | `approval_timeout` | string | `""` (wait forever) | Go duration bounding how long one gated call waits for an answer before failing with `ErrPromptExpired`. See [Approval timeout](#approval-timeout-v30--approval_timeout). |
 | `approval_notify` | string | `""` (off) | Name of an [alert target](#alerts) to notify when a gated prompt opens and nobody is attached. See [Out-of-band approval](#out-of-band-approval-v30--approval_notify). |
+| `approval_notify_after` | string | `""` (off) | Go duration. A prompt that reached an attached client and is still unanswered after this long is sent to `approval_notify` too. Requires `approval_notify`, and must be shorter than `approval_timeout` when that is set. See [Attached is not watching](#attached-is-not-watching-v210--approval_notify_after). |
 
 Example:
 
@@ -373,11 +374,28 @@ curl -X POST "$DAEMON/sessions/core-agent/$SID/perms/respond" \
 Four details worth knowing:
 
 - **A target name, never a URL.** The alerts registry already owns destinations, auth and templates, and reusing it keeps this path SSRF-safe by construction — nothing here can be pointed at an address you did not pre-register.
-- **It fires on silence, not on every prompt.** If a `/perms/stream` subscriber received the frame, no notification goes out. Escalating every prompt of an interactive session is noise that trains the recipient to mute the channel. A subscriber that is attached but has stopped draining counts as silence, because from the operator's side it is.
+- **It fires on silence, not on every prompt.** If a `/perms/stream` subscriber received the frame, no notification goes out — unless `approval_notify_after` is set and the prompt then sits unanswered that long (see [below](#attached-is-not-watching-v210--approval_notify_after)). Escalating every prompt of an interactive session is noise that trains the recipient to mute the channel. A subscriber that is attached but has stopped draining counts as silence, because from the operator's side it is.
 - **An unusable target fails at startup.** An unknown name is a config error; a name whose webhook env is unset refuses the boot. An operator who set this field has told you they are not reading the console, so a warning printed there would be delivered to the one place they said they would not look.
 - **It has its own rate-limit budget,** separate from the `alert` tool's. Otherwise an agent firing alerts in a loop could exhaust the budget for the channel that governs that same agent.
 
 If delivery fails the prompt is unaffected — it stays answerable, and the failure is logged as `approval notification failed`. The gate never waits on a webhook.
+
+#### Attached is not watching (v2.10+) — `approval_notify_after`
+
+A client that stays attached while its operator is away receives every prompt, so none of them count as unwatched and the approval channel hears about none of them. Set `approval_notify_after` to cover that case too:
+
+```json
+{
+  "permissions": {
+    "mode": "ask",
+    "approval_timeout": "30m",
+    "approval_notify": "oncall",
+    "approval_notify_after": "10m"
+  }
+}
+```
+
+A prompt that reached an attached client and is still unanswered after ten minutes is sent to `oncall`. The notification says an attached client has not answered, and carries `unanswered_for` in its details. A prompt that reached nobody is still sent at once, and each prompt produces at most one notification either way. The field is rejected at load if `approval_notify` is unset, or if it is not shorter than `approval_timeout`, because either way the notification could never be sent ([#1167](https://github.com/go-steer/core-agent/issues/1167)).
 
 ### Plan mode (v2.9+) — `plan_mode`
 

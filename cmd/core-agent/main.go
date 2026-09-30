@@ -2241,6 +2241,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		approvalNotifier.Attach(promptBroker, primarySessionID(&agentRef))
 		if t := approvalNotifier.Target(); t != "" {
 			fmt.Fprintf(os.Stderr, "core-agent: unanswered permission prompts will be announced on alert target %q\n", t)
+			if a := cfg.Permissions.ApprovalNotifyAfter; a != "" {
+				fmt.Fprintf(os.Stderr, "core-agent: ...including prompts an attached client leaves unanswered for %s\n", a)
+			}
 		}
 
 		token := ""

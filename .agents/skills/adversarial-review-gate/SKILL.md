@@ -23,6 +23,10 @@ git add <the files>
 git status --short   # confirm nothing you meant to include is still ` M`
 ```
 
+Stage by name, never with `git add -A` or `git add .`. The tree can hold
+things that are not yours to commit: a scratch file, a reviewer's leftover,
+or an untracked file that belongs to the developer whose checkout this is.
+
 Then delegate to the `reviewer` subagent. **Tell it three things**, because a
 reviewer that has to infer intent grades style instead of correctness:
 
@@ -49,9 +53,23 @@ satisfy it.
 Findings about **comments and docs the diff makes false** are real findings,
 including in files the diff does not touch. Fix those.
 
+If the reviewer comes back without a report, because a budget cap stopped
+it or you stopped it, the gate has not run yet. Delegate again with a
+narrower brief: the files you are least sure of, and the one or two
+questions that matter. A cap returns whatever the reviewer had written by
+then, which is a starting point, not a verdict. A stop returns nothing at
+all. Each run can spend up to its budget, so a narrower brief is also the
+cheaper one.
+
 ## Record it
 
 A table is the readable form: finding, and what you did about it.
+
+Say who found what. When a finding came from your own checks rather than
+the reviewer, say so in its row, and if a reviewer run returned nothing,
+say that too. A section that credits the reviewer with findings it never
+returned tells the next reader the gate caught them, and so hides the
+fact that it did not.
 
 ```markdown
 ## Adversarial review

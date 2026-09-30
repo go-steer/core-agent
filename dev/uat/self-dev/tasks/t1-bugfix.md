@@ -6,9 +6,12 @@ task end to end and stop when the pull request is open.
 ## The bug
 
 Issue #1002: `spawn_agent` discards an acked `return_result` when the
-subagent then errors, so the parent re-does the work. Read the issue
-first with `gh issue view 1002`, including its comments. It has the
-ground truth from a live run and a proposed fix.
+subagent then errors, so the parent re-does the work. The issue and its
+comments have the ground truth from a live run and a proposed fix.
+`bash` is plan-gated, so `gh issue view 1002` can't run until a plan is
+recorded. Record a first plan from this file and the code, then read the
+issue with its comments, and record a revised plan if the issue changes
+it.
 
 In short: a subagent that has called `return_result` and been acked has
 banked a real result. If the run then fails (a provider 429, say), the

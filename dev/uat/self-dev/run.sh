@@ -41,8 +41,8 @@
 # T2 is the exception to the clone, by design: it is the first tier that
 # works in a git worktree of the real checkout, attended. There is no
 # --yolo. The agent runs as a daemon under the committed recipe's `ask`
-# gate, and an operator attaches with core-agent-tui to approve the plan
-# and each mutating call. permissions.approval_notify points at a local
+# gate, and an operator attaches with core-agent-tui to read the plan and
+# answer each mutating call. permissions.approval_notify points at a local
 # webhook sink (dev/webhook-sink), so a prompt nobody is watching is
 # graded by what the sink received, not by what the daemon said it sent
 # (A17). A9 cannot be a hash any more, because the agent legitimately adds
@@ -626,7 +626,7 @@ fi
 #
 # T2 runs the agent the way a developer would run it unattended-but-
 # watched: a daemon with no REPL, an attach listener, and an operator who
-# attaches with core-agent-tui to approve the plan and each mutating call.
+# attaches with core-agent-tui to read the plan and answer each mutating call.
 # Two secrets, both random per run: the attach token and the sink's
 # bearer token. Each reaches its process as a prefix assignment on the
 # exec, never as an argument (`env VAR=...` would put it in argv, readable
@@ -820,8 +820,8 @@ attended_live() {
 
     source ${RUN_DIR}/attach.env && ${TUI_BIN} ${ATTACH_URL} --token-env=SELFDEV_ATTACH_TOKEN
 
-  Approve the plan and each call you agree with; deny the rest, with a
-  reason. At least once, DETACH before the agent's next mutating call, so
+  Read the plan, then approve each call you agree with and deny the rest.
+  A denial carries no reason to the agent. At least once, DETACH before the agent's next mutating call, so
   the prompt opens with nobody attached and the notification goes out
   (A17). Re-attach to answer it.
 

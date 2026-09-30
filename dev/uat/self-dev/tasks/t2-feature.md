@@ -4,18 +4,24 @@ You are working in a git worktree of a developer's own `core-agent`
 checkout, detached at the commit the task was cut from. Do this task end
 to end and stop when the pull request is open.
 
-An operator is attached. They approve your plan and each mutating call.
-A denied call is an answer, not an error to work around: read why, change
-course, and carry on. When nobody is attached, a call you make waits and
-the operator is notified; wait for them rather than trying another route.
+An operator is attached. They read your plan and approve or deny each
+mutating call. Recording the plan doesn't wait for them; the first call it
+unlocks does. A denied call is an answer, not an error to work around. A
+denial carries no reason, so work out from your plan which step the call
+served and change course. Ending your turn ends this run, so do that only
+if the denial leaves no way to finish, and say why. When nobody is
+attached, a call you make waits and the operator is notified; wait for
+them rather than trying another route.
 
 ## The feature
 
-Issue #954: a `view_file_outline` tool. Read the issue first with
-`gh issue view 954`. It returns a file's structural skeleton, without
-the bodies: the package, imports, type declarations, function and method
-signatures, and top-level constants. `grep` finds a string and
-`read_file` reads a range. Neither answers "what is in this file" cheaply.
+Issue #954: a `view_file_outline` tool. `bash` is plan-gated, so
+`gh issue view 954` can't run until a plan is recorded. Record a first
+plan from this file and the code, then read the issue with its comments,
+and record a revised plan if the issue changes it. The tool returns a
+file's structural skeleton, without the bodies: the package, imports,
+type declarations, function and method signatures, and top-level
+constants. `grep` finds a string and `read_file` reads a range. Neither answers "what is in this file" cheaply.
 
 The issue's "Shape" section is the specification. For Go, use
 `go/parser` and `go/ast`, not regular expressions. For other languages,
@@ -65,6 +71,11 @@ plan recorded, and reads what comes back.
   and not the recipe under `.agents/`.
 - Plan first. `plan_mode` is `required`, so record your plan before any
   mutating call. The operator reads it before approving anything else.
+- Stage by name: `git add <file> ...`, never `git add -A` or `git add .`.
+  The checkout can hold untracked files that belong to the developer, and
+  a reviewer can leave files behind.
+- Don't clean shared caches (`golangci-lint cache clean`, `go clean
+  -cache`). They belong to the developer's machine, not to your worktree.
 - Run the presubmit sweep before you push. Use the `presubmit-sweep`
   skill; this change is Go, so it is the full sweep, not the docs subset.
 - Run the adversarial review gate before you open the PR. Use the

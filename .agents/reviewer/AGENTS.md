@@ -76,6 +76,29 @@ You have `bash`, so you can run `go build`, `go vet`, `go test`, `git` and
 `go test -race` on the touched package costs a minute.
 
 You are read-only by discipline, not only by tool surface. Do not edit,
-stage, commit, push, or run any presubmit that rewrites files. If you mutate
-the tree to prove a guard gap, restore it in the same step and verify the
-restore with `git diff`.
+stage, commit, push, or run any presubmit that rewrites files in the tree
+you were given. The author works in that same tree while you review it, so
+a mutation there, even one you restore a minute later, can land in their
+test run or their commit.
+
+To prove a guard gap by mutation, copy the tree first and break the copy.
+Leave git's metadata out of the copy. In a worktree `.git` is a pointer
+to the author's repository, and a `git stash` or `git checkout` run in a
+copy that kept it rewrites the author's index:
+
+```bash
+d=$(mktemp -d) && tar -cf - --exclude=.git --exclude=./.claude \
+  --exclude=./docs/site/node_modules . | tar -xf - -C "$d" && echo "$d"
+```
+
+Each `bash` call starts a fresh shell in the author's tree, so a `cd` does
+not carry over to the next call. Start every later call with
+`cd /tmp/tmp.XXXX &&`, using the path the copy printed. Don't run git in
+the copy; it has no repository. A `go test` run can outlast the default
+30-second limit, so pass `timeout_seconds`. Report the exact failure line
+you saw.
+
+Write each finding down as soon as you have confirmed it, rather than
+saving them all for the end, and restate the earlier ones each time you
+do. A delegation has a budget, and if a cap stops you, only your latest
+text reaches the author.

@@ -247,6 +247,38 @@ func TestBudgetsLeaveRoomForRealWork(t *testing.T) {
 	}
 }
 
+// TestReviewerBudgetLeavesRoomForAReview guards the second budget this
+// recipe got wrong. The reviewer declared no budgets, so every delegation
+// fell back to the background manager's default ($1 / 50 turns / 10m).
+// In the #1116 T2 run all three reviewer delegations hit that cap before
+// they reported. The gate recorded in the PR body was empty, and the
+// author found every defect alone.
+//
+// On a spawn_agent delegation each dimension falls back to that default
+// independently when it is left at zero, so all three are checked. The floors are just above the
+// defaults that emptied the gate, not tuned values.
+func TestReviewerBudgetLeavesRoomForAReview(t *testing.T) {
+	t.Parallel()
+	spec := subagentByName(t, loadRecipe(t), "reviewer")
+	b := spec.Budgets
+	if b == nil {
+		t.Fatal("reviewer declares no budgets, so each spawn_agent delegation gets the " +
+			"background default of $1 / 50 turns / 10m. That emptied the review " +
+			"gate on all three reviewer runs in #1116 T2")
+	}
+	if b.MaxCostUSD < 5 {
+		t.Errorf("reviewer budgets.max_cost_usd = %v, want >= 5; $1 did not "+
+			"cover one review of a feature-sized diff", b.MaxCostUSD)
+	}
+	if b.MaxTurns < 100 {
+		t.Errorf("reviewer budgets.max_turns = %d, want >= 100 (0 on spawn_agent falls back to 50)", b.MaxTurns)
+	}
+	if b.MaxWallclockSeconds < 1200 {
+		t.Errorf("reviewer budgets.max_wallclock_seconds = %d, want >= 1200 "+
+			"(0 on spawn_agent falls back to 10 minutes)", b.MaxWallclockSeconds)
+	}
+}
+
 // TestWatchdogIsEnforced — the recipe's autonomy story rests on the
 // watchdog being a kill switch, and the unattended default is conditional
 // on how the process is launched. Declared beats inherited: a silent

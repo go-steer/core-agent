@@ -470,9 +470,10 @@ rig is, not just the task:
    `source RUN_DIR/attach.env && RUN_DIR/core-agent-tui URL --token-env=SELFDEV_ATTACH_TOKEN`.
    Run it from outside the checkout, since anything it writes there
    counts against A9.
-3. Read the plan, then approve the calls you agree with and deny the rest
-   with a reason. A denial is an answer the task tells the agent to work
-   with.
+3. Read the plan, then approve the calls you agree with and deny the rest.
+   A denial is an answer the task tells the agent to work with. It reaches
+   the agent without a reason, because the attach API has no field for one
+   yet.
 4. **At least once, detach before a mutating call.** The notifier only
    fires when a prompt opens with no subscriber. That is the case #647
    exists for, and A17 fails the run if it never happened. The rig's

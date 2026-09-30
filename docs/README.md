@@ -79,6 +79,7 @@ research + friction logs, or handover notes.
 
 - [`metrics-design.md`](metrics-design.md) — OTel MeterProvider (primary) + Prometheus scrape (secondary)
 - [`alert-tool-design.md`](alert-tool-design.md) — native `alert` tool for headless escalation (*shipped* in v2.9, with one addition the doc did not anticipate: the `switchboard` destination class alongside `generic`, `slack`, `discord` and `pagerduty_events_v2`)
+- [`auto-mode-design.md`](auto-mode-design.md) — permission mode `auto`: an approver model allows-once, denies with a reason, or escalates the calls `ask` would prompt for; opt-in eligibility, fails closed, never reads tool output, never decides path-scope or control-plane calls (proposed, [#1175](https://github.com/go-steer/core-agent/issues/1175))
 - [`plan-first-design.md`](plan-first-design.md) — gate-level "plan before action" enforcement
 - [`gated-apply-design.md`](gated-apply-design.md) — letting `gke-platform-agent` apply the fix it found: one overlay, two legs (`mode: ask` vs `mode: allow`), and why the RoleBinding is the security argument once the human is gone (design, [#1042](https://github.com/go-steer/core-agent/issues/1042) box A3)
 - [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the K8s fleet-monitor topology

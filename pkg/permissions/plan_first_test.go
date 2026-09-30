@@ -69,7 +69,7 @@ func TestPlanFirst_DeniesBashBeforePlan(t *testing.T) {
 func TestPlanFirst_AllowsReadTools(t *testing.T) {
 	t.Parallel()
 	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
-	readTools := []string{"read_file", "read_many_files", "stat", "list_dir", "glob", "grep", "json_query", "todo"}
+	readTools := []string{"read_file", "read_many_files", "view_file_outline", "stat", "list_dir", "glob", "grep", "json_query", "todo"}
 	for _, name := range readTools {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

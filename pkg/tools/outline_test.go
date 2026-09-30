@@ -261,6 +261,29 @@ func TestViewFileOutline_UnknownExtensionDeclines(t *testing.T) {
 	}
 }
 
+// filepath.Ext is "" for a suffixless file, and `for "" files` reads
+// as a bug rather than an answer. The caller has to be able to tell a
+// missing extension from an unsupported one.
+func TestViewFileOutline_NoExtensionDeclinesReadably(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Makefile")
+	if err := os.WriteFile(path, []byte("all:\n\techo hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fn := viewFileOutlineFunc(gateFor(t, dir), config.DefaultConfig())
+	_, err := fn(tool.Context(nil), viewFileOutlineArgs{Path: path})
+	if err == nil {
+		t.Fatal("expected a decline for a file with no extension")
+	}
+	if strings.Contains(err.Error(), `""`) {
+		t.Errorf("decline names an empty extension instead of saying there is none: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no extension") {
+		t.Errorf("decline should say the file has no extension; got %v", err)
+	}
+}
+
 // Same path-scope treatment as read_file (mirrors
 // TestReadFile_OutOfScope_Denied).
 func TestViewFileOutline_OutOfScope_Denied(t *testing.T) {
@@ -344,7 +367,14 @@ func TestViewFileOutline_IsAnOrdinaryReadTool(t *testing.T) {
 	if !IsReadOnlyToolName("view_file_outline") {
 		t.Error("IsReadOnlyToolName must know view_file_outline")
 	}
-	// Plan-exempt: with no plan recorded, a read must still run.
+	// Plan-exempt. Two readings, because the obvious one is vacuous:
+	// CheckFileRead returns as soon as the path scope grants the read
+	// and never reaches planFirstDenial, so an IN-scope read succeeds
+	// under plan_mode: required whether or not the tool is exempt.
+	// (Verified by mutation: deleting the planExemptTools entry leaves
+	// the in-scope assertion passing.) The exemption is load-bearing on
+	// the OUT-of-scope path — promptForPath consults planFirstDenial
+	// before the mode — so that is what the second reading exercises.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.go")
 	if err := os.WriteFile(path, []byte("package x\n\nfunc F() {}\n"), 0o644); err != nil {
@@ -365,5 +395,17 @@ func TestViewFileOutline_IsAnOrdinaryReadTool(t *testing.T) {
 	}
 	if !strings.Contains(res.Outline, "func F()") {
 		t.Errorf("unexpected outline: %s", res.Outline)
+	}
+
+	// The non-vacuous half: a path the scope does not cover routes
+	// through promptForPath, which runs the plan-first pre-check
+	// BEFORE the mode. An unexempt tool is denied there with the
+	// plan-first error even under yolo; an exempt one proceeds.
+	outside := filepath.Join(t.TempDir(), "y.go")
+	if err := os.WriteFile(outside, []byte("package y\n\nfunc G() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := viewFileOutlineFunc(planGate, config.DefaultConfig())(tool.Context(nil), viewFileOutlineArgs{Path: outside}); err != nil {
+		t.Errorf("view_file_outline is not plan-exempt: an out-of-scope read before a plan was denied with %v", err)
 	}
 }

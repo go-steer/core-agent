@@ -59,6 +59,14 @@ const DefaultDigestThreshold = 8000
 //   - json_query — the model already narrowed. Pruning a jq result
 //     is second-guessing an extraction that was the whole point of
 //     the call.
+//   - view_file_outline — already a summary, and a lossy one by
+//     construction. It surveys, but the trade this wrap makes was
+//     made once already at a better place: the tool dropped the
+//     bodies and kept the signatures, which is a structural choice a
+//     generic pruner cannot reproduce. Digesting it would truncate
+//     signatures and line numbers — the two things the caller needs
+//     to pick the follow-up read — to save against a payload the
+//     per-tool cap already bounds.
 //   - write_file / edit_file / delete_file / record_plan / todo /
 //     alert / ask_user / retrieve_raw — control and mutation
 //     responses, small by construction, and in retrieve_raw's case

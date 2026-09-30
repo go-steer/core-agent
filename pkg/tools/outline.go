@@ -159,7 +159,7 @@ func outlineFor(path string, data []byte) (viewFileOutlineResult, error) {
 	}
 	lang, ok := heuristicLangs[ext]
 	if !ok {
-		return viewFileOutlineResult{}, fmt.Errorf("view_file_outline: no outline available for %q files; this tool parses Go (.go) and scans %s. Read the file's lines instead", ext, knownHeuristicExtensions())
+		return viewFileOutlineResult{}, fmt.Errorf("view_file_outline: %s; this tool parses Go (.go) and scans %s. Read the file's lines instead", declineSubject(ext), knownHeuristicExtensions())
 	}
 	return viewFileOutlineResult{
 		Path:     path,
@@ -168,6 +168,18 @@ func outlineFor(path string, data []byte) (viewFileOutlineResult, error) {
 		Outline:  outlineHeuristic(data, lang),
 		Note:     heuristicNote,
 	}, nil
+}
+
+// declineSubject names what was refused. filepath.Ext returns "" for
+// a file with no dot in its name (Makefile, a suffixless script), and
+// `no outline available for "" files` reads like a bug rather than an
+// answer — the caller should be able to tell a missing extension from
+// an unsupported one.
+func declineSubject(ext string) string {
+	if ext == "" {
+		return "no outline available for a file with no extension"
+	}
+	return fmt.Sprintf("no outline available for %q files", ext)
 }
 
 // knownHeuristicExtensions renders the scanned extensions for the

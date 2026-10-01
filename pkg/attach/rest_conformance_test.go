@@ -206,6 +206,23 @@ func TestConformance_RESTPermsRespondV1_UnattributedOmitsApprover(t *testing.T) 
 	}
 }
 
+// TestConformance_RESTPermsRespondV2 pins `decision` and `downgraded`
+// (protocol 1.17.0, #1179) with the one case that sets both: a
+// contributor's "allow-always" applied as "allow-session". The v1
+// fixture stays frozen as the shape without them.
+func TestConformance_RESTPermsRespondV2(t *testing.T) {
+	t.Parallel()
+	resp := PromptRespondResponse{
+		Acknowledged: true,
+		Approver:     "contributor@example.com",
+		Decision:     "allow-session",
+		Downgraded:   true,
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-perms-respond-v2.json",
+		resp)
+}
+
 // TestConformance_RESTSessionTitleV1 pins the POST
 // /sessions/{sid}/title body (protocol 1.10.0, #808).
 func TestConformance_RESTSessionTitleV1(t *testing.T) {

@@ -294,7 +294,7 @@ Decision keys (case-insensitive, single character + enter):
 | `y` | Allow once. Next identical call asks again. |
 | `s` | Allow this exact request for the rest of the session. |
 | `t` | Allow every call to this tool for the rest of the session. |
-| `a` | Allow always. Persists an entry to `.agents/config.json`'s `permissions.allow`. |
+| `a` | Allow always. Persists an entry to `.agents/config.json`: for a command or tool call, a `permissions.allow` entry that matches this exact request (a `*`, `?`, `[` or `\` in it is escaped, not a wildcard); for a path outside the scope, a `path_scope.allow_paths` entry for its directory. |
 | `n` or bare enter | Deny. |
 
 This is the stdin prompter. The TUI (`--tui`, and `core-agent-tui` in attach mode) asks with the same decisions plus `r`, deny with a one-line reason of at most 500 bytes that the model reads in the refused call's result. `core-agent-tui` offers `r` only against a daemon on attach protocol 1.15.0 or later; see [Attach TUI → Permission prompts](/reference/attach-tui/#permission-prompts).

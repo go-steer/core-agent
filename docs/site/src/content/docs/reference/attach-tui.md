@@ -268,7 +268,7 @@ If the remote agent runs in `ask` mode (the default), tool calls that aren't pre
 └────────────────────────────────────────────────────────────────┘
 ```
 
-The decision round-trips to the daemon via `POST /perms/respond`; the tool call resumes on the remote side. Picking `a` (allow-always) also persists the pattern to the daemon's `.agents/config.json` so subsequent sessions don't re-prompt.
+The decision round-trips to the daemon via `POST /perms/respond`; the tool call resumes on the remote side. Picking `a` (allow-always) also persists the pattern to the daemon's `.agents/config.json` so subsequent sessions don't re-prompt. On a multi-session daemon that takes a daemon admin; anyone else's `a` is applied as allow-for-this-session (protocol 1.17.0, [#1179](https://github.com/go-steer/core-agent/issues/1179)).
 
 **`r` denies with a reason the model reads.** The key legend lists it as `r deny with reason…`, next to `n deny`. It opens a one-line input under the choices: type why, press enter, and the call is denied with the refused call's result reading `The operator's reason: "…"`, so the model can change course instead of guessing at the objection ([#1165](https://github.com/go-steer/core-agent/issues/1165)). Esc goes back to the choices without deciding; enter on an empty input is a plain deny. The reason is capped at 500 bytes: the input shows a counter, and enter does nothing while it is over. `n` stays the plain deny, unchanged.
 

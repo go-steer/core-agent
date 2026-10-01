@@ -238,10 +238,10 @@ func matchAnyAllow(rules []rule, tool, key string) bool {
 		if r.tool != "" && r.tool != tool {
 			continue
 		}
-		if r.pat == key {
+		if r.pat == key && !hasGlobEscape(r.pat) {
 			return true // exact match: unchanged semantics
 		}
-		if !matchGlob(r.pat, key) {
+		if !globMatch(r.pat, key) {
 			continue
 		}
 		if tool != "bash" || !isOpenPrefixPattern(r.pat) {
@@ -264,7 +264,55 @@ func matchAnyAllow(rules []rule, tool, key string) bool {
 // open-prefix form matchGlob special-cases (a literal prefix followed
 // by a single trailing `*`).
 func isOpenPrefixPattern(pattern string) bool {
-	return strings.HasSuffix(pattern, "*") && !strings.ContainsAny(pattern[:len(pattern)-1], "*?[")
+	if !strings.HasSuffix(pattern, "*") || strings.ContainsAny(pattern[:len(pattern)-1], "*?[") {
+		return false
+	}
+	// A `*` behind an odd run of backslashes is escaped: a literal
+	// star, not an open prefix (#1179). Without this, escapeGlob's
+	// `rm \*` would still read as "anything starting with `rm \`".
+	escapes := 0
+	for i := len(pattern) - 2; i >= 0 && pattern[i] == '\\'; i-- {
+		escapes++
+	}
+	return escapes%2 == 0
+}
+
+// hasGlobEscape reports whether pattern contains one of the escapes
+// escapeGlob writes. matchAnyAllow skips its exact-string shortcut for
+// such a pattern (#1179): the always-grant `echo x\\; rm -rf ~` is for
+// the call `echo x\; rm -rf ~`, and comparing it to a key as a plain
+// string would also allow the different call spelled like the pattern.
+// Every pattern escapeGlob changed contains one; a hand-written allow
+// with some other backslash, `echo a\b`, keeps the shortcut it had.
+func hasGlobEscape(pattern string) bool {
+	return strings.Contains(pattern, `\*`) || strings.Contains(pattern, `\?`) ||
+		strings.Contains(pattern, `\[`) || strings.Contains(pattern, `\\`)
+}
+
+// escapeGlob backslash-escapes the characters matchGlob treats as glob
+// syntax, so the result matches s and nothing else. The gate runs a
+// prompt's PersistKey through it before installing an "allow always"
+// pattern (#1179): the key is a command or call the operator saw and
+// approved, and a `*`, `?` or `[` inside it must not turn one approved
+// call into a wildcard over others — nor an unbalanced `[` into an
+// install error. It relies on filepath.Match's escape syntax, which
+// Windows does not have; no release targets Windows.
+func escapeGlob(s string) string {
+	if !strings.ContainsAny(s, `*?[\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 4)
+	// Byte-wise: the four are ASCII, and ranging over runes would
+	// turn invalid UTF-8 into U+FFFD and a pattern its own key misses.
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '*', '?', '[', '\\':
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // matchGlob tries an exact match first (so the pattern "git status" only
@@ -272,9 +320,11 @@ func isOpenPrefixPattern(pattern string) bool {
 // glob via filepath.Match. A trailing `*` is treated as an open prefix
 // match too, which is friendlier for command patterns like "git diff*".
 func matchGlob(pattern, s string) bool {
-	if pattern == s {
-		return true
-	}
+	return pattern == s || globMatch(pattern, s)
+}
+
+// globMatch is matchGlob without the exact-string shortcut.
+func globMatch(pattern, s string) bool {
 	if isOpenPrefixPattern(pattern) {
 		return strings.HasPrefix(s, pattern[:len(pattern)-1])
 	}

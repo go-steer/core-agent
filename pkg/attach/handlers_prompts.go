@@ -122,6 +122,7 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		http.Error(w, rerr.Error(), http.StatusBadRequest)
 		return
 	}
+	decision, downgraded := h.capAlways(r, decision)
 	approver := verifiedApprover(r.Context())
 	if req.Approver != "" && req.Approver != approver {
 		if approver == "" {
@@ -153,7 +154,34 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, PromptRespondResponse{Acknowledged: true, Approver: approver})
+	writeJSON(w, http.StatusOK, PromptRespondResponse{
+		Acknowledged: true,
+		Approver:     approver,
+		Decision:     decision.String(), // the wire names; TestDecisionWireRoundTrip pins it
+		Downgraded:   downgraded,
+	})
+}
+
+// capAlways downgrades "allow always" to "allow for this session"
+// unless the caller is a daemon admin (#1179). An always grant goes
+// into the policy every session shares and into .agents/config.json,
+// so it widens sessions the answering caller may not even read. The
+// bar is the daemon's, not the session's: owning a session is no
+// standing to widen others, and any authenticated caller can own one
+// by creating it, so an owner's always would leave the hole open. The
+// answer is downgraded rather than refused: the call in front of the
+// caller still runs, identical calls on that session stay allowed, and
+// the response says what was applied. A daemon without ACLs has no
+// caller roles to tell apart and is unchanged.
+func (h *handlers) capAlways(r *http.Request, d permissions.Decision) (permissions.Decision, bool) {
+	if d != permissions.DecisionAllowAlways || !h.enforceACL {
+		return d, false
+	}
+	c, _ := auth.CallerFromContext(r.Context())
+	if auth.Authorize(c, auth.ActionDaemonAdmin, auth.SessionACL{}) {
+		return d, false
+	}
+	return permissions.DecisionAllowSession, true
 }
 
 // denyReason normalizes a /perms/respond reason (#1165): whitespace

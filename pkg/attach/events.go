@@ -316,7 +316,14 @@ import "time"
 // A pre-1.16.0 daemon has no such route, and a caller the ACL refuses
 // gets the same not-found body, by design (authorize never reveals a
 // session to someone it refuses).
-const protocolVersion = "1.16.0"
+//
+// v1.17.0 (#1179): on a multi-session daemon, an "allow-always" answer
+// to `POST /perms/respond` from anyone but a daemon admin — the session
+// owner included — is applied as "allow-session", because an always
+// grant widens every session and survives a restart.
+// The 200 body gains `decision` (what was applied) and `downgraded`. A
+// pre-1.17.0 daemon omits both and applied the always.
+const protocolVersion = "1.17.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

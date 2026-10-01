@@ -231,21 +231,24 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 	mcpServers := a.FetchMCPServers(ctx)
 	permMode := a.FetchPermissionMode(ctx)
 
-	// Remote permission prompts (PR D). The bridge subscribes to
-	// /perms/stream; if the daemon didn't wire a broker the GET
-	// returns 501 and the bridge sits idle (the prompter exists
-	// but never sees a request). Stop the bridge on shutdown so
-	// the goroutine doesn't outlive the program.
+	// Remote permission prompts (PR D). Each session's bridge
+	// subscribes to its /perms/stream while core-tui is attached to
+	// that session, and follows the operator across /switch, /new and
+	// /attach (#1183); see Adapter.BindPrompts. If the daemon didn't
+	// wire a broker the GET returns 501 and the bridge sits idle (the
+	// prompter exists but never sees a request). The cancel stops
+	// whichever bridge is running when the program ends.
 	// io.Discard for the bridge's diagnostics — bubble-tea owns the
 	// alt-screen and writes to stderr while it's running corrupt the
 	// rendered chat (lines bleed into the textarea + status). If
 	// debug visibility is ever needed, plumb a logfile through here.
-	// The adapter is the bridge's host: it supplies the daemon's
-	// protocol version (which decides whether the prompt offers the
-	// "r" deny-with-reason key) and a chat row for the one note the
-	// bridge has to show the operator.
-	prompter, stopPrompter := coretuiremote.StartRemotePrompter(ctx, client, sessionPath, io.Discard, a)
-	defer stopPrompter()
+	// Each session's adapter is its bridge's host: it supplies that
+	// daemon's protocol version (which decides whether the prompt
+	// offers the "r" deny-with-reason key) and a chat row for the one
+	// note the bridge has to show the operator.
+	promptCtx, stopPrompts := context.WithCancel(ctx)
+	defer stopPrompts()
+	prompter := a.BindPrompts(promptCtx, io.Discard)
 
 	identity := alias
 	if identity == "" {

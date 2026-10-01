@@ -214,6 +214,16 @@ type Adapter struct {
 	// it on), so an option wired once at startup can tell that the
 	// operator has since switched away. See FetchPermissionMode.
 	view *viewedSession
+
+	// prompts is the permission-prompt wiring BindPrompts installs,
+	// shared like view by every Adapter one operator session hops
+	// through. Nil when prompts are not bound (tests, mostly).
+	prompts *promptBinding
+	// prompter is this session's own prompter: what a SwitchTarget to
+	// this Adapter hands core-tui, and what its bridge asks through.
+	// Built by BindPrompts for the first session and by handOff for
+	// each one after. Never reassigned once core-tui can see it.
+	prompter remotePrompter
 }
 
 // viewedSession is the Adapter core-tui currently shows.
@@ -240,7 +250,16 @@ func (v *viewedSession) set(a *Adapter) {
 // if a switch were then not applied, the view would name a session the
 // operator is not looking at, and FetchPermissionMode's chip would
 // refuse rather than act, which is the safe direction.
+//
+// It also gives next a prompter of its own when prompts are bound, for
+// the SwitchTarget to carry (#1183). Building one starts nothing: next's
+// bridge only runs once core-tui applies the switch and calls Events,
+// so a target that is never applied leaves nothing behind.
 func (a *Adapter) handOff(next *Adapter) {
+	if a.prompts != nil {
+		next.prompts = a.prompts
+		next.prompter = a.prompts.newPrompter()
+	}
 	if a.view == nil { // a bare &Adapter{} literal, test-only
 		return
 	}
@@ -572,8 +591,16 @@ func isTurnEnd(raw *session.Event, ev coretui.Event) bool {
 // reconnect immediately — without this, a prompt typed while
 // Events is in the 30s sleep would sit silent for up to 30s
 // before the operator sees any response.
+//
+// Prompts: when BindPrompts has wired them, the session's permission
+// prompt bridge runs for exactly as long as this call, because this
+// call is how core-tui says it is attached to the session. See
+// BindPrompts.
 func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 	return func(yield func(coretui.Event, error) bool) {
+		if stop := a.startPromptBridge(ctx); stop != nil {
+			defer stop()
+		}
 		const (
 			initialBackoff = 5 * time.Second
 			maxBackoff     = 30 * time.Second

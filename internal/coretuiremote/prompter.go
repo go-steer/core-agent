@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	coretui "github.com/go-steer/core-tui/tui"
@@ -77,18 +78,130 @@ type PromptBridgeHost interface {
 	NotifyOperator(err error)
 }
 
-// StartRemotePrompter wires the remote agent's permission prompts
-// into a coretui.Prompter so the local TUI's modal can render them.
-// Returns the prompter (to pass into coretui.Options.Prompter) and a
-// stop func the caller invokes when the program ends.
+// detachGrace is how long a prompt the bridge has already handed to
+// the operator outlives the bridge being stopped. core-tui stops the
+// bridge (by cancelling the outgoing session's Events context) in the
+// same Update call that answers any prompt on screen with a deny,
+// "superseded", so the answer is normally in hand microseconds after
+// the stop. The grace lets that deny reach the daemon instead of
+// leaving the tool call blocked until the daemon's approval timeout.
+// It only bounds a prompt nobody will answer any more.
+const detachGrace = 5 * time.Second
+
+// promptBinding is the attach client's permission-prompt wiring. It is
+// shared by every Adapter one operator session hops through (handOff
+// passes it on, as it does the view), so each session the operator
+// switches to gets a prompter of its own built the same way.
+type promptBinding struct {
+	// root is the program's lifetime. No bridge outlives it, whatever
+	// core-tui does or does not cancel on the way out.
+	root context.Context
+	// errOut receives the bridges' one-line network diagnostics.
+	errOut io.Writer
+	// newPrompter builds the prompter for one session. coretui's in
+	// production; a test supplies one that answers for the operator.
+	newPrompter func() remotePrompter
+}
+
+// BindPrompts wires the remote daemon's permission prompts into the
+// TUI and returns the prompter to pass as coretui.Options.Prompter.
 //
-// The bridge goroutine ranges over /perms/stream; each frame is
+// Prompts follow the session on screen (#1183). Each Adapter owns a
+// prompter of its own, and its bridge to <sessionPath>/perms/stream
+// runs exactly while core-tui is attached to it: it starts when
+// core-tui calls Events on the Adapter, and stops when core-tui
+// cancels that call's context or ctx ends. Every SwitchTarget the
+// Adapter returns (/switch, /new, /attach <url> <sid>) carries the
+// incoming Adapter's prompter, and that Adapter is its bridge's
+// PromptBridgeHost, so the protocol version that decides whether the
+// prompt offers "r" comes from the daemon the operator is now looking
+// at.
+//
+// Tying the bridge to Events rather than to building the target is
+// what makes the lifecycle safe. core-tui calls Events on an incoming
+// Agent only once it has applied the switch, and cancels the outgoing
+// Agent's Events context in that same step. A target core-tui never
+// applies (the operator pressed esc while SessionInput.Submit was
+// still dialling) never starts a bridge, so it has nothing to leak; a
+// switch that fails never cancels the live session's context, so its
+// bridge keeps running. The outgoing bridge stops reading new prompts
+// at once, and a prompt it already showed the operator gets
+// detachGrace to deliver the deny core-tui answers it with.
+//
+// errOut receives one-line diagnostics about the bridges' network
+// trouble (transient stream errors, 404 on response). Pass nil for
+// stderr.
+//
+// Call it once, before coretui.Run, on the Adapter passed as
+// Options.Agent.
+func (a *Adapter) BindPrompts(ctx context.Context, errOut io.Writer) coretui.PermissionPrompter {
+	return a.bindPrompts(ctx, errOut, func() remotePrompter { return coretui.NewPrompter() })
+}
+
+func (a *Adapter) bindPrompts(ctx context.Context, errOut io.Writer, newPrompter func() remotePrompter) coretui.PermissionPrompter {
+	a.prompts = &promptBinding{root: ctx, errOut: errOut, newPrompter: newPrompter}
+	a.prompter = newPrompter()
+	return a.prompter
+}
+
+// targetPrompter is the value for SwitchTarget.Prompter when core-tui
+// switches to a: a's own prompter, or a nil interface when prompts are
+// not bound. Never a typed nil, which core-tui would install and then
+// dereference.
+func (a *Adapter) targetPrompter() coretui.PermissionPrompter {
+	if a.prompter == nil {
+		return nil
+	}
+	return a.prompter
+}
+
+// startPromptBridge starts a's bridge for the Events call whose
+// context is viewCtx, and returns the func that stops it. Nil when
+// prompts are not bound. The bridge's context ends with viewCtx or
+// with the program, whichever is first.
+func (a *Adapter) startPromptBridge(viewCtx context.Context) (stop func()) {
+	b, p := a.prompts, a.prompter
+	if b == nil || p == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(viewCtx)
+	unhook := context.AfterFunc(b.root, cancel)
+	go runRemotePromptBridge(ctx, a.client, a.sessionPath, p, b.errOut, a)
+	return func() {
+		unhook()
+		cancel()
+	}
+}
+
+// graceAfter returns a context that outlives ctx by grace: it is not
+// cancelled when ctx is, only grace later (or by the returned cancel).
+func graceAfter(ctx context.Context, grace time.Duration) (context.Context, context.CancelFunc) {
+	out, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	var timer *time.Timer
+	var mu sync.Mutex
+	stop := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		timer = time.AfterFunc(grace, cancel)
+	})
+	return out, func() {
+		stop()
+		mu.Lock()
+		if timer != nil {
+			timer.Stop()
+		}
+		mu.Unlock()
+		cancel()
+	}
+}
+
+// runRemotePromptBridge ranges over /perms/stream; each frame is
 // handed to the prompter (which blocks until the operator picks a
 // decision in the modal), then the decision is POSTed back via
 // /perms/respond. If the remote daemon wasn't constructed with
 // attachadapter.WithPromptBroker the initial GET returns 501; the
-// bridge logs once and returns (the returned prompter sits idle and
-// the daemon's gate then surfaces its usual "no prompter configured"
+// bridge logs once and returns (the prompter sits idle and the
+// daemon's gate then surfaces its usual "no prompter configured"
 // error, which is the correct headless-mode behavior).
 //
 // Deny with a reason (#1165): the bridge asks with
@@ -97,33 +210,16 @@ type PromptBridgeHost interface {
 // at the moment the prompt arrives. Otherwise it asks with plain
 // AskApproval and the operator is never offered a reason the daemon
 // would silently drop. The version comes from the `capabilities` frame
-// on the adapter's event stream, which core-tui opens just after the
-// program starts — usually AFTER /perms/stream has replayed any prompt
-// already pending, which is exactly the prompt an operator attached to
-// answer. So before the first frame the bridge waits up to
-// protocolWait for the version, once per process: a daemon that never
-// advertises one costs one short delay, not one per prompt, and a
-// prompt that outlasts the wait simply doesn't offer "r".
-//
-// Known limitation: the bridge stays on the session it started with
-// across /switch (as it always has), and host is the adapter for that
-// session, whose event stream core-tui stops on a switch. The version
-// it reports is still that daemon's — the one the bridge talks to —
-// but it is no longer refreshed. On the session's own stream, a drop
-// clears the version until the reconnect re-announces it, so a daemon
-// restarted at an older protocol is not offered a reason it would
-// ignore.
-//
-// errOut receives one-line diagnostics about the bridge's network
-// trouble (transient stream errors, 404 on response). Pass nil to
-// drop them.
-func StartRemotePrompter(ctx context.Context, client *attachclient.Client, sessionPath string, errOut io.Writer, host PromptBridgeHost) (coretui.PermissionPrompter, func()) {
-	prompter := coretui.NewPrompter()
-	bridgeCtx, cancel := context.WithCancel(ctx)
-	go runRemotePromptBridge(bridgeCtx, client, sessionPath, prompter, errOut, host)
-	return prompter, cancel
-}
-
+// on the adapter's event stream, which core-tui opens in the same step
+// that starts this bridge, so a prompt already pending (exactly the
+// prompt an operator attached to answer) usually replays before the
+// version is known. Before the first frame the bridge therefore waits
+// up to protocolWait for the version, once per bridge: a daemon that
+// never advertises one costs one short delay, not one per prompt, and
+// a prompt that outlasts the wait simply doesn't offer "r". On the
+// session's own stream, a drop clears the version until the reconnect
+// re-announces it, so a daemon restarted at an older protocol is not
+// offered a reason it would ignore.
 func runRemotePromptBridge(ctx context.Context, client *attachclient.Client, sessionPath string, prompter remotePrompter, errOut io.Writer, host PromptBridgeHost) {
 	const (
 		initialBackoff = 5 * time.Second
@@ -163,8 +259,18 @@ func runRemotePromptBridge(ctx context.Context, client *attachclient.Client, ses
 			if !waited {
 				awaitDaemonProtocol(ctx, host, protocolWait)
 				waited = true
+				if ctx.Err() != nil {
+					// Detached during the wait: the prompt belongs to
+					// a session the operator has left, and asking now
+					// would put it over the one they switched to.
+					return
+				}
 			}
-			handleRemotePromptFrame(ctx, client, sessionPath, prompter, frame, errOut, host)
+			// The prompt may outlive the bridge by detachGrace, so the
+			// deny a switch answers it with still reaches the daemon.
+			askCtx, cancelAsk := graceAfter(ctx, detachGrace)
+			handleRemotePromptFrame(askCtx, client, sessionPath, prompter, frame, errOut, host)
+			cancelAsk()
 		}
 		debugf("prompt bridge: stream closed; will reconnect after %s", backoff)
 	}

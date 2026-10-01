@@ -125,8 +125,9 @@ var (
 //     that wants one wires an instance into the matching Options
 //     field, which is interface-typed and therefore already
 //     compile-checked at the wiring site. Attach mode wires exactly
-//     one of the three — StartRemotePrompter (prompter.go) returns a
-//     coretui.NewPrompter() bridged to the daemon's /perms stream.
+//     one of the three — Adapter.BindPrompts (prompter.go) returns a
+//     coretui.NewPrompter() bridged to the session's /perms stream,
+//     and every SwitchTarget carries the incoming session's own.
 //     Options.Elicitor and Options.Asker are left unset here: MCP
 //     elicits are answered on the daemon side, and nothing in the tree
 //     wires Asker yet (it needs an ask-the-user tool behind it — see

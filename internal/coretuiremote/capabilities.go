@@ -852,6 +852,11 @@ func (a *Adapter) Set(modelID string, in, out float64) (string, error) {
 // Adapter's ctxs closes the local SSE reader; the daemon session
 // keeps ticking per its own reattach policy. See the SwitchTarget
 // godoc in core-tui for the full contract.
+//
+// Every target built from a fresh Adapter carries that Adapter's own
+// prompter (handOff builds it, targetPrompter hands it over), so
+// permission prompts follow the switch; its bridge starts only when
+// core-tui applies the target. See BindPrompts (#1183).
 
 // peerEnumTimeout bounds the per-peer ListSessions call in the
 // fan-out so one slow peer doesn't stall the whole picker open.
@@ -1199,6 +1204,7 @@ func (a *Adapter) buildSwitchTarget(next *Adapter, newPath, note string) coretui
 	tgt := coretui.SwitchTarget{
 		Agent:        next,
 		UsageTracker: next,
+		Prompter:     next.targetPrompter(),
 		Memory:       next.FetchMemory(ctx),
 		Skills:       next.FetchSkills(ctx),
 		MCPServers:   next.FetchMCPServers(ctx),
@@ -1498,8 +1504,9 @@ func (a *Adapter) invokeAsyncSlash(ctx context.Context, name, args string) (core
 		a.handOff(next)
 		return coretui.SlashResult{
 			SwitchTo: &coretui.SwitchTarget{
-				Agent: next,
-				Note:  fmt.Sprintf("Attached to new session %s (%s)", resp.SessionID, resp.URL),
+				Agent:    next,
+				Prompter: next.targetPrompter(),
+				Note:     fmt.Sprintf("Attached to new session %s (%s)", resp.SessionID, resp.URL),
 			},
 		}, nil
 
@@ -1592,8 +1599,9 @@ func (a *Adapter) dispatchAttach(ctx context.Context, args string) (coretui.Slas
 	a.handOff(next)
 	return coretui.SlashResult{
 		SwitchTo: &coretui.SwitchTarget{
-			Agent: next,
-			Note:  "Attached to " + rawURL + " session " + sid,
+			Agent:    next,
+			Prompter: next.targetPrompter(),
+			Note:     "Attached to " + rawURL + " session " + sid,
 		},
 	}, nil
 }

@@ -16,6 +16,7 @@ package permissions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -117,6 +118,23 @@ type PromptRequest struct {
 	// blanket grant the operator didn't explicitly choose. Zero
 	// (AccessNone) for non-path-scope prompts.
 	Access Access
+
+	// Args is the call's full, untruncated arguments as JSON, when the
+	// call site has them. Detail is a summary and is cut short for
+	// namespaced tools, so in ModeAuto a request without Args never
+	// reaches the approver (#1175): a call site nobody updated fails
+	// closed, to a person.
+	Args json.RawMessage
+
+	// ApproverModel is set when ModeAuto's approver model was asked
+	// about this call and passed it to a person; ApproverReason is its
+	// stated reason, when it gave one that was used. The reason is
+	// model output the call's own arguments can steer, so a prompter
+	// shows it quoted as the approver's words. On such a prompt the
+	// gate applies any allow as DecisionAllowOnce, so prompters should
+	// offer only once and deny (#1175 decision 11).
+	ApproverModel  string
+	ApproverReason string
 }
 
 // subagentSourceKey is the unexported context-value type used to

@@ -79,11 +79,8 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 	// starts. When the consumer doesn't pass a gate we can't
 	// introspect their wiring; the docs steer them to ModeYolo or
 	// ModeAllow for unattended runs.
-	if cfg.permissionsGate != nil {
-		g := cfg.permissionsGate
-		if g.Mode() == permissions.ModeAsk && !g.HasPrompter() {
-			return RunResult{}, fmt.Errorf("agent: Run: permissions gate is in ask-mode with no Prompter; would deadlock on first tool call (use ModeYolo / ModeAllow for unattended runs, or wire a Prompter)")
-		}
+	if err := checkGateWiring(cfg.permissionsGate); err != nil {
+		return RunResult{}, err
 	}
 
 	doneCh := make(chan string, 1)
@@ -1340,3 +1337,22 @@ const (
 	// wake-time and Resume picks up.
 	StopReasonDeferred StopReason = "deferred"
 )
+
+// checkGateWiring is Run's permissions deadlock guard; nil g passes.
+func checkGateWiring(g *permissions.Gate) error {
+	if g == nil {
+		return nil
+	}
+	if g.Mode() == permissions.ModeAsk && !g.HasPrompter() {
+		return fmt.Errorf("agent: Run: permissions gate is in ask-mode with no Prompter; would deadlock on first tool call (use ModeYolo / ModeAllow for unattended runs, or wire a Prompter)")
+	}
+	// Auto with no Prompter can run headless — the approver allows
+	// what it may and the rest is denied — but only with an approver.
+	// Without one it is ask-mode with no Prompter under another name.
+	// (Until a call site passes Args, every call is denied either
+	// way; that is phase 2 of #1175, not a wiring mistake.)
+	if g.Mode() == permissions.ModeAuto && !g.HasPrompter() && !g.HasApprover() {
+		return fmt.Errorf("agent: Run: permissions gate is in auto-mode with neither an Approver nor a Prompter; every gated call would be denied (wire an Approver or a Prompter, or use ModeYolo / ModeAllow for unattended runs)")
+	}
+	return nil
+}

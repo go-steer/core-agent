@@ -41,6 +41,13 @@ func Recommend(approvals []ApprovalLog) []Recommendation {
 	seen := map[string]bool{}
 	tools := []string{}
 	for _, a := range approvals {
+		// An approver model's allow is not an operator's answer, and a
+		// recommendation turns answers into a permanent allowlist. A
+		// model's judgement must not become standing policy by way of
+		// a picker that says the operator approved it (#1175).
+		if a.Approver != "" {
+			continue
+		}
 		if !seen[a.Tool] {
 			tools = append(tools, a.Tool)
 		}

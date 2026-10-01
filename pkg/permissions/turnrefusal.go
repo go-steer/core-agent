@@ -57,7 +57,7 @@ import (
 	"fmt"
 )
 
-// refusalKind records which of the two refusals armed the memory, so
+// refusalKind records which refusal armed the memory, so
 // the repeat can say which. They are not interchangeable to a model: a
 // denial is a human decision, an expiry is the absence of one, and the
 // useful next action differs (find another approach vs. report that the
@@ -67,6 +67,16 @@ type refusalKind int
 const (
 	refusedByDeny refusalKind = iota + 1
 	refusedByExpiry
+
+	// refusedByApprover is a deny from ModeAuto's approver model
+	// (#1175). It is final for the turn like an operator's, but the
+	// repeat must not claim a person said no.
+	refusedByApprover
+
+	// refusedNoPerson is a ModeAuto call that needed a person on a
+	// gate with no prompter (#1175). Like an expiry, nobody is there to
+	// answer a retry; unlike one, no wall clock was spent.
+	refusedNoPerson
 )
 
 // turnRefusalKey is the identity of a gated request for suppression
@@ -175,6 +185,12 @@ func repeatRefusalError(kind refusalKind, toolName, detail string) error {
 	case refusedByExpiry:
 		return fmt.Errorf("%s not attempted: an identical request expired unanswered earlier in this turn, so this one was not put to anybody either (detail=%q). %s",
 			toolName, detail, expiryGuidance)
+	case refusedNoPerson:
+		return fmt.Errorf("%s not attempted: an identical request earlier in this turn needed a person's approval and no person can be asked in this session, so this one was not put to the approver either (detail=%q). %s",
+			toolName, detail, expiryGuidance)
+	case refusedByApprover:
+		return fmt.Errorf("%s not attempted: the approver model denied an identical request earlier in this turn, so this one was not put to the approver or to a person (detail=%q). %s",
+			toolName, detail, denyGuidance)
 	default:
 		return fmt.Errorf("%s not attempted: an identical request was denied earlier in this turn, so this one was not put to a human again (detail=%q). %s",
 			toolName, detail, denyGuidance)

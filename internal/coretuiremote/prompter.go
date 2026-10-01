@@ -109,7 +109,10 @@ type PromptBridgeHost interface {
 // across /switch (as it always has), and host is the adapter for that
 // session, whose event stream core-tui stops on a switch. The version
 // it reports is still that daemon's — the one the bridge talks to —
-// but it is no longer refreshed.
+// but it is no longer refreshed. On the session's own stream, a drop
+// clears the version until the reconnect re-announces it, so a daemon
+// restarted at an older protocol is not offered a reason it would
+// ignore.
 //
 // errOut receives one-line diagnostics about the bridge's network
 // trouble (transient stream errors, 404 on response). Pass nil to
@@ -238,7 +241,7 @@ func sendDenyWithReason(ctx context.Context, client *attachclient.Client, sessio
 		return
 	}
 	if host != nil {
-		host.NotifyOperator(fmt.Errorf("the daemon refused your deny reason, so the call was denied without it (%w); send a steer if the model needs to know why", err))
+		host.NotifyOperator(fmt.Errorf("the daemon refused your deny reason for prompt %s on %s, so the call was denied without it (%w); send a steer if the model needs to know why", id, sessionPath, err))
 	}
 }
 

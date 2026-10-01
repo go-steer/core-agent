@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -391,6 +392,51 @@ func TestAdapter_LearnsProtocolFromTheEventStream(t *testing.T) {
 	}
 	if v := a.DaemonProtocolVersion(); v != "1.16.0" {
 		t.Errorf("version = %q, want 1.16.0", v)
+	}
+}
+
+// A dropped /events stream may reconnect to a restarted daemon at a
+// different version, so the adapter forgets the old one until the new
+// stream's capabilities frame says otherwise.
+func TestAdapter_ForgetsProtocolWhenTheStreamDrops(t *testing.T) {
+	t.Parallel()
+	var connects atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /sessions/{sid}/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if connects.Add(1) == 1 {
+			// First connection: announce 1.16.0, then drop.
+			_, _ = io.WriteString(w, "event: capabilities\ndata: {\"protocol_version\":\"1.16.0\",\"event_types\":[\"agent\"]}\n\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			return
+		}
+		// Reconnect: never announce anything.
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	a := newPauseAdapter(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() {
+		for range a.Events(ctx) { //nolint:revive // drained only for its side effect
+		}
+	}()
+	select {
+	case <-a.DaemonProtocolKnown():
+	case <-ctx.Done():
+		t.Fatal("the capabilities frame on /events never reached the adapter")
+	}
+	for a.DaemonProtocolVersion() != "" {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("version = %q after the stream dropped, want it forgotten", a.DaemonProtocolVersion())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

@@ -702,6 +702,14 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 			// Stream closed mid-flight. Surface as a transient error
 			// so the operator sees activity, then reconnect.
 			debugf("Events: stream closed; will reconnect")
+			// Forget the daemon's protocol until the reconnected
+			// stream's capabilities frame re-announces it: the daemon
+			// on the other side may have been restarted at a different
+			// version, and a stale >= 1.15.0 would offer the deny
+			// reason to a daemon that no longer takes it.
+			a.mu.Lock()
+			a.daemonProtocol = ""
+			a.mu.Unlock()
 			if !yield(coretui.Event{}, fmt.Errorf("stream disconnected — waiting to reconnect")) {
 				return
 			}

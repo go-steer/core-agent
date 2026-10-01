@@ -85,7 +85,10 @@ type PromptBridgeHost interface {
 // "superseded", so the answer is normally in hand microseconds after
 // the stop. The grace lets that deny reach the daemon instead of
 // leaving the tool call blocked until the daemon's approval timeout.
-// It only bounds a prompt nobody will answer any more.
+// The same holds for the deny core-tui (v0.28.1 and later) gives a
+// prompt the bridge handed over in the instant of the switch: it
+// arrives after the stop, on the outgoing prompter. Otherwise the grace
+// only bounds a prompt nobody will answer any more.
 const detachGrace = 5 * time.Second
 
 // promptBinding is the attach client's permission-prompt wiring. It is
@@ -129,13 +132,20 @@ type promptBinding struct {
 // at once, and a prompt it already showed the operator gets
 // detachGrace to deliver the deny core-tui answers it with.
 //
-// Known limitation, in core-tui v0.28.0: its prompt listener outlives
-// a switch and its permission request carries no session generation,
-// so a prompt the outgoing bridge hands over in the instant of the
-// switch can still be drawn over the new session, and the answer goes
-// to the new prompter. The outgoing ask then gives up after
-// detachGrace and the daemon re-offers the prompt when the operator
-// returns. Only core-tui can close that window.
+// The bridge stops only once the outgoing Events context is cancelled,
+// so it can still hand the outgoing prompter a prompt in the instant
+// of the switch. Since core-tui v0.28.1 (core-tui#353) that prompt
+// never reaches the new session. Replacing a prompter releases its
+// listener, and core-tui answers a prompt the released listener had
+// already read, or one still queued on the channel, with a deny on
+// the prompter it came from. That deny goes through this bridge's
+// ask after the bridge's context has ended, which is why the ask keeps
+// detachGrace. A prompt handed over after core-tui stopped reading is
+// never read: its ask gives up after detachGrace without answering,
+// and the daemon re-offers the prompt when the operator returns.
+// Before v0.28.1 such a prompt could be drawn over the new session,
+// with the answer going to the new prompter, and every switch left a
+// listener parked on the old prompter for the life of the program.
 //
 // errOut receives one-line diagnostics about the bridges' network
 // trouble (transient stream errors, 404 on response). Pass nil for

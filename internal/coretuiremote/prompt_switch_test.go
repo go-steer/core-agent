@@ -243,16 +243,6 @@ func (o *operator) shown(t *testing.T) operatorAsk {
 	}
 }
 
-// quiet asserts no prompt reaches this operator for a short while.
-func (o *operator) quiet(t *testing.T, why string) {
-	t.Helper()
-	select {
-	case a := <-o.asks:
-		t.Fatalf("%s: prompt %q reached this operator", why, a.req.Detail)
-	case <-time.After(150 * time.Millisecond):
-	}
-}
-
 func asOperator(t *testing.T, p coretui.PermissionPrompter) *operator {
 	t.Helper()
 	o, ok := p.(*operator)
@@ -350,7 +340,6 @@ func TestPrompts_FollowSwitch(t *testing.T) {
 	d.waitSubscribers(t, "s2", 1)
 	d.waitSubscribers(t, "s1", 0) // the outgoing bridge stopped
 	answer(t, d, op2, "s2", "after")
-	op1.quiet(t, "after the switch")
 }
 
 func TestPrompts_FollowNew(t *testing.T) {
@@ -358,7 +347,7 @@ func TestPrompts_FollowNew(t *testing.T) {
 	d := startPromptDaemon(t, "1.14.0", "s1")
 	d.created = attachclient.NewSessionResponse{SessionID: "fresh", URL: d.URL + "/sessions/fresh"}
 	a := New(d.client(t), "/sessions/s1")
-	op1, v := boundAdapter(t, a)
+	_, v := boundAdapter(t, a)
 	d.waitSubscribers(t, "s1", 1)
 
 	res, err := a.invokeAsyncSlash(context.Background(), "new", "")
@@ -372,7 +361,6 @@ func TestPrompts_FollowNew(t *testing.T) {
 	d.waitSubscribers(t, "fresh", 1)
 	d.waitSubscribers(t, "s1", 0)
 	answer(t, d, op2, "fresh", "p")
-	op1.quiet(t, "after /new")
 }
 
 // /attach to a daemon on a newer protocol: the incoming session's
@@ -422,7 +410,6 @@ func TestPrompts_FollowAttach_AndItsProtocol(t *testing.T) {
 	if r := peer.nextReply(t); r.sid != "s9" || r.Decision != "deny" || r.Reason != "wrong cluster" {
 		t.Fatalf("respond = %+v, want the deny with its reason on s9", r)
 	}
-	op1.quiet(t, "after /attach")
 }
 
 // A target core-tui never applies (esc while SessionInput.Submit was
@@ -448,7 +435,10 @@ func TestPrompts_DiscardedTargetLeavesTheLiveBridge(t *testing.T) {
 }
 
 // A switch that fails leaves the old session attached, and so its
-// bridge.
+// bridge. Every failure SwitchToSession can return today happens before
+// handOff builds anything for the incoming session, so this pins that
+// ordering: should a failure ever come after it, the live bridge must
+// still be the one running.
 func TestPrompts_FailedSwitchLeavesTheLiveBridge(t *testing.T) {
 	t.Parallel()
 	d := startPromptDaemon(t, "1.14.0", "s1", "s2")
@@ -528,5 +518,31 @@ func TestPrompts_UnboundTargetsCarryNoPrompter(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if n := d.subscribers("s1"); n != 0 {
 		t.Fatalf("an unbound adapter opened %d prompt streams", n)
+	}
+}
+
+// The grace a shown prompt gets past the bridge's stop starts when the
+// bridge stops, not before, and ends on its own.
+func TestGraceAfter(t *testing.T) {
+	t.Parallel()
+	parent, stop := context.WithCancel(context.Background())
+	ctx, cancel := graceAfter(parent, 50*time.Millisecond)
+	defer cancel()
+	stop()
+	select {
+	case <-ctx.Done():
+		t.Fatal("the graced context ended with its parent")
+	case <-time.After(20 * time.Millisecond):
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(promptTestWait):
+		t.Fatal("the graced context outlived its grace")
+	}
+
+	ctx2, cancel2 := graceAfter(context.Background(), time.Hour)
+	cancel2()
+	if ctx2.Err() == nil {
+		t.Fatal("cancel did not end the graced context")
 	}
 }

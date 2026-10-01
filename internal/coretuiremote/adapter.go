@@ -597,10 +597,18 @@ func isTurnEnd(raw *session.Event, ev coretui.Event) bool {
 // call is how core-tui says it is attached to the session. See
 // BindPrompts.
 func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
+	events := a.events(ctx)
 	return func(yield func(coretui.Event, error) bool) {
 		if stop := a.startPromptBridge(ctx); stop != nil {
 			defer stop()
 		}
+		events(yield)
+	}
+}
+
+// events is Events' stream: the drain, reconnect and backoff loop.
+func (a *Adapter) events(ctx context.Context) iter.Seq2[coretui.Event, error] {
+	return func(yield func(coretui.Event, error) bool) {
 		const (
 			initialBackoff = 5 * time.Second
 			maxBackoff     = 30 * time.Second

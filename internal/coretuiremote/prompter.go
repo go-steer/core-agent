@@ -120,13 +120,22 @@ type promptBinding struct {
 // Tying the bridge to Events rather than to building the target is
 // what makes the lifecycle safe. core-tui calls Events on an incoming
 // Agent only once it has applied the switch, and cancels the outgoing
-// Agent's Events context in that same step. A target core-tui never
+// Agent's Events context in that same step (or, when the switch lands
+// before that stream's start was recorded, as soon as it is). A target core-tui never
 // applies (the operator pressed esc while SessionInput.Submit was
 // still dialling) never starts a bridge, so it has nothing to leak; a
 // switch that fails never cancels the live session's context, so its
 // bridge keeps running. The outgoing bridge stops reading new prompts
 // at once, and a prompt it already showed the operator gets
 // detachGrace to deliver the deny core-tui answers it with.
+//
+// Known limitation, in core-tui v0.28.0: its prompt listener outlives
+// a switch and its permission request carries no session generation,
+// so a prompt the outgoing bridge hands over in the instant of the
+// switch can still be drawn over the new session, and the answer goes
+// to the new prompter. The outgoing ask then gives up after
+// detachGrace and the daemon re-offers the prompt when the operator
+// returns. Only core-tui can close that window.
 //
 // errOut receives one-line diagnostics about the bridges' network
 // trouble (transient stream errors, 404 on response). Pass nil for

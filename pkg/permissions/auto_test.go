@@ -117,8 +117,17 @@ func taskCtx() (context.Context, *stubApproverContext) {
 	return WithApproverContext(context.Background(), ac), ac
 }
 
+// rawArgs hands the gate b exactly, bypassing CallArgs, so a test can
+// put non-canonical Args in front of the approver checks.
+func rawArgs(b json.RawMessage) lazyArgs {
+	if b == nil {
+		return nil
+	}
+	return func() json.RawMessage { return b }
+}
+
 func bashCall(ctx context.Context, g *Gate, cmd string, args json.RawMessage) error {
-	return g.gateRequest(ctx, PromptKindBash, "bash", cmd, "bash", cmd, "bash", false, args)
+	return g.gateRequest(ctx, PromptKindBash, "bash", cmd, "bash", cmd, "bash", false, rawArgs(args))
 }
 
 // Decision 5: an approver allow is once. Nothing is remembered and no
@@ -281,7 +290,7 @@ func TestAuto_EscalatesWithoutAnApproverCall(t *testing.T) {
 			o.AutoEligible = mustPolicy(t, []string{"mcp:*"}, nil)
 		}, call: func(ctx context.Context, g *Gate) error {
 			return g.gateRequest(ctx, PromptKindGeneric, "mcp", "fs_write path=notes.txt…", "mcp", "fs_write", "mcp/fs_write", false,
-				json.RawMessage(`{"path":"notes.txt","also":"`+strings.Repeat("x", 300)+` ../.agents/config.json"}`))
+				rawArgs(json.RawMessage(`{"path":"notes.txt","also":"`+strings.Repeat("x", 300)+` ../.agents/config.json"}`)))
 		}},
 		{name: "bash names the instructions file", why: instructions, opts: eligibleExactly(insAbs, withInstructions), call: bash(insAbs)},
 		{name: "bash names the instructions file by base name", why: "approver-policy.md", opts: eligibleExactly(insBase, withInstructions), call: bash(insBase)},
@@ -422,8 +431,8 @@ func TestAuto_ControlPlaneWriteNeverReachesApprover(t *testing.T) {
 	}
 }
 
-// Phase 1 has no call site passing Args, so a public Check* in auto
-// never reaches the approver: a call site nobody updated fails closed.
+// A public Check* holds no Args, so in auto it never reaches the
+// approver: a call site nobody moved to a WithArgs sibling fails closed.
 func TestAuto_PublicCheckWithoutArgsNeverReachesApprover(t *testing.T) {
 	t.Parallel()
 	a := &stubApprover{verdict: allowVerdict}

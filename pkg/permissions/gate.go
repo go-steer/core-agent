@@ -16,7 +16,6 @@ package permissions
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -896,8 +895,12 @@ func (g *Gate) resolveSessionGate(ctx context.Context) *Gate {
 // keyed by toolName (the whole namespace). Prefer CheckToolCall for
 // namespaced toolsets so the grant is scoped per underlying tool.
 func (g *Gate) CheckGeneric(ctx context.Context, toolName, key string) error {
+	return g.checkGeneric(ctx, toolName, key, nil)
+}
+
+func (g *Gate) checkGeneric(ctx context.Context, toolName, key string, args lazyArgs) error {
 	g = g.resolveSessionGate(ctx)
-	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key, toolName, false, nil)
+	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key, toolName, false, args)
 }
 
 // CheckToolCall gates a call to a specific tool within a namespaced
@@ -913,7 +916,7 @@ func (g *Gate) CheckGeneric(ctx context.Context, toolName, key string) error {
 // uses namespace, preserving the "mcp:<tool>" / "skill:<tool>"
 // pattern grammar.
 func (g *Gate) CheckToolCall(ctx context.Context, namespace, tool, key string) error {
-	return g.checkToolCall(ctx, namespace, tool, key, false)
+	return g.checkToolCall(ctx, namespace, tool, key, false, nil)
 }
 
 // CheckReadOnlyToolCall is CheckToolCall for a call the caller has
@@ -932,12 +935,12 @@ func (g *Gate) CheckToolCall(ctx context.Context, namespace, tool, key string) e
 // Policy allow/deny, permission mode, and prompting are untouched: a
 // read-only MCP tool in ask mode still prompts.
 func (g *Gate) CheckReadOnlyToolCall(ctx context.Context, namespace, tool, key string) error {
-	return g.checkToolCall(ctx, namespace, tool, key, true)
+	return g.checkToolCall(ctx, namespace, tool, key, true, nil)
 }
 
-func (g *Gate) checkToolCall(ctx context.Context, namespace, tool, key string, readOnly bool) error {
+func (g *Gate) checkToolCall(ctx context.Context, namespace, tool, key string, readOnly bool, args lazyArgs) error {
 	g = g.resolveSessionGate(ctx)
-	return g.gateRequest(ctx, PromptKindGeneric, namespace, key, namespace, key, sessionToolKey(namespace, tool), readOnly, nil)
+	return g.gateRequest(ctx, PromptKindGeneric, namespace, key, namespace, key, sessionToolKey(namespace, tool), readOnly, args)
 }
 
 // sessionToolKey builds the per-underlying-tool session-grant key for
@@ -957,6 +960,10 @@ func sessionToolKey(namespace, tool string) string {
 // boundary, run in allow/ask mode with an explicit allowlist rather
 // than relying on the denylist.
 func (g *Gate) CheckBash(ctx context.Context, command string) error {
+	return g.checkBash(ctx, command, nil)
+}
+
+func (g *Gate) checkBash(ctx context.Context, command string, args lazyArgs) error {
 	g = g.resolveSessionGate(ctx)
 	command = strings.TrimSpace(command)
 	if denied, reason := IsBashDenied(command); denied {
@@ -967,7 +974,7 @@ func (g *Gate) CheckBash(ctx context.Context, command string) error {
 			return fmt.Errorf("bash refused: %s", SearchGateMessage(binary, native))
 		}
 	}
-	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command, "bash", false, nil)
+	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command, "bash", false, args)
 }
 
 // BashSearchGate reports the resolved search-gate posture.
@@ -1114,6 +1121,10 @@ func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
 // Paths not covered for writes — even if the same scope entry
 // permits reads — escalate via the path-scope prompt.
 func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error {
+	return g.checkFileWrite(ctx, toolName, path, nil)
+}
+
+func (g *Gate) checkFileWrite(ctx context.Context, toolName, path string, args lazyArgs) error {
 	g = g.resolveSessionGate(ctx)
 	// Control-plane classification runs FIRST and on the symlink-
 	// resolved path, before any mode/session/allowlist short-circuit,
@@ -1138,7 +1149,7 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 	if g.sessionToolAllowed(toolName) {
 		return nil
 	}
-	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path, toolName, false, nil)
+	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path, toolName, false, args)
 }
 
 // checkControlPlaneWrite is the elevated gate for privilege-bearing
@@ -1199,10 +1210,11 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	return nil
 }
 
-// args is the call's full arguments as JSON, or nil when the call site
-// does not pass them; it reaches PromptRequest.Args, and in ModeAuto a
-// request without it never goes to the approver (#1175).
-func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey, sessToolKey string, readOnly bool, args json.RawMessage) error {
+// args yields the call's full arguments as JSON, or is nil when the
+// call site does not pass them. It is evaluated only on the prompt
+// path, into PromptRequest.Args, and in ModeAuto a request without it
+// never goes to the approver (#1175).
+func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey, sessToolKey string, readOnly bool, args lazyArgs) error {
 	// Plan-first pre-check runs before mode/policy logic. Even
 	// ModeYolo respects it — the operator opted into "no actions
 	// before plan" by setting RequirePlanArtifact. Once a plan is
@@ -1268,7 +1280,7 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 			Verb:           verb,
 			SessionToolKey: sessToolKey,
 			Source:         SubagentSourceFromContext(ctx),
-			Args:           args,
+			Args:           args.get(),
 		})
 	}
 	return fmt.Errorf("%s denied: unknown permission mode %q", toolName, mode)

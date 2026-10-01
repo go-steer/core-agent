@@ -94,11 +94,14 @@ func spawnGateKey(args spawnAgentArgs) string {
 // A nil gate means the host wired no gate at all, in which case nothing
 // else in the process is gated either and refusing here would be the
 // only enforcement in a build that asked for none.
-func (m *Manager) checkSpawn(ctx context.Context, toolName, key string) error {
+//
+// args is the spawn call's input, so ModeAuto's approver judges the
+// whole brief, not the key's name alone (#1175).
+func (m *Manager) checkSpawn(ctx context.Context, toolName, key string, args any) error {
 	if m == nil || m.gate == nil {
 		return nil
 	}
-	return m.gate.CheckGeneric(ctx, toolName, key)
+	return m.gate.CheckGenericWithArgs(ctx, toolName, key, args)
 }
 
 // registerPlanGated tells the gate this build registered a spawn tool,
@@ -628,7 +631,7 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 		// started. The cost is that an unresolvable reference can
 		// prompt before it is refused — rare, since the roster enum
 		// (#640) constrains what the model can name.
-		if err := mgr.checkSpawn(toolCtx, SpawnAgentToolName, spawnGateKey(args)); err != nil {
+		if err := mgr.checkSpawn(toolCtx, SpawnAgentToolName, spawnGateKey(args), args); err != nil {
 			return refusedSpawn(spawnTargetName(args), err), nil
 		}
 		parentBranch := toolCtx.Branch()

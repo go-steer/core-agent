@@ -136,7 +136,7 @@ func writeFileFunc(gate *permissions.Gate) functiontool.Func[writeFileArgs, writ
 		if err != nil {
 			return writeFileResult{}, err
 		}
-		if err := gate.CheckFileWrite(ctx, "write_file", path); err != nil {
+		if err := gate.CheckFileWriteWithArgs(ctx, "write_file", path, in); err != nil {
 			return writeFileResult{}, err
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -155,7 +155,7 @@ func editFileFunc(gate *permissions.Gate) functiontool.Func[editFileArgs, editFi
 		if err != nil {
 			return editFileResult{}, err
 		}
-		if err := gate.CheckFileWrite(ctx, "edit_file", path); err != nil {
+		if err := gate.CheckFileWriteWithArgs(ctx, "edit_file", path, in); err != nil {
 			return editFileResult{}, err
 		}
 		if in.OldString == "" {
@@ -320,7 +320,7 @@ func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, de
 		if err != nil {
 			return deleteFileResult{}, err
 		}
-		if err := gate.CheckFileWrite(ctx, "delete_file", path); err != nil {
+		if err := gate.CheckFileWriteWithArgs(ctx, "delete_file", path, in); err != nil {
 			return deleteFileResult{}, err
 		}
 		info, err := os.Lstat(path)

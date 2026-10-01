@@ -199,7 +199,7 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 		// once it is running. Every remote spawn is ad-hoc by shape
 		// (system_prompt, no catalog reference), so the key carries the
 		// same "ad-hoc:" prefix its in-process equivalent does.
-		if err := mgr.checkSpawn(toolCtx, spawnRemoteAgentToolName, "ad-hoc:"+strings.TrimSpace(args.Name)); err != nil {
+		if err := mgr.checkSpawn(toolCtx, spawnRemoteAgentToolName, "ad-hoc:"+strings.TrimSpace(args.Name), args); err != nil {
 			return spawnRemoteAgentResult{
 				Name:   args.Name,
 				Status: "error: " + err.Error(),

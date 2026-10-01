@@ -179,7 +179,7 @@ func fetchURLFuncWithResolver(gate *permissions.Gate, cfg *config.Config, resolv
 		// permissions.allow: ["fetch_url:github.com/*"] etc.
 		// Key passes the URL as the gate sees it; pattern-matchers
 		// on the gate side do their own globbing.
-		if err := gate.CheckGeneric(ctx, "fetch_url", in.URL); err != nil {
+		if err := gate.CheckGenericWithArgs(ctx, "fetch_url", in.URL, in); err != nil {
 			return fetchURLResult{}, err
 		}
 

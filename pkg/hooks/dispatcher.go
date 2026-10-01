@@ -222,6 +222,9 @@ func (d *Dispatcher) fire(eventName string, extra map[string]any) {
 			cancel()
 			continue
 		}
+		// Plain CheckBash, not the WithArgs form: a hook is operator
+		// config rather than a model's call, so ModeAuto's approver has
+		// nothing to judge and the command escalates (#1175).
 		if err := d.gate.CheckBash(ctx, h.Command); err != nil {
 			fmt.Fprintf(d.stderr, "hooks: %s handler #%d (%q): permission gate refused: %v\n", eventName, i, h.Command, err)
 			cancel()

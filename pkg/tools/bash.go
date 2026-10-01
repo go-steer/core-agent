@@ -128,7 +128,7 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		if in.Command == "" {
 			return bashResult{}, fmt.Errorf("bash: command is required")
 		}
-		if err := gate.CheckBash(ctx, in.Command); err != nil {
+		if err := gate.CheckBashWithArgs(ctx, in.Command, in); err != nil {
 			return bashResult{}, err
 		}
 		// Resolved before the command runs so a timeout or a non-zero

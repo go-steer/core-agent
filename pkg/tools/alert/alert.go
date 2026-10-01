@@ -169,7 +169,7 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 
 	// Gate first — operators scope per target via
 	// permissions.allow: ["alert:slack-oncall"] (or "alert:*" for all).
-	if err := h.gate.CheckGeneric(ctx, toolName, in.Target); err != nil {
+	if err := h.gate.CheckGenericWithArgs(ctx, toolName, in.Target, in); err != nil {
 		return Result{}, err
 	}
 

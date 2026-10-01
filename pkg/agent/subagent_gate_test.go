@@ -28,6 +28,7 @@ import (
 	"google.golang.org/adk/tool/toolconfirmation"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/internal/testutil"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
@@ -194,4 +195,22 @@ func TestSubagentTool_NilGateIsNotADenial(t *testing.T) {
 	if err := runSubagentTool(t, gatedSubagentTool(t, nil)); err != nil {
 		t.Fatalf("ungated build: err = %v, want none", err)
 	}
+}
+
+// #1175 phase 2: the gate key for the synchronous door is the
+// subagent's name alone, so the approver can only judge a delegation if
+// it gets the request too. The probe denies, so the subagent never runs.
+func TestSubagentTool_PassesFullArgsToTheApprover(t *testing.T) {
+	t.Parallel()
+	g, probe := testutil.AutoGate(t, subagentGateBucket+":*")
+	tl := gatedSubagentTool(t, g)
+	runner := tl.(interface {
+		Run(tool.Context, any) (map[string]any, error)
+	})
+	_, err := runner.Run(&gateToolCtx{Context: testutil.ApproverContext(context.Background())},
+		map[string]any{"request": "marker-request"})
+	if err == nil {
+		t.Fatal("subagent ran, want the probe's deny")
+	}
+	probe.RequireArgs(t, subagentGateBucket, `"request":"marker-request"`)
 }

@@ -22,6 +22,8 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -798,6 +800,100 @@ type PermissionsConfig struct {
 	// shorter, since a notification due after the prompt has expired
 	// can never be sent.
 	ApprovalNotifyAfter string `json:"approval_notify_after,omitempty"`
+
+	// Auto configures the approver model that permission mode "auto"
+	// puts in front of a person (#1175, docs/auto-mode-design.md).
+	// nil, the default, wires no approver: auto then asks a person
+	// about every prompt, exactly as ask does.
+	//
+	// EXPERIMENTAL until mode "auto" is selectable.
+	Auto *AutoApproverConfig `json:"auto,omitempty"`
+}
+
+// AutoApproverConfig configures permission mode "auto"'s approver.
+type AutoApproverConfig struct {
+	// Model is the approver's model ID, resolved through the session's
+	// own provider. Empty uses model.name: the approver then judges
+	// with the same model the agent runs on, which is the safer
+	// default than a smaller one an operator did not pick.
+	Model string `json:"model,omitempty"`
+
+	// Timeout bounds one approver call, as a Go duration string. Empty
+	// is DefaultAutoApproverTimeout. A call that runs out escalates to
+	// a person, and approval_timeout only starts then.
+	Timeout string `json:"timeout,omitempty"`
+
+	// Eligible lists the calls the approver may decide, in the
+	// permissions pattern grammar ("bash:go test *", "edit_file:*").
+	// Anything else goes to a person without an approver call. Empty
+	// makes nothing eligible, so auto behaves exactly like ask.
+	Eligible []string `json:"eligible,omitempty"`
+
+	// InstructionsFile is a file whose text is added to the approver's
+	// built-in instructions. A relative path resolves against the
+	// agents dir, like content_roots. The file is read once at startup
+	// and a missing one is a startup error. Because it steers the gate,
+	// a write to it through the file tools takes the same elevated
+	// approval as .agents/config.json, and the approver never judges a
+	// call that names it. A bash write outside mode "auto" is not
+	// covered, as it is not for .agents/config.json.
+	InstructionsFile string `json:"instructions_file,omitempty"`
+}
+
+// DefaultAutoApproverTimeout is the approver call bound when
+// permissions.auto.timeout is unset.
+const DefaultAutoApproverTimeout = 30 * time.Second
+
+// ResolvedTimeout parses Timeout: empty is DefaultAutoApproverTimeout,
+// and zero or a negative duration is an error, since an unbounded
+// approver call would hold the tool call with no prompt open.
+func (a AutoApproverConfig) ResolvedTimeout() (time.Duration, error) {
+	if a.Timeout == "" {
+		return DefaultAutoApproverTimeout, nil
+	}
+	d, err := time.ParseDuration(a.Timeout)
+	if err != nil {
+		return 0, fmt.Errorf("permissions.auto.timeout %q: %w (want a Go duration like \"30s\")", a.Timeout, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("permissions.auto.timeout %q must be positive; omit it for the %s default", a.Timeout, DefaultAutoApproverTimeout)
+	}
+	return d, nil
+}
+
+// InstructionsPath is InstructionsFile resolved against agentsDir, or
+// "" when no file is configured. A leading "~/" is the user's home
+// directory. A relative path with no agentsDir is returned as written,
+// relative to the process's working directory.
+func (a AutoApproverConfig) InstructionsPath(agentsDir string) string {
+	p := strings.TrimSpace(a.InstructionsFile)
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		if home, err := os.UserHomeDir(); err == nil {
+			p = filepath.Join(home, rest)
+		}
+	}
+	if p == "" || filepath.IsAbs(p) || agentsDir == "" {
+		return p
+	}
+	return filepath.Join(agentsDir, p)
+}
+
+func (a *AutoApproverConfig) validate() error {
+	if a == nil {
+		return nil
+	}
+	if _, err := a.ResolvedTimeout(); err != nil {
+		return err
+	}
+	for i, e := range a.Eligible {
+		if strings.TrimSpace(e) == "" {
+			return fmt.Errorf("permissions.auto.eligible[%d] is empty", i)
+		}
+	}
+	if a.InstructionsFile != "" && strings.TrimSpace(a.InstructionsFile) == "" {
+		return fmt.Errorf("permissions.auto.instructions_file is blank; omit it, or name a file")
+	}
+	return nil
 }
 
 // ResolvedApprovalTimeout parses ApprovalTimeout. Empty is zero (wait
@@ -1747,6 +1843,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if err := c.Permissions.validateApprovalNotifyAfter(); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	if err := c.Permissions.Auto.validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 	for i, e := range c.PathScope.AllowPaths {

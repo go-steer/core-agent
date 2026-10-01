@@ -2,7 +2,7 @@
 
 Design for [#1175](https://github.com/go-steer/core-agent/issues/1175).
 
-**Status:** Phases 1 (`pkg/permissions`) and 2 (`Args` at the call sites) implemented. Phases 3–5 are not, so `auto` cannot be selected yet.
+**Status:** Phases 1 (`pkg/permissions`) and 2 (`Args` at the call sites) implemented. Phase 3 is half done: the config, `pkg/approver`, the instructions file's privilege tier and the wiring are in, and the turn-context stamping (task, usage, ceiling, audit) is not. Phases 4–5 are not started, so `auto` cannot be selected yet.
 
 ## Motivation
 
@@ -92,7 +92,7 @@ still need a person.
 
      It also treats everything in the pending call as data.
    - A recipe can add text through `permissions.auto.instructions_file`.
-   - That file acts on the gate, not through the model. So it joins the privilege-bearing tier: writes to it take the elevated control-plane prompt (`controlplane.go`), and bash that names it is floored by decision 4.
+   - That file acts on the gate, not through the model. So it joins the privilege-bearing tier: writes to it through the file tools take the elevated control-plane prompt (`controlplane.go`), and bash that names it is floored by decision 4. Outside `auto`, a bash write to it is no more gated than a bash write to `.agents/config.json` (#378 classifies file-tool paths only).
    - It is loaded once at startup, with no hot reload. A changed file needs a restart, like any other permissions change made in config.
 
 8. **The approver's model is configured on its own, and billed to the turn that triggered it.**

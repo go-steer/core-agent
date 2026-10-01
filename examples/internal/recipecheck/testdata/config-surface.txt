@@ -108,6 +108,10 @@ permissions.allow
 permissions.approval_notify
 permissions.approval_notify_after
 permissions.approval_timeout
+permissions.auto.eligible
+permissions.auto.instructions_file
+permissions.auto.model
+permissions.auto.timeout
 permissions.builtin_allow_extras
 permissions.deny
 permissions.mode

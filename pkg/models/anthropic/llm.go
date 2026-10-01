@@ -85,13 +85,18 @@ func (l *llm) Name() string { return l.modelID }
 func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		// One llm serves both the agentic loop and the one-shot side
-		// calls (summarizer, checkpointer, /btw), so the opt-out is read
-		// per request rather than baked in at construction.
+		// calls (summarizer, checkpointer, /btw, the auto-mode
+		// approver), so the opt-outs are read per request rather than
+		// baked in at construction.
 		cache := l.cache
 		if models.PromptCacheSuppressed(ctx) {
 			cache = CacheOptions{}
 		}
-		params, err := buildParams(req.Model, req.Contents, req.Config, cache, l.builtins)
+		builtins := l.builtins
+		if models.BuiltinsSuppressed(ctx) {
+			builtins = BuiltinTools{}
+		}
+		params, err := buildParams(req.Model, req.Contents, req.Config, cache, builtins)
 		if err != nil {
 			yield(nil, fmt.Errorf("anthropic: build request: %w", err))
 			return

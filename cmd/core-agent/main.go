@@ -875,6 +875,10 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// agentsDir ⇒ Persist is a no-op (grants stay session-scoped),
 	// same fallback the TUI callback used to implement one layer up.
 	template.SetGrantStore(&permissions.ConfigGrantStore{AgentsDir: agentsDir})
+	if err := wireApprover(ctx, provider, cfg, agentsDir, template, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
 	// Always-derive: even in single-user mode the agent runs against
 	// a per-session sub-gate so per-session state (sessionAllow,
 	// planRecorded, etc.) is naturally isolated and the multi-session

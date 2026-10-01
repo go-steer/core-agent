@@ -257,6 +257,11 @@ type Gate struct {
 	approver      Approver
 	autoEligible  *Policy
 	autoProtected []string
+
+	// approverInstructions is the symlink-resolved path of the
+	// approver's instructions file, or "". Writes to it take the
+	// elevated control-plane path (checkFileWrite).
+	approverInstructions string
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
@@ -431,21 +436,22 @@ func New(opts Options) *Gate {
 		opts.Mode = ModeAsk
 	}
 	return &Gate{
-		mode:                opts.Mode,
-		policy:              opts.Policy,
-		scope:               opts.Scope,
-		prompter:            opts.Prompter,
-		grants:              opts.GrantStore,
-		sessionAllow:        make(map[string]struct{}),
-		sessionAllowTools:   make(map[string]struct{}),
-		sessionAllowVerbs:   make(map[string]struct{}),
-		turnRefusals:        make(map[string]refusalKind),
-		requirePlanArtifact: opts.RequirePlanArtifact,
-		bashSearchGate:      opts.BashSearchGate,
-		approvalTimeout:     opts.ApprovalTimeout,
-		approver:            opts.Approver,
-		autoEligible:        opts.AutoEligible,
-		autoProtected:       protectedMentions(opts.ApproverInstructionsFile),
+		mode:                 opts.Mode,
+		policy:               opts.Policy,
+		scope:                opts.Scope,
+		prompter:             opts.Prompter,
+		grants:               opts.GrantStore,
+		sessionAllow:         make(map[string]struct{}),
+		sessionAllowTools:    make(map[string]struct{}),
+		sessionAllowVerbs:    make(map[string]struct{}),
+		turnRefusals:         make(map[string]refusalKind),
+		requirePlanArtifact:  opts.RequirePlanArtifact,
+		bashSearchGate:       opts.BashSearchGate,
+		approvalTimeout:      opts.ApprovalTimeout,
+		approver:             opts.Approver,
+		autoEligible:         opts.AutoEligible,
+		autoProtected:        protectedMentions(opts.ApproverInstructionsFile),
+		approverInstructions: resolvedInstructionsPath(opts.ApproverInstructionsFile),
 	}
 }
 
@@ -504,11 +510,16 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	if mode == ModeAuto && approvalTimeout <= 0 {
 		return nil, fmt.Errorf("permissions: %w", ErrAutoNeedsApprovalTimeout)
 	}
+	autoEligible, err := autoEligibleFromConfig(cfg.Permissions.Auto)
+	if err != nil {
+		return nil, err
+	}
 	return New(Options{
-		Mode:     mode,
-		Policy:   policy,
-		Scope:    scope,
-		Prompter: prompter,
+		Mode:         mode,
+		Policy:       policy,
+		Scope:        scope,
+		Prompter:     prompter,
+		AutoEligible: autoEligible,
 		// PlanGateArmed, not the raw RequirePlanArtifact bool: advisory
 		// mode registers record_plan and persists the artifact but must
 		// never deny a mutating call on plan state.
@@ -516,6 +527,21 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		BashSearchGate:      cfg.Safety.BashSearchGate,
 		ApprovalTimeout:     approvalTimeout,
 	}), nil
+}
+
+// autoEligibleFromConfig builds the approver's eligible list from
+// permissions.auto.eligible, or nil when there is none. The
+// instructions file is not set here: it resolves against the agents
+// dir, which FromConfig is not given (see SetApprover).
+func autoEligibleFromConfig(auto *config.AutoApproverConfig) (*Policy, error) {
+	if auto == nil || len(auto.Eligible) == 0 {
+		return nil, nil
+	}
+	p, err := NewPolicy(auto.Eligible, nil)
+	if err != nil {
+		return nil, fmt.Errorf("permissions.auto.eligible: %w", err)
+	}
+	return p, nil
 }
 
 // Mode reports the active permission mode. Acquires g.mu to pair
@@ -631,6 +657,10 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		approver:      template.approver,
 		autoEligible:  template.autoEligible,
 		autoProtected: template.autoProtected,
+		// And a sub-gate that dropped this would let any session's
+		// model rewrite the approver's instructions with an ordinary
+		// write prompt, or none at all in yolo.
+		approverInstructions: template.approverInstructions,
 	}
 }
 
@@ -814,6 +844,22 @@ func (g *Gate) SetPrompter(p Prompter) { g.prompter = p }
 // to disable persistence — DecisionAllowAlways grants then apply for
 // the process lifetime only.
 func (g *Gate) SetGrantStore(s GrantStore) { g.grants = s }
+
+// SetApprover wires ModeAuto's approver and its instructions file
+// (Options.Approver and Options.ApproverInstructionsFile), for hosts
+// that build the gate with FromConfig before the approver's model is
+// resolved. Like SetGrantStore it is construction-time only: call it
+// before DeriveForSession, which is how sub-gates inherit both, and
+// before any check runs.
+//
+// instructionsFile joins the privilege-bearing tier whether or not a
+// is nil: writes to it take the control-plane approval, and the
+// approver never judges a call that names it.
+func (g *Gate) SetApprover(a Approver, instructionsFile string) {
+	g.approver = a
+	g.autoProtected = protectedMentions(instructionsFile)
+	g.approverInstructions = resolvedInstructionsPath(instructionsFile)
+}
 
 // AddAllowPatterns extends the live policy with additional allow
 // patterns and is safe to call concurrently with in-flight Match
@@ -1131,7 +1177,11 @@ func (g *Gate) checkFileWrite(ctx context.Context, toolName, path string, args l
 	// so a write (or a symlink laundering one) to .agents/config.json
 	// or .agents/mcp.json cannot be auto-approved by yolo, acceptEdits,
 	// a session-tool grant, or an allowlist entry. See #378.
-	if resolved, err := ResolvePath(path); err == nil && isControlPlanePath(resolved) {
+	//
+	// The approver's instructions file is in the same tier (#1175
+	// decision 7): it steers the gate, so a model that could rewrite it
+	// could approve its own next calls.
+	if resolved, err := ResolvePath(path); err == nil && (isControlPlanePath(resolved) || g.isApproverInstructions(resolved)) {
 		return g.checkControlPlaneWrite(ctx, toolName, resolved)
 	}
 	// Scope is consulted BEFORE the per-tool session grant (#380).

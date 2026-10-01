@@ -460,6 +460,12 @@ func TestPrompts_FailedSwitchLeavesTheLiveBridge(t *testing.T) {
 // deny ("superseded") just after it cancels the outgoing Events
 // context. Stopping the bridge must not swallow that deny: the old
 // session's tool call would otherwise wait out the approval timeout.
+//
+// From the bridge's side this is also the case of a prompt handed over in
+// the instant of the switch: core-tui v0.28.1 answers it with a deny on
+// the outgoing prompter after the outgoing context has ended (core-tui#353),
+// just as here. Whether the deny comes from a prompt on screen or one the
+// released listener refused, the bridge sees the same thing.
 func TestPrompts_SupersededPromptDenyReachesTheOldSession(t *testing.T) {
 	t.Parallel()
 	d := startPromptDaemon(t, "1.14.0", "s1", "s2")

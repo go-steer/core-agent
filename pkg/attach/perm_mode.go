@@ -84,6 +84,12 @@ func ParseRemotePermMode(s string) (permissions.Mode, error) {
 			return m, nil
 		}
 	}
+	if permissions.Mode(s) == permissions.ModeAuto {
+		// Not settable until both TUIs can display it: an attached
+		// operator would otherwise see "ask" while a model approves
+		// calls (#1175 decision 13).
+		return "", fmt.Errorf("perms/mode: %q is not available yet (#1175): %w", s, ErrPermModeNotSettable)
+	}
 	return "", fmt.Errorf("perms/mode: %q: %w", s, ErrPermModeNotSettable)
 }
 

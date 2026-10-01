@@ -638,6 +638,24 @@ func TestRunAutonomous_RejectsAskModeWithoutPrompter(t *testing.T) {
 	}
 }
 
+// #1175: auto with no Approver and no Prompter denies every gated call,
+// so the guard refuses it like ask-mode with no Prompter.
+func TestRunAutonomous_RejectsAutoModeWithoutApproverOrPrompter(t *testing.T) {
+	t.Parallel()
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeAuto, ApprovalTimeout: time.Minute})
+	llm := &stubLLM{scenarios: nil} // never called
+	build := func([]tool.Tool) (*agent.Agent, error) {
+		return agent.New(llm, agent.WithSession("u", "s-auto-guard"))
+	}
+	_, err := Run(context.Background(), build, "go", WithPermissionsGate(gate))
+	if err == nil || !strings.Contains(err.Error(), "auto-mode") {
+		t.Fatalf("err = %v, want the auto-mode guard", err)
+	}
+	if atomic.LoadInt32(&llm.calls) != 0 {
+		t.Errorf("LLM was called %d times; guard should have prevented any calls", llm.calls)
+	}
+}
+
 func TestRunAutonomous_AskModeWithPrompterIsAllowed(t *testing.T) {
 	t.Parallel()
 	// Same gate but with a prompter wired — guard should not fire.

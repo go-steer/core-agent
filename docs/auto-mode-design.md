@@ -2,7 +2,7 @@
 
 Design for [#1175](https://github.com/go-steer/core-agent/issues/1175).
 
-**Status:** proposed. Nothing here is implemented yet.
+**Status:** Phase 1 (`pkg/permissions`) implemented. Phases 2–5 are not, so `auto` cannot be selected yet.
 
 ## Motivation
 

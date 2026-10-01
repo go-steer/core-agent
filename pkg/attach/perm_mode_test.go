@@ -16,12 +16,14 @@ package attach
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 // permModeStub records every AttachSetPermMode call, so a test can
@@ -236,5 +238,15 @@ func TestPermMode_NoGateIs501(t *testing.T) {
 	code, body := postPermMode(t, mux, `{"mode":"plan"}`, auth.Anonymous, "")
 	if code != http.StatusNotImplemented || !strings.Contains(body, "no permission gate") {
 		t.Errorf("status = %d body = %q, want 501 naming the missing gate", code, body)
+	}
+}
+
+// #1175 decision 13: auto is not settable remotely until both TUIs can
+// display it, and the 400 says so rather than calling it unknown.
+func TestParseRemotePermMode_AutoNotYetSettable(t *testing.T) {
+	t.Parallel()
+	_, err := ParseRemotePermMode(string(permissions.ModeAuto))
+	if !errors.Is(err, ErrPermModeNotSettable) || !strings.Contains(err.Error(), "not available yet") {
+		t.Fatalf("ParseRemotePermMode(auto) = %v, want ErrPermModeNotSettable naming not-available-yet", err)
 	}
 }

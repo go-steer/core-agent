@@ -1600,6 +1600,10 @@ const (
 	PermissionModeYolo        = "yolo"
 	PermissionModePlan        = "plan"
 	PermissionModeAcceptEdits = "acceptEdits"
+
+	// permissionModeAuto is recognized so validation can say it is not
+	// selectable yet rather than unknown. Exported once it is (#1175).
+	permissionModeAuto = "auto"
 )
 
 // Provider names recognized by the resolver.
@@ -1709,6 +1713,11 @@ func (c *Config) Validate() error {
 	switch c.Permissions.Mode {
 	case "", PermissionModeAsk, PermissionModeAllow, PermissionModeYolo, PermissionModePlan, PermissionModeAcceptEdits:
 		// ok
+	case permissionModeAuto:
+		// The gate implements auto, but nothing may select it until the
+		// TUI can show it: today both TUIs would render it as "ask"
+		// while a model approves calls (#1175 decision 13).
+		return fmt.Errorf(`config: permissions.mode %q is not available yet (#1175): it can be selected once the TUI can display it`, c.Permissions.Mode)
 	default:
 		return fmt.Errorf("config: unknown permissions.mode %q", c.Permissions.Mode)
 	}

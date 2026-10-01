@@ -16,6 +16,7 @@ package permissions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -45,6 +46,11 @@ type ApprovalLog struct {
 	// being the person at the terminal — and empty is also what an
 	// unattributable answer records, never a guess.
 	By string
+
+	// Approver is the approver model's ID when that model, not a
+	// person, allowed the call in ModeAuto (#1175). By stays reserved
+	// for a verified human, so the two are never both set.
+	Approver string
 }
 
 // Mode mirrors the permission modes recognized by config.PermissionsConfig.
@@ -70,6 +76,9 @@ const (
 	// mode; see the promptForPath comment for the full blast-radius
 	// warning.
 	ModeAcceptEdits Mode = "acceptEdits"
+
+	// ModeAuto (auto.go) is ModeAsk with an approver model in front of
+	// the prompt for calls the recipe made eligible.
 )
 
 // Refusal guidance. The errors below are read by a model as a tool
@@ -241,6 +250,14 @@ type Gate struct {
 	// filtered through it — HasTool would report them missing when
 	// they are merely unknown.
 	registeredTools map[string]bool
+
+	// approver, autoEligible and autoProtected configure ModeAuto
+	// (auto.go). Immutable after New and inherited by DeriveForSession:
+	// the approver's configuration is daemon-wide, only the mode is
+	// per session (#1175 decision 14).
+	approver      Approver
+	autoEligible  *Policy
+	autoProtected []string
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
@@ -373,10 +390,28 @@ type Options struct {
 	// gate was built for; the deployments that need a bound are the
 	// ones that opted into running unattended, and they say so.
 	ApprovalTimeout time.Duration
+
+	// Approver judges eligible prompts in ModeAuto (#1175). nil means
+	// every auto-mode prompt goes to the Prompter, as in ModeAsk.
+	Approver Approver
+
+	// AutoEligible lists what the Approver may decide, in the policy
+	// pattern grammar ("bash:go test *", "read_file:*"), built with
+	// NewPolicy. Only a call its Match reports OutcomeAllow for is
+	// eligible, so a deny rule in it carves calls out. nil or empty
+	// makes nothing eligible: ModeAuto then behaves exactly like
+	// ModeAsk.
+	AutoEligible *Policy
+
+	// ApproverInstructionsFile is the recipe's addition to the
+	// approver's instructions. The gate keeps any call that names it
+	// away from the approver, the way it does the control-plane files.
+	ApproverInstructionsFile string
 }
 
 // New builds a Gate from the supplied options. The Mode defaults to
-// "ask"; missing Policy/Scope default to permissive empties.
+// "ask", as does ModeAuto with no ApprovalTimeout (see ValidateMode);
+// missing Policy/Scope default to permissive empties.
 func New(opts Options) *Gate {
 	if opts.Mode == "" {
 		opts.Mode = ModeAsk
@@ -389,6 +424,12 @@ func New(opts Options) *Gate {
 	}
 	if opts.BashSearchGate == "" {
 		opts.BashSearchGate = config.BashSearchGateEnforce
+	}
+	if opts.Mode == ModeAuto && opts.ApprovalTimeout <= 0 {
+		// The same refusal SetMode applies (decision 12). New cannot
+		// return an error, so it builds the ask gate auto would have
+		// been without its approver; FromConfig reports the cause.
+		opts.Mode = ModeAsk
 	}
 	return &Gate{
 		mode:                opts.Mode,
@@ -403,6 +444,9 @@ func New(opts Options) *Gate {
 		requirePlanArtifact: opts.RequirePlanArtifact,
 		bashSearchGate:      opts.BashSearchGate,
 		approvalTimeout:     opts.ApprovalTimeout,
+		approver:            opts.Approver,
+		autoEligible:        opts.AutoEligible,
+		autoProtected:       protectedMentions(opts.ApproverInstructionsFile),
 	}
 }
 
@@ -458,6 +502,9 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	if err != nil {
 		return nil, fmt.Errorf("permissions: %w", err)
 	}
+	if mode == ModeAuto && approvalTimeout <= 0 {
+		return nil, fmt.Errorf("permissions: %w", ErrAutoNeedsApprovalTimeout)
+	}
 	return New(Options{
 		Mode:     mode,
 		Policy:   policy,
@@ -484,29 +531,30 @@ func (g *Gate) Mode() Mode {
 
 // SetMode replaces the gate's permission mode at runtime. Used by
 // the embedded TUI when the operator cycles the permission-mode
-// chip (R-PERM-6 in core-tui). Unknown modes are silently ignored
-// so a future TUI value can't smuggle in semantics the gate
-// doesn't recognize.
+// chip (R-PERM-6 in core-tui). A mode ValidateMode refuses is
+// silently ignored, so a future TUI value can't smuggle in semantics
+// the gate doesn't recognize, and ModeAuto can't be entered on a gate
+// with no approval timeout.
 func (g *Gate) SetMode(m Mode) {
-	switch m {
-	case ModeAsk, ModeAllow, ModeYolo, ModePlan, ModeAcceptEdits:
-		g.mu.Lock()
-		g.mode = m
-		g.mu.Unlock()
+	if g.ValidateMode(m) != nil {
+		return
 	}
+	g.mu.Lock()
+	g.mode = m
+	g.mu.Unlock()
 }
 
 // SwapMode is SetMode that also returns the mode it replaced, read
 // under the same lock so two concurrent changes each report the
 // transition they actually made — which is what an audit row of
-// "from → to" needs. An unknown mode changes nothing and returns the
-// current mode.
+// "from → to" needs. A mode ValidateMode refuses changes nothing and
+// returns the current mode.
 func (g *Gate) SwapMode(m Mode) (previous Mode) {
+	valid := g.ValidateMode(m) == nil
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	previous = g.mode
-	switch m {
-	case ModeAsk, ModeAllow, ModeYolo, ModePlan, ModeAcceptEdits:
+	if valid {
 		g.mode = m
 	}
 	return previous
@@ -576,6 +624,14 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		// that dropped this would make record_plan stop naming what it
 		// unblocked for exactly the sessions an operator is watching.
 		planGatedTools: template.planGatedToolSet(),
+		// The approver's configuration is daemon-wide (#1175 decision
+		// 14): a sub-gate that dropped it would put every auto-mode
+		// session's eligible calls in front of a person, and one that
+		// dropped autoProtected would let the approver see calls the
+		// template keeps from it.
+		approver:      template.approver,
+		autoEligible:  template.autoEligible,
+		autoProtected: template.autoProtected,
 	}
 }
 
@@ -841,7 +897,7 @@ func (g *Gate) resolveSessionGate(ctx context.Context) *Gate {
 // namespaced toolsets so the grant is scoped per underlying tool.
 func (g *Gate) CheckGeneric(ctx context.Context, toolName, key string) error {
 	g = g.resolveSessionGate(ctx)
-	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key, toolName, false)
+	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key, toolName, false, nil)
 }
 
 // CheckToolCall gates a call to a specific tool within a namespaced
@@ -881,7 +937,7 @@ func (g *Gate) CheckReadOnlyToolCall(ctx context.Context, namespace, tool, key s
 
 func (g *Gate) checkToolCall(ctx context.Context, namespace, tool, key string, readOnly bool) error {
 	g = g.resolveSessionGate(ctx)
-	return g.gateRequest(ctx, PromptKindGeneric, namespace, key, namespace, key, sessionToolKey(namespace, tool), readOnly)
+	return g.gateRequest(ctx, PromptKindGeneric, namespace, key, namespace, key, sessionToolKey(namespace, tool), readOnly, nil)
 }
 
 // sessionToolKey builds the per-underlying-tool session-grant key for
@@ -911,7 +967,7 @@ func (g *Gate) CheckBash(ctx context.Context, command string) error {
 			return fmt.Errorf("bash refused: %s", SearchGateMessage(binary, native))
 		}
 	}
-	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command, "bash", false)
+	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command, "bash", false, nil)
 }
 
 // BashSearchGate reports the resolved search-gate posture.
@@ -1082,7 +1138,7 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 	if g.sessionToolAllowed(toolName) {
 		return nil
 	}
-	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path, toolName, false)
+	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path, toolName, false, nil)
 }
 
 // checkControlPlaneWrite is the elevated gate for privilege-bearing
@@ -1143,7 +1199,10 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	return nil
 }
 
-func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey, sessToolKey string, readOnly bool) error {
+// args is the call's full arguments as JSON, or nil when the call site
+// does not pass them; it reaches PromptRequest.Args, and in ModeAuto a
+// request without it never goes to the approver (#1175).
+func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey, sessToolKey string, readOnly bool, args json.RawMessage) error {
 	// Plan-first pre-check runs before mode/policy logic. Even
 	// ModeYolo respects it — the operator opted into "no actions
 	// before plan" by setting RequirePlanArtifact. Once a plan is
@@ -1199,8 +1258,8 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 			return nil
 		}
 		fallthrough
-	case ModeAsk:
-		return g.prompt(ctx, PromptRequest{
+	case ModeAsk, ModeAuto:
+		return g.prompt(ctx, mode, PromptRequest{
 			Kind:           kind,
 			ToolName:       toolName,
 			Detail:         key,
@@ -1209,6 +1268,7 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 			Verb:           verb,
 			SessionToolKey: sessToolKey,
 			Source:         SubagentSourceFromContext(ctx),
+			Args:           args,
 		})
 	}
 	return fmt.Errorf("%s denied: unknown permission mode %q", toolName, mode)
@@ -1257,7 +1317,10 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Acce
 	if mode == ModeAcceptEdits && op == AccessWrite {
 		return nil
 	}
-	return g.prompt(ctx, PromptRequest{
+	// ModeAsk and ModeAuto both reach the prompt. In auto the approver
+	// never decides a path-scope request (#1175 decision 4), so the
+	// prompt escalates it straight to a person.
+	return g.prompt(ctx, mode, PromptRequest{
 		Kind:           PromptKindPathScope,
 		ToolName:       toolName,
 		Detail:         fmt.Sprintf("%s %s (out of scope)", opLabel(op), path),
@@ -1327,7 +1390,10 @@ func (g *Gate) askWithTimeout(ctx context.Context, req PromptRequest) (Approval,
 	return approval, err
 }
 
-func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
+// prompt takes the mode gateRequest or promptForPath already resolved
+// rather than re-reading g.mode: a re-read would race SwapMode and
+// could disagree with the mode that routed the call here (#1175).
+func (g *Gate) prompt(ctx context.Context, mode Mode, req PromptRequest) error {
 	// Turn-scoped refusal memory (#1074). This is the single choke
 	// point every interactive path funnels through, so the check and
 	// the arming both live here and no caller can route around them.
@@ -1341,7 +1407,27 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 	if kind, refused := g.turnRefusal(req.ToolName, req.Detail); refused {
 		return repeatRefusalError(kind, req.ToolName, req.Detail)
 	}
+	// ModeAuto: the approver goes after the refusal check and before
+	// the nil-prompter check, so auto works on a host with no prompter
+	// — eligible routine calls proceed and everything else is denied
+	// below (#1175 decision 2).
+	if mode == ModeAuto {
+		if handled, err := g.approverStep(ctx, &req); handled {
+			return err
+		}
+	}
 	if g.prompter == nil {
+		if mode == ModeAuto {
+			// Armed like an expiry: nothing in this turn can change the
+			// answer, and unlike ask mode a retry is not free — an
+			// eligible call goes back to the approver, a paid model
+			// call, every time. Arming routes the repeat through
+			// turnRefusal, which also counts it for the #1081 cut.
+			g.rememberTurnRefusal(req.ToolName, req.Detail, refusedNoPerson)
+			// The --yolo advice below is wrong here: the operator chose
+			// auto so that calls like this one reach a person.
+			return fmt.Errorf("%w (tool=%s detail=%q); this call needs a person's approval (the approver may not decide it, or passed it on), and no person can be asked in this session. %s", ErrNoPrompter, req.ToolName, req.Detail, expiryGuidance)
+		}
 		return fmt.Errorf("%w (tool=%s detail=%q); run with --yolo to bypass the gate, set permissions.mode=\"allow\" with an explicit allowlist for headless use, or attach an interactive stdin", ErrNoPrompter, req.ToolName, req.Detail)
 	}
 	approval, err := g.askWithTimeout(ctx, req)
@@ -1365,6 +1451,14 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		return fmt.Errorf("permissions: %w", err)
 	}
 	d := approval.Decision
+	if req.ApproverModel != "" && d >= DecisionAllowSession && d <= DecisionAllowAlways {
+		// An approver-escalated prompt offers only once or deny
+		// (#1175 decision 11): its reason is model output that the
+		// call's own arguments can steer ("routine, safe to always
+		// allow"). Hiding the wider options is the surface's job; this
+		// is the gate holding the line for a surface that didn't.
+		d = DecisionAllowOnce
+	}
 	switch d {
 	case DecisionAllowOnce:
 		g.recordApproval(req.ToolName, req.Detail, d, approval.By)
@@ -1539,6 +1633,20 @@ func (g *Gate) recordApproval(toolName, key string, d Decision, by string) {
 	})
 }
 
+// recordApproverAllow logs a call the approver model allowed. By stays
+// empty: it is reserved for a verified human.
+func (g *Gate) recordApproverAllow(toolName, key, model string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.approvals = append(g.approvals, ApprovalLog{
+		Tool:     toolName,
+		Key:      key,
+		Decision: DecisionAllowOnce,
+		At:       time.Now(),
+		Approver: model,
+	})
+}
+
 // Approvals returns a defensive copy of the in-session approval log.
 // Order is chronological. Safe for concurrent callers.
 func (g *Gate) Approvals() []ApprovalLog {
@@ -1613,6 +1721,10 @@ func (g *Gate) ToolGateState(toolName string) string {
 	if mode == ModeAllow {
 		return ToolGateDeniedInAllowMode
 	}
+	// Auto prompts like ask; whether the approver or a person answers
+	// depends on the call's arguments, which a key-less projection
+	// doesn't have, so it reports "prompted" too (#1175).
+	//
 	// AcceptEdits would auto-allow file-write tools, but ToolGateState
 	// runs without the call's Kind so it can't distinguish edit
 	// tools from other tools — degrades to "prompted".

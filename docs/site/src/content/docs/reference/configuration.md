@@ -297,7 +297,7 @@ Decision keys (case-insensitive, single character + enter):
 | `a` | Allow always. Persists an entry to `.agents/config.json`'s `permissions.allow`. |
 | `n` or bare enter | Deny. |
 
-This is the stdin prompter. The TUI (`--tui`, and `core-agent-tui` in attach mode) asks in a modal with the same decisions plus `r`, deny with a one-line reason of at most 500 bytes that the model reads in the refused call's result; see [Attach TUI → Permission prompts](/reference/attach-tui/#permission-prompts).
+This is the stdin prompter. The TUI (`--tui`, and `core-agent-tui` in attach mode) asks with the same decisions plus `r`, deny with a one-line reason of at most 500 bytes that the model reads in the refused call's result. `core-agent-tui` offers `r` only against a daemon on attach protocol 1.15.0 or later; see [Attach TUI → Permission prompts](/reference/attach-tui/#permission-prompts).
 
 The prompter is auto-wired when stdin is a TTY. Non-TTY callers (piped stdin, CI, `nohup`) get `ErrNoPrompter`-wrapped errors that point at the bypass options below — they don't hang waiting for a non-existent user.
 

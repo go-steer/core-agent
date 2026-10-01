@@ -78,6 +78,13 @@ type Adapter struct {
 	// decide whether the daemon can take a deny's reason (1.15.0+); see
 	// DaemonProtocolVersion.
 	daemonProtocol string
+	// protocolKnown is closed, once, when the first `capabilities`
+	// frame has been read (protocolOnce guards the close). The prompt
+	// bridge waits on it briefly so a prompt already pending at attach
+	// time isn't decided before the version is known. Nil on a bare
+	// &Adapter{} literal, which only tests build.
+	protocolKnown chan struct{}
+	protocolOnce  sync.Once
 
 	// usage caches the remote's totals (see capabilities.go).
 	// coretui.UsageTracker is queried on every TUI render; the cache
@@ -280,6 +287,7 @@ func New(client *attachclient.Client, sessionPath string) *Adapter {
 		reconnectKick: make(chan struct{}, 1),
 		injectErrs:    make(chan error, 8),
 		wakeCh:        make(chan struct{}, 1),
+		protocolKnown: make(chan struct{}),
 		view:          &viewedSession{},
 	}
 	a.view.set(a)

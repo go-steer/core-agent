@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	coretui "github.com/go-steer/core-tui/tui"
 
@@ -51,18 +52,54 @@ func (p *answeringPrompter) AskApprovalDetailed(context.Context, coretui.Permiss
 	return p.out, nil
 }
 
+// fakeBridgeHost reports a fixed version and, unless setLater is used,
+// reports it as already known.
 type fakeBridgeHost struct {
 	version string
+	known   chan struct{} // nil until known() first runs
 	mu      sync.Mutex
 	notes   []error
 }
 
-func (h *fakeBridgeHost) DaemonProtocolVersion() string { return h.version }
+func (h *fakeBridgeHost) DaemonProtocolVersion() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.version
+}
+
+func (h *fakeBridgeHost) DaemonProtocolKnown() <-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.known == nil {
+		h.known = make(chan struct{})
+		close(h.known)
+	}
+	return h.known
+}
+
+// pendingBridgeHost is a host whose version is not known yet; learn
+// supplies it the way the adapter's first capabilities frame does.
+func pendingBridgeHost() *fakeBridgeHost {
+	return &fakeBridgeHost{known: make(chan struct{})}
+}
+
+func (h *fakeBridgeHost) learn(version string) {
+	h.mu.Lock()
+	h.version = version
+	h.mu.Unlock()
+	close(h.known)
+}
 
 func (h *fakeBridgeHost) NotifyOperator(err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.notes = append(h.notes, err)
+}
+
+func (h *fakeBridgeHost) gotNotes() []error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]error(nil), h.notes...)
 }
 
 // respondRecorder is a /perms/respond that records every body. With
@@ -138,8 +175,8 @@ func TestRemotePrompt_DenyReasonReachesTheDaemon(t *testing.T) {
 			if b := bodies[0]; b.ID != "p1" || b.Decision != "deny" || b.Reason != "use the staging cluster" {
 				t.Errorf("respond body = %+v, want a deny for p1 carrying the reason", b)
 			}
-			if len(host.notes) != 0 {
-				t.Errorf("unexpected operator notes: %v", host.notes)
+			if len(host.gotNotes()) != 0 {
+				t.Errorf("unexpected operator notes: %v", host.gotNotes())
 			}
 		})
 	}
@@ -229,8 +266,8 @@ func TestRemotePrompt_RefusedReasonFallsBackToPlainDeny(t *testing.T) {
 	if bodies[0].Reason == "" || bodies[1].Decision != "deny" || bodies[1].Reason != "" || bodies[1].ID != "p1" {
 		t.Errorf("respond bodies = %+v, want a reasoned deny followed by a plain deny for p1", bodies)
 	}
-	if len(host.notes) != 1 || !strings.Contains(host.notes[0].Error(), "denied without it") {
-		t.Errorf("operator notes = %v, want one saying the deny went without the reason", host.notes)
+	if notes := host.gotNotes(); len(notes) != 1 || !strings.Contains(notes[0].Error(), "denied without it") {
+		t.Errorf("operator notes = %v, want one saying the deny went without the reason", notes)
 	}
 }
 
@@ -249,8 +286,8 @@ func TestRemotePrompt_GonePromptIsNotRetried(t *testing.T) {
 	if n := len(rec.got()); n != 1 {
 		t.Errorf("got %d respond requests, want 1", n)
 	}
-	if len(host.notes) != 0 {
-		t.Errorf("operator notes = %v, want none", host.notes)
+	if len(host.gotNotes()) != 0 {
+		t.Errorf("operator notes = %v, want none", host.gotNotes())
 	}
 	if !strings.Contains(log.String(), "410") {
 		t.Errorf("bridge log = %q, want the 410 logged", log.String())
@@ -288,5 +325,160 @@ func TestAdapter_PromptBridgeHost(t *testing.T) {
 	}
 	for range cap(a.injectErrs) + 2 {
 		a.NotifyOperator(note) // must never block on a full queue
+	}
+	select {
+	case <-a.DaemonProtocolKnown():
+	default:
+		t.Error("DaemonProtocolKnown not closed after the capabilities frame")
+	}
+	// A second capabilities frame (every reconnect sends one) updates
+	// the version and must not close the channel twice.
+	a.consumeTypedFrame(attach.Frame{Type: attach.EventCapabilities, TypedData: &attach.Capabilities{ProtocolVersion: "1.14.0"}})
+	if daemonTakesDenyReason(a) {
+		t.Error("after reconnecting to a 1.14.0 daemon the bridge must stop opting in")
+	}
+}
+
+// After a /switch the original adapter's Events loop is stopped, so a
+// note queued on it would never render. NotifyOperator follows the
+// shared view to the adapter the operator is looking at.
+func TestAdapter_NotifyOperatorFollowsTheViewedSession(t *testing.T) {
+	t.Parallel()
+	a := New(nil, "/sessions/s1")
+	b := New(nil, "/sessions/s2")
+	a.handOff(b)
+	note := errors.New("reason dropped")
+	a.NotifyOperator(note)
+	select {
+	case got := <-b.injectErrs:
+		if !errors.Is(got, note) {
+			t.Errorf("queued %v, want %v", got, note)
+		}
+	default:
+		t.Fatal("the note did not reach the viewed session's adapter")
+	}
+}
+
+// The capabilities frame really arrives through the SSE path the TUI
+// runs — attachclient's parser, then the Events loop — not only through
+// a hand-built Frame.
+func TestAdapter_LearnsProtocolFromTheEventStream(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /sessions/{sid}/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "event: capabilities\ndata: {\"protocol_version\":\"1.16.0\",\"event_types\":[\"agent\"]}\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	a := newPauseAdapter(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() {
+		for range a.Events(ctx) { //nolint:revive // drained only for its side effect
+		}
+	}()
+	select {
+	case <-a.DaemonProtocolKnown():
+	case <-ctx.Done():
+		t.Fatal("the capabilities frame on /events never reached the adapter")
+	}
+	if v := a.DaemonProtocolVersion(); v != "1.16.0" {
+		t.Errorf("version = %q, want 1.16.0", v)
+	}
+}
+
+func TestAwaitDaemonProtocol(t *testing.T) {
+	t.Parallel()
+	const long = 10 * time.Second
+	quick := func(name string, f func()) {
+		t.Helper()
+		start := time.Now()
+		f()
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("%s: waited %v, want an immediate return", name, d)
+		}
+	}
+	quick("nil host", func() { awaitDaemonProtocol(context.Background(), nil, long) })
+	quick("known", func() { awaitDaemonProtocol(context.Background(), &fakeBridgeHost{version: "1.15.0"}, long) })
+
+	h := pendingBridgeHost()
+	go func() { time.Sleep(20 * time.Millisecond); h.learn("1.15.0") }()
+	quick("learned while waiting", func() { awaitDaemonProtocol(context.Background(), h, long) })
+
+	quick("bounded", func() { awaitDaemonProtocol(context.Background(), pendingBridgeHost(), 20*time.Millisecond) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	quick("ctx done", func() { awaitDaemonProtocol(ctx, pendingBridgeHost(), long) })
+}
+
+// The case the wait exists for: an operator attaches to answer a prompt
+// that is already pending. /perms/stream replays it within a round trip,
+// usually before the event stream's capabilities frame. The bridge must
+// still offer "r" and carry the reason.
+func TestRemotePromptBridge_PendingPromptWaitsForTheVersion(t *testing.T) {
+	t.Parallel()
+	rec := &respondRecorder{}
+	responded := make(chan struct{}, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /sessions/{sid}/perms/stream", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		payload, _ := json.Marshal(testPromptFrame)
+		_, _ = io.WriteString(w, "data: "+string(payload)+"\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	})
+	mux.HandleFunc("POST /sessions/{sid}/perms/respond", func(w http.ResponseWriter, req *http.Request) {
+		var body attach.PromptResponse
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		rec.mu.Lock()
+		rec.bodies = append(rec.bodies, body)
+		rec.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(attach.PromptRespondResponse{Acknowledged: true})
+		responded <- struct{}{}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	parsed, err := attachclient.ParseURL(srv.URL + "/sessions/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := attachclient.New(parsed, "", 0)
+
+	host := pendingBridgeHost()
+	p := &answeringPrompter{out: coretui.PermissionOutcome{Decision: coretui.DecisionDeny, Reason: "wait for the canary"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() {
+		time.Sleep(100 * time.Millisecond) // the frame is in hand; the version is not
+		host.learn("1.16.0")
+	}()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runRemotePromptBridge(ctx, client, "/sessions/s1", p, io.Discard, host)
+	}()
+	select {
+	case <-responded:
+	case <-ctx.Done():
+		t.Fatal("the bridge never answered the pending prompt")
+	}
+	cancel()
+	<-done
+	if p.detailCalls != 1 || p.plainCalls != 0 {
+		t.Errorf("detailed calls = %d, plain = %d; a prompt pending at attach must still offer \"r\"", p.detailCalls, p.plainCalls)
+	}
+	if b := rec.got(); len(b) != 1 || b[0].Reason != "wait for the canary" {
+		t.Errorf("respond bodies = %+v, want one deny carrying the reason", b)
 	}
 }

@@ -73,6 +73,9 @@ func (a *Adapter) consumeTypedFrame(frame attach.Frame) (coretui.Event, bool) {
 			a.mu.Lock()
 			a.daemonProtocol = p.ProtocolVersion
 			a.mu.Unlock()
+			if a.protocolKnown != nil {
+				a.protocolOnce.Do(func() { close(a.protocolKnown) })
+			}
 		}
 		return coretui.Event{}, false
 	}

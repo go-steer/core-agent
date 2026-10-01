@@ -1446,7 +1446,9 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 			// this, the very next identical call short-circuits at
 			// the policy layer regardless of which prompter the
 			// host wired.
-			grant.Pattern = req.PersistTool + ":" + req.PersistKey
+			// The key is escaped so it matches only itself (#1179):
+			// a `*` in an approved command is part of the command.
+			grant.Pattern = req.PersistTool + ":" + escapeGlob(req.PersistKey)
 			if err := g.policy.AddAllow([]string{grant.Pattern}); err != nil {
 				return fmt.Errorf("permissions: install always-allow pattern %q: %w", grant.Pattern, err)
 			}

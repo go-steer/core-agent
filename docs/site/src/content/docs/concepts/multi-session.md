@@ -179,7 +179,7 @@ When multi-session is enabled, each session gets a derived sub-gate with its own
 
 **What's still daemon-wide** (by design — operator model is "one config, many users"):
 - `permissions.allow` / `permissions.deny` patterns from config
-- An "allow always" answer to a prompt: it installs the pattern in the shared policy (or path scope, for a path) and persists it, and persisted grants load for every session after a restart. "Always" means beyond this session. A contributor can currently give that answer too; restricting it is tracked in [#1179](https://github.com/go-steer/core-agent/issues/1179).
+- An "allow always" answer to a prompt: it installs the pattern in the shared policy (or path scope, for a path) and persists it, and persisted grants load for every session after a restart. "Always" means beyond this session, so it takes a daemon admin (`admin_identities`). Anyone else's "allow always", the session owner's included, is applied as "allow for this session" ([#1179](https://github.com/go-steer/core-agent/issues/1179)). See [Who can allow always](/reference/attach-http/#who-can-allow-always-protocol-1170).
 
 ---
 

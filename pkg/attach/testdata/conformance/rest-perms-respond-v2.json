@@ -1,0 +1,6 @@
+{
+  "acknowledged": true,
+  "approver": "contributor@example.com",
+  "decision": "allow-session",
+  "downgraded": true
+}

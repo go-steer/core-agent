@@ -69,7 +69,16 @@ const MaxDenyReasonBytes = 500
 // echoes what the server recorded, so a relay can tell "attributed to
 // the human who clicked" from "accepted, but the audit line will be
 // anonymous" without a second call to /whoami.
+//
+// Decision is the decision the server applied, in wire form, and
+// Downgraded is true when that differs from the one requested because
+// the caller may not give it (#1179): on a multi-session daemon an
+// "allow-always" from anyone but a daemon admin is applied as
+// "allow-session". Protocol 1.17.0; an older daemon
+// omits both, and applied what was sent.
 type PromptRespondResponse struct {
 	Acknowledged bool   `json:"acknowledged"`
 	Approver     string `json:"approver,omitempty"`
+	Decision     string `json:"decision,omitempty"`
+	Downgraded   bool   `json:"downgraded,omitempty"`
 }

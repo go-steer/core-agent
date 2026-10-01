@@ -240,7 +240,11 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 	// alt-screen and writes to stderr while it's running corrupt the
 	// rendered chat (lines bleed into the textarea + status). If
 	// debug visibility is ever needed, plumb a logfile through here.
-	prompter, stopPrompter := coretuiremote.StartRemotePrompter(ctx, client, sessionPath, io.Discard)
+	// The adapter is the bridge's host: it supplies the daemon's
+	// protocol version (which decides whether the prompt offers the
+	// "r" deny-with-reason key) and a chat row for the one note the
+	// bridge has to show the operator.
+	prompter, stopPrompter := coretuiremote.StartRemotePrompter(ctx, client, sessionPath, io.Discard, a)
 	defer stopPrompter()
 
 	identity := alias

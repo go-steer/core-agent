@@ -16,6 +16,7 @@ package attachclient
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -166,5 +167,28 @@ func TestHTTPStatusError_SatisfiesPermanentStreamErrorInterface(t *testing.T) {
 	var e permanentStreamError = &httpStatusError{op: "stream", statusCode: 404, body: ""}
 	if !e.PermanentStreamErr() {
 		t.Errorf("interface-typed 404 should still classify as permanent")
+	}
+}
+
+// HTTPStatus is how the prompt bridge tells a refused deny reason (400,
+// prompt still pending) from a deny that can't land at all; it has to
+// see through wrapping and through the 429 promotion.
+func TestHTTPStatus(t *testing.T) {
+	t.Parallel()
+	bad := &httpStatusError{op: "POST /perms/respond", statusCode: http.StatusBadRequest}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"direct", bad, http.StatusBadRequest},
+		{"wrapped", fmt.Errorf("respond: %w", bad), http.StatusBadRequest},
+		{"rate limited", asRateLimit(&httpStatusError{op: "x", statusCode: http.StatusTooManyRequests}, http.Header{}), http.StatusTooManyRequests},
+		{"transport", errors.New("connection refused"), 0},
+		{"nil", nil, 0},
+	} {
+		if got := HTTPStatus(tc.err); got != tc.want {
+			t.Errorf("%s: HTTPStatus = %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }

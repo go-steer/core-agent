@@ -72,6 +72,20 @@ type Adapter struct {
 	mu      sync.Mutex
 	lastSeq int64
 
+	// daemonProtocol is the protocol_version from the most recent
+	// `capabilities` frame on this adapter's event stream, or "" before
+	// one has arrived. Protected by mu. The prompt bridge reads it to
+	// decide whether the daemon can take a deny's reason (1.15.0+); see
+	// DaemonProtocolVersion.
+	daemonProtocol string
+	// protocolKnown is closed, once, when the first `capabilities`
+	// frame has been read (protocolOnce guards the close). The prompt
+	// bridge waits on it briefly so a prompt already pending at attach
+	// time isn't decided before the version is known. Nil on a bare
+	// &Adapter{} literal, which only tests build.
+	protocolKnown chan struct{}
+	protocolOnce  sync.Once
+
 	// usage caches the remote's totals (see capabilities.go).
 	// coretui.UsageTracker is queried on every TUI render; the cache
 	// keeps the network traffic bounded.
@@ -273,6 +287,7 @@ func New(client *attachclient.Client, sessionPath string) *Adapter {
 		reconnectKick: make(chan struct{}, 1),
 		injectErrs:    make(chan error, 8),
 		wakeCh:        make(chan struct{}, 1),
+		protocolKnown: make(chan struct{}),
 		view:          &viewedSession{},
 	}
 	a.view.set(a)
@@ -687,6 +702,14 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 			// Stream closed mid-flight. Surface as a transient error
 			// so the operator sees activity, then reconnect.
 			debugf("Events: stream closed; will reconnect")
+			// Forget the daemon's protocol until the reconnected
+			// stream's capabilities frame re-announces it: the daemon
+			// on the other side may have been restarted at a different
+			// version, and a stale >= 1.15.0 would offer the deny
+			// reason to a daemon that no longer takes it.
+			a.mu.Lock()
+			a.daemonProtocol = ""
+			a.mu.Unlock()
 			if !yield(coretui.Event{}, fmt.Errorf("stream disconnected — waiting to reconnect")) {
 				return
 			}

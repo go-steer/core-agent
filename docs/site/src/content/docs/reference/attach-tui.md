@@ -270,6 +270,10 @@ If the remote agent runs in `ask` mode (the default), tool calls that aren't pre
 
 The decision round-trips to the daemon via `POST /perms/respond`; the tool call resumes on the remote side. Picking `a` (allow-always) also persists the pattern to the daemon's `.agents/config.json` so subsequent sessions don't re-prompt.
 
+**`r` denies with a reason the model reads.** The key legend lists it as `r deny with reason…`, next to `n deny`. It opens a one-line input under the choices: type why, press enter, and the call is denied with the refused call's result reading `The operator's reason: "…"`, so the model can change course instead of guessing at the objection ([#1165](https://github.com/go-steer/core-agent/issues/1165)). Esc goes back to the choices without deciding; enter on an empty input is a plain deny. The reason is capped at 500 bytes: the input shows a counter, and enter does nothing while it is over. `n` stays the plain deny, unchanged.
+
+`r` appears only when the daemon can take the reason, which means a 1.x release of the attach protocol at 1.15.0 or later (pre-releases don't count), read from the `capabilities` frame the event stream opens with. A prompt that was already pending when you attached waits up to 3 seconds, once, for that frame before it shows. Against an older daemon the prompt doesn't offer it: such a daemon answers 200 and drops the field, so the operator would believe the model read words it never saw. As a defensive measure, if a daemon refuses a reason with a 400, which leaves the prompt pending, the client sends the deny again without it and says so in the chat, rather than lose the deny.
+
 Operators who want zero prompts can pass `--yolo` to the daemon or pre-populate `.agents/config.json`.
 
 ## Layout

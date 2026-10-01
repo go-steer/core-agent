@@ -15,6 +15,7 @@
 package attachclient
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -145,4 +146,17 @@ func (e *SubagentNotFoundError) Error() string {
 		return e.Message
 	}
 	return fmt.Sprintf("no such subagent %q", e.Name)
+}
+
+// HTTPStatus reports the HTTP status a daemon answered with when err
+// came from one of this client's request helpers (including a
+// RateLimitError), or 0 when err carries no status — a transport
+// failure, a cancelled ctx, a decode error. Lets a caller branch on
+// the status without matching the error text.
+func HTTPStatus(err error) int {
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		return se.statusCode
+	}
+	return 0
 }

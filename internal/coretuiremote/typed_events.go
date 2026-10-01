@@ -60,9 +60,20 @@ import (
 // the transcript. core-tui wants both halves and says why — the event is
 // what makes a transition render immediately, PauseState is what makes a
 // TUI attaching to an already-held session render the banner at all.
+// `capabilities` is absorbed for its protocol_version, which the prompt
+// bridge reads to decide whether this daemon can take a deny's reason
+// (#1165); it never renders.
 func (a *Adapter) consumeTypedFrame(frame attach.Frame) (coretui.Event, bool) {
 	if frame.Type == attach.EventWake {
 		a.signalWake()
+		return coretui.Event{}, false
+	}
+	if frame.Type == attach.EventCapabilities {
+		if p, ok := frame.TypedData.(*attach.Capabilities); ok && p != nil {
+			a.mu.Lock()
+			a.daemonProtocol = p.ProtocolVersion
+			a.mu.Unlock()
+		}
 		return coretui.Event{}, false
 	}
 	if frame.Type == attach.EventPause {

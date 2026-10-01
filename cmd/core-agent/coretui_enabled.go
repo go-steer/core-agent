@@ -1759,13 +1759,49 @@ func preambleFor(name, args string) string {
 // satisfies permissions.Prompter (the gate's expected interface).
 // Translates PromptKind / Decision values across the two enum
 // vocabularies.
+//
+// It also implements permissions.AttributingPrompter, which is the
+// only door the gate has for a deny's reason (#1165). Through it the
+// bridge asks core-tui with AskApprovalDetailed when the inner prompter
+// has that method, so the prompt offers the "r" deny-with-reason step
+// and the operator's words reach the model in the refused call's
+// result. By stays empty: a local terminal has one operator and no
+// identity to attribute.
 type gatePrompterBridge struct {
 	inner coretui.PermissionPrompter
 }
 
-// AskApproval implements permissions.Prompter by delegating to the
-// core-tui prompter after translating the request shape.
+// detailedPermissionPrompter is the part of *coretui.Prompter that
+// PermissionPrompter doesn't carry (core-tui v0.28.0). A local
+// interface rather than the concrete type so a test can stand in for
+// the prompter, and so an inner prompter without the method falls back
+// to plain AskApproval, where the prompt never offers "r" and there is
+// no reason to lose.
+type detailedPermissionPrompter interface {
+	AskApprovalDetailed(ctx context.Context, req coretui.PermissionRequest) (coretui.PermissionOutcome, error)
+}
+
+var (
+	_ permissions.AttributingPrompter = (*gatePrompterBridge)(nil)
+	// launchTUIv2 wires a *coretui.Prompter as inner; if it ever stopped
+	// having the method the "r" step would vanish without a build error.
+	_ detailedPermissionPrompter = (*coretui.Prompter)(nil)
+)
+
+// AskApproval implements permissions.Prompter. The gate always calls
+// AskApprovalAttributed instead (it type-asserts for it), so this is
+// the path for a caller that holds the bridge as a plain Prompter.
 func (g *gatePrompterBridge) AskApproval(ctx context.Context, req permissions.PromptRequest) (permissions.Decision, error) {
+	a, err := g.AskApprovalAttributed(ctx, req)
+	return a.Decision, err
+}
+
+// AskApprovalAttributed implements permissions.AttributingPrompter by
+// delegating to the core-tui prompter after translating the request
+// shape. The decision maps exactly as it always did; the operator's
+// reason rides along only on a deny, which is the only decision core-tui
+// sets it on and the only one the gate reads it from.
+func (g *gatePrompterBridge) AskApprovalAttributed(ctx context.Context, req permissions.PromptRequest) (permissions.Approval, error) {
 	cReq := coretui.PermissionRequest{
 		Kind:        translateKind(req.Kind),
 		ToolName:    req.ToolName,
@@ -1776,11 +1812,21 @@ func (g *gatePrompterBridge) AskApproval(ctx context.Context, req permissions.Pr
 		PersistTool: req.PersistTool,
 		PersistKey:  req.PersistKey,
 	}
-	cDec, err := g.inner.AskApproval(ctx, cReq)
-	if err != nil {
-		return permissions.DecisionDeny, err
+	var out coretui.PermissionOutcome
+	var err error
+	if dp, ok := g.inner.(detailedPermissionPrompter); ok {
+		out, err = dp.AskApprovalDetailed(ctx, cReq)
+	} else {
+		out.Decision, err = g.inner.AskApproval(ctx, cReq)
 	}
-	return translateDecision(cDec), nil
+	if err != nil {
+		return permissions.Approval{Decision: permissions.DecisionDeny}, err
+	}
+	a := permissions.Approval{Decision: translateDecision(out.Decision)}
+	if a.Decision == permissions.DecisionDeny {
+		a.Reason = out.Reason
+	}
+	return a, nil
 }
 
 // translateKind maps permissions.PromptKind → coretui.PermissionKind.

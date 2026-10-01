@@ -215,7 +215,7 @@ Without a reason, the model got the same sentence whatever the operator objected
 - **A reason cannot reopen the call within the turn.** An identical re-issue in the same turn is refused without asking anyone, as for any deny, so "try again in five minutes" works across turns, not inside one. The refusal the model already has carries the reason.
 - **The reason is the operator's text, quoted as such.** Unlike `approver`, it is not verified and does not need to be.
 
-A daemon older than 1.15.0 accepts the field and drops it, so the status code cannot tell you whether the reason reached the model. Check `protocol_version`. Go clients can use `attachclient.Client.DenyPrompt`. Denying with a reason from the TUI needs a core-tui release that asks for one.
+A daemon older than 1.15.0 accepts the field and drops it, so the status code cannot tell you whether the reason reached the model. Check `protocol_version`. Go clients can use `attachclient.Client.DenyPrompt`. Both TUIs ask for one: the permission prompt's `r` key, in the in-process `--tui` and in `core-agent-tui`, which offers it only against a daemon whose `capabilities` frame advertises 1.15.0 or later (see [Attach TUI → Permission prompts](/reference/attach-tui/#permission-prompts)).
 
 ### Changing the permission mode (protocol 1.16.0)
 

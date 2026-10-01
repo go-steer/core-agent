@@ -72,6 +72,13 @@ type Adapter struct {
 	mu      sync.Mutex
 	lastSeq int64
 
+	// daemonProtocol is the protocol_version from the most recent
+	// `capabilities` frame on this adapter's event stream, or "" before
+	// one has arrived. Protected by mu. The prompt bridge reads it to
+	// decide whether the daemon can take a deny's reason (1.15.0+); see
+	// DaemonProtocolVersion.
+	daemonProtocol string
+
 	// usage caches the remote's totals (see capabilities.go).
 	// coretui.UsageTracker is queried on every TUI render; the cache
 	// keeps the network traffic bounded.

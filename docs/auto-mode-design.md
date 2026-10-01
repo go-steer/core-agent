@@ -2,7 +2,7 @@
 
 Design for [#1175](https://github.com/go-steer/core-agent/issues/1175).
 
-**Status:** Phase 1 (`pkg/permissions`) implemented. Phases 2–5 are not, so `auto` cannot be selected yet.
+**Status:** Phases 1 (`pkg/permissions`) and 2 (`Args` at the call sites) implemented. Phases 3–5 are not, so `auto` cannot be selected yet.
 
 ## Motivation
 
@@ -53,7 +53,7 @@ still need a person.
    - Control-plane writes are outside this entirely. `checkControlPlaneWrite` calls `askApproval` directly and never calls `prompt` (its own comment says so). A Phase 1 test pins that the approver stub is never called from that path.
 
 3. **The approver decides only what the recipe opts it into, and only with the whole call in hand.**
-   - `permissions.auto.eligible` lists tool patterns in the existing `tool:pattern` syntax, for example `["bash:go test *", "write_file:*", "read_file:*"]`. A request that matches no entry escalates without an approver call. The default is empty, so `mode: auto` with no list changes nothing, and startup logs a warning about it.
+   - `permissions.auto.eligible` lists tool patterns in the existing `tool:pattern` syntax, for example `["bash:go test *", "write_file:*", "edit_file:*"]`. A request that matches no entry escalates without an approver call. The default is empty, so `mode: auto` with no list changes nothing, and startup logs a warning about it.
    - A request is also eligible only if the gate holds the **full call**. `PromptRequest` gains an additive `Args json.RawMessage` field, carrying the untruncated arguments. Each `Check*` call site that has arguments fills it in.
    - `Detail` is not enough: for MCP and skill tools it is cut at 200 bytes (`summarizeRequest`, `pkg/tools/gate.go`). `alert`, `call_peer`, `fetch_url` and synchronous subagents pass only a target name or URL, and `write_file`'s content never reaches the gate at all.
    - A request with no `Args` escalates, so a call site nobody updated fails closed.

@@ -30,6 +30,7 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/internal/testutil"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -720,5 +721,22 @@ func TestCallPeer_SubscribesBeforeInjecting(t *testing.T) {
 	want := []string{"new-session", "events", "inject"}
 	if got := p.routeOrder(); !reflect.DeepEqual(got, want) {
 		t.Errorf("request order = %v, want %v", got, want)
+	}
+}
+
+// #1175 phase 2: the gate key is the peer name alone, so the approver
+// can only judge a delegation if it gets the prompt too.
+func TestCallPeer_PassesFullArgsToTheApprover(t *testing.T) {
+	t.Parallel()
+	p := newFakePeer(t)
+	g, probe := testutil.AutoGate(t, "call_peer:*")
+	h := mustHandler(t, g, cfgCallPeer(config.CallPeerConfig{Enabled: true}),
+		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
+	if _, err := h.run(testutil.ApproverToolContext(), Args{Peer: "ops", Prompt: "marker-prompt"}); err == nil {
+		t.Fatal("call ran, want the probe's deny")
+	}
+	probe.RequireArgs(t, "call_peer", `"prompt":"marker-prompt"`)
+	if p.sessionCount() != 0 {
+		t.Error("the call reached the peer after a deny")
 	}
 }

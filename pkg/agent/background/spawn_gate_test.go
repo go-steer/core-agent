@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-steer/core-agent/v2/internal/testutil"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
@@ -325,4 +326,32 @@ func TestSpawnAgent_NoGateIsNotADenial(t *testing.T) {
 	if got := errorText(t, spawnVia(t, mgr, map[string]any{"agent": "cluster", "goal": "g"})); got != "" {
 		t.Fatalf("ungated build: error = %q, want none", got)
 	}
+}
+
+// #1175 phase 2: both spawn doors hand the gate the whole spawn call,
+// so ModeAuto's approver judges the goal it would launch, not only the
+// subagent's name. The probe denies, so nothing launches.
+func TestSpawnTools_PassFullArgsToTheApprover(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.ApproverContext(context.Background())
+
+	g, probe := testutil.AutoGate(t, SpawnAgentToolName+":*")
+	mgr := gatedTemplateManager(t, g)
+	resp := runToolJSON(t, NewSpawnAgentTool(mgr), ctx, map[string]any{"agent": "cluster", "goal": "marker-goal"})
+	if got := errorText(t, resp); !strings.Contains(got, "approver probe") {
+		t.Fatalf("spawn_agent: error = %q, want the probe's deny", got)
+	}
+	probe.RequireArgs(t, SpawnAgentToolName, `"goal":"marker-goal"`)
+
+	g, probe = testutil.AutoGate(t, spawnRemoteAgentToolName+":*")
+	mgr = gatedTemplateManager(t, g)
+	tl, err := NewSpawnRemoteAgentTool(&fakeRemoteSpawner{}, mgr)
+	if err != nil {
+		t.Fatalf("NewSpawnRemoteAgentTool: %v", err)
+	}
+	resp = runToolJSON(t, tl, ctx, map[string]any{"name": "far-worker", "system_prompt": "marker-prompt", "goal": "g"})
+	if got := errorText(t, resp); !strings.Contains(got, "approver probe") {
+		t.Fatalf("spawn_remote_agent: error = %q, want the probe's deny", got)
+	}
+	probe.RequireArgs(t, spawnRemoteAgentToolName, `"system_prompt":"marker-prompt"`)
 }

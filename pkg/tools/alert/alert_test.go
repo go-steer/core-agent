@@ -24,6 +24,7 @@ import (
 
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/internal/testutil"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
@@ -491,5 +492,27 @@ func TestNew_Rejects(t *testing.T) {
 	}
 	if _, err := New(yoloGate(t), config.DefaultConfig()); err == nil {
 		t.Error("no targets should error")
+	}
+}
+
+// #1175 phase 2: the gate key is the target name alone, so the approver
+// can only judge an alert if it gets the summary too. The probe
+// denies, so nothing is sent.
+func TestRun_PassesFullArgsToTheApprover(t *testing.T) {
+	t.Parallel()
+	var got captured
+	srv := mockServer(t, 200, "ok", &got)
+	cfg := cfgWith(config.AlertTarget{Name: "audit", URL: srv.URL, Template: config.AlertTemplateGeneric})
+	g, probe := testutil.AutoGate(t, "alert:*")
+	h, err := newHandler(g, cfg, func(string) string { return "" }, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("newHandler: %v", err)
+	}
+	if _, err := h.run(testutil.ApproverToolContext(), Args{Target: "audit", Level: "warning", Summary: "marker-summary"}); err == nil {
+		t.Fatal("alert sent, want the probe's deny")
+	}
+	probe.RequireArgs(t, toolName, `"summary":"marker-summary"`)
+	if got.method != "" {
+		t.Errorf("the alert reached the target (%s) after a deny", got.method)
 	}
 }

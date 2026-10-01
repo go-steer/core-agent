@@ -204,12 +204,13 @@ var controlPlaneMentions = []string{
 // approver; it is not a boundary, and the approver's eligible list is
 // what a recipe author should keep narrow.
 //
-// The match is byte-exact against Detail and Args, so it also misses a
-// different letter case (`.Agents/Config.json` on a case-insensitive
-// filesystem) and JSON escapes in Args (`.agents\/config.json`). Call
-// sites must therefore build Args with json.Marshal rather than pass
-// the model's raw bytes through; json.Marshal also escapes <, > and &,
-// so an instructions-file name containing them never matches Args.
+// The match ignores letter case (`.Agents/Config.json` on a
+// case-insensitive filesystem), which over-matches toward a person.
+// Args are canonical JSON (CallArgs, #1175 phase 2), so a mention is
+// matched in Args both as written and in the one spelling the encoder
+// gives it (jsonSpelling) — no optional escape can hide it, and one the
+// encoder cannot avoid, such as a quote or backslash in the
+// instructions file's name, is matched as encoded.
 func protectedMentions(instructionsFile string) []string {
 	out := append([]string(nil), controlPlaneMentions...)
 	if instructionsFile == "" {
@@ -254,8 +255,10 @@ func (g *Gate) approverIneligible(ctx context.Context, req PromptRequest) (strin
 	if g.autoEligible == nil || g.autoEligible.Match(req.ToolName, req.Detail) != OutcomeAllow {
 		return "the call is not on the approver's eligible list", nil
 	}
+	detail, args := strings.ToLower(req.Detail), strings.ToLower(string(req.Args))
 	for _, m := range g.autoProtected {
-		if strings.Contains(req.Detail, m) || strings.Contains(string(req.Args), m) {
+		lm, le := strings.ToLower(m), strings.ToLower(jsonSpelling(m))
+		if strings.Contains(detail, lm) || strings.Contains(args, lm) || strings.Contains(args, le) {
 			return fmt.Sprintf("the call names %q, which only a person may approve", m), nil
 		}
 	}

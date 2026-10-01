@@ -357,7 +357,7 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		// the flow trace, the watchdog and both TUIs treat it as the
 		// failed call it is.
 		if opts.Gate != nil {
-			if err := opts.Gate.CheckToolCall(toolCtx, subagentGateBucket, name, name); err != nil {
+			if err := opts.Gate.CheckToolCallWithArgs(toolCtx, subagentGateBucket, name, name, args); err != nil {
 				return subagentResult{}, err
 			}
 		}

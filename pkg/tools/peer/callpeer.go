@@ -248,7 +248,7 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 	// permissions.allow: ["call_peer:operator-prod-1"] (or
 	// "call_peer:*"). Gated before any network work, and before the
 	// token is read out of the environment.
-	if err := h.gate.CheckGeneric(ctx, h.toolName, target.Name); err != nil {
+	if err := h.gate.CheckGenericWithArgs(ctx, h.toolName, target.Name, in); err != nil {
 		return Result{}, err
 	}
 

@@ -159,14 +159,31 @@ func (gt *gatedTool) Run(ctx adktool.Context, args any) (map[string]any, error) 
 	// which holds the live tool, has to classify and say so (#693).
 	// IsReadOnlyTool is fail-safe mutating, so a toolset that declares
 	// nothing gets exactly the pre-#693 behavior.
-	check := gt.gate.CheckToolCall
+	//
+	// The WithArgs forms hand the gate the full arguments as well as
+	// the 200-byte summary, which is what lets ModeAuto's approver
+	// judge an MCP or skill call at all (#1175 decision 3).
+	check := gt.gate.CheckToolCallWithArgs
 	if IsReadOnlyTool(gt.inner) {
-		check = gt.gate.CheckReadOnlyToolCall
+		check = gt.gate.CheckReadOnlyToolCallWithArgs
 	}
-	if err := check(ctx, gt.namespace, gt.inner.Name(), summarizeRequest(gt.inner.Name(), args)); err != nil {
+	if err := check(ctx, gt.namespace, gt.inner.Name(), summarizeRequest(gt.inner.Name(), args), callArgsForGate(args)); err != nil {
 		return nil, err
 	}
 	return rn.Run(ctx, args)
+}
+
+// callArgsForGate is what the gate is told a toolset call's arguments
+// are. ADK hands a tool the function call's Args map as-is, and a model
+// calling a tool with no parameters usually sends none, so the map is
+// nil and would encode as JSON null, which the gate reads as "no
+// arguments held" and never puts to ModeAuto's approver. A call with
+// no arguments is held whole by an empty object (#1175).
+func callArgsForGate(args any) any {
+	if m, ok := args.(map[string]any); args == nil || (ok && m == nil) {
+		return map[string]any{}
+	}
+	return args
 }
 
 func summarizeRequest(name string, args any) string {

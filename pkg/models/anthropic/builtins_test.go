@@ -15,9 +15,13 @@
 package anthropic
 
 import (
+	"context"
 	"testing"
 
+	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 func TestDefaultBuiltinTools_AllOff(t *testing.T) {
@@ -122,5 +126,32 @@ func TestBuildParams_NoBuiltinsWhenAllOff(t *testing.T) {
 	}
 	if len(p.Tools) != 1 {
 		t.Errorf("expected 1 tool (function decl only), got %d", len(p.Tools))
+	}
+}
+
+// TestGenerateContent_WithoutBuiltinsDropsWebSearch: a one-shot side
+// call on the shared model (the auto-mode approver, #1175) must go out
+// with no server-side tools, even when the deployment turned
+// web_search on for the agent loop. Same llm, same request; only the
+// context differs.
+func TestGenerateContent_WithoutBuiltinsDropsWebSearch(t *testing.T) {
+	t.Parallel()
+	req := &adkmodel.LLMRequest{
+		Contents: []*genai.Content{genai.NewContentFromText("judge this", genai.RoleUser)},
+		Config:   &genai.GenerateContentConfig{},
+	}
+
+	l, captured := newOfflineLLM(t, "claude-test", cacheWarmingSSEFixture)
+	l.builtins = BuiltinTools{WebSearch: true}
+	drain(t, l, context.Background(), req)
+	if tools, _ := captured.body["tools"].([]any); len(tools) == 0 {
+		t.Fatal("baseline request carried no tools; the opt-out test proves nothing")
+	}
+
+	l2, captured2 := newOfflineLLM(t, "claude-test", cacheWarmingSSEFixture)
+	l2.builtins = BuiltinTools{WebSearch: true}
+	drain(t, l2, models.WithoutBuiltins(context.Background()), req)
+	if tools, ok := captured2.body["tools"]; ok {
+		t.Errorf("suppressed request carried tools %v, want none", tools)
 	}
 }

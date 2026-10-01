@@ -14,7 +14,10 @@
 
 package permissions
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // Control-plane file classification (#378).
 //
@@ -72,4 +75,30 @@ func isControlPlanePath(resolved string) bool {
 		return false
 	}
 	return filepath.Base(filepath.Dir(resolved)) == controlPlaneDirName
+}
+
+// resolvedInstructionsPath is the approver instructions file in the
+// form checkFileWrite compares against: absolute and symlink-resolved
+// (ResolvePath), or "" when none is configured. A path whose symlinks
+// cannot be resolved keeps its absolute spelling rather than dropping
+// out of the tier.
+func resolvedInstructionsPath(file string) string {
+	if file == "" {
+		return ""
+	}
+	if resolved, err := ResolvePath(file); err == nil {
+		return resolved
+	}
+	if abs, err := filepath.Abs(expandUser(file)); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(file)
+}
+
+// isApproverInstructions reports whether resolved (symlink-resolved,
+// as for isControlPlanePath) is the approver's instructions file. The
+// comparison ignores letter case, which on a case-sensitive filesystem
+// over-matches toward the elevated prompt rather than away from it.
+func (g *Gate) isApproverInstructions(resolved string) bool {
+	return g.approverInstructions != "" && strings.EqualFold(resolved, g.approverInstructions)
 }

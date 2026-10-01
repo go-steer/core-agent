@@ -41,8 +41,7 @@ type noBuiltinsKey struct{}
 // reported symptom is blank answers, dropping that retry to get
 // tool-lessness would trade one bug for another.
 //
-// A hint, not a guarantee: providers with no built-ins to inject
-// (Anthropic today) ignore it, and it can only take tools away.
+// Both Gemini and Anthropic honor it. It can only take tools away.
 func WithoutBuiltins(ctx context.Context) context.Context {
 	return context.WithValue(ctx, noBuiltinsKey{}, true)
 }

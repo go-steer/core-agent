@@ -197,6 +197,19 @@ For **deterministic** cache savings on Vertex, core-agent ships [explicit contex
 
 Output tokens are usually 10-25% of total cost, but they're 4-6x more expensive per-token than input on most models. Tightening output is the cheap fix when the model is being unnecessarily verbose.
 
+### Thinking tokens are output you don't see
+
+Thinking models bill their reasoning at the output rate, and it can dwarf the visible answer — one measured agentic Gemini turn spent 6,449 thinking tokens. core-agent prices it into every cost figure and ceiling, but how it *shows* depends on the provider:
+
+- **Gemini / Vertex Gemini** report thinking separately from output. A `-p` run's closing summary names it after the model, so the dollar figure is explained rather than looking high for the arrows beside it:
+
+  ```
+  core-agent: 2 turn(s) · ↑2000 ↓100 tokens · $0.0093 (gemini-3.5-flash) · +600 thinking tokens (billed as output)
+  ```
+
+  `↓` stays the visible output alone. The same count appears as `thoughts` in `/usage` and as the `thoughts` token type in [metrics](/concepts/metrics/).
+- **Anthropic** bills thinking inside `output_tokens` and reports no separate count, so it is already in `↓` and the summary adds nothing for those turns. If an Anthropic parent sends its `agentic_*` subtasks or digest summarizer to a Gemini model, *their* thinking does appear in the segment — it is real spend that `↓` doesn't contain.
+
 ### `AGENTS.md` patterns that reduce output
 
 ```markdown

@@ -1366,8 +1366,6 @@ func checkGateWiring(g *permissions.Gate) error {
 	// Auto with no Prompter can run headless — the approver allows
 	// what it may and the rest is denied — but only with an approver.
 	// Without one it is ask-mode with no Prompter under another name.
-	// (Until a call site passes Args, every call is denied either
-	// way; that is phase 2 of #1175, not a wiring mistake.)
 	if g.Mode() == permissions.ModeAuto && !g.HasPrompter() && !g.HasApprover() {
 		return fmt.Errorf("agent: Run: permissions gate is in auto-mode with neither an Approver nor a Prompter; every gated call would be denied (wire an Approver or a Prompter, or use ModeYolo / ModeAllow for unattended runs)")
 	}

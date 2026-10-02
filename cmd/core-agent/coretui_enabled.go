@@ -306,6 +306,7 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		PermissionMode: coretui.PermissionModeWiring{
 			Initial: translateMode(deps.Gate.Mode()),
 			Set:     wrapped.setPermMode,
+			Cycle:   localChipCycle(deps.Gate),
 		},
 		// AutoContinueFromInbox (core-tui v0.6, issue #9) — full PR-α
 		// parity for the ADK-opaque-runner case. On turn-end, core-tui
@@ -1986,6 +1987,22 @@ func translateDecision(d coretui.PermissionDecision) permissions.Decision {
 	}
 }
 
+// localChipCycle is the Shift+Tab order for the local chip: ask, auto,
+// acceptEdits, plan, yolo when this session can enter auto, else nil
+// (core-tui's default four). A mode the chip's Set refuses rolls the
+// chip back and the next keystroke tries it again, so offering auto to
+// a session with no approver or no approval_timeout would trap the
+// operator in front of it (#1175).
+func localChipCycle(g *permissions.Gate) []coretui.PermissionMode {
+	if g.AutoSelectable() != nil {
+		return nil
+	}
+	return []coretui.PermissionMode{
+		coretui.PermissionModeDefault, coretui.PermissionModeAuto,
+		coretui.PermissionModeAcceptEdits, coretui.PermissionModePlan, coretui.PermissionModeBypass,
+	}
+}
+
 // escalationFor is the core-tui escalation for a prompt ModeAuto's
 // approver passed on, or nil for an ordinary prompt (#1175 decision
 // 11): core-tui then offers only once and deny, and quotes the reason
@@ -1998,10 +2015,9 @@ func escalationFor(req permissions.PromptRequest) *coretui.PermissionEscalation 
 }
 
 // translateMode / translateModeBack bridge the gate's Mode values
-// and core-tui's PermissionMode enum. Both sides now carry the
-// same four modes (default / acceptEdits / plan / bypass) since
-// the gate grew ModePlan + ModeAcceptEdits — see
-// permissions/gate.go.
+// and core-tui's PermissionMode enum: default / auto / acceptEdits /
+// plan / bypass on the chip, ask / auto / acceptEdits / plan / yolo on
+// the gate.
 //
 // permissions.ModeAllow (config-side "auto-allow if in allowlist
 // else fail") has no chip equivalent and is intentionally collapsed

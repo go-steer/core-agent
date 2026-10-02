@@ -399,9 +399,10 @@ func (ad *Adapter) AttachPerms() attach.PermsInfo {
 	gate := a.Gate()
 	s := gate.Snapshot()
 	out := attach.PermsInfo{
-		Mode:  string(s.Mode),
-		Allow: s.Allow,
-		Deny:  s.Deny,
+		Mode:          string(s.Mode),
+		Allow:         s.Allow,
+		Deny:          s.Deny,
+		SettableModes: settableModes(gate),
 	}
 	for _, ap := range gate.Approvals() {
 		out.Approvals = append(out.Approvals, attach.ApprovalInfo{

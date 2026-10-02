@@ -484,6 +484,13 @@ func identitySet(ids []string) map[string]struct{} {
 // off with permissions.use_builtin_allow=false; additional bundles
 // listed in permissions.builtin_allow_extras add to the merge. See
 // builtin_allow.go for the bundle catalog.
+//
+// permissions.mode "auto" needs an approver, which FromConfig cannot
+// build (pkg/permissions must not import pkg/models). A host that loads
+// such a config wires one with SetApprover — approver.FromConfig builds
+// it from permissions.auto — before the gate is used, as cmd/core-agent
+// does. Without it the gate reports "auto" and asks a person about
+// every call.
 func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Prompter) (*Gate, error) {
 	useBuiltin := true
 	if cfg.Permissions.UseBuiltinAllow != nil {
@@ -590,7 +597,7 @@ func (g *Gate) Mode() Mode {
 // the gate doesn't recognize, and ModeAuto can't be entered on a gate
 // with no approval timeout.
 func (g *Gate) SetMode(m Mode) {
-	if g.ValidateMode(m) != nil {
+	if g.switchableTo(m) != nil {
 		return
 	}
 	g.mu.Lock()
@@ -604,7 +611,7 @@ func (g *Gate) SetMode(m Mode) {
 // "from → to" needs. A mode ValidateMode refuses changes nothing and
 // returns the current mode.
 func (g *Gate) SwapMode(m Mode) (previous Mode) {
-	valid := g.ValidateMode(m) == nil
+	valid := g.switchableTo(m) == nil
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	previous = g.mode
@@ -612,6 +619,19 @@ func (g *Gate) SwapMode(m Mode) (previous Mode) {
 		g.mode = m
 	}
 	return previous
+}
+
+// switchableTo is whether a running gate may change into m: ValidateMode,
+// and for ModeAuto also an approver (AutoSelectable). Auto with no
+// approver decides nothing, so a switch into it would put a chip
+// reading "auto" in front of a gate that asks a person about every
+// call. A gate built in auto by New keeps it: an approver can still be
+// wired with SetApprover before the gate is used, as cmd/core-agent does.
+func (g *Gate) switchableTo(m Mode) error {
+	if m == ModeAuto {
+		return g.AutoSelectable()
+	}
+	return g.ValidateMode(m)
 }
 
 // DeriveForSession returns a per-session sub-gate derived from this

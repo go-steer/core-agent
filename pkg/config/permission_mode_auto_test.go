@@ -22,18 +22,35 @@ import (
 	"time"
 )
 
-// #1175 decision 13: the gate implements "auto", but config must not
-// select it until both TUIs can display it — today they would show
-// "ask" while a model approves calls. The error says it is not
-// available yet, not that it is unknown.
-func TestValidate_PermissionModeAutoNotYetSelectable(t *testing.T) {
+// permissions.mode "auto" is selectable (#1175 phase 4), and needs
+// what makes it auto: an approver (permissions.auto), and an
+// approval_timeout so an escalated call cannot wait forever (decision
+// 12). Missing either is a startup error naming the field.
+func TestValidate_PermissionModeAuto(t *testing.T) {
 	t.Parallel()
-	c := DefaultConfig()
-	c.Permissions.Mode = "auto"
-	c.Permissions.ApprovalTimeout = "5m"
-	err := c.Validate()
-	if err == nil || !strings.Contains(err.Error(), "not available yet") {
-		t.Fatalf("Validate() with mode auto = %v, want a not-available-yet error", err)
+	cases := []struct {
+		name    string
+		auto    *AutoApproverConfig
+		timeout string
+		want    string // "" = valid
+	}{
+		{"approver and timeout", &AutoApproverConfig{Eligible: []string{"read_file:*"}}, "5m", ""},
+		{"no approver", nil, "5m", "permissions.auto"},
+		{"no timeout", &AutoApproverConfig{}, "", "permissions.approval_timeout"},
+		{"bad timeout", &AutoApproverConfig{}, "soon", "approval_timeout"},
+	}
+	for _, tc := range cases {
+		c := DefaultConfig()
+		c.Permissions.Mode = PermissionModeAuto
+		c.Permissions.Auto = tc.auto
+		c.Permissions.ApprovalTimeout = tc.timeout
+		err := c.Validate()
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: Validate() = %v, want nil", tc.name, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: Validate() = %v, want an error naming %q", tc.name, err, tc.want)
+		}
 	}
 }
 

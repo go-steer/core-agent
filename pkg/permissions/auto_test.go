@@ -607,8 +607,19 @@ func TestAuto_RequiresApprovalTimeout(t *testing.T) {
 	if err := timed.ValidateMode(ModeAuto); err != nil {
 		t.Errorf("ValidateMode(auto) with a timeout = %v", err)
 	}
-	if prev := timed.SwapMode(ModeAuto); prev != ModeAsk || timed.Mode() != ModeAuto {
-		t.Errorf("SwapMode(auto) with a timeout: prev %q mode %q", prev, timed.Mode())
+	// A running gate also needs an approver to switch into auto (#1175
+	// phase 4): without one, auto would decide nothing while the chip
+	// read "auto".
+	if prev := timed.SwapMode(ModeAuto); prev != ModeAsk || timed.Mode() != ModeAsk {
+		t.Errorf("SwapMode(auto) with no approver: prev %q mode %q, want it refused", prev, timed.Mode())
+	}
+	timed.SetMode(ModeAuto)
+	if timed.Mode() != ModeAsk {
+		t.Errorf("SetMode(auto) with no approver entered %q", timed.Mode())
+	}
+	ready := New(Options{ApprovalTimeout: time.Minute, Approver: &stubApprover{}})
+	if prev := ready.SwapMode(ModeAuto); prev != ModeAsk || ready.Mode() != ModeAuto {
+		t.Errorf("SwapMode(auto) with a timeout and an approver: prev %q mode %q", prev, ready.Mode())
 	}
 
 	cfg := defaultGateConfig(t)

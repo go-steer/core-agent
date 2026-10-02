@@ -241,12 +241,15 @@ func TestPermMode_NoGateIs501(t *testing.T) {
 	}
 }
 
-// #1175 decision 13: auto is not settable remotely until both TUIs can
-// display it, and the 400 says so rather than calling it unknown.
-func TestParseRemotePermMode_AutoNotYetSettable(t *testing.T) {
+// auto parses as a remote mode now both TUIs show it (#1175 phase 4).
+// Whether a given session can enter it is the adapter's call
+// (permissions.Gate.AutoSelectable), not the parser's.
+func TestParseRemotePermMode_Auto(t *testing.T) {
 	t.Parallel()
-	_, err := ParseRemotePermMode(string(permissions.ModeAuto))
-	if !errors.Is(err, ErrPermModeNotSettable) || !strings.Contains(err.Error(), "not available yet") {
-		t.Fatalf("ParseRemotePermMode(auto) = %v, want ErrPermModeNotSettable naming not-available-yet", err)
+	if m, err := ParseRemotePermMode(string(permissions.ModeAuto)); err != nil || m != permissions.ModeAuto {
+		t.Fatalf("ParseRemotePermMode(auto) = %q, %v; want auto, nil", m, err)
+	}
+	if _, err := ParseRemotePermMode("allow"); !errors.Is(err, ErrPermModeNotSettable) {
+		t.Errorf("allow parsed: %v; it stays config-only", err)
 	}
 }

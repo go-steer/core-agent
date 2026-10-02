@@ -333,8 +333,10 @@ import "time"
 // prompt as allow-once, and `POST /perms/respond` now reports that with
 // `decision: "allow-once"`, `downgraded: true`. `GET /perms` approval
 // rows gain `approver_model` for a call the approver allowed without a
-// person. All additive and omitempty; a pre-1.18.0 daemon never sets
-// them.
+// person. `POST /perms/mode` accepts "auto" for a session that can enter
+// it (400 otherwise), and `GET /perms` gains `settable_modes`, the modes
+// it will accept for this session, in the chip's order. All additive and
+// omitempty; a pre-1.18.0 daemon never sets them and refuses "auto".
 const protocolVersion = "1.18.0"
 
 // SSE event-type names per the protocol spec (section 2).

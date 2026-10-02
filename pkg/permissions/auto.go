@@ -53,6 +53,12 @@ const ModeAuto Mode = "auto"
 // prompt it exists to remove (decision 12).
 var ErrAutoNeedsApprovalTimeout = errors.New(`permission mode "auto" requires permissions.approval_timeout: an escalated call would otherwise wait for an answer forever`)
 
+// ErrAutoNeedsApprover rejects switching a session into ModeAuto when
+// no approver is wired: auto would then decide nothing and ask a
+// person about every call, while the chip told the operator a model
+// was approving them.
+var ErrAutoNeedsApprover = errors.New(`permission mode "auto" requires an approver: configure permissions.auto`)
+
 // ErrUnknownMode rejects a mode the gate does not implement.
 var ErrUnknownMode = errors.New("unknown permission mode")
 
@@ -121,8 +127,9 @@ type ApproverRequest struct {
 // outside pkg/permissions, which must not import pkg/models.
 //
 // EXPERIMENTAL: Approver, ApproverRequest, ApproverContext and Verdict
-// are outside the v2 compatibility promise until ModeAuto is
-// selectable (#1175). Later phases may add methods or change fields.
+// are outside the v2 compatibility promise until the auto-mode
+// evaluation (#1175 phase 5) has run against a real model. Later
+// phases may add methods or change fields.
 //
 // An error escalates. Judge runs on the tool call's goroutine and may
 // run concurrently for calls the model issued together.
@@ -404,3 +411,16 @@ func (g *Gate) ValidateMode(m Mode) error {
 
 // HasApprover reports whether an Approver is wired.
 func (g *Gate) HasApprover() bool { return g.approver != nil }
+
+// AutoSelectable reports whether an operator may switch this gate into
+// ModeAuto: nil when an approver is wired and the approval timeout
+// decision 12 requires is set, else the reason it may not. It is the
+// one answer the chip's cycle, GET /perms' settable modes and
+// POST /perms/mode all use, so the chip never offers a mode the switch
+// would refuse. Nil-safe.
+func (g *Gate) AutoSelectable() error {
+	if g == nil || g.approver == nil {
+		return ErrAutoNeedsApprover
+	}
+	return g.ValidateMode(ModeAuto)
+}

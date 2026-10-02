@@ -18,7 +18,10 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"google.golang.org/adk/session"
@@ -33,13 +36,19 @@ import (
 // session and a gate in mode start.
 func permModeFixture(t *testing.T, sid string, start permissions.Mode) (*Adapter, *permissions.Gate, func() []*session.Event) {
 	t.Helper()
+	return permModeFixtureOpts(t, sid, permissions.Options{Mode: start})
+}
+
+// permModeFixtureOpts is permModeFixture over a gate built from opts.
+func permModeFixtureOpts(t *testing.T, sid string, opts permissions.Options) (*Adapter, *permissions.Gate, func() []*session.Event) {
+	t.Helper()
 	h, err := eventlog.Open(context.Background(),
 		sqlite.Open(filepath.Join(t.TempDir(), "session.db")))
 	if err != nil {
 		t.Fatalf("eventlog.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = h.Close() })
-	gate := permissions.New(permissions.Options{Mode: start})
+	gate := permissions.New(opts)
 	a := newEchoAgent(t, agent.WithEventLog(h), agent.WithSession("u", sid), agent.WithGate(gate))
 	if _, err := h.Service.Create(context.Background(), &session.CreateRequest{
 		AppName: a.AppName(), UserID: "u", SessionID: sid,
@@ -170,5 +179,47 @@ func TestAttachSetPermMode_ChangesOneSessionOnly(t *testing.T) {
 	}
 	if gateB.Mode() != permissions.ModeAsk || template.Mode() != permissions.ModeAsk {
 		t.Errorf("session b = %q, template = %q; both must stay ask", gateB.Mode(), template.Mode())
+	}
+}
+
+// Switching into auto takes a session that can enter it (#1175 phase
+// 4): an approver, and the approval timeout decision 12 requires. A
+// session without either is refused — the HTTP handler turns the error
+// into a 400 — and nothing changes: not the gate, and no audit row.
+// Before the check, SwapMode dropped the refused mode silently while
+// the response said "auto" and the row recorded a change that never
+// happened.
+func TestAttachSetPermMode_AutoNeedsApproverAndTimeout(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		opts permissions.Options
+		want error
+	}{
+		{"no approver", permissions.Options{Mode: permissions.ModeAsk, ApprovalTimeout: time.Minute}, permissions.ErrAutoNeedsApprover},
+		{"no timeout", permissions.Options{Mode: permissions.ModeAsk, Approver: allowingApprover{}}, permissions.ErrAutoNeedsApprovalTimeout},
+	} {
+		ad, gate, rows := permModeFixtureOpts(t, "s-"+strings.ReplaceAll(tc.name, " ", "-"), tc.opts)
+		_, err := ad.AttachSetPermMode(attach.PermModeRequest{Mode: "auto", Caller: "alice@example.com"})
+		if !errors.Is(err, tc.want) {
+			t.Errorf("%s: err = %v, want %v", tc.name, err, tc.want)
+		}
+		if gate.Mode() != permissions.ModeAsk || len(rows()) != 0 {
+			t.Errorf("%s: mode = %s, audit rows = %d; a refused switch must change nothing", tc.name, gate.Mode(), len(rows()))
+		}
+		if slices.Contains(ad.AttachPerms().SettableModes, "auto") {
+			t.Errorf("%s: settable_modes offers auto to a session that cannot enter it", tc.name)
+		}
+	}
+
+	ad, gate, rows := permModeFixtureOpts(t, "s-auto-ok", permissions.Options{
+		Mode: permissions.ModeAsk, Approver: allowingApprover{}, ApprovalTimeout: time.Minute,
+	})
+	if want := []string{"ask", "auto", "acceptEdits", "plan", "yolo"}; !slices.Equal(ad.AttachPerms().SettableModes, want) {
+		t.Errorf("settable_modes = %v, want %v", ad.AttachPerms().SettableModes, want)
+	}
+	resp, err := ad.AttachSetPermMode(attach.PermModeRequest{Mode: "auto", Caller: "alice@example.com"})
+	if err != nil || resp.Mode != "auto" || gate.Mode() != permissions.ModeAuto || len(rows()) != 1 {
+		t.Errorf("switch to auto: resp = %+v, err = %v, mode = %s, rows = %d", resp, err, gate.Mode(), len(rows()))
 	}
 }

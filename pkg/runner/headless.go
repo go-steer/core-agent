@@ -131,6 +131,29 @@ func WriteSummary(w io.Writer, t *usage.Tracker, modelID string) {
 	if tot.CostUSD == 0 && (tot.InputTokens > 0 || tot.OutputTokens > 0) {
 		cost = "$— (pricing not configured for this model)"
 	}
-	fmt.Fprintf(w, "core-agent: %d turn(s) · ↑%d ↓%d tokens · %s (%s)\n",
-		tot.Turns, tot.InputTokens, tot.OutputTokens, cost, modelID)
+	fmt.Fprintf(w, "core-agent: %d turn(s) · ↑%d ↓%d tokens · %s (%s)%s\n",
+		tot.Turns, tot.InputTokens, tot.OutputTokens, cost, modelID, thinkingSegment(tot.ThoughtsTokens))
+}
+
+// thinkingSegment names the reasoning tokens a provider reported
+// separately from its output (Gemini's thoughtsTokenCount). They are
+// additive to ↓ and billed at the output rate, so without this the
+// dollar figure includes spend the arrows do not show — one measured
+// agentic turn spent 6,449 of them.
+//
+// Appended at the END of the line, after the model, rather than beside
+// ↓ where it reads most naturally: this line is documented as suitable
+// for shell pipelines, and a pattern written against
+// `↓N tokens · $X (model)` keeps matching. Empty when zero, which is
+// every Anthropic turn — Anthropic bills thinking inside output_tokens
+// and reports no separate count, so there is nothing to add. Totals
+// spans every row in the tracker, so an Anthropic parent that routes a
+// subtask or the digest summarizer to Gemini does print it: those
+// thoughts are real spend and are not inside ↓, so that is correct
+// rather than a double count.
+func thinkingSegment(thoughts int) string {
+	if thoughts <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · +%d thinking tokens (billed as output)", thoughts)
 }

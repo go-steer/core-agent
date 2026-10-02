@@ -90,8 +90,9 @@ type Profile struct {
 	// the model.
 	Tier string
 
-	// CompactionThreshold goes into the compactor's fallback
-	// Threshold field. 0 = leave the substrate default in place.
+	// CompactionThreshold goes into the compactor's single
+	// Threshold field, which displaces the substrate per-tier
+	// defaults (#1226). 0 = leave the substrate default in place.
 	// Note: per-tier overrides from config still win for their
 	// specific tier (see compactor's resolveThreshold precedence).
 	CompactionThreshold float64

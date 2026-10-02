@@ -51,7 +51,7 @@ A single 0.85 threshold worked for frontier-tier models (Opus, Pro) but fired fa
 | `mid` | `0.65` | `claude-sonnet-4-*`, `gemini-3.5-flash`, `gemini-2.5-pro` |
 | `small` | `0.35` | `claude-haiku-4-*`, `gemini-3.5-flash-lite`, `gemini-3.1-flash`, `gemini-2.5-flash` |
 
-Tier classification is by substring match against the model ID — see `pkg/modeltier`. Unknown models fall back to the single `compaction.threshold` setting (default `0.85`).
+Tier classification is by substring match against the model ID — see `pkg/modeltier`. These are what you get when you haven't said: setting the single `compaction.threshold` (or `--compaction-threshold`, or a task class's threshold) replaces them for **every** tier, and only your own `threshold_by_tier` entries outrank it for their tier. Precedence: your `threshold_by_tier` entry → your `threshold` → the tier default above → `0.85`. (Before [#1226](https://github.com/go-steer/core-agent/issues/1226) the single threshold ranked *below* the tier defaults, so it governed only unclassified models — none of the supported ones — and a lowered threshold silently did nothing.)
 
 Override per-tier defaults in `.agents/config.json`:
 
@@ -173,7 +173,7 @@ Useful for project-local defaults (an infra repo where debugging is the typical 
 
 - **Agentic-tools** — already on by default since v2.1; every task class wants it on.
 - **`--agentic-small-model`** — per-provider default already picked by [#122](https://github.com/go-steer/core-agent/issues/122).
-- **Per-tier compaction thresholds** in `compaction.threshold_by_tier` config — those still win for their specific tier even when a task class sets the fallback `Threshold`. Operators who've carefully tuned per-tier thresholds keep them.
+- **Per-tier compaction thresholds** in `compaction.threshold_by_tier` config — those still win for their specific tier even when a task class sets the single `Threshold`. Operators who've carefully tuned per-tier thresholds keep them.
 
 ### Small-tier-parent guard (since v2.5)
 

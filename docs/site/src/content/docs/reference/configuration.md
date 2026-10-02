@@ -750,7 +750,7 @@ Overrides for the automatic context-window compaction trigger. See [Context mana
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `threshold` | float | tier default | Fraction of the model's context window (0-1) at which compaction fires. When unset, `threshold_by_tier` applies. |
+| `threshold` | float | tier default | Fraction of the model's context window (0-1) at which compaction fires, for every tier. Your own `threshold_by_tier` entries still win for their tier; the built-in tier defaults do not. When unset, the tier defaults apply. |
 | `threshold_by_tier` | object | see notes | Per-model-tier defaults keyed by tier name (`frontier`, `mid`, `small`, ...). Lets a shared config target different thresholds per model without a per-project override. |
 
 ---

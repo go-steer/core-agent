@@ -60,12 +60,14 @@ func TestBuildCompactor_OperatorOverrides(t *testing.T) {
 	if got := dc.ThresholdByTier[modeltier.TierSmall]; got != 0.20 {
 		t.Errorf("ThresholdByTier[small] = %v, want operator override 0.20", got)
 	}
-	// Substrate defaults still present for tiers the operator didn't
-	// override.
-	if got := dc.ThresholdByTier[modeltier.TierFrontier]; got != 0.85 {
-		t.Errorf("ThresholdByTier[frontier] = %v, want substrate default 0.85 (operator didn't override)", got)
-	}
-	if got := dc.ThresholdByTier[modeltier.TierMid]; got != 0.65 {
-		t.Errorf("ThresholdByTier[mid] = %v, want substrate default 0.65 (operator didn't override)", got)
+	// The operator's single threshold displaces the substrate defaults
+	// for every tier they did not set explicitly (#1226): those tiers are
+	// absent from the map, so the 0.5 governs them. This test used to
+	// assert the substrate 0.85 / 0.65 were still present — i.e. that the
+	// operator's 0.5 was ignored for frontier and mid models.
+	for _, tier := range []string{modeltier.TierFrontier, modeltier.TierMid} {
+		if got, present := dc.ThresholdByTier[tier]; present {
+			t.Errorf("ThresholdByTier[%s] = %v; with an operator Threshold set, the substrate default must not outrank it", tier, got)
+		}
 	}
 }

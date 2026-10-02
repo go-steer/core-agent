@@ -102,6 +102,7 @@ research + friction logs, or handover notes.
 
 - [`k8s-event-agent-design.md`](k8s-event-agent-design.md) — K8s-event-driven troubleshooting agent (watcher source now lives in [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout))
 - [`kube-agents-platform-fit.md`](kube-agents-platform-fit.md) — running `core-agent` as the `kube-agents` platform agent (*superseded* for the full-replacement scope by `hermes-replacement-design.md`; its "80% reusable" is architectural fit, not deployability)
+- [`kube-agents-scenarios-design.md`](kube-agents-scenarios-design.md) — the six kube-agents demo scenarios checked against core-agent + lookout/leeway + switchboard (and mast): realism fixes, gap matrix, show-now vs planned vs missing (draft)
 - [`scion-core-agent-architecture.md`](scion-core-agent-architecture.md) — layered architecture for Scion-managed agent runtimes
 - [`ax-integration-audit.md`](ax-integration-audit.md) — gap audit for `extras/ax-agent/`; don't build a parallel coordinator
 

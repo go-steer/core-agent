@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"google.golang.org/genai"
 )
@@ -285,6 +286,7 @@ func (g *Gate) approverStep(ctx context.Context, req *PromptRequest) (handled bo
 		return false, nil
 	}
 	v, jerr := judge(ctx, g.approver, ac, req)
+	v.Reason = approverReasonText(v.Reason)
 	audit := ApproverAudit{ToolName: req.ToolName, Detail: req.Detail, Verdict: v}
 	switch {
 	case jerr != nil:
@@ -326,6 +328,28 @@ func (g *Gate) approverStep(ctx context.Context, req *PromptRequest) (handled bo
 		req.ApproverReason = v.Reason
 	}
 	return false, nil
+}
+
+// MaxApproverReasonBytes bounds the approver's reason wherever it goes
+// — the prompt, the attach frame, the stdin prompter, an alert, the deny
+// error the model reads, the audit row. It is model output the call's
+// own arguments can steer: long enough for a sentence or two, and no
+// room for a wall of text.
+const MaxApproverReasonBytes = 600
+
+// approverReasonText is the reason as every surface receives it: one
+// line, whitespace runs collapsed, at most MaxApproverReasonBytes cut
+// on a rune boundary. Surfaces still sanitize it for their own medium.
+func approverReasonText(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= MaxApproverReasonBytes {
+		return s
+	}
+	cut := MaxApproverReasonBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // hasArgs reports whether a call site actually supplied arguments. A

@@ -2,7 +2,7 @@
 
 Design for [#1175](https://github.com/go-steer/core-agent/issues/1175).
 
-**Status:** Phases 1 (`pkg/permissions`) and 2 (`Args` at the call sites) implemented. Phase 3 implemented: the config, `pkg/approver`, the instructions file's privilege tier, the wiring, and the turn-context stamping (task, earlier calls, usage, ceiling, audit). Phases 4–5 are not started, so `auto` cannot be selected yet.
+**Status:** Phases 1 (`pkg/permissions`) and 2 (`Args` at the call sites) implemented. Phase 3 implemented: the config, `pkg/approver`, the instructions file's privilege tier, the wiring, and the turn-context stamping (task, earlier calls, usage, ceiling, audit). Phase 4 is under way: core-tui v0.29.0 has the `auto` chip, a host-supplied Shift+Tab cycle and the escalated prompt (go-steer/core-tui#360), and both TUIs, the attach wire (protocol 1.18.0), the stdin prompter and the notifier now carry the approver's reason. Making `auto` selectable is the rest of phase 4. Phase 5 is not started.
 
 ## Motivation
 

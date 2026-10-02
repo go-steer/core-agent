@@ -656,6 +656,12 @@ type ApprovalInfo struct {
 	// anonymous placeholder — when it could not, so "who allowed this"
 	// is answerable after the fact without the log ever guessing.
 	By string `json:"by,omitempty"`
+	// ApproverModel is the approver model's ID when ModeAuto's
+	// approver allowed the call without asking a person (#1175,
+	// protocol 1.18.0). By stays reserved for a verified human, and so
+	// does the bare word "approver", which POST /perms/respond already
+	// uses for one (#830).
+	ApproverModel string `json:"approver_model,omitempty"`
 }
 
 // PatternsRequest is the POST body for /perms/allow + /perms/deny.

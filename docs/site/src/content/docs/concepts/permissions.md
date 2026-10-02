@@ -289,6 +289,8 @@ type Prompter interface {
 
 `PromptRequest` carries everything needed to render a prompt — kind (bash / file write / path scope / generic), tool name, detail string, and the persistence keys the gate uses to build the grant if the user picks `DecisionAllowAlways`. A custom Prompter only returns the decision; installing and persisting the grant is the gate's job (via the wired `GrantStore`).
 
+In mode `auto`, a prompt can come from the approver model passing a call on ([#1175](https://github.com/go-steer/core-agent/issues/1175)). `ApproverModel` is then set, and `ApproverReason` holds its reason when it gave one. Show the reason quoted as the approver's words: it is model output that the call's own arguments can steer. Offer only allow once and deny, because the gate applies any allow on such a prompt as `DecisionAllowOnce`. The bundled `StdinPrompter`, the local TUI and `core-agent-tui` all do.
+
 The bundled `cmd/core-agent` does not currently ship a Prompter — `ask` mode in the REPL fails closed. To use `ask` mode interactively, embed the library in your own host and supply a Prompter. See [Library API → Prompter](/embed/api/#prompter).
 
 ### Naming the approver (v2.9.0-dev)

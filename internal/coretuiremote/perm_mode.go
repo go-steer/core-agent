@@ -70,6 +70,10 @@ func (a *Adapter) FetchPermissionMode(ctx context.Context) coretui.PermissionMod
 // locally; cycling out of default never re-enters it.
 func permModeToChip(m permissions.Mode) coretui.PermissionMode {
 	switch m {
+	case permissions.ModeAuto:
+		// Its own chip (#1175 decision 13). The default arm below would
+		// show "ask" while a model approves calls.
+		return coretui.PermissionModeAuto
 	case permissions.ModeAcceptEdits:
 		return coretui.PermissionModeAcceptEdits
 	case permissions.ModePlan:
@@ -83,6 +87,8 @@ func permModeToChip(m permissions.Mode) coretui.PermissionMode {
 
 func chipToPermMode(m coretui.PermissionMode) permissions.Mode {
 	switch m {
+	case coretui.PermissionModeAuto:
+		return permissions.ModeAuto
 	case coretui.PermissionModeAcceptEdits:
 		return permissions.ModeAcceptEdits
 	case coretui.PermissionModePlan:

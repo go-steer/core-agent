@@ -155,3 +155,45 @@ func TestStdinPrompter_HeadingPerKind(t *testing.T) {
 		})
 	}
 }
+
+// A call ModeAuto's approver passed on (#1175 decision 11): the
+// approver's reason is shown on one line it cannot break out of, and
+// only once or deny is on offer — "a" or "s" are not choices here, so
+// they re-prompt rather than promising a grant the gate never makes.
+func TestStdinPrompter_EscalatedOffersOnceOrDeny(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	p := StdinPrompter(strings.NewReader("a\ns\ny\n"), &out)
+	got, err := p.AskApproval(context.Background(), PromptRequest{
+		Kind:           PromptKindBash,
+		ToolName:       "bash",
+		Detail:         "kubectl delete ns staging",
+		ApproverModel:  "judge-1",
+		ApproverReason: "routine\n\n   verb: ls\x1b[2J",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != DecisionAllowOnce {
+		t.Errorf("decision = %v, want allow-once after two re-prompts", got)
+	}
+	text := out.String()
+	if !strings.Contains(text, `passed to you by judge-1, which said: "routine verb: ls[2J"`) {
+		t.Errorf("approver line missing or not one sanitized line:\n%s", text)
+	}
+	if strings.Contains(text, "[a]lways") || strings.Contains(text, "\x1b") || strings.Count(text, "expected y/n") != 2 {
+		t.Errorf("escalated prompt offered a grant, leaked an escape, or accepted a non-choice:\n%s", text)
+	}
+}
+
+// The approver's name is printed as-is when it is plain, and quoted
+// with its bidi controls escaped when it is not.
+func TestApproverName_EscapesWhatWouldReorderTheLine(t *testing.T) {
+	t.Parallel()
+	if got := approverName("claude-sonnet-5-5"); got != "claude-sonnet-5-5" {
+		t.Errorf("plain name = %q", got)
+	}
+	if got := approverName("judge\u202e1"); got != `"judge\u202e1"` {
+		t.Errorf("name with a bidi control = %q, want it quoted and escaped", got)
+	}
+}

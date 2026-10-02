@@ -320,6 +320,12 @@ func handleRemotePromptFrame(ctx context.Context, client *attachclient.Client, s
 		PersistTool: frame.PersistTool,
 		PersistKey:  frame.PersistKey,
 	}
+	// #1175 decision 11: a prompt ModeAuto's approver passed on offers
+	// only once and deny, and quotes the approver's reason. A pre-1.18.0
+	// daemon never sets the field, so its prompts are unchanged.
+	if frame.ApproverModel != "" {
+		req.Escalation = &coretui.PermissionEscalation{Approver: frame.ApproverModel, Reason: frame.ApproverReason}
+	}
 	var out coretui.PermissionOutcome
 	var err error
 	if daemonTakesDenyReason(host) {

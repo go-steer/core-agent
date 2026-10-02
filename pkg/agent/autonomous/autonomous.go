@@ -215,6 +215,12 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 			turnCtx, cancel = context.WithTimeout(ctx, cfg.perTurnTimeout)
 		}
 
+		// A goal a person wrote governs every turn of the run, so every
+		// turn hands it to the auto-mode approver as the task (#1175).
+		// The continuation prompts never are: the loop wrote them.
+		if cfg.operatorGoal {
+			turnCtx = agent.WithOperatorTask(turnCtx, goal)
+		}
 		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1, result.CostUSD)
 		if cancel != nil {
 			cancel()
@@ -920,6 +926,7 @@ func warnIfInteractiveMode(a *agent.Agent, buildErr error) {
 type Option func(*autoConfig)
 
 type autoConfig struct {
+	operatorGoal            bool
 	maxTurns                int
 	maxInputTokens          int
 	maxOutputTokens         int
@@ -979,6 +986,16 @@ func defaultAutoConfig() autoConfig {
 // WithMaxTurns caps the number of turns the loop will execute. Zero
 // disables the cap (use with caution; pair with another budget). The
 // default is 50.
+// WithOperatorGoal declares that a person wrote the goal, so every
+// turn hands it to the auto-mode approver as the operator's task
+// (#1175 decision 6). Leave it off when the goal is anything else —
+// background subagents pass the parent model's brief, which can carry
+// injected text — and the approver escalates rather than judge
+// against it.
+func WithOperatorGoal() Option {
+	return func(c *autoConfig) { c.operatorGoal = true }
+}
+
 func WithMaxTurns(n int) Option {
 	return func(c *autoConfig) { c.maxTurns = n }
 }

@@ -572,6 +572,14 @@ func (a *Agent) appendBoundaryEvent(ctx context.Context, summary string, spec su
 	if err := a.sessionService.AppendEvent(ctx, resp.Session, ev); err != nil {
 		return "", err
 	}
+	// The boundary is now where the model's view of the history
+	// starts, so the operator messages behind it are no longer an
+	// instruction it can see, and the auto-mode approver must not
+	// judge against them (#1175 decision 6). Here, not in a caller:
+	// every boundary — summary, checkpoint, and the mechanical
+	// fallback — is written by this one function. A turn's own
+	// operator text is captured after this in the pre-turn pipeline.
+	a.clearApproverTask()
 	return ev.ID, nil
 }
 

@@ -123,8 +123,11 @@ type Registrant interface {
 }
 
 // ContextInjector is the optional capability a registrant implements
-// when it can carry the injecting request's context — specifically its
-// OpenTelemetry span context — onto the queued inbox message.
+// when it can carry the injecting request's context — its
+// OpenTelemetry span context, and the DirectCaller verdict the
+// auto-mode approver's task depends on (#1175) — onto the queued inbox
+// message. A registrant without it gets neither, so its injects are
+// never the approver's task.
 //
 // The write handlers (POST /inject, POST /wake with a prompt) prefer
 // it over Registrant.InjectAs so that the turn which eventually drains

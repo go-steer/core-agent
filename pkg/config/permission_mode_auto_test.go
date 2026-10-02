@@ -48,11 +48,13 @@ func TestValidate_PermissionsAuto(t *testing.T) {
 	}{
 		{"absent", nil, ""},
 		{"empty block", &AutoApproverConfig{}, ""},
-		{"full", &AutoApproverConfig{Model: "m", Timeout: "45s", Eligible: []string{"bash:go test *"}, InstructionsFile: "approver.md"}, ""},
+		{"full", &AutoApproverConfig{Model: "m", Timeout: "45s", Eligible: []string{"bash:go test *"}, TaskFrom: []string{"alice@example.com"}, InstructionsFile: "approver.md"}, ""},
 		{"bad timeout", &AutoApproverConfig{Timeout: "soon"}, "permissions.auto.timeout"},
 		{"zero timeout", &AutoApproverConfig{Timeout: "0s"}, "must be positive"},
 		{"negative timeout", &AutoApproverConfig{Timeout: "-30s"}, "must be positive"},
 		{"blank eligible entry", &AutoApproverConfig{Eligible: []string{"read_file:*", " "}}, "permissions.auto.eligible[1]"},
+		{"blank task_from entry", &AutoApproverConfig{TaskFrom: []string{"alice", ""}}, "permissions.auto.task_from[1]"},
+		{"padded task_from entry", &AutoApproverConfig{TaskFrom: []string{" alice"}}, "match exactly"},
 		{"blank instructions file", &AutoApproverConfig{InstructionsFile: "  "}, "instructions_file"},
 	}
 	for _, tc := range cases {

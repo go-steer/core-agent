@@ -17,8 +17,6 @@ package agent
 import (
 	"testing"
 
-	"go.opentelemetry.io/otel/trace"
-
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
@@ -26,7 +24,7 @@ func TestInbox_PushPreservesCaller(t *testing.T) {
 	t.Parallel()
 	q := newInbox()
 	want := auth.Caller{Identity: "alice@example.com"}
-	if _, err := q.push("hello", want, trace.SpanContext{}, false); err != nil {
+	if _, err := q.push("hello", want); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 	msgs := q.drain()
@@ -44,10 +42,10 @@ func TestDrainInboxFull_LastNonEmptyCallerWins(t *testing.T) {
 	// recent ask" — when a batch arrives with mixed callers, the
 	// last non-empty caller becomes the turn originator.
 	a := &Agent{inbox: newInbox()}
-	_, _ = a.inbox.push("first", auth.Caller{Identity: "alice@example.com"}, trace.SpanContext{}, false)
-	_, _ = a.inbox.push("second", auth.Caller{}, trace.SpanContext{}, false) // empty — should not overwrite
-	_, _ = a.inbox.push("third", auth.Caller{Identity: "bob@example.com"}, trace.SpanContext{}, false)
-	_, _ = a.inbox.push("fourth", auth.Caller{}, trace.SpanContext{}, false) // empty trailing — should not clobber bob
+	_, _ = a.inbox.push("first", auth.Caller{Identity: "alice@example.com"})
+	_, _ = a.inbox.push("second", auth.Caller{}) // empty — should not overwrite
+	_, _ = a.inbox.push("third", auth.Caller{Identity: "bob@example.com"})
+	_, _ = a.inbox.push("fourth", auth.Caller{}) // empty trailing — should not clobber bob
 
 	d := a.drainInboxFull()
 	texts, originator := d.texts, d.originator
@@ -76,8 +74,8 @@ func TestDrainInboxFull_EmptyInbox(t *testing.T) {
 func TestDrainInboxFull_AllEmptyCallersYieldsZeroOriginator(t *testing.T) {
 	t.Parallel()
 	a := &Agent{inbox: newInbox()}
-	_, _ = a.inbox.push("x", auth.Caller{}, trace.SpanContext{}, false)
-	_, _ = a.inbox.push("y", auth.Caller{}, trace.SpanContext{}, false)
+	_, _ = a.inbox.push("x", auth.Caller{})
+	_, _ = a.inbox.push("y", auth.Caller{})
 	d := a.drainInboxFull()
 	texts, originator := d.texts, d.originator
 	if len(texts) != 2 {

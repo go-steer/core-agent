@@ -111,6 +111,7 @@ permissions.approval_timeout
 permissions.auto.eligible
 permissions.auto.instructions_file
 permissions.auto.model
+permissions.auto.task_from
 permissions.auto.timeout
 permissions.builtin_allow_extras
 permissions.deny

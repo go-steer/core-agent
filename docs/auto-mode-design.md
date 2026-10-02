@@ -2,7 +2,7 @@
 
 Design for [#1175](https://github.com/go-steer/core-agent/issues/1175).
 
-**Status:** Phases 1 (`pkg/permissions`) and 2 (`Args` at the call sites) implemented. Phase 3 is half done: the config, `pkg/approver`, the instructions file's privilege tier and the wiring are in, and the turn-context stamping (task, usage, ceiling, audit) is not. Phases 4–5 are not started, so `auto` cannot be selected yet.
+**Status:** Phases 1 (`pkg/permissions`) and 2 (`Args` at the call sites) implemented. Phase 3 implemented: the config, `pkg/approver`, the instructions file's privilege tier, the wiring, and the turn-context stamping (task, earlier calls, usage, ceiling, audit). Phases 4–5 are not started, so `auto` cannot be selected yet.
 
 ## Motivation
 
@@ -82,6 +82,20 @@ still need a person.
      - compaction summaries.
 
      Each is either left out or passed in a separate block labelled model- or system-authored and untrusted. If compaction has removed every operator turn, there is no task, and the call escalates.
+   - **Implementation note (phase 3).** "From an authenticated caller" turned out not to separate an operator from a relay. Lookout and chat gateways inject through the same `POST /inject` door, often under the operator's own identity through `X-Asserted-Caller`, and `auth.Caller` has no human/machine bit (the #878 comment in `pkg/agent/inbox.go` says so). So an inject is the task only when both hold:
+     - its caller authenticated **directly** as that identity: the per-caller authenticator derived it from the request's own credential, with no proxy assertion and not anonymously (`attach.DirectCaller`). A shared transport token (`--attach-token`) or a client certificate verifies the request but not whose it is, because every holder resolves to the same default identity. So `task_from` needs per-user tokens;
+     - that identity is listed in **`permissions.auto.task_from`**.
+     An empty list means no inject is the task. On a daemon, that escalates every call until the list is configured. This only narrows the decision as written, so it fails closed.
+   - **Where the rest comes from.** A host hands `Run` operator-written text through `agent.WithOperatorTask`:
+     - the `-p` prompt and the REPL's typed lines (`runner.streamTurn`). This assumes a person wrote `-p`; a launcher that composes `-p` from machine text makes that text the task;
+     - the local TUI's typed message, minus any files core-tui inlined after it for `@` references;
+     - in the local TUI's auto-continue turn, only the queued messages that TUI's own keyboard typed. The rest of the batch, such as relayed wakes and anonymous injects, is not the task;
+     - an autonomous run's goal on every turn, but only when the host passes `autonomous.WithOperatorGoal()`. A background subagent's goal is the parent model's brief, and is never marked.
+
+     A resume-with-message (`POST /resume`) carries no request context into the inbox, so it is not the task.
+   - **The earlier calls** are the turn's calls that already have a result, including calls that were refused, without saying which. A foreground delegate's calls run under the parent's turn context, so they are judged against the operator's task, but the parent's earlier-calls list doesn't include them. Background subagent calls escalate before any of this.
+   - **Billing.** The approver's spend counts toward totals and the ceilings. It is never `Tracker.Last()` (`AppendSideUsage`), and it is persisted as content-less rows that `RebuildTrackerFromEvents` replays, so a restart doesn't refund it. In `Totals().Turns` it counts as a model call, the way subtasks do.
+   - **What drops it.** Every history boundary drops the task: a compaction or checkpoint summary, or the mechanical fallback. So does a restart, since the task is held in memory. That leaves no task until an operator sends text again. A `/compact` that races a starting turn can drop that turn's text too. That fails closed.
    - **Background subagents** keep their parent's context values (`context.WithoutCancel`). So they would be judged against the parent's turn, which describes the wrong task. Their real task is a brief the parent model wrote, which can carry injected text. In the first cut, a call carrying a `SubagentSource` escalates. Giving subagents their own labelled brief is a later phase.
 
 7. **The verdict policy has a built-in core, and a recipe can add to it through a privilege-bearing file.**

@@ -24,14 +24,13 @@ import (
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/memory"
 	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/toolconfirmation"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
-// alertToolCtx is a tool.Context that names a session, which is the
+// alertToolCtx is an adkagent.ToolContext that names a session, which is the
 // whole point here: the switchboard template reads one. Full-interface
 // satisfaction is deliberate — an ADK bump that adds a method should
 // break the stub rather than silently drift (the planToolCtx pattern in
@@ -61,8 +60,8 @@ func (c *alertToolCtx) SearchMemory(context.Context, string) (*memory.SearchResp
 	return nil, nil
 }
 
-// inSession returns a tool.Context reporting sess.
-func inSession(sess string) tool.Context {
+// inSession returns an adkagent.ToolContext reporting sess.
+func inSession(sess string) adkagent.ToolContext {
 	return &alertToolCtx{Context: context.Background(), session: sess}
 }
 
@@ -175,9 +174,9 @@ func TestRun_SwitchboardOmitsTheSessionHeaderWhenThereIsNone(t *testing.T) {
 	cfg := cfgWith(switchboardTarget("chat", srv.URL, "C0123"))
 	h, _ := newHandler(yoloGate(t), cfg, sbEnv, nil, srv.Client())
 
-	// A nil tool.Context names no session; an empty header value is not
+	// A nil adkagent.ToolContext names no session; an empty header value is not
 	// an id, so the header is absent rather than blank.
-	if _, err := h.run(tool.Context(nil), Args{Target: "chat", Level: "info", Summary: "hi"}); err != nil {
+	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "chat", Level: "info", Summary: "hi"}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if _, has := got.header[sessionHeader]; has {

@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -38,7 +38,7 @@ func (f *fakeInnerTool) Name() string                            { return f.name
 func (f *fakeInnerTool) Description() string                     { return "fake" }
 func (f *fakeInnerTool) IsLongRunning() bool                     { return false }
 func (f *fakeInnerTool) Declaration() *genai.FunctionDeclaration { return f.decl }
-func (f *fakeInnerTool) Run(_ adktool.Context, _ any) (map[string]any, error) {
+func (f *fakeInnerTool) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
 	return map[string]any{"ok": true}, nil
 }
 

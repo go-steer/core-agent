@@ -33,7 +33,7 @@ import (
 // implement against it without importing an unexported symbol.
 type runnable interface {
 	Declaration() *genai.FunctionDeclaration
-	Run(ctx tool.Context, args any) (result map[string]any, err error)
+	Run(ctx agent.ToolContext, args any) (result map[string]any, err error)
 }
 
 // namespacedToolset wraps an upstream Toolset and returns each Tool
@@ -135,7 +135,7 @@ func (r renamedTool) Declaration() *genai.FunctionDeclaration {
 	return &clone
 }
 
-func (r renamedTool) Run(ctx tool.Context, args any) (map[string]any, error) {
+func (r renamedTool) Run(ctx agent.ToolContext, args any) (map[string]any, error) {
 	rn, ok := r.inner.(runnable)
 	if !ok {
 		return nil, errNotRunnable
@@ -166,7 +166,7 @@ func (r renamedTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 // configured. With a gate, gatedTool wraps this in turn and supplies
 // its own ProcessRequest; only the outermost wrapper's
 // ProcessRequest runs during preprocess.
-func (r renamedTool) ProcessRequest(ctx tool.Context, req *model.LLMRequest) error {
+func (r renamedTool) ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error {
 	return coretools.PackTool(req, r)
 }
 
@@ -197,8 +197,8 @@ type simpleErr string
 
 func (e simpleErr) Error() string { return string(e) }
 
-// Compile-time assertion that tool.Context is still a context.Context.
-var _ context.Context = (tool.Context)(nil)
+// Compile-time assertion that agent.ToolContext is still a context.Context.
+var _ context.Context = (agent.ToolContext)(nil)
 
 // ReadOnlyHint reports this tool's dispatch class (tools.ReadOnlyHinter,
 // #460). Order of authority: the upstream tool's own declaration when

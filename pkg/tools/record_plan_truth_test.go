@@ -37,7 +37,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
-// planToolCtx is a tool.Context that reports an agent and a session,
+// planToolCtx is a agent.ToolContext that reports an agent and a session,
 // which is the whole point: the handler now reads both. Full-interface
 // satisfaction is deliberate — an ADK bump that adds a method should
 // break the stub rather than silently drift.

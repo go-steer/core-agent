@@ -19,7 +19,7 @@ import (
 	"strings"
 	"sync"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool/functiontool"
 )
 
@@ -61,7 +61,7 @@ type todoResult struct {
 }
 
 func todoFunc(store *TodoStore) functiontool.Func[todoArgs, todoResult] {
-	return func(_ tool.Context, in todoArgs) (todoResult, error) {
+	return func(_ adkagent.ToolContext, in todoArgs) (todoResult, error) {
 		store.mu.Lock()
 		defer store.mu.Unlock()
 		switch strings.ToLower(in.Action) {

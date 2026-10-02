@@ -51,7 +51,7 @@ func appendBranchedEvent(t *testing.T, h *eventlog.Handle, appName, userID, sess
 			t.Fatalf("session Get(%s): %v", sessionID, err)
 		}
 	}
-	ev := session.NewEvent(id)
+	ev := session.NewEventWithContext(context.Background(), id)
 	ev.Author = "test"
 	ev.Branch = branch
 	ev.CustomMetadata = map[string]any{"id": id}

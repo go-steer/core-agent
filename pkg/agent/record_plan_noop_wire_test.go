@@ -35,7 +35,7 @@ import (
 	"fmt"
 	"testing"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
@@ -63,7 +63,7 @@ func runRecordPlan(t *testing.T) func(invocation, plan string) map[string]any {
 		t.Fatalf("tools.RecordPlan: %v", err)
 	}
 	runner, ok := tl.(interface {
-		Run(tool.Context, any) (map[string]any, error)
+		Run(adkagent.ToolContext, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("%s is not runnable", tl.Name())

@@ -58,6 +58,7 @@ import (
 	"time"
 
 	"github.com/itchyny/gojq"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -234,8 +235,8 @@ type waitAndVerifyTool struct {
 type callableTool interface {
 	adktool.Tool
 	Declaration() *genai.FunctionDeclaration
-	Run(ctx adktool.Context, args any) (map[string]any, error)
-	ProcessRequest(ctx adktool.Context, req *model.LLMRequest) error
+	Run(ctx adkagent.ToolContext, args any) (map[string]any, error)
+	ProcessRequest(ctx adkagent.ToolContext, req *model.LLMRequest) error
 }
 
 // ReadOnlyHint: the waiter mutates nothing itself, and refuses to poll
@@ -296,7 +297,7 @@ func NewWaitAndVerifyTool(cfg *config.Config, opts WaitAndVerifyOptions) (adktoo
 // may be polled. Toolsets resolve lazily (an MCP toolset fetches from
 // its server), so this happens once per wait_and_verify call rather
 // than once per process.
-func (v *waitVerifier) resolve(ctx adktool.Context, name string) (runnableTool, error) {
+func (v *waitVerifier) resolve(ctx adkagent.ToolContext, name string) (runnableTool, error) {
 	v.mu.RLock()
 	tools := v.tools
 	toolsets := v.toolsets
@@ -523,14 +524,14 @@ func (v *waitVerifier) resolveBounds(in waitAndVerifyArgs) (waitBounds, error) {
 	return b, nil
 }
 
-// deadlineToolContext narrows a tool.Context to the wait's deadline —
+// deadlineToolContext narrows an agent.ToolContext to the wait's deadline —
 // normally earlier than the turn's — so a polled tool that hangs is
 // cut off when the budget expires instead of hanging the turn. Only the
 // context.Context half is overridden; everything else is the real
 // tool context, so the polled tool still sees its invocation, its
 // actions, and its confirmation handler.
 type deadlineToolContext struct {
-	adktool.Context
+	adkagent.ToolContext
 	ctx context.Context
 }
 
@@ -539,7 +540,7 @@ func (d deadlineToolContext) Done() <-chan struct{}       { return d.ctx.Done() 
 func (d deadlineToolContext) Err() error                  { return d.ctx.Err() }
 func (d deadlineToolContext) Value(key any) any           { return d.ctx.Value(key) }
 
-func (v *waitVerifier) run(ctx adktool.Context, in waitAndVerifyArgs) (waitAndVerifyResult, error) {
+func (v *waitVerifier) run(ctx adkagent.ToolContext, in waitAndVerifyArgs) (waitAndVerifyResult, error) {
 	if strings.TrimSpace(in.Tool) == "" {
 		return waitAndVerifyResult{}, fmt.Errorf("%s: tool is required", WaitAndVerifyToolName)
 	}
@@ -586,7 +587,7 @@ func (v *waitVerifier) run(ctx adktool.Context, in waitAndVerifyArgs) (waitAndVe
 		ok, serialized, callErr, matchErr := func() (bool, string, error, error) {
 			pollCtx, cancel := context.WithDeadline(parent, deadline)
 			defer cancel()
-			out, err := target.Run(deadlineToolContext{Context: ctx, ctx: pollCtx}, args)
+			out, err := target.Run(deadlineToolContext{ToolContext: ctx, ctx: pollCtx}, args)
 			if err != nil {
 				return false, "", err, nil
 			}

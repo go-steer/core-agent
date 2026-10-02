@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/genai"
 )
@@ -42,7 +43,7 @@ func (d describedTool) IsLongRunning() bool { return false }
 func (d describedTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: d.name, Description: d.declDesc}
 }
-func (d describedTool) Run(tool.Context, any) (map[string]any, error) {
+func (d describedTool) Run(adkagent.ToolContext, any) (map[string]any, error) {
 	return map[string]any{"ok": true}, nil
 }
 

@@ -48,7 +48,11 @@
 
 package attach
 
-import "google.golang.org/adk/session"
+import (
+	"context"
+
+	"google.golang.org/adk/session"
+)
 
 // Event name and author for the context-reduction failure row. The
 // author prefix distinguishes it from model turns in an eventlog tail,
@@ -96,7 +100,7 @@ const (
 // path has no backoff to report, and a key that is always present but
 // meaningless for half its writers is a key consumers read wrong.
 func NewContextReductionFailedEvent(operation, reason string, consecutiveFailures, cooldownTurns int) *session.Event {
-	ev := session.NewEvent(ContextReductionFailedEventName)
+	ev := session.NewEventWithContext(context.Background(), ContextReductionFailedEventName)
 	ev.Author = ContextReductionFailedEventAuthor
 	md := map[string]any{
 		ctxReductionMetaSource: "agent",
@@ -198,7 +202,7 @@ const ctxReductionMetaDetail = "detail"
 // per session. It describes a state, not an attempt, and a state
 // re-announced every turn is one operators filter out.
 func NewContextReductionDegradedEvent(operation, detail string) *session.Event {
-	ev := session.NewEvent(ContextReductionDegradedEventName)
+	ev := session.NewEventWithContext(context.Background(), ContextReductionDegradedEventName)
 	ev.Author = ContextReductionDegradedEventAuthor
 	ev.CustomMetadata = map[string]any{
 		ctxReductionMetaSource: "agent",

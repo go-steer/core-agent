@@ -909,7 +909,7 @@ func appendInterruptAudit(ctx context.Context, entry *Entry) {
 // (appendInterruptAudit) and by self-auditing registrants
 // (InterruptSelfAuditor) so the two paths can never drift (#565).
 func NewInterruptAuditEvent() *session.Event {
-	ev := session.NewEvent("attach-interrupt")
+	ev := session.NewEventWithContext(context.Background(), "attach-interrupt")
 	ev.Author = "attach/interrupt"
 	ev.CustomMetadata = map[string]any{"source": "operator"}
 	return ev

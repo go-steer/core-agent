@@ -36,7 +36,7 @@ import (
 	"sync"
 	"testing"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -344,7 +344,7 @@ func TestRecordPlan_NoInvocationContextStillGuardsRepeats(t *testing.T) {
 	fn := recordPlanFunc(armedGate(), dir)
 
 	for i := 1; i <= 5; i++ {
-		if _, err := fn(tool.Context(nil), recordPlanArgs{Plan: fmt.Sprintf("plan rev %d", i)}); err != nil {
+		if _, err := fn(adkagent.ToolContext(nil), recordPlanArgs{Plan: fmt.Sprintf("plan rev %d", i)}); err != nil {
 			t.Fatal(err)
 		}
 	}

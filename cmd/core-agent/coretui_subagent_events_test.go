@@ -77,7 +77,7 @@ func appendSubagentTurn(t *testing.T, a *coreAgentAdapter, h *eventlog.Handle, b
 			t.Fatalf("session Get: %v", err)
 		}
 	}
-	ev := session.NewEvent(id)
+	ev := session.NewEventWithContext(context.Background(), id)
 	ev.Author = "cluster"
 	ev.Branch = branch
 	ev.LLMResponse = adkmodel.LLMResponse{

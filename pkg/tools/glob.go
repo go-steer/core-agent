@@ -21,7 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -66,7 +66,7 @@ var skippedDirs = map[string]bool{
 // Output is JSON-encoded then truncated as a whole via Truncate +
 // the per-tool caps.
 func globFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[globArgs, globResult] {
-	return func(ctx tool.Context, in globArgs) (globResult, error) {
+	return func(ctx adkagent.ToolContext, in globArgs) (globResult, error) {
 		if in.Pattern == "" {
 			return globResult{}, fmt.Errorf("glob: pattern is required")
 		}

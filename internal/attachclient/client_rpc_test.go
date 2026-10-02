@@ -197,7 +197,7 @@ func (h *rpcHarness) appendSessionEvent(t *testing.T, text string) {
 	if err != nil {
 		t.Fatalf("session Get: %v", err)
 	}
-	ev := session.NewEvent("evt-" + text)
+	ev := session.NewEventWithContext(context.Background(), "evt-"+text)
 	ev.Author = "test"
 	ev.LLMResponse = adkmodel.LLMResponse{}
 	ev.CustomMetadata = map[string]any{"text": text}
@@ -835,7 +835,7 @@ func (h *rpcHarness) appendBranchedEvent(t *testing.T, branch, id, text string) 
 			t.Fatalf("session Get: %v", err)
 		}
 	}
-	ev := session.NewEvent(id)
+	ev := session.NewEventWithContext(context.Background(), id)
 	ev.Author = "cluster"
 	ev.Branch = branch
 	ev.LLMResponse = adkmodel.LLMResponse{

@@ -15,6 +15,7 @@
 package toolcalls
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ import (
 
 // callEvent builds a consolidated model event carrying tool calls.
 func callEvent(calls ...*genai.FunctionCall) *session.Event {
-	ev := session.NewEvent("inv")
+	ev := session.NewEventWithContext(context.Background(), "inv")
 	parts := []*genai.Part{{Text: "calling a tool"}}
 	for _, fc := range calls {
 		parts = append(parts, &genai.Part{FunctionCall: fc})
@@ -40,7 +41,7 @@ func callEvent(calls ...*genai.FunctionCall) *session.Event {
 
 // responseEvent builds the user-role event carrying tool results.
 func responseEvent(resps ...*genai.FunctionResponse) *session.Event {
-	ev := session.NewEvent("inv")
+	ev := session.NewEventWithContext(context.Background(), "inv")
 	var parts []*genai.Part
 	for _, fr := range resps {
 		parts = append(parts, &genai.Part{FunctionResponse: fr})

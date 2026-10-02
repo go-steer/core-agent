@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -31,7 +31,7 @@ func TestBash_RunsAndCapturesOutput(t *testing.T) {
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
 	fn := bashFunc(gate, cfg)
-	res, err := fn(tool.Context(nil), bashArgs{Command: "printf hello"})
+	res, err := fn(adkagent.ToolContext(nil), bashArgs{Command: "printf hello"})
 	if err != nil {
 		t.Fatalf("bash: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestBash_RefusesDenylist(t *testing.T) {
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo}) // even yolo
 	fn := bashFunc(gate, cfg)
-	_, err := fn(tool.Context(nil), bashArgs{Command: "rm -rf /"})
+	_, err := fn(adkagent.ToolContext(nil), bashArgs{Command: "rm -rf /"})
 	if err == nil || !strings.Contains(err.Error(), "filesystem root") {
 		t.Errorf("expected denylist refusal, got %v", err)
 	}
@@ -63,7 +63,7 @@ func TestBash_RefusesSearchShapedByDefault(t *testing.T) {
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
 	fn := bashFunc(gate, cfg)
-	_, err := fn(tool.Context(nil), bashArgs{Command: "grep -rn TODO ."})
+	_, err := fn(adkagent.ToolContext(nil), bashArgs{Command: "grep -rn TODO ."})
 	if err == nil {
 		t.Fatal("bash ran a search-shaped command under the default gate")
 	}
@@ -83,7 +83,7 @@ func TestBash_WarnModeAttachesNotice(t *testing.T) {
 		BashSearchGate: config.BashSearchGateWarn,
 	})
 	fn := bashFunc(gate, cfg)
-	res, err := fn(tool.Context(nil), bashArgs{Command: "grep -rn TODO /nonexistent-path-for-test"})
+	res, err := fn(adkagent.ToolContext(nil), bashArgs{Command: "grep -rn TODO /nonexistent-path-for-test"})
 	if err != nil {
 		t.Fatalf("warn mode must not refuse: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestBash_NoNoticeOnOrdinaryCommands(t *testing.T) {
 		BashSearchGate: config.BashSearchGateWarn,
 	})
 	fn := bashFunc(gate, cfg)
-	res, err := fn(tool.Context(nil), bashArgs{Command: "printf hello"})
+	res, err := fn(adkagent.ToolContext(nil), bashArgs{Command: "printf hello"})
 	if err != nil {
 		t.Fatalf("bash: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestBash_TimesOut(t *testing.T) {
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
 	fn := bashFunc(gate, cfg)
-	_, err := fn(tool.Context(nil), bashArgs{Command: "sleep 5", TimeoutSeconds: 1})
+	_, err := fn(adkagent.ToolContext(nil), bashArgs{Command: "sleep 5", TimeoutSeconds: 1})
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("expected timeout, got %v", err)
 	}
@@ -207,7 +207,7 @@ func TestBash_NonzeroExitNotAnError(t *testing.T) {
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
 	fn := bashFunc(gate, cfg)
-	res, err := fn(tool.Context(nil), bashArgs{Command: "false"})
+	res, err := fn(adkagent.ToolContext(nil), bashArgs{Command: "false"})
 	if err != nil {
 		t.Errorf("non-zero exit should not be a Go error: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestBash_OrphanedBackgroundProcessDoesntHang(t *testing.T) {
 	var res bashResult
 	var err error
 	go func() {
-		res, err = fn(tool.Context(nil), bashArgs{
+		res, err = fn(adkagent.ToolContext(nil), bashArgs{
 			// Background `sleep 30` and let the shell exit immediately.
 			// The orphan still holds stdout/stderr; the tool must
 			// SIGKILL it via WaitDelay rather than wait 30s.
@@ -297,7 +297,7 @@ func TestBash_TimeoutKillsOrphans(t *testing.T) {
 		// Foreground sleep keeps the shell alive past TimeoutSeconds,
 		// AND a backgrounded sleep orphan inherits the pipes. Both
 		// cleanup paths must run.
-		_, err = fn(tool.Context(nil), bashArgs{
+		_, err = fn(adkagent.ToolContext(nil), bashArgs{
 			Command:        "sleep 60 & sleep 30",
 			TimeoutSeconds: 1,
 		})

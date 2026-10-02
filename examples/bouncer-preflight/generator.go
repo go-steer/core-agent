@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -127,7 +128,7 @@ func historyTool(l *handoffLog) (adktool.Tool, error) {
 			Description: "Recall every candidate you have already handed to the Checker and the verdict " +
 				"it returned, oldest first. Use this if you have lost track of what you have tried.",
 		},
-		func(_ adktool.Context, _ struct{}) (historyResult, error) {
+		func(_ adkagent.ToolContext, _ struct{}) (historyResult, error) {
 			return historyResult{Handoffs: l.snapshot()}, nil
 		},
 	)
@@ -155,7 +156,7 @@ func saveIfValidatedTool(cfg generatorConfig) (adktool.Tool, error) {
 				"The Checker submits it, watches it run and decides. You have NOT succeeded until " +
 				"this returns success=true; on failure, read details, fix the manifest and call again.",
 		},
-		func(ctx adktool.Context, in saveIfValidatedArgs) (saveIfValidatedResult, error) {
+		func(ctx adkagent.ToolContext, in saveIfValidatedArgs) (saveIfValidatedResult, error) {
 			return saveIfValidatedFunc(cfg)(stdContext(ctx), in)
 		},
 	)
@@ -229,7 +230,7 @@ func readSourceTool(st *store) (adktool.Tool, error) {
 			Name:        "read_source_manifest",
 			Description: "Read the full production manifest you are deriving a preflight from.",
 		},
-		func(_ adktool.Context, _ struct{}) (readSourceResult, error) {
+		func(_ adkagent.ToolContext, _ struct{}) (readSourceResult, error) {
 			manifest, err := st.readSource()
 			if err != nil {
 				return readSourceResult{}, err
@@ -249,7 +250,7 @@ func objectiveTool(objective string) (adktool.Tool, error) {
 			Name:        "get_original_objective",
 			Description: "Re-read the original task you were given, verbatim, if you have lost the thread.",
 		},
-		func(_ adktool.Context, _ struct{}) (objectiveResult, error) {
+		func(_ adkagent.ToolContext, _ struct{}) (objectiveResult, error) {
 			return objectiveResult{Objective: objective}, nil
 		},
 	)
@@ -271,7 +272,7 @@ func experienceTool(st *store) (adktool.Tool, error) {
 			Description: "Record something worth remembering — a framework quirk, a topology constraint, " +
 				"or how you resolved a specific error — so future runs can retrieve it.",
 		},
-		func(_ adktool.Context, in experienceArgs) (experienceResult, error) {
+		func(_ adkagent.ToolContext, in experienceArgs) (experienceResult, error) {
 			if strings.TrimSpace(in.Note) == "" {
 				return experienceResult{}, fmt.Errorf("append_experience_log: note is required")
 			}
@@ -304,7 +305,7 @@ func retrieverTool(st *store) (adktool.Tool, error) {
 				"Do this FIRST: if a saved preflight already matches this workload's topology, " +
 				"hardware and framework, reuse it instead of deriving a new one.",
 		},
-		func(_ adktool.Context, in retrieverArgs) (retrieverResult, error) {
+		func(_ adkagent.ToolContext, in retrieverArgs) (retrieverResult, error) {
 			return retrieverResult{Matches: st.grep(in.Query, 40)}, nil
 		},
 	)
@@ -326,7 +327,7 @@ func reuseTool(st *store) (adktool.Tool, error) {
 			Description: "Declare that an existing library preflight already covers this workload. " +
 				"Only valid when the topology, hardware and framework match exactly.",
 		},
-		func(_ adktool.Context, in reuseArgs) (reuseResult, error) {
+		func(_ adkagent.ToolContext, in reuseArgs) (reuseResult, error) {
 			slug := slugify(in.Name)
 			path := filepath.Join(st.libraryDir, slug+".yaml")
 			if _, err := os.Stat(path); err != nil {

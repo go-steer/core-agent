@@ -41,7 +41,7 @@ func (p *probeTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: "probe"}
 }
 
-func (p *probeTool) Run(adktool.Context, any) (map[string]any, error) {
+func (p *probeTool) Run(adkagent.ToolContext, any) (map[string]any, error) {
 	return map[string]any{"state": p.payload}, nil
 }
 
@@ -70,7 +70,7 @@ func TestNew_BindsTheToolCatalogToWaitAndVerify(t *testing.T) {
 		t.Fatal("wait_and_verify is not in the agent's tool list")
 	}
 	runnable, ok := registered.(interface {
-		Run(adktool.Context, any) (map[string]any, error)
+		Run(adkagent.ToolContext, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("registered wait_and_verify (%T) is not callable", registered)
@@ -102,12 +102,12 @@ func TestNew_WaitAndVerifyStillRefusesAMutatingSibling(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	var runnable interface {
-		Run(adktool.Context, any) (map[string]any, error)
+		Run(adkagent.ToolContext, any) (map[string]any, error)
 	}
 	for _, tl := range a.Tools() {
 		if tl.Name() == tools.WaitAndVerifyToolName {
 			runnable, _ = tl.(interface {
-				Run(adktool.Context, any) (map[string]any, error)
+				Run(adkagent.ToolContext, any) (map[string]any, error)
 			})
 		}
 	}
@@ -132,11 +132,11 @@ func (m *mutatingProbe) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: "apply_manifest"}
 }
 
-func (m *mutatingProbe) Run(adktool.Context, any) (map[string]any, error) {
+func (m *mutatingProbe) Run(adkagent.ToolContext, any) (map[string]any, error) {
 	return map[string]any{"applied": true}, nil
 }
 
-// wiringToolCtx is a minimal tool.Context for driving a registered
+// wiringToolCtx is a minimal agent.ToolContext for driving a registered
 // tool's Run directly. Full-interface satisfaction is deliberate: an
 // ADK bump that adds a method should break the stub rather than
 // silently drift.

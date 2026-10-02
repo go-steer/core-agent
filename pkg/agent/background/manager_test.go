@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -43,7 +44,7 @@ func newNamedStubTool(t *testing.T, name string) tool.Tool {
 	type empty struct{}
 	tl, err := functiontool.New(
 		functiontool.Config{Name: name, Description: "stub"},
-		func(_ tool.Context, _ empty) (empty, error) { return empty{}, nil },
+		func(_ adkagent.ToolContext, _ empty) (empty, error) { return empty{}, nil },
 	)
 	if err != nil {
 		t.Fatalf("functiontool.New(%q): %v", name, err)

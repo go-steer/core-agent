@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -54,7 +54,7 @@ func TestFetchURL_HappyPath(t *testing.T) {
 	host := mustHost(t, srv.URL)
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://" + host}, nil))
 
-	res, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL})
+	res, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: srv.URL})
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestFetchURL_HappyPath(t *testing.T) {
 
 func TestFetchURL_AllowEmpty_Denied(t *testing.T) {
 	fn := fetchURLFunc(fetchGate(t), fetchCfg(nil, nil))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "https://example.com"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "https://example.com"})
 	if err == nil || !strings.Contains(err.Error(), "url_scope.allow is empty") {
 		t.Errorf("want default-deny error, got: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestFetchURL_AllowEmpty_Denied(t *testing.T) {
 
 func TestFetchURL_HostNotInAllowlist(t *testing.T) {
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"github.com"}, nil))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "https://other.com/x"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "https://other.com/x"})
 	if err == nil || !strings.Contains(err.Error(), "not in allowlist") {
 		t.Errorf("want allowlist denial, got: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestFetchURL_DenyBeatsAllow(t *testing.T) {
 		[]string{"*.example.com"},
 		[]string{"evil.example.com"},
 	))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "https://evil.example.com/"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "https://evil.example.com/"})
 	if err == nil || !strings.Contains(err.Error(), "deny pattern") {
 		t.Errorf("want deny match, got: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestFetchURL_HTTPSDefaultRejectsPlainHTTP(t *testing.T) {
 
 	// Allowlist entry without http:// prefix → HTTPS only.
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{mustHost(t, srv.URL)}, nil))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: srv.URL})
 	if err == nil || !strings.Contains(err.Error(), "not in allowlist") {
 		t.Errorf("want http denial without explicit http:// prefix, got: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestFetchURL_RedirectAllowed(t *testing.T) {
 		[]string{"http://" + mustHost(t, src.URL), "http://" + mustHost(t, target.URL)},
 		nil,
 	))
-	res, err := fn(tool.Context(nil), fetchURLArgs{URL: src.URL})
+	res, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: src.URL})
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestFetchURL_RedirectToDeniedHost(t *testing.T) {
 		[]string{"http://" + mustHost(t, src.URL)},
 		nil,
 	))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: src.URL})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: src.URL})
 	if err == nil || !strings.Contains(err.Error(), "redirect") {
 		t.Errorf("want redirect denial, got: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestFetchURL_BodyCapTruncates(t *testing.T) {
 	cfg := fetchCfg([]string{"http://" + mustHost(t, srv.URL)}, nil)
 	cfg.URLScope.MaxBodyBytes = 100
 	fn := fetchURLFunc(fetchGate(t), cfg)
-	res, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL})
+	res, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: srv.URL})
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestFetchURL_BinaryContentSuppressed(t *testing.T) {
 	defer srv.Close()
 
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://" + mustHost(t, srv.URL)}, nil))
-	res, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL})
+	res, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: srv.URL})
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestFetchURL_HeaderInjection_EnvExpanded(t *testing.T) {
 		},
 	}
 	fn := fetchURLFunc(fetchGate(t), cfg)
-	if _, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL}); err != nil {
+	if _, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: srv.URL}); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	if got.Get("Authorization") != "Bearer the-secret" {
@@ -245,7 +245,7 @@ func TestFetchURL_HeaderInjection_MostSpecificWins(t *testing.T) {
 		host: {"X-Source": "specific"},
 	}
 	fn := fetchURLFunc(fetchGate(t), cfg)
-	if _, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL}); err != nil {
+	if _, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: srv.URL}); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	if got.Get("X-Source") != "specific" {
@@ -288,7 +288,7 @@ func TestFetchURL_Redirect_InjectedHeadersDoNotCrossHosts(t *testing.T) {
 		"b.internal": {"127.0.0.1"},
 	}))
 
-	res, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://a.internal:" + portA + "/"})
+	res, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "http://a.internal:" + portA + "/"})
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestFetchURL_Redirect_TargetHostBundleApplies(t *testing.T) {
 		"b.internal": {"127.0.0.1"},
 	}))
 
-	if _, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://a.internal:" + portA + "/"}); err != nil {
+	if _, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "http://a.internal:" + portA + "/"}); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	if got := gotB.Get("X-Api-Key"); got != "secret-for-b" {
@@ -355,7 +355,7 @@ func mustPort(t *testing.T, raw string) string {
 
 func TestFetchURL_EmptyURL(t *testing.T) {
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"*"}, nil))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: ""})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: ""})
 	if err == nil || !strings.Contains(err.Error(), "required") {
 		t.Errorf("want url-required error, got: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestFetchURL_EmptyURL(t *testing.T) {
 
 func TestFetchURL_UnsupportedScheme(t *testing.T) {
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"*"}, nil))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "ftp://example.com/file"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "ftp://example.com/file"})
 	if err == nil || !strings.Contains(err.Error(), "scheme") {
 		t.Errorf("want scheme error, got: %v", err)
 	}
@@ -452,7 +452,7 @@ func staticResolver(m map[string][]string) fetchResolver {
 func TestFetchURL_MetadataLiteralIP_BlockedDespiteWildcard(t *testing.T) {
 	t.Parallel()
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://*"}, nil))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://169.254.169.254/latest/meta-data/"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "http://169.254.169.254/latest/meta-data/"})
 	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
 		t.Errorf("want metadata block, got: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestFetchURL_MetadataLiteralIP_BlockedDespiteExactAllow(t *testing.T) {
 	// Even an exact-host allowlist entry does not unlock the
 	// metadata ranges — only allow_metadata_endpoints does.
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://169.254.169.254"}, nil))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://169.254.169.254/latest/meta-data/"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "http://169.254.169.254/latest/meta-data/"})
 	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
 		t.Errorf("want metadata block, got: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestFetchURL_MetadataHostname_Blocked(t *testing.T) {
 		fetchCfg([]string{"http://*"}, nil),
 		staticResolver(map[string][]string{"metadata.internal": {"169.254.169.254"}}),
 	)
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://metadata.internal/latest/meta-data/"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "http://metadata.internal/latest/meta-data/"})
 	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
 		t.Errorf("want metadata block, got: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestFetchURL_PrivateIP_WildcardAllow_Blocked(t *testing.T) {
 
 	// Wildcard allowlist entry does NOT unlock loopback/private.
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://*"}, nil))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: srv.URL})
 	if err == nil || !strings.Contains(err.Error(), "loopback/private") {
 		t.Errorf("want private-range block, got: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestFetchURL_PrivateIP_ExactHostAllow_PinnedDial(t *testing.T) {
 		fetchCfg([]string{"http://" + host}, nil),
 		staticResolver(map[string][]string{"app.internal": {u.Hostname()}}),
 	)
-	res, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://" + host + "/"})
+	res, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "http://" + host + "/"})
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -536,7 +536,7 @@ func TestFetchURL_Rebinding_PrivateResolution_WildcardBlocked(t *testing.T) {
 		fetchCfg([]string{"http://*"}, nil),
 		staticResolver(map[string][]string{"rebind.example.net": {"127.0.0.1"}}),
 	)
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://rebind.example.net/"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "http://rebind.example.net/"})
 	if err == nil || !strings.Contains(err.Error(), "loopback/private") {
 		t.Errorf("want private-range block, got: %v", err)
 	}
@@ -551,7 +551,7 @@ func TestFetchURL_MixedResolution_AnyBadIPRejects(t *testing.T) {
 		fetchCfg([]string{"http://mixed.example.net"}, nil),
 		staticResolver(map[string][]string{"mixed.example.net": {"93.184.216.34", "169.254.169.254"}}),
 	)
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://mixed.example.net/"})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: "http://mixed.example.net/"})
 	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
 		t.Errorf("want metadata block, got: %v", err)
 	}
@@ -570,17 +570,17 @@ func TestFetchURL_RedirectToMetadataIP_Blocked(t *testing.T) {
 		[]string{"http://" + mustHost(t, src.URL), "http://*"},
 		nil,
 	))
-	_, err := fn(tool.Context(nil), fetchURLArgs{URL: src.URL})
+	_, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: src.URL})
 	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
 		t.Errorf("want metadata block on redirect, got: %v", err)
 	}
 }
 
-// ctxToolContext adapts a plain context.Context into the tool.Context
+// ctxToolContext adapts a plain context.Context into the adkagent.ToolContext
 // interface for tests that need cancellation. Only the context methods
 // are backed; everything else panics via the nil embedded interface.
 type ctxToolContext struct {
-	tool.Context
+	adkagent.ToolContext
 	ctx context.Context
 }
 
@@ -775,7 +775,7 @@ func TestFetchURL_TransportIgnoresAmbientProxyByDefault(t *testing.T) {
 	// allowlisted, so the only way this fetch fails is if the
 	// transport tried to route through the (nonexistent) ambient
 	// proxy instead of dialing direct.
-	out, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL})
+	out, err := fn(adkagent.ToolContext(nil), fetchURLArgs{URL: srv.URL})
 	if err != nil {
 		t.Fatalf("fetch via ambient-proxy env: %v (transport should dial direct)", err)
 	}

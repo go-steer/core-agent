@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -135,7 +136,7 @@ func pingTool(t *testing.T) tool.Tool {
 	t.Helper()
 	tl, err := functiontool.New(
 		functiontool.Config{Name: "ping", Description: "return pong"},
-		func(_ tool.Context, _ struct{}) (map[string]any, error) {
+		func(_ adkagent.ToolContext, _ struct{}) (map[string]any, error) {
 			return map[string]any{"result": "pong"}, nil
 		})
 	if err != nil {

@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -122,16 +122,16 @@ func ApproverContext(ctx context.Context) context.Context {
 	return permissions.WithApproverContext(ctx, taskContext{})
 }
 
-// ApproverToolContext is ApproverContext as a tool.Context, for calling
+// ApproverToolContext is ApproverContext as an adkagent.ToolContext, for calling
 // a tool's handler directly. Only the context.Context methods are
 // backed; anything else panics on the nil embedded interface, which is
 // the right failure for a handler that needs more.
-func ApproverToolContext() tool.Context {
+func ApproverToolContext() adkagent.ToolContext {
 	return ctxTool{ctx: ApproverContext(context.Background())}
 }
 
 type ctxTool struct {
-	tool.Context
+	adkagent.ToolContext
 	ctx context.Context
 }
 

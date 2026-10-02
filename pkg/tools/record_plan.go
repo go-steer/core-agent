@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
@@ -189,7 +190,7 @@ func recordPlanFunc(gate *permissions.Gate, agentsDir string) functiontool.Func[
 	// living in a single field. A host that rebuilds the tool per turn
 	// degrades to the pre-#906 behavior rather than misfiring.
 	turns := newPlanTurnMemory()
-	return func(ctx tool.Context, in recordPlanArgs) (recordPlanResult, error) {
+	return func(ctx adkagent.ToolContext, in recordPlanArgs) (recordPlanResult, error) {
 		body := strings.TrimSpace(in.Plan)
 		if body == "" {
 			return recordPlanResult{}, errors.New("record_plan: plan is required (non-empty markdown)")
@@ -329,7 +330,7 @@ type planWriteOutcome struct {
 // Why the state lives here and not on the Agent: pkg/agent's
 // checkpointer keys its in-turn repeat flag off an Agent field cleared
 // by the post-turn hook, but pkg/tools has no Agent and no turn hook.
-// What it does have is the invocation ID on tool.Context, which ADK
+// What it does have is the invocation ID on adkagent.ToolContext, which ADK
 // mints per invocation and threads through every tool call in that
 // turn — the same signal, read where the code already stands, and
 // self-expiring (a new turn simply brings a new ID) rather than needing
@@ -464,7 +465,7 @@ func writePlanArtifact(path string, seq int, owner PlanOwner, body string) error
 // minting siblings. That is the conservative direction for a guard whose
 // entire job is to stop unbounded writes, and it costs a host that
 // declines to identify its turns nothing it can't get from /replan.
-func planInvocationID(ctx tool.Context) string {
+func planInvocationID(ctx adkagent.ToolContext) string {
 	if ctx == nil {
 		return ""
 	}
@@ -579,7 +580,7 @@ func planFrontmatter(seq int, owner PlanOwner) string {
 // the handler directly) yields the zero owner, which planFrontmatter
 // renders as no attribution — same guard rationale as
 // permissions.SessionGateFromContext.
-func planOwnerFromContext(ctx tool.Context) PlanOwner {
+func planOwnerFromContext(ctx adkagent.ToolContext) PlanOwner {
 	if ctx == nil {
 		return PlanOwner{}
 	}
@@ -603,7 +604,7 @@ func planOwnerFromContext(ctx tool.Context) PlanOwner {
 // planRecorded=true. Filed as #214.
 //
 // Extracted as its own helper so unit tests can exercise both paths
-// without stubbing the full tool.Context interface.
+// without stubbing the full adkagent.ToolContext interface.
 //
 // Returns whether this call actually opened the gate. False means the
 // flag was already set — which is every repeat within a turn and every
@@ -660,7 +661,7 @@ func nextPlanSeq(plansDir string) (int, error) {
 // RevokeLatestPlan's historical "newest wins" semantics intact for
 // callers that don't care.
 type PlanOwner struct {
-	// Agent is the recording agent's name (tool.Context.AgentName) —
+	// Agent is the recording agent's name (adkagent.ToolContext.AgentName) —
 	// "core_agent" for the root, the subagent's declared name for a
 	// background subagent. This is the field that separates a parent's
 	// plan from its specialist's.

@@ -42,7 +42,7 @@ func (f *timedFakeTool) IsLongRunning() bool { return false }
 func (f *timedFakeTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: f.name}
 }
-func (f *timedFakeTool) Run(_ adktool.Context, _ any) (map[string]any, error) {
+func (f *timedFakeTool) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
 	if f.sleep > 0 {
 		time.Sleep(f.sleep)
 	}

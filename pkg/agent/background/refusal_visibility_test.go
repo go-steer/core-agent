@@ -39,7 +39,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
-// refusalToolCtx is a minimal tool.Context for driving a registered
+// refusalToolCtx is a minimal adkagent.ToolContext for driving a registered
 // tool's Run directly. Full-interface satisfaction is deliberate: an
 // ADK bump that adds a method should break the stub rather than
 // silently drift.
@@ -72,7 +72,7 @@ func (c *refusalToolCtx) SearchMemory(context.Context, string) (*memory.SearchRe
 func runToolJSON(t *testing.T, tl tool.Tool, ctx context.Context, args map[string]any) map[string]any {
 	t.Helper()
 	runner, ok := tl.(interface {
-		Run(tool.Context, any) (map[string]any, error)
+		Run(adkagent.ToolContext, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("%s is not runnable", tl.Name())

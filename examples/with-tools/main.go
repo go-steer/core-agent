@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 
+	adkagent "google.golang.org/adk/agent"
 	adktool "google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
@@ -54,7 +55,7 @@ func addTool() adktool.Tool {
 			Name:        "add",
 			Description: "Add two integers and return the sum.",
 		},
-		func(_ adktool.Context, in addArgs) (addResult, error) {
+		func(_ adkagent.ToolContext, in addArgs) (addResult, error) {
 			return addResult{Sum: in.A + in.B}, nil
 		},
 	)

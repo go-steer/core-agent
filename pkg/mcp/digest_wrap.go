@@ -38,18 +38,18 @@ import (
 var tracer = otel.Tracer("core-agent/mcp")
 
 // spanCtxToolContext overrides just the context.Context methods on a
-// tool.Context so the inner tool's HTTP round-trip picks up our
+// agent.ToolContext so the inner tool's HTTP round-trip picks up our
 // mcp.tool_call span as its parent (nesting mcp.http_call under
-// mcp.tool_call in the trace tree). All other tool.Context methods
+// mcp.tool_call in the trace tree). All other agent.ToolContext methods
 // (FunctionCallID, Actions, State, ...) delegate to the wrapped
 // context so the inner tool sees identical behavior otherwise.
 //
-// Without this, ADK's tool.Context carries whatever context.Context
+// Without this, ADK's agent.ToolContext carries whatever context.Context
 // the runner handed to it — likely the turn-level one — and
 // otelhttp parents mcp.http_call off that instead of mcp.tool_call.
 // The trace still records all the spans; they just don't nest.
 type spanCtxToolContext struct {
-	tool.Context
+	agent.ToolContext
 	span context.Context
 }
 
@@ -262,7 +262,7 @@ func (d digestingTool) ReadOnlyHint() bool { return d.inner.ReadOnlyHint() }
 // returns a content-shape error) degrade to a bounded passthrough of
 // the marshaled raw response, so the caller always gets *something*
 // they can hand to the model.
-func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
+func (d digestingTool) Run(ctx agent.ToolContext, args any) (map[string]any, error) {
 	// mcp.tool_call span groups the upstream HTTP round-trip
 	// (already otelhttp-instrumented via #237) with the digest
 	// child span pkg/digest.Process emits below. Attribute names
@@ -288,12 +288,12 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	// Also stamped on the error / marshal-fallback paths so slow
 	// failing calls are still visible (a 30-second MCP timeout is
 	// exactly the case operators need to see).
-	// Swap the context.Context inside tool.Context to spanCtx so
+	// Swap the context.Context inside agent.ToolContext to spanCtx so
 	// otelhttp on the inner MCP call picks up mcp.tool_call as the
 	// parent span. Delegates non-context methods (FunctionCallID,
-	// State, ...) to the original tool.Context so the inner tool
+	// State, ...) to the original agent.ToolContext so the inner tool
 	// sees the same behavior otherwise.
-	innerCtx := spanCtxToolContext{Context: ctx, span: spanCtx}
+	innerCtx := spanCtxToolContext{ToolContext: ctx, span: spanCtx}
 	start := time.Now()
 	raw, err := d.inner.Run(innerCtx, args)
 	latencyMS := time.Since(start).Milliseconds()
@@ -457,6 +457,6 @@ func withLatency(raw map[string]any, latencyMS int64) map[string]any {
 // — same reasoning as renamedTool.ProcessRequest. Packs the outer
 // wrapper (d), not the inner, so the model-visible function name
 // stays the prefixed one and dispatch routes back through digesting.
-func (d digestingTool) ProcessRequest(ctx tool.Context, req *model.LLMRequest) error {
+func (d digestingTool) ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error {
 	return coretools.PackTool(req, d)
 }

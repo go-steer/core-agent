@@ -208,7 +208,7 @@ func (h hintedTool) Declaration() *genai.FunctionDeclaration {
 	return rn.Declaration()
 }
 
-func (h hintedTool) Run(ctx tool.Context, args any) (map[string]any, error) {
+func (h hintedTool) Run(ctx agent.ToolContext, args any) (map[string]any, error) {
 	rn, ok := h.inner.(runnable)
 	if !ok {
 		return nil, errNotRunnable

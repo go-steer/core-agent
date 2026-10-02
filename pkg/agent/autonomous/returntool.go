@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
@@ -183,10 +184,10 @@ func buildDoneTools(cfg *autoConfig, doneCh chan string) ([]tool.Tool, error) {
 		signal(result)
 		return returnAck{Ack: "ok"}
 	}
-	primaryFn := func(_ tool.Context, args returnArgs) (returnAck, error) {
+	primaryFn := func(_ adkagent.ToolContext, args returnArgs) (returnAck, error) {
 		return deliver(args.Result), nil
 	}
-	aliasFn := func(_ tool.Context, args legacyReturnArgs) (returnAck, error) {
+	aliasFn := func(_ adkagent.ToolContext, args legacyReturnArgs) (returnAck, error) {
 		if strings.TrimSpace(args.Result) != "" {
 			return deliver(args.Result), nil
 		}

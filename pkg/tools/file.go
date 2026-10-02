@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -109,7 +109,7 @@ type statResult struct {
 // readFileFunc returns the ADK functiontool handler for read_file. The
 // returned closure consults gate.CheckFileRead before touching disk.
 func readFileFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[readFileArgs, readFileResult] {
-	return func(ctx tool.Context, in readFileArgs) (readFileResult, error) {
+	return func(ctx adkagent.ToolContext, in readFileArgs) (readFileResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return readFileResult{}, err
@@ -131,7 +131,7 @@ func readFileFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[
 }
 
 func writeFileFunc(gate *permissions.Gate) functiontool.Func[writeFileArgs, writeFileResult] {
-	return func(ctx tool.Context, in writeFileArgs) (writeFileResult, error) {
+	return func(ctx adkagent.ToolContext, in writeFileArgs) (writeFileResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return writeFileResult{}, err
@@ -150,7 +150,7 @@ func writeFileFunc(gate *permissions.Gate) functiontool.Func[writeFileArgs, writ
 }
 
 func editFileFunc(gate *permissions.Gate) functiontool.Func[editFileArgs, editFileResult] {
-	return func(ctx tool.Context, in editFileArgs) (editFileResult, error) {
+	return func(ctx adkagent.ToolContext, in editFileArgs) (editFileResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return editFileResult{}, err
@@ -206,7 +206,7 @@ func editedStatus(path string, n int) string {
 }
 
 func listDirFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[listDirArgs, listDirResult] {
-	return func(ctx tool.Context, in listDirArgs) (listDirResult, error) {
+	return func(ctx adkagent.ToolContext, in listDirArgs) (listDirResult, error) {
 		path := in.Path
 		if path == "" {
 			path = "."
@@ -315,7 +315,7 @@ func atomicWrite(path string, data []byte, mode fs.FileMode) error {
 // (CheckFileWrite, because delete is a destructive write-class op)
 // covers path-scope and per-tool denylists.
 func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, deleteFileResult] {
-	return func(ctx tool.Context, in deleteFileArgs) (deleteFileResult, error) {
+	return func(ctx adkagent.ToolContext, in deleteFileArgs) (deleteFileResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return deleteFileResult{}, err
@@ -358,7 +358,7 @@ func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, de
 // success result with Exists=false rather than an error — lets the
 // model do "does X exist yet?" checks without exception handling.
 func statFunc(gate *permissions.Gate) functiontool.Func[statArgs, statResult] {
-	return func(ctx tool.Context, in statArgs) (statResult, error) {
+	return func(ctx adkagent.ToolContext, in statArgs) (statResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return statResult{}, err

@@ -25,6 +25,7 @@ import (
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
@@ -61,7 +62,7 @@ func newRefusalProbeTool(t *testing.T, g *permissions.Gate) tool.Tool {
 	type empty struct{}
 	tl, err := functiontool.New(
 		functiontool.Config{Name: refusalProbeTool, Description: "delete a namespace"},
-		func(ctx tool.Context, _ args) (empty, error) {
+		func(ctx adkagent.ToolContext, _ args) (empty, error) {
 			return empty{}, g.CheckBash(ctx, refusalProbeDetail)
 		},
 	)
@@ -407,7 +408,7 @@ func TestHasToolResult(t *testing.T) {
 	t.Parallel()
 
 	ev := func(parts ...*genai.Part) *session.Event {
-		e := session.NewEvent("t")
+		e := session.NewEventWithContext(context.Background(), "t")
 		e.Content = &genai.Content{Role: genai.RoleModel, Parts: parts}
 		return e
 	}
@@ -418,7 +419,7 @@ func TestHasToolResult(t *testing.T) {
 		want bool
 	}{
 		{"nil event", nil, false},
-		{"no content", session.NewEvent("t"), false},
+		{"no content", session.NewEventWithContext(context.Background(), "t"), false},
 		{"no parts", ev(), false},
 		{"nil part", ev(nil), false},
 		{"text delta", ev(&genai.Part{Text: "thinking about it"}), false},

@@ -15,6 +15,7 @@
 package coretuievent
 
 import (
+	"context"
 	"testing"
 
 	adkmodel "google.golang.org/adk/model"
@@ -58,7 +59,7 @@ func TestToolResult_RefusedSpawnProjectsAsAnError(t *testing.T) {
 // tail) — the ones the operator was actually reading during the UAT.
 func TestSubagent_RefusedSpawnProjectsAsAnError(t *testing.T) {
 	t.Parallel()
-	ev := session.NewEvent("e1")
+	ev := session.NewEventWithContext(context.Background(), "e1")
 	ev.Author = "cluster-1"
 	ev.LLMResponse = adkmodel.LLMResponse{Content: &genai.Content{
 		Role: genai.RoleModel,

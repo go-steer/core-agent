@@ -49,7 +49,7 @@ func (answeringLLM) GenerateContent(context.Context, *adkmodel.LLMRequest, bool)
 	}
 }
 
-// gateToolCtx is a minimal tool.Context for driving a subagent tool's
+// gateToolCtx is a minimal adkagent.ToolContext for driving a subagent tool's
 // Run directly. Full-interface satisfaction is deliberate: an ADK bump
 // that adds a method should break the stub rather than silently drift.
 type gateToolCtx struct{ context.Context }
@@ -79,7 +79,7 @@ func (c *gateToolCtx) SearchMemory(context.Context, string) (*memory.SearchRespo
 func runSubagentTool(t *testing.T, tl tool.Tool) error {
 	t.Helper()
 	runner, ok := tl.(interface {
-		Run(tool.Context, any) (map[string]any, error)
+		Run(adkagent.ToolContext, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("%s is not runnable", tl.Name())
@@ -205,7 +205,7 @@ func TestSubagentTool_PassesFullArgsToTheApprover(t *testing.T) {
 	g, probe := testutil.AutoGate(t, subagentGateBucket+":*")
 	tl := gatedSubagentTool(t, g)
 	runner := tl.(interface {
-		Run(tool.Context, any) (map[string]any, error)
+		Run(adkagent.ToolContext, any) (map[string]any, error)
 	})
 	_, err := runner.Run(&gateToolCtx{Context: testutil.ApproverContext(context.Background())},
 		map[string]any{"request": "marker-request"})

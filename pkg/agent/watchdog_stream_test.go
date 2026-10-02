@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -111,7 +112,7 @@ func runStreamingLoop(t *testing.T, calls int32, rebuildOnAggregate bool) []watc
 	}
 	probe, err := functiontool.New(
 		functiontool.Config{Name: "probe", Description: "reads back the value it is given"},
-		func(_ tool.Context, a probeArgs) (probeResult, error) { return probeResult{OK: a.Q != ""}, nil },
+		func(_ adkagent.ToolContext, a probeArgs) (probeResult, error) { return probeResult{OK: a.Q != ""}, nil },
 	)
 	if err != nil {
 		t.Fatalf("functiontool.New: %v", err)

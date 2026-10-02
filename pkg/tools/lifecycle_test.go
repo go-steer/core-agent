@@ -21,7 +21,7 @@ import (
 	"sync"
 	"testing"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 )
 
 func TestNewLifecycleTool_RequiresHandler(t *testing.T) {
@@ -107,7 +107,7 @@ func TestLifecycleFunc_DeliversToHandler(t *testing.T) {
 		return nil
 	}, nil)
 
-	res, err := fn(tool.Context(nil), lifecycleArgs{State: "thinking", Detail: "looking around"})
+	res, err := fn(adkagent.ToolContext(nil), lifecycleArgs{State: "thinking", Detail: "looking around"})
 	if err != nil {
 		t.Fatalf("fn: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestLifecycleFunc_TrimsArgs(t *testing.T) {
 		got = ev
 		return nil
 	}, nil)
-	if _, err := fn(tool.Context(nil), lifecycleArgs{State: "  done  ", Detail: "  finished  "}); err != nil {
+	if _, err := fn(adkagent.ToolContext(nil), lifecycleArgs{State: "  done  ", Detail: "  finished  "}); err != nil {
 		t.Fatalf("fn: %v", err)
 	}
 	if got.State != "done" {
@@ -150,7 +150,7 @@ func TestLifecycleFunc_RejectsEmptyState(t *testing.T) {
 		called = true
 		return nil
 	}, nil)
-	res, err := fn(tool.Context(nil), lifecycleArgs{State: "   "})
+	res, err := fn(adkagent.ToolContext(nil), lifecycleArgs{State: "   "})
 	if err != nil {
 		t.Fatalf("fn: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestLifecycleFunc_AllowedStatesRejection(t *testing.T) {
 	}, []string{"thinking", "done"})
 
 	// Allowed state passes through.
-	res, err := fn(tool.Context(nil), lifecycleArgs{State: "done"})
+	res, err := fn(adkagent.ToolContext(nil), lifecycleArgs{State: "done"})
 	if err != nil || res.Ack != "ok" {
 		t.Fatalf("allowed state should pass: ack=%q err=%v", res.Ack, err)
 	}
@@ -181,7 +181,7 @@ func TestLifecycleFunc_AllowedStatesRejection(t *testing.T) {
 
 	// Disallowed state is rejected without invoking the handler.
 	called = false
-	res, err = fn(tool.Context(nil), lifecycleArgs{State: "frozen"})
+	res, err = fn(adkagent.ToolContext(nil), lifecycleArgs{State: "frozen"})
 	if err != nil {
 		t.Fatalf("fn: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestLifecycleFunc_HandlerErrorBecomesAck(t *testing.T) {
 	fn := lifecycleFunc(func(_ context.Context, _ LifecycleEvent) error {
 		return wantErr
 	}, nil)
-	res, err := fn(tool.Context(nil), lifecycleArgs{State: "done"})
+	res, err := fn(adkagent.ToolContext(nil), lifecycleArgs{State: "done"})
 	if err != nil {
 		t.Fatalf("fn returned err; should surface via Ack: %v", err)
 	}

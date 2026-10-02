@@ -218,7 +218,7 @@ func (dt *digestingTool) Declaration() *genai.FunctionDeclaration {
 // ProcessRequest packs dt — the wrapper — so ADK dispatch routes
 // through the digest instead of bypassing it. Same shape as
 // timedTool.ProcessRequest.
-func (dt *digestingTool) ProcessRequest(ctx adktool.Context, req *model.LLMRequest) error {
+func (dt *digestingTool) ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error {
 	return PackTool(req, dt)
 }
 
@@ -249,7 +249,7 @@ func (dt *digestingTool) ProcessRequest(ctx adktool.Context, req *model.LLMReque
 // cannot be produced is not worth failing a tool call over, and a
 // digest that came out no smaller than the payload it replaced is
 // not worth the retrieve_raw round trip it would invite.
-func (dt *digestingTool) Run(ctx adktool.Context, args any) (map[string]any, error) {
+func (dt *digestingTool) Run(ctx agent.ToolContext, args any) (map[string]any, error) {
 	rn, ok := dt.inner.(runnableTool)
 	if !ok {
 		return nil, nil

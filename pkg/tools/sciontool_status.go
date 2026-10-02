@@ -36,6 +36,7 @@ import (
 	"os/exec"
 	"time"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
@@ -74,7 +75,7 @@ func NewSciontoolStatusTool() (tool.Tool, error) {
 			"asking the user a question, blocked when waiting on an external " +
 			"dependency, task_completed when the task is finished, and " +
 			"limits_exceeded when a budget is exhausted.",
-	}, func(_ tool.Context, in sciontoolStatusToolArgs) (sciontoolStatusToolResult, error) {
+	}, func(_ adkagent.ToolContext, in sciontoolStatusToolArgs) (sciontoolStatusToolResult, error) {
 		if !isValidStickyType(in.StatusType) {
 			return sciontoolStatusToolResult{}, fmt.Errorf(
 				"sciontool_status: invalid status_type %q; must be one of %v",

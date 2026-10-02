@@ -335,8 +335,8 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 	// (#364).
 	parentSessionID := firstNonEmpty(opts.ParentSessionID, opts.Inner.SessionID())
 
-	handler := func(toolCtx tool.Context, args subagentArgs) (subagentResult, error) {
-		// tool.Context embeds agent.ReadonlyContext which embeds
+	handler := func(toolCtx adkagent.ToolContext, args subagentArgs) (subagentResult, error) {
+		// adkagent.ToolContext embeds agent.ReadonlyContext which embeds
 		// context.Context, so we can read context values and pass
 		// it to runner.Run directly.
 		//

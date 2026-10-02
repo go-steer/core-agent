@@ -131,7 +131,12 @@ func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, err
 			cacheInvalidate:     invalidateFn,
 		}, nil
 	}
-	return llm, nil
+	// Wrapped even with nothing to add, for the empty-tail detection.
+	// ADK v1.7.0's stream aggregator stopped erroring on a stream of
+	// candidate-less chunks; it now yields a final event with no
+	// parts, which unwrapped would end the turn silently (the #220
+	// shape). The wrapper turns that into ErrEmptyResponse.
+	return &builtinsLLM{inner: llm}, nil
 }
 
 // NewAPIKey returns a Provider authenticated against the public Gemini API

@@ -15,6 +15,7 @@
 package gemini
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -187,5 +188,29 @@ func TestNewVertex_NoHTTPClientOverride(t *testing.T) {
 	}
 	if p.cfg.HTTPClient != nil {
 		t.Error("NewVertex: cfg.HTTPClient is set; this bypasses genai's ADC wiring (auth breaks) and double-instruments the transport")
+	}
+}
+
+// ADK v1.7.0's stream aggregator no longer errors on a stream of
+// candidate-less chunks: it yields a final event with no parts. The
+// direct Gemini API with every built-in off used to get the raw ADK
+// model, so that stream would end the turn silently (#220's shape).
+// Every Model is now wrapped, so the empty-tail detection is always in
+// place.
+func TestModel_DirectAPIWithoutBuiltinsIsStillWrapped(t *testing.T) {
+	p, err := NewAPIKey("test-key", WithBuiltinTools(BuiltinTools{}))
+	if err != nil {
+		t.Fatalf("NewAPIKey: %v", err)
+	}
+	m, err := p.Model(context.Background(), "gemini-3.5-flash")
+	if err != nil {
+		t.Fatalf("Model: %v", err)
+	}
+	b, ok := m.(*builtinsLLM)
+	if !ok {
+		t.Fatalf("Model returned %T, want *builtinsLLM", m)
+	}
+	if len(b.builtins) != 0 || b.tolerateEmptyChunks {
+		t.Errorf("wrapper = %+v, want no built-ins and empty chunks not tolerated", b)
 	}
 }

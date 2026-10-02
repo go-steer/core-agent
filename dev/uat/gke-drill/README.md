@@ -423,6 +423,7 @@ mostly failing is the instrument working.
 | `runs/` | committed scorecards (the artifacts live in `~/.gke-drill/runs/`) |
 | `soak.sh` | the overnight run — hours of incidents with nobody watching (box A1) |
 | `soak_verdict.py` | grades a finished soak against A1's four clauses, after the fact |
+| `a2_count.py` | counts each box-A2 failure class in the daemon log and in the transcripts; a log-only failure is the A2 finding |
 | `testdata/soak-0914/` | the 2026-09-14 eight-hour soak, cut down; `soak_verdict_selftest.py` grades it and doctored copies |
 
 ## Reading a run as a trajectory
@@ -575,6 +576,33 @@ healthy reading.
 SOAK_HOURS=0.2 SOAK_CYCLE_SECS=300 SOAK_HOLD_SECS=180 \
   SOAK_PROBE_SECS=60 SOAK_SCENARIOS=b dev/uat/gke-drill/soak.sh
 ```
+
+## Counting failures on both sides (box A2)
+
+Box A2 asks whether every failure the agent hits shows up where someone reading
+the session would see it, not only in daemon stderr. The 2026-09-13 batch
+answered that by hand — 13 provider retries in the log, 0 in any transcript — and
+`a2_count.py` makes the next batch produce the number:
+
+```sh
+dev/uat/gke-drill/a2_count.py --log <daemon.log> --events <run>/events.sse [<run>/events.sse ...]
+```
+
+One row per class: provider retry, guardrail trip, turn error (which is where a
+refused turn lands), failed delegation, wedged session. Each has a log count, a
+transcript count and a verdict. **FAIL** means the log saw more than the
+transcripts did — the A2 finding. Two classes cannot be compared, and the tool
+says why rather than inventing a number: the daemon logs nothing when a
+delegation fails, and since #1040 a wedge leaves no per-event line on either
+side (`soak_verdict.py` grades wedges). Provider retries have **no transcript
+surface at all** today, so any retry in the log fails A2 until one exists
+([#1206](https://github.com/go-steer/core-agent/issues/1206)).
+
+Capture the daemon log for the whole batch — `kubectl logs -f --timestamps
+deploy/core-agent` to a file — and pass the `events.sse` of every run in the
+same window. The tool cannot check that the two cover the same sessions;
+`--session ID` narrows the log to one session's lines, except retry lines, which
+name no session.
 
 ## Before you spend a cluster day
 

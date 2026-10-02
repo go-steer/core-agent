@@ -44,6 +44,7 @@ import (
 	"strings"
 	"time"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
@@ -293,7 +294,7 @@ const markTaskDoneDescription = "Signal that a task you were given is finished, 
 // is — compaction reduces context on its own, and the model has no way
 // to know that otherwise.
 func NewMarkTaskDoneTool(getter func() *Agent) tool.Tool {
-	handler := func(_ tool.Context, args markTaskDoneArgs) (markTaskDoneResult, error) {
+	handler := func(_ adkagent.ToolContext, args markTaskDoneArgs) (markTaskDoneResult, error) {
 		return markTaskDone(getter(), args.Detail), nil
 	}
 	t, err := functiontool.New(functiontool.Config{

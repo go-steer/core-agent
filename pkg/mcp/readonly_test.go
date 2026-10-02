@@ -44,7 +44,7 @@ func (h hintingTool) ReadOnlyHint() bool  { return h.hint }
 func (h hintingTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: h.name}
 }
-func (h hintingTool) Run(tool.Context, any) (map[string]any, error) {
+func (h hintingTool) Run(agent.ToolContext, any) (map[string]any, error) {
 	return map[string]any{"ok": true}, nil
 }
 
@@ -59,7 +59,7 @@ func (p plainTool) IsLongRunning() bool { return false }
 func (p plainTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: p.name}
 }
-func (p plainTool) Run(tool.Context, any) (map[string]any, error) {
+func (p plainTool) Run(agent.ToolContext, any) (map[string]any, error) {
 	return map[string]any{"ok": true}, nil
 }
 

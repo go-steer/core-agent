@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 )
@@ -192,7 +193,7 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 	if spawner == nil {
 		return nil, ErrNoSpawner
 	}
-	handler := func(toolCtx tool.Context, args spawnRemoteAgentArgs) (spawnRemoteAgentResult, error) {
+	handler := func(toolCtx adkagent.ToolContext, args spawnRemoteAgentArgs) (spawnRemoteAgentResult, error) {
 		// Same gate as the in-process door (#758) — gating only
 		// spawn_agent would leave the escape hatch open, and this one
 		// launches work on a substrate the parent's gate can't reach

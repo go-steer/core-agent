@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/childenv"
@@ -125,7 +125,7 @@ const defaultBashTimeout = 30 * time.Second
 const bashWaitDelay = 5 * time.Second
 
 func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bashArgs, bashResult] {
-	return func(ctx tool.Context, in bashArgs) (bashResult, error) {
+	return func(ctx adkagent.ToolContext, in bashArgs) (bashResult, error) {
 		if in.Command == "" {
 			return bashResult{}, fmt.Errorf("bash: command is required")
 		}
@@ -150,7 +150,7 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		// every cancel until the bash timeout fires and the
 		// operator can't kill it via /interrupt at all.
 		//
-		// tool.Context is an interface; some tests pass nil. Fall
+		// adkagent.ToolContext is an interface; some tests pass nil. Fall
 		// back to Background in that case so context.WithTimeout
 		// doesn't panic on "nil parent."
 		parent := context.Context(ctx)

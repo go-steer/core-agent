@@ -236,7 +236,7 @@ func (a *Agent) drainRefusalStormAudit() {
 	if err != nil {
 		return
 	}
-	ev := session.NewEvent("gate-refusal-storm")
+	ev := session.NewEventWithContext(context.Background(), "gate-refusal-storm")
 	ev.Author = refusalStormAuthor
 	ev.CustomMetadata = map[string]any{
 		"source":  "gate",

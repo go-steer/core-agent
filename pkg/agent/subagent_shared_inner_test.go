@@ -21,6 +21,7 @@ import (
 	"sync"
 	"testing"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -91,7 +92,7 @@ func newInnerProbeTool(t *testing.T, p *innerProbe) tool.Tool {
 	type empty struct{}
 	tl, err := functiontool.New(
 		functiontool.Config{Name: innerProbeTool, Description: "record the delegation's session identity"},
-		func(ctx tool.Context, _ args) (empty, error) {
+		func(ctx adkagent.ToolContext, _ args) (empty, error) {
 			g, _ := permissions.SessionGateFromContext(ctx)
 			p.record(g, ctx.SessionID())
 			return empty{}, nil

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 	"google.golang.org/genai"
@@ -43,7 +44,7 @@ func (s *surveyTool) IsLongRunning() bool { return false }
 func (s *surveyTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: s.name}
 }
-func (s *surveyTool) Run(_ adktool.Context, _ any) (map[string]any, error) {
+func (s *surveyTool) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
 	if s.err != nil {
 		return nil, s.err
 	}

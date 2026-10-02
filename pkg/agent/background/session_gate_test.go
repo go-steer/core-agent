@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -90,7 +91,7 @@ func newGateProbe(t *testing.T, g *permissions.Gate) (*gateProbe, tool.Tool) {
 	type empty struct{}
 	tl, err := functiontool.New(
 		functiontool.Config{Name: probeToolName, Description: "probe the gate"},
-		func(ctx tool.Context, _ empty) (empty, error) {
+		func(ctx adkagent.ToolContext, _ empty) (empty, error) {
 			err := g.CheckGeneric(ctx, probeToolName, "probe")
 			p.record(err)
 			return empty{}, err
@@ -250,7 +251,7 @@ func TestDeclarativeSubagent_SessionGateSurvivesTheSpawnGoroutine(t *testing.T) 
 	type empty struct{}
 	tl, err := functiontool.New(
 		functiontool.Config{Name: probeToolName, Description: "report the session gate on ctx"},
-		func(ctx tool.Context, _ empty) (empty, error) {
+		func(ctx adkagent.ToolContext, _ empty) (empty, error) {
 			g, _ := permissions.SessionGateFromContext(ctx)
 			select {
 			case seen <- g:

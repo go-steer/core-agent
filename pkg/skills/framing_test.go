@@ -26,13 +26,12 @@ import (
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/memory"
 	"google.golang.org/adk/session"
-	adktool "google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/skilltoolset/skill"
 	"google.golang.org/adk/tool/toolconfirmation"
 	"google.golang.org/genai"
 )
 
-// stubToolCtx is a minimal adktool.Context so these tests can drive the
+// stubToolCtx is a minimal adkagent.ToolContext so these tests can drive the
 // real load_skill tool. ADK's own equivalent lives behind internal/, so
 // there is nothing to import. Only the embedded context.Context carries
 // anything; every other method returns the zero value. Satisfying the
@@ -56,7 +55,7 @@ func (stubToolCtx) Branch() string                       { return "" }
 func (stubToolCtx) Artifacts() adkagent.Artifacts { return nil }
 func (stubToolCtx) State() session.State          { return nil }
 
-// adktool.Context (adds).
+// adkagent.ToolContext (adds).
 func (stubToolCtx) FunctionCallID() string                               { return "test-call" }
 func (stubToolCtx) Actions() *session.EventActions                       { return nil }
 func (stubToolCtx) ToolConfirmation() *toolconfirmation.ToolConfirmation { return nil }
@@ -86,7 +85,7 @@ func loadSkillInstructions(t *testing.T, s Skills, name string) string {
 			continue
 		}
 		runner, ok := tl.(interface {
-			Run(adktool.Context, any) (map[string]any, error)
+			Run(adkagent.ToolContext, any) (map[string]any, error)
 		})
 		if !ok {
 			t.Fatalf("load_skill is %T, which is not runnable", tl)

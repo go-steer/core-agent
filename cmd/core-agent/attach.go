@@ -30,8 +30,6 @@ import (
 	"strings"
 	"syscall"
 
-	"google.golang.org/adk/session"
-
 	"github.com/go-steer/core-agent/v2/internal/attachclient"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/runner"
@@ -403,7 +401,3 @@ func isCanceledErr(err error) bool {
 	return strings.Contains(err.Error(), "context canceled") ||
 		strings.Contains(err.Error(), "use of closed network connection")
 }
-
-// Silence unused-import errors when this file is compiled in
-// isolation; session import is for the Frame's Event type clarity.
-var _ = session.NewEvent

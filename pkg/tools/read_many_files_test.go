@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
@@ -28,7 +28,7 @@ func TestReadManyFiles_RequiresPathsOrPattern(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	_, err := fn(tool.Context(nil), readManyFilesArgs{})
+	_, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{})
 	if err == nil || !strings.Contains(err.Error(), "provide paths or pattern") {
 		t.Errorf("err = %v, want paths-or-pattern", err)
 	}
@@ -41,7 +41,7 @@ func TestReadManyFiles_ExplicitPaths(t *testing.T) {
 	b := writeFile(t, dir, "b.txt", "bravo")
 
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Paths: []string{a, b}})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Paths: []string{a, b}})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestReadManyFiles_PreservesExplicitOrder(t *testing.T) {
 	m := writeFile(t, dir, "m.txt", "m")
 
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Paths: []string{z, a, m}})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Paths: []string{z, a, m}})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestReadManyFiles_PatternWalk(t *testing.T) {
 	writeFile(t, dir, "README.md", "ignore me")
 
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Pattern: "*.go", Path: dir})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Pattern: "*.go", Path: dir})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestReadManyFiles_PathsAndPatternUnioned(t *testing.T) {
 	// Explicit README + pattern *.go should produce 3 files; goA
 	// should not appear twice even if the model also lists it
 	// explicitly.
-	res, err := fn(tool.Context(nil), readManyFilesArgs{
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{
 		Paths:   []string{md, goA},
 		Pattern: "*.go",
 		Path:    dir,
@@ -147,7 +147,7 @@ func TestReadManyFiles_SkipsHiddenAndVendored(t *testing.T) {
 	writeFile(t, dir, "node_modules/baz/qux.go", "node")
 
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Pattern: "*.go", Path: dir})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Pattern: "*.go", Path: dir})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestReadManyFiles_GateDeniedSurfacesAsSkipped(t *testing.T) {
 	denied := writeFile(t, outside, "out.txt", "outside")
 
 	fn := readManyFilesFunc(scopedGate(t, scoped), config.DefaultConfig())
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Paths: []string{allowed, denied}})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Paths: []string{allowed, denied}})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestReadManyFiles_MissingFileSkipped(t *testing.T) {
 	ghost := filepath.Join(dir, "does-not-exist.txt")
 
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Paths: []string{exists, ghost}})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Paths: []string{exists, ghost}})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestReadManyFiles_DirectoryEntrySkipped(t *testing.T) {
 	subdir := filepath.Join(dir, "sub")
 
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Paths: []string{subdir}})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Paths: []string{subdir}})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestReadManyFiles_PerFileCapTruncates(t *testing.T) {
 	tiny := writeFile(t, dir, "tiny.txt", "hi")
 
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Paths: []string{huge, tiny}})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Paths: []string{huge, tiny}})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestReadManyFiles_WholeResponseCapDropsTrailing(t *testing.T) {
 		MaxLines: 0,
 	}
 	fn := readManyFilesFunc(permissiveGate(t, dir), cfg)
-	res, err := fn(tool.Context(nil), readManyFilesArgs{Paths: paths})
+	res, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Paths: paths})
 	if err != nil {
 		t.Fatalf("read_many_files: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestReadManyFiles_InvalidPatternError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := readManyFilesFunc(permissiveGate(t, dir), config.DefaultConfig())
-	_, err := fn(tool.Context(nil), readManyFilesArgs{Pattern: "[bad", Path: dir})
+	_, err := fn(adkagent.ToolContext(nil), readManyFilesArgs{Pattern: "[bad", Path: dir})
 	if err == nil || !strings.Contains(err.Error(), "invalid pattern") {
 		t.Errorf("err = %v, want invalid-pattern", err)
 	}

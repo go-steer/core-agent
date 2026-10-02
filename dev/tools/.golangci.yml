@@ -80,16 +80,6 @@ linters:
       # silence "always returns nil" style noise inside our wrapper.
       - path: mcp/
         text: "(unparam|S1009)"
-      # ADK v1.7.0 deprecated tool.Context (an alias of
-      # agent.ToolContext) and session.NewEvent (NewEventWithContext,
-      # identical without a platform provider on ctx). The upgrade was
-      # a security unblock (GO-2026-6505 / GO-2026-6615) and the rename
-      # is ~340 sites, so it is tracked on its own: #1193. Exactly
-      # these two messages, so any other deprecation still fails.
-      # Delete this rule when #1193 lands.
-      - linters:
-          - staticcheck
-        text: "SA1019: (adk)?tool\\.Context is deprecated|SA1019: session\\.NewEvent is deprecated"
       # The one complexity-ratchet exemption, and the reason the
       # thresholds below can be as tight as they are: cmd/core-agent's
       # `run` is a 1228-line / 642-statement / 374-cognitive-complexity

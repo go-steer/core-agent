@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -79,7 +80,7 @@ func runGateProbe(t *testing.T, opts ...Option) (*permissions.Gate, bool) {
 	type empty struct{}
 	probe, err := functiontool.New(
 		functiontool.Config{Name: name, Description: "report the session gate on ctx"},
-		func(ctx tool.Context, _ empty) (empty, error) {
+		func(ctx adkagent.ToolContext, _ empty) (empty, error) {
 			g, _ := permissions.SessionGateFromContext(ctx)
 			select {
 			case seen <- g:

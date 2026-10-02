@@ -24,7 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -68,7 +68,7 @@ type grepResult struct {
 // Output is capped per cfg.ToolOutput.PerTool["grep"]. Defaults are
 // 256KB / 5000 lines (ripgrep-scale).
 func grepFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[grepArgs, grepResult] {
-	return func(ctx tool.Context, in grepArgs) (grepResult, error) {
+	return func(ctx adkagent.ToolContext, in grepArgs) (grepResult, error) {
 		if in.Pattern == "" {
 			return grepResult{}, fmt.Errorf("grep: pattern is required")
 		}

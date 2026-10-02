@@ -145,7 +145,7 @@ func TestRenamedTool_ProcessRequest_PacksWrapper(t *testing.T) {
 	req := &model.LLMRequest{}
 	for _, tl := range tools {
 		rp, ok := tl.(interface {
-			ProcessRequest(ctx tool.Context, req *model.LLMRequest) error
+			ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error
 		})
 		if !ok {
 			t.Fatalf("renamedTool %q does not implement ProcessRequest — regression of the GKE MCP bug", tl.Name())
@@ -162,7 +162,7 @@ func TestRenamedTool_ProcessRequest_PacksWrapper(t *testing.T) {
 			continue
 		}
 		if _, isInner := got.(interface {
-			ProcessRequest(ctx tool.Context, req *model.LLMRequest) error
+			ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error
 		}); !isInner {
 			t.Errorf("packed entry for %q must itself implement ProcessRequest", tl.Name())
 		}

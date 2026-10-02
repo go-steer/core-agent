@@ -73,7 +73,7 @@ func tailEvents(t *testing.T, svc session.Service) []*session.Event {
 }
 
 func userTextEvent(text string) *session.Event {
-	ev := session.NewEvent("inv-user")
+	ev := session.NewEventWithContext(context.Background(), "inv-user")
 	ev.Author = "user"
 	ev.LLMResponse = adkmodel.LLMResponse{
 		Content: &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{{Text: text}}},
@@ -82,7 +82,7 @@ func userTextEvent(text string) *session.Event {
 }
 
 func callEvent(author, invocationID string, longRunning []string, calls ...*genai.FunctionCall) *session.Event {
-	ev := session.NewEvent(invocationID)
+	ev := session.NewEventWithContext(context.Background(), invocationID)
 	ev.Author = author
 	ev.LongRunningToolIDs = longRunning
 	parts := []*genai.Part{{Text: "calling a tool"}}
@@ -96,7 +96,7 @@ func callEvent(author, invocationID string, longRunning []string, calls ...*gena
 }
 
 func responseEvent(author string, resps ...*genai.FunctionResponse) *session.Event {
-	ev := session.NewEvent("inv-resp")
+	ev := session.NewEventWithContext(context.Background(), "inv-resp")
 	ev.Author = author
 	var parts []*genai.Part
 	for _, fr := range resps {

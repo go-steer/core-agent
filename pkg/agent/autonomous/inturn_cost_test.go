@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -60,7 +61,7 @@ func buildSpinAgent(llm *stubLLM, name string, calls *atomic.Int32) func([]tool.
 		type empty struct{}
 		spin, err := functiontool.New(
 			functiontool.Config{Name: "spin", Description: "no-op that keeps the turn going"},
-			func(_ tool.Context, _ empty) (empty, error) {
+			func(_ adkagent.ToolContext, _ empty) (empty, error) {
 				calls.Add(1)
 				return empty{}, nil
 			})

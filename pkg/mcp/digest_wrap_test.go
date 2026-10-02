@@ -33,7 +33,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/digest"
 )
 
-// stubToolCtx is a minimal tool.Context implementation for digest_wrap
+// stubToolCtx is a minimal adkagent.ToolContext implementation for digest_wrap
 // unit tests. Only FunctionCallID is meaningfully populated; every
 // other method returns the zero value. Full-interface satisfaction
 // keeps compile-time honest — a future ADK bump that adds a method
@@ -59,7 +59,7 @@ func (s *stubToolCtx) Branch() string                       { return "" }
 func (s *stubToolCtx) Artifacts() adkagent.Artifacts { return nil }
 func (s *stubToolCtx) State() session.State          { return nil }
 
-// tool.Context (adds).
+// adkagent.ToolContext (adds).
 func (s *stubToolCtx) FunctionCallID() string                               { return s.callID }
 func (s *stubToolCtx) Actions() *session.EventActions                       { return nil }
 func (s *stubToolCtx) ToolConfirmation() *toolconfirmation.ToolConfirmation { return nil }
@@ -508,7 +508,7 @@ func (errRunnable) Name() string                            { return "err" }
 func (errRunnable) Description() string                     { return "always errors" }
 func (errRunnable) IsLongRunning() bool                     { return false }
 func (errRunnable) Declaration() *genai.FunctionDeclaration { return nil }
-func (e errRunnable) Run(_ tool.Context, _ any) (map[string]any, error) {
+func (e errRunnable) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
 	return nil, e.err
 }
 
@@ -526,7 +526,7 @@ func (f fixedResponseRunnable) Name() string                            { return
 func (f fixedResponseRunnable) Description() string                     { return "returns a fixed map" }
 func (f fixedResponseRunnable) IsLongRunning() bool                     { return false }
 func (f fixedResponseRunnable) Declaration() *genai.FunctionDeclaration { return nil }
-func (f fixedResponseRunnable) Run(_ tool.Context, _ any) (map[string]any, error) {
+func (f fixedResponseRunnable) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
 	return f.resp, nil
 }
 
@@ -564,8 +564,8 @@ func wrapFixedTool(t *testing.T, name string, resp map[string]any, opts *DigestO
 // Compile-time asserts so future ADK / interface bumps force the
 // stub to update rather than silently drift.
 var (
-	_ tool.Context = (*stubToolCtx)(nil)
-	_ digest.Store = (*spyStore)(nil)
+	_ adkagent.ToolContext = (*stubToolCtx)(nil)
+	_ digest.Store         = (*spyStore)(nil)
 )
 
 // TestDigestingTool_Run_LatencyStampedOnAllPaths pins the #277

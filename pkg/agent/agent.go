@@ -1962,7 +1962,7 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 			if c == nil {
 				continue
 			}
-			ev := session.NewEvent(fmt.Sprintf("rwc-history-%d", i))
+			ev := session.NewEventWithContext(ctx, fmt.Sprintf("rwc-history-%d", i))
 			ev.Author = authorFor(c.Role, a.agentName)
 			ev.LLMResponse = adkmodel.LLMResponse{Content: c}
 			if err := a.sessionService.AppendEvent(ctx, sess, ev); err != nil {

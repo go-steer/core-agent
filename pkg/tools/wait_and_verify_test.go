@@ -51,7 +51,7 @@ func (p *pollTarget) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: p.name}
 }
 
-func (p *pollTarget) Run(ctx adktool.Context, args any) (map[string]any, error) {
+func (p *pollTarget) Run(ctx adkagent.ToolContext, args any) (map[string]any, error) {
 	p.mu.Lock()
 	p.calls++
 	n := p.calls
@@ -671,10 +671,10 @@ func (s *stubToolset) Tools(adkagent.ReadonlyContext) ([]adktool.Tool, error) {
 	return s.tools, s.err
 }
 
-// waitToolCtx adapts a plain context into tool.Context for the
+// waitToolCtx adapts a plain context into agent.ToolContext for the
 // cancellation test; only the context half is backed.
 type waitToolCtx struct {
-	adktool.Context
+	adkagent.ToolContext
 	ctx context.Context
 }
 

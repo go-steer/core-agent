@@ -46,7 +46,7 @@ func seedTestEvents(t *testing.T, h *eventlog.Handle, appName, userID, sessionID
 		t.Fatalf("session Get: %v", err)
 	}
 	for i := 0; i < n; i++ {
-		ev := session.NewEvent(fmt.Sprintf("evt-%03d", i))
+		ev := session.NewEventWithContext(context.Background(), fmt.Sprintf("evt-%03d", i))
 		ev.Author = "test"
 		ev.CustomMetadata = map[string]any{"n": i}
 		if err := h.Service.AppendEvent(ctx, getResp.Session, ev); err != nil {
@@ -162,7 +162,7 @@ func appendMoreTestEvents(t *testing.T, h *eventlog.Handle, appName, userID, ses
 		t.Fatalf("session Get: %v", err)
 	}
 	for i := 0; i < n; i++ {
-		ev := session.NewEvent(fmt.Sprintf("evt-%03d", start+i))
+		ev := session.NewEventWithContext(context.Background(), fmt.Sprintf("evt-%03d", start+i))
 		ev.Author = "test"
 		if err := h.Service.AppendEvent(ctx, getResp.Session, ev); err != nil {
 			t.Fatalf("AppendEvent %d: %v", start+i, err)

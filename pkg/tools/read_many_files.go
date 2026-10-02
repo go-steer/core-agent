@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -77,7 +77,7 @@ type readManyFilesResult struct {
 // dropping trailing entries; the truncated flag at the top level
 // signals when this fires.
 func readManyFilesFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[readManyFilesArgs, readManyFilesResult] {
-	return func(ctx tool.Context, in readManyFilesArgs) (readManyFilesResult, error) {
+	return func(ctx adkagent.ToolContext, in readManyFilesArgs) (readManyFilesResult, error) {
 		if len(in.Paths) == 0 && in.Pattern == "" {
 			return readManyFilesResult{}, fmt.Errorf("read_many_files: provide paths or pattern (or both)")
 		}

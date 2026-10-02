@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
@@ -102,8 +103,8 @@ func NewRetrieveRawTool(opts RetrieveRawOptions) (tool.Tool, error) {
 // tests can exercise the logic without going through functiontool's
 // reflection layer. Matches the same factory-returning-handler
 // pattern used by fetch.go / bash.go.
-func retrieveRawFunc(store digest.Store) func(tool.Context, retrieveRawArgs) (retrieveRawResult, error) {
-	return func(ctx tool.Context, in retrieveRawArgs) (retrieveRawResult, error) {
+func retrieveRawFunc(store digest.Store) func(adkagent.ToolContext, retrieveRawArgs) (retrieveRawResult, error) {
+	return func(ctx adkagent.ToolContext, in retrieveRawArgs) (retrieveRawResult, error) {
 		if in.CallID == "" {
 			return retrieveRawResult{
 				Raw: "(error: retrieve_raw requires a non-empty call_id)",

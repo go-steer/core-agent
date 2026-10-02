@@ -109,7 +109,7 @@ func appendTestEvent(t *testing.T, h *eventlog.Handle, appName, userID, sessionI
 	if err != nil {
 		t.Fatalf("session Get: %v", err)
 	}
-	ev := session.NewEvent("evt-" + text)
+	ev := session.NewEventWithContext(context.Background(), "evt-"+text)
 	ev.Author = "test"
 	ev.LLMResponse = adkmodel.LLMResponse{}
 	// Attach a synthetic detail in CustomMetadata so receivers can

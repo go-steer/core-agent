@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/childenv"
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -120,7 +120,7 @@ func credentialChild() {
 	// the post-Protect absence proves nothing — on a host where /proc is
 	// unreadable for some other reason (hidepid, a sandboxed kernel) the
 	// check would pass with no protection at all.
-	ctl, err := bashFunc(gate, config.DefaultConfig())(tool.Context(nil), bashArgs{Command: `printf 'CONTROL=%s\n' "$(tr '\0' '\n' < /proc/$PPID/environ 2>/dev/null | sed -n 's/^` + credTestVar + `=//p')"`})
+	ctl, err := bashFunc(gate, config.DefaultConfig())(adkagent.ToolContext(nil), bashArgs{Command: `printf 'CONTROL=%s\n' "$(tr '\0' '\n' < /proc/$PPID/environ 2>/dev/null | sed -n 's/^` + credTestVar + `=//p')"`})
 	if err != nil {
 		os.Stdout.WriteString("BASH-FAILED: " + err.Error() + "\n")
 		os.Exit(1)
@@ -130,7 +130,7 @@ func credentialChild() {
 		os.Stdout.WriteString("PROTECT-FAILED: " + err.Error() + "\n")
 		os.Exit(1)
 	}
-	res, err := bashFunc(gate, config.DefaultConfig())(tool.Context(nil), bashArgs{Command: `
+	res, err := bashFunc(gate, config.DefaultConfig())(adkagent.ToolContext(nil), bashArgs{Command: `
 printf 'CHILD-RAN\n'
 printf 'INHERITED=%s\n' "$` + credTestVar + `"
 printf 'PROC=%s\n' "$(tr '\0' '\n' < /proc/$PPID/environ 2>/dev/null | sed -n 's/^` + credTestVar + `=//p')"

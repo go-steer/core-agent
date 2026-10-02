@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/itchyny/gojq"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
@@ -74,7 +75,7 @@ func NewJSONQueryTool(gate *permissions.Gate, cfg *config.Config) tool.Tool {
 // jsonQueryFunc is the handler, extracted so tests can drive it
 // without going through ADK's functiontool wrapper.
 func jsonQueryFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[jsonQueryArgs, jsonQueryResult] {
-	return func(ctx tool.Context, in jsonQueryArgs) (jsonQueryResult, error) {
+	return func(ctx adkagent.ToolContext, in jsonQueryArgs) (jsonQueryResult, error) {
 		hasPath := in.Path != ""
 		hasJSON := in.JSON != ""
 		if hasPath == hasJSON {

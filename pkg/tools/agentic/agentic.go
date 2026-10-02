@@ -45,6 +45,7 @@ import (
 	"errors"
 	"fmt"
 
+	adkagent "google.golang.org/adk/agent"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -119,7 +120,7 @@ func agenticTool(opts AgenticToolOpts, name, description, systemPrompt string) t
 	var resolveErr error
 	var resolveDone bool
 
-	handler := func(toolCtx tool.Context, args agenticArgs) (agenticResult, error) {
+	handler := func(toolCtx adkagent.ToolContext, args agenticArgs) (agenticResult, error) {
 		a := opts.AgentGetter()
 		if a == nil {
 			return agenticResult{}, fmt.Errorf("%s: agent not yet bound (registration race?)", name)

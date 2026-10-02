@@ -57,7 +57,7 @@ func subagentEventsServer(t *testing.T, status int, body any) (*Adapter, *string
 }
 
 func subagentFrame(seq int64, text string, parts ...*genai.Part) attach.Frame {
-	ev := session.NewEvent("e-" + text)
+	ev := session.NewEventWithContext(context.Background(), "e-"+text)
 	ev.Author = "cluster"
 	ev.Timestamp = time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
 	all := []*genai.Part{}

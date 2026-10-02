@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ import (
 
 // modelTextEvent is a completed final model turn.
 func modelTextEvent(text string) *session.Event {
-	ev := session.NewEvent("inv-model")
+	ev := session.NewEventWithContext(context.Background(), "inv-model")
 	ev.Author = defaultAgentName
 	ev.LLMResponse = adkmodel.LLMResponse{
 		Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: text}}},
@@ -39,7 +40,7 @@ func modelTextEvent(text string) *session.Event {
 // annotationEvent mimics autonomous notes: content-bearing but
 // role-less, which ADK's content processor (and our classifier) skip.
 func annotationEvent() *session.Event {
-	ev := session.NewEvent("inv-note")
+	ev := session.NewEventWithContext(context.Background(), "inv-note")
 	ev.Author = "core-agent/autonomous"
 	ev.LLMResponse = adkmodel.LLMResponse{
 		Content:        &genai.Content{Parts: []*genai.Part{{Text: "paused"}}},
@@ -82,20 +83,20 @@ func branched(ev *session.Event) *session.Event {
 }
 
 func interruptAuditRow() *session.Event {
-	ev := session.NewEvent("inv-audit")
+	ev := session.NewEventWithContext(context.Background(), "inv-audit")
 	ev.Author = interruptAuditAuthor // contentless audit row, mirrors pkg/attach
 	return ev
 }
 
 func errorFinalEvent(code string) *session.Event {
-	ev := session.NewEvent("inv-err")
+	ev := session.NewEventWithContext(context.Background(), "inv-err")
 	ev.Author = defaultAgentName
 	ev.LLMResponse = adkmodel.LLMResponse{ErrorCode: code}
 	return ev
 }
 
 func emptyModelFinal() *session.Event {
-	ev := session.NewEvent("inv-empty")
+	ev := session.NewEventWithContext(context.Background(), "inv-empty")
 	ev.Author = defaultAgentName
 	ev.LLMResponse = adkmodel.LLMResponse{
 		Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{}},

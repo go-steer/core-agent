@@ -138,7 +138,7 @@ func projectGrounding(ev *session.Event) []*session.Event {
 // so ADK's content processor (which skips events with empty Role
 // when building LLM context) treats this as metadata, not history.
 func syntheticEvent(parent *session.Event, author, text string) *session.Event {
-	syn := session.NewEvent(parent.InvocationID)
+	syn := session.NewEventWithContext(context.Background(), parent.InvocationID)
 	syn.Author = author
 	syn.Branch = parent.Branch
 	syn.Content = &genai.Content{

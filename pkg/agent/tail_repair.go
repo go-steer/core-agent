@@ -214,7 +214,7 @@ func (a *Agent) repairDanglingToolCalls(ctx context.Context) {
 		if len(parts) == 0 {
 			continue
 		}
-		ev := session.NewEvent(cev.InvocationID)
+		ev := session.NewEventWithContext(ctx, cev.InvocationID)
 		ev.Author = cev.Author
 		ev.Branch = cev.Branch
 		ev.LLMResponse = adkmodel.LLMResponse{

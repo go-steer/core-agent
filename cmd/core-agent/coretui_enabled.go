@@ -651,6 +651,15 @@ func pathScopeToCoreTui(cfg *config.Config) coretui.PathScope {
 // below in spec order.
 type coreAgentAdapter struct {
 	inner *agent.Agent
+
+	// For the auto-mode approver's task (#1175): which inbox texts
+	// this TUI's own keyboard queued, and whether the next Run is the
+	// auto-continue turn core-tui builds from a drain. See
+	// operatorTaskFor.
+	approverMu      sync.Mutex
+	typedQueued     map[string]int
+	autoTurnPending bool
+	autoTurnTask    string
 	// attachAd carries the attach capability surface (AttachTools /
 	// AttachStatus / AttachUsage / AttachReplan / AttachReload) that
 	// moved off *agent.Agent with the pkg/agent split (#388 phase 4).
@@ -786,7 +795,10 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 		// regression #156 fixed and #157 extracted to pkg/usage.TurnTap
 		// so future adapters get it right by default.
 		var tap usage.TurnTap
-		for ev, err := range a.inner.Run(ctx, prompt) {
+		// What the operator typed is the auto-mode approver's task
+		// (#1175); an auto-continue turn's prompt is not. See
+		// operatorTaskFor.
+		for ev, err := range a.inner.Run(agent.WithOperatorTask(ctx, a.operatorTaskFor(prompt)), prompt) {
 			if err != nil {
 				yield(coretui.Event{}, err)
 				return
@@ -904,8 +916,76 @@ func (a *coreAgentAdapter) Interrupt(_ context.Context) error {
 	return errors.New("no turn in flight")
 }
 
-// Inject satisfies coretui.InjectableAgent (R-CHAT-11).
-func (a *coreAgentAdapter) Inject(message string) error { return a.inner.Inject(message) }
+// Inject satisfies coretui.InjectableAgent (R-CHAT-11). It is the
+// operator typing while a turn streams, so the text is remembered as
+// theirs for the auto-continue turn that will carry it (#1175).
+func (a *coreAgentAdapter) Inject(message string) error {
+	a.approverMu.Lock()
+	if a.typedQueued == nil {
+		a.typedQueued = make(map[string]int)
+	}
+	a.typedQueued[message]++
+	a.approverMu.Unlock()
+	if err := a.inner.Inject(message); err != nil {
+		a.approverMu.Lock()
+		a.forgetTyped(message)
+		a.approverMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// forgetTyped drops one record of message. Caller holds approverMu.
+func (a *coreAgentAdapter) forgetTyped(message string) {
+	if a.typedQueued[message] <= 1 {
+		delete(a.typedQueued, message)
+		return
+	}
+	a.typedQueued[message]--
+}
+
+// operatorTaskFor is the text of prompt that the operator wrote, for
+// the auto-mode approver (#1175 decision 6).
+//
+// An ordinary prompt is what they typed. The turn after a non-empty
+// DrainInbox is the auto-continue turn core-tui builds from that
+// drain — it calls submitTurn straight after DrainInbox, and nothing
+// else in core-tui drains — and its prompt is the drained batch,
+// formatted. That batch holds whatever reached the inbox while the
+// turn ran: the operator's own typing, but also a watcher's wake
+// payload relayed over --attach-listen or an anonymous inject. So
+// only the drained texts this TUI's Inject queued are the operator's.
+// Pairing by order rather than matching the prompt's text is
+// deliberate: core-tui expands @-references in the prompt, so the
+// text Run receives need not equal the formatted batch.
+func (a *coreAgentAdapter) operatorTaskFor(prompt string) string {
+	a.approverMu.Lock()
+	defer a.approverMu.Unlock()
+	if a.autoTurnPending {
+		a.autoTurnPending = false
+		task := a.autoTurnTask
+		a.autoTurnTask = ""
+		return task
+	}
+	return typedPart(prompt)
+}
+
+// coreTUIReferencedFiles is the header core-tui's submitTurn writes
+// after the operator's text when it inlines @-referenced files
+// (expandAtRefs, core-tui v0.28.0 tui/files.go).
+const coreTUIReferencedFiles = "\n\nReferenced files:\n"
+
+// typedPart is prompt without the files core-tui inlined after it.
+// File content is not the operator's words, and it is exactly where an
+// injection would sit. Cutting at the FIRST header is safe in both
+// directions: the operator's text comes first, so the cut can only
+// shorten what they wrote, never keep file content.
+func typedPart(prompt string) string {
+	if i := strings.Index(prompt, coreTUIReferencedFiles); i >= 0 {
+		return prompt[:i]
+	}
+	return prompt
+}
 
 // DrainInbox + PendingInboxCount satisfy coretui.InboxDrainer
 // (core-tui v0.6, issue #9). Combined with InjectableAgent (above)
@@ -915,7 +995,32 @@ func (a *coreAgentAdapter) Inject(message string) error { return a.inner.Inject(
 // turn ends → DrainInbox returns everything queued → core-tui
 // formats it via AutoContinueFormatter and fires a synthetic
 // follow-up turn with the ↻ marker.
-func (a *coreAgentAdapter) DrainInbox() []string   { return a.inner.DrainInbox() }
+//
+// A non-empty drain arms operatorTaskFor for the auto-continue turn
+// that follows, with the drained texts this TUI's own Inject queued.
+func (a *coreAgentAdapter) DrainInbox() []string {
+	texts := a.inner.DrainInbox()
+	a.approverMu.Lock()
+	defer a.approverMu.Unlock()
+	var typed []string
+	drained := false
+	for _, t := range texts {
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
+		drained = true
+		if a.typedQueued[t] > 0 {
+			a.forgetTyped(t)
+			typed = append(typed, t)
+		}
+	}
+	if drained {
+		a.autoTurnPending = true
+		a.autoTurnTask = strings.Join(typed, "\n\n")
+	}
+	return texts
+}
+
 func (a *coreAgentAdapter) PendingInboxCount() int { return a.inner.PendingInboxCount() }
 
 // WakeRequested satisfies coretui.WakeRequester (R-WAKE-1).

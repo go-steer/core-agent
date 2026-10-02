@@ -321,6 +321,11 @@ type Agent struct {
 	// It doubles as the once-per-turn guard: the arm runs on every tool
 	// observation and a turn is only cut once.
 	pendingRefusalStorm atomic.Int64
+	// approverTask is the operator-sent text the auto-mode approver
+	// judges calls against (#1175 decision 6), oldest first. Only kept
+	// when the gate has an approver; see approver_context.go.
+	approverTaskMu sync.Mutex
+	approverTask   []string
 	// watchdogAlertCounter is the sync core_agent.watchdog.alerts
 	// instrument; counted in drainWatchdogAlerts.
 	watchdogAlertCounter metric.Int64Counter
@@ -1628,6 +1633,21 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// permissions.WithSessionGate(nil) is a no-op so the guard is
 	// covered by the helper.
 	runCtx = permissions.WithSessionGate(runCtx, a.gate)
+	// And the auto-mode approver's view of this turn (#1175): the
+	// operator's task, the turn's earlier calls, the bill and the
+	// audit. Only with an approver wired; without it the gate never
+	// asks, and a turn that recorded calls for nobody would be waste.
+	// The operator's task text has been read (capture-approver-task);
+	// a subagent or nested Run started from this turn's context must
+	// not inherit it as its own.
+	if operatorTaskFrom(runCtx) != "" {
+		runCtx = WithOperatorTask(runCtx, "")
+	}
+	var approverTurn *turnApprover
+	if a.gate != nil && a.gate.HasApprover() {
+		approverTurn = newTurnApprover(a)
+		runCtx = permissions.WithApproverContext(runCtx, approverTurn)
+	}
 	// Open core-agent's own turn span LAST, so it sits on the fully
 	// layered per-turn context that goes to runner.Run. Two things
 	// follow from that ordering: ADK's `invoke_agent <name>` span
@@ -1674,6 +1694,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			if err != nil {
 				turnErr = err
 			}
+			// The approver's record of earlier calls: a call is
+			// pending until its result arrives. Nil-safe.
+			approverTurn.observe(ev)
 			// Watchdog observation (#123 PR 2). Extract tool calls
 			// (FunctionCall parts) from this event and feed them to
 			// the watchdog so its signals can fire on the post-turn
@@ -1778,6 +1801,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// the row explaining a refusal-storm cut (#1081) is written
 		// once the runner's session handle is released.
 		a.drainRefusalStormAudit()
+		// The approver's verdicts (#1175 decision 10), same window and
+		// same reasoning.
+		approverTurn.drainAudits()
 		// Durable guardrail rows (#643) for anything the two hooks
 		// above just tripped. Same window and same reasoning as the
 		// interrupt audit: the stream has drained and runCtx is

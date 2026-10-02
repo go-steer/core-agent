@@ -521,6 +521,33 @@ func (a *Agent) enforceCostCeilingInTurn() {
 	}
 }
 
+// costCeilingReached reports whether a configured ceiling is already
+// met: the session halted, this turn already tripped, or the spend at
+// or over either bound. It decides nothing and trips nothing; the
+// auto-mode approver asks it so it does not spend on a judgement once
+// the money is gone (#1175 decision 8).
+func (a *Agent) costCeilingReached() bool {
+	if a == nil || a.tracker == nil {
+		return false
+	}
+	a.mu.Lock()
+	ceiling := a.costCeiling
+	exceeded, turnTripped := a.costCeilingExceeded, a.turnCeilingTripped
+	turnStart, turnStartSet := a.turnStartCost, a.turnStartCostSet
+	a.mu.Unlock()
+	if exceeded || turnTripped {
+		return true
+	}
+	if !ceiling.active() {
+		return false
+	}
+	spent := a.tracker.Totals().CostUSD
+	if ceiling.MaxSessionUSD > 0 && spent >= ceiling.MaxSessionUSD {
+		return true
+	}
+	return ceiling.MaxTurnUSD > 0 && turnStartSet && spent-turnStart >= ceiling.MaxTurnUSD
+}
+
 // snapshotTurnStartCost captures the current session cost so the
 // post-turn hook can compute the delta (turn cost). Called from
 // Agent.Run at turn start, before the model is invoked. No-op when

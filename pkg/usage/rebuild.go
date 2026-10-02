@@ -91,7 +91,14 @@ func RebuildTrackerFromEvents(
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if ev == nil || ev.UsageMetadata == nil {
+		if ev == nil {
+			continue
+		}
+		if model, u, ok := sideUsageFrom(ev.CustomMetadata); ok {
+			t.AppendSideUsage(model, u, pricingFor(model))
+			continue
+		}
+		if ev.UsageMetadata == nil {
 			continue
 		}
 		u := TurnUsageFromMetadata(ev.UsageMetadata, ev.CustomMetadata)

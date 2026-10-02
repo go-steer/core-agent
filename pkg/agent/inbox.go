@@ -68,6 +68,11 @@ type inboxMessage struct {
 	caller  auth.Caller
 	spanCtx trace.SpanContext
 	quiet   bool
+	// taskCaller is the identity the attach server verified from the
+	// injecting request's own credential (attach.DirectCaller), or ""
+	// — anonymous, proxy-asserted, or not an HTTP inject at all. Only
+	// a message with one can be the auto-mode approver's task (#1175).
+	taskCaller string
 }
 
 // newPromptID returns a new prompt_id. UUID v7 is sortable by
@@ -137,23 +142,31 @@ var ErrInboxClosed = errors.New("agent: inbox closed")
 // downstream `inbox` event carrying the correlation handle.
 //
 // caller is the originator stamped on the message; zero value means
-// "no attached identity" (legacy Inject path). spanCtx is the trace
-// context of the injecting call, zero (invalid) when the inject
-// carried none.
+// "no attached identity" (legacy Inject path). Production injects go
+// through enqueue, which also carries the trace context, the quiet bit
+// and the verified caller.
+func (q *inbox) push(msg string, caller auth.Caller) (string, error) {
+	return q.enqueue(inboxMessage{text: msg, caller: caller})
+}
+
+// enqueue is push for a message with every field set by the caller
+// except its id, which it assigns.
 //
-// quiet suppresses the notify signal. InboxArrived is the harness-side
+// m.quiet suppresses the notify signal. InboxArrived is the harness-side
 // analogue of the wake signal — the documented pattern is to start a
 // turn when it fires — so a message that deliberately does not wake the
 // agent must not drive one through the side door either. It is still
 // appended, still counted, and still drained by the next turn.
-func (q *inbox) push(msg string, caller auth.Caller, spanCtx trace.SpanContext, quiet bool) (string, error) {
+func (q *inbox) enqueue(m inboxMessage) (string, error) {
 	id := newPromptID()
+	m.id = id
+	quiet := m.quiet
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
 		return "", ErrInboxClosed
 	}
-	q.messages = append(q.messages, inboxMessage{id: id, text: msg, caller: caller, spanCtx: spanCtx, quiet: quiet})
+	q.messages = append(q.messages, m)
 	if len(q.messages) > defaultInboxCap {
 		// Drop oldest with a logged warning so a stuck producer
 		// can't deadlock the agent.
@@ -509,11 +522,15 @@ func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 // it. Everything else is identical — same queue, same prompt_id, same
 // SSE events, same last-caller-wins originator rule.
 //
-// ctx is used ONLY to read the active span context. It is deliberately
-// not stored, not used for cancellation, and not consulted for the
-// caller identity (pass that explicitly): an inbox message outlives
-// the request that queued it by design, so keeping the request's
-// context alive on the queue would be a lifetime bug.
+// ctx is read for two values and nothing else: the active span
+// context, and attach.DirectCaller — whether the attach server
+// verified the caller from the request's own credential, which decides
+// whether the message can be the auto-mode approver's task (#1175).
+// The originator identity is still the caller argument, passed
+// explicitly. ctx is not stored and not used for cancellation: an
+// inbox message outlives the request that queued it by design, so
+// keeping the request's context alive on the queue would be a
+// lifetime bug.
 //
 // Why a link and not a parent: the injecting request returns as soon
 // as the message is queued, so its span has already ended by the time
@@ -677,7 +694,13 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 		// do, for example) we don't want to panic.
 		return "", errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
-	id, err := a.inbox.push(message, caller, trace.SpanContextFromContext(ctx), !mode.wake)
+	id, err := a.inbox.enqueue(inboxMessage{
+		text:       message,
+		caller:     caller,
+		spanCtx:    trace.SpanContextFromContext(ctx),
+		quiet:      !mode.wake,
+		taskCaller: attach.DirectCaller(ctx),
+	})
 	if err != nil {
 		return "", err
 	}
@@ -782,6 +805,9 @@ type inboxDrain struct {
 	// batch can mix an operator's question with a watcher's signal and
 	// the whole point is to stop those rendering identically.
 	senders []string
+	// taskCallers parallels texts: each message's directly verified
+	// caller (inboxMessage.taskCaller), for the approver's task.
+	taskCallers []string
 	// originator is the last non-empty caller in the batch — the
 	// turn's originator per docs/multi-session-design.md ("the turn
 	// answers the most recent ask"). Zero when nothing carried an
@@ -843,8 +869,9 @@ func (a *Agent) drainInboxFull() inboxDrain {
 	a.wakeFenced = false
 	a.mu.Unlock()
 	d := inboxDrain{
-		texts:   make([]string, len(msgs)),
-		senders: make([]string, len(msgs)),
+		texts:       make([]string, len(msgs)),
+		senders:     make([]string, len(msgs)),
+		taskCallers: make([]string, len(msgs)),
 	}
 	var deferredCaller auth.Caller
 	for i, m := range msgs {
@@ -854,6 +881,7 @@ func (a *Agent) drainInboxFull() inboxDrain {
 		})
 		d.texts[i] = m.text
 		d.senders[i] = m.caller.Identity
+		d.taskCallers[i] = m.taskCaller
 		switch {
 		case m.caller.Identity == "":
 		case m.quiet:

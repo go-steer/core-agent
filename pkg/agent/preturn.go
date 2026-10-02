@@ -222,6 +222,16 @@ var preTurnSteps = []preTurnStep{
 		run: func(a *Agent, tp *turnPrep) error { tp.drained = a.drainInboxFull(); return nil },
 	},
 	{
+		name: "capture-approver-task",
+		enforces: "After drain-inbox, which supplies each message's verified caller, and after " +
+			"pending-compaction, whose summary drops the old task: the operator text this turn " +
+			"brings must survive the compaction it rides in on. Behind every refusal above, " +
+			"because a refused turn never reaches the model, so its text is not an instruction " +
+			"the model has seen. Reads the host's WithOperatorTask text and the raw inbox " +
+			"texts, never tp.prompt, so alert and inbox framing never become the task (#1175).",
+		run: func(a *Agent, tp *turnPrep) error { a.captureApproverTask(tp); return nil },
+	},
+	{
 		name: "prepend-inbox",
 		enforces: "After drain-inbox, obviously, but the load-bearing part is that it reads " +
 			"tp.rawPrompt and not tp.prompt: the alert prepend may already have filled " +

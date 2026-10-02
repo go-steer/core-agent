@@ -78,10 +78,11 @@ func (t *Tracker) ContextWindowUsed() int {
 func (t *Tracker) ContextWindowUsedEstimated() (used int, estimated bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.turns) == 0 {
+	last, ok := t.lastLocked()
+	if !ok {
 		return 0, false
 	}
-	measured := t.turns[len(t.turns)-1].InputTokens
+	measured := last.InputTokens
 	if t.pendingContextBytes <= 0 {
 		return measured, false
 	}

@@ -76,7 +76,10 @@ func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr
 // per-TurnComplete, reset between turns — see pkg/usage.TurnTap), then
 // hands the wrapped iterator to WriteEvents for formatting.
 func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts []EventsOption) (int, error) {
-	events := tapTracker(a.Run(ctx, prompt), tracker, m.Name(), pricing)
+	// Headless's -p prompt and the REPL's typed lines are the
+	// operator's own words, the auto-mode approver's task (#1175). A
+	// REPL wake turn arrives here with an empty prompt and adds none.
+	events := tapTracker(a.Run(agent.WithOperatorTask(ctx, prompt), prompt), tracker, m.Name(), pricing)
 	if err := WriteEvents(events, stdout, stderr, eventsOpts...); err != nil {
 		return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
 	}

@@ -165,3 +165,38 @@ func TestFromConfig_AutoEligible(t *testing.T) {
 		t.Errorf("malformed eligible pattern: err = %v, want one naming permissions.auto.eligible", err)
 	}
 }
+
+// permissions.auto.task_from reaches the gate, survives DeriveForSession
+// (a multi-session daemon's sessions are all derived), and matches only
+// exact, non-empty identities.
+func TestApproverTaskSource(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Permissions: config.PermissionsConfig{
+		Mode:            "ask",
+		ApprovalTimeout: "1m",
+		Auto:            &config.AutoApproverConfig{TaskFrom: []string{"alice@example.com"}},
+	}}
+	g, err := FromConfig(cfg, t.TempDir(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived := g.DeriveForSession("s1", nil)
+	for name, gate := range map[string]*Gate{"template": g, "derived": derived} {
+		if !gate.ApproverTaskSource("alice@example.com") {
+			t.Errorf("%s: a listed identity is not a task source", name)
+		}
+		for _, id := range []string{"", "bob@example.com", "Alice@example.com", "alice@example.com "} {
+			if gate.ApproverTaskSource(id) {
+				t.Errorf("%s: %q is a task source, want only the exact listed identity", name, id)
+			}
+		}
+	}
+	var nilGate *Gate
+	if nilGate.ApproverTaskSource("alice@example.com") {
+		t.Error("a nil gate named a task source")
+	}
+	cfg.Permissions.Auto = nil
+	if g, _ = FromConfig(cfg, t.TempDir(), "", nil); g.ApproverTaskSource("alice@example.com") {
+		t.Error("no auto block, yet an identity is a task source")
+	}
+}

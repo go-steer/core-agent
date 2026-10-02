@@ -257,6 +257,7 @@ type Gate struct {
 	approver      Approver
 	autoEligible  *Policy
 	autoProtected []string
+	autoTaskFrom  map[string]struct{}
 
 	// approverInstructions is the symlink-resolved path of the
 	// approver's instructions file, or "". Writes to it take the
@@ -411,6 +412,12 @@ type Options struct {
 	// approver's instructions. The gate keeps any call that names it
 	// away from the approver, the way it does the control-plane files.
 	ApproverInstructionsFile string
+
+	// ApproverTaskFrom lists the caller identities whose injected
+	// messages are the operator's task (permissions.auto.task_from).
+	// The gate only holds it: the agent asks ApproverTaskSource when
+	// it decides what a turn's task is.
+	ApproverTaskFrom []string
 }
 
 // New builds a Gate from the supplied options. The Mode defaults to
@@ -452,7 +459,20 @@ func New(opts Options) *Gate {
 		autoEligible:         opts.AutoEligible,
 		autoProtected:        protectedMentions(opts.ApproverInstructionsFile),
 		approverInstructions: resolvedInstructionsPath(opts.ApproverInstructionsFile),
+		autoTaskFrom:         identitySet(opts.ApproverTaskFrom),
 	}
+}
+
+// identitySet is ids as a set, or nil when there are none.
+func identitySet(ids []string) map[string]struct{} {
+	if len(ids) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
 }
 
 // FromConfig builds a Gate from a Config plus the resolved project root
@@ -515,11 +535,12 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		return nil, err
 	}
 	return New(Options{
-		Mode:         mode,
-		Policy:       policy,
-		Scope:        scope,
-		Prompter:     prompter,
-		AutoEligible: autoEligible,
+		Mode:             mode,
+		Policy:           policy,
+		Scope:            scope,
+		Prompter:         prompter,
+		AutoEligible:     autoEligible,
+		ApproverTaskFrom: autoTaskFromConfig(cfg.Permissions.Auto),
 		// PlanGateArmed, not the raw RequirePlanArtifact bool: advisory
 		// mode registers record_plan and persists the artifact but must
 		// never deny a mutating call on plan state.
@@ -542,6 +563,14 @@ func autoEligibleFromConfig(auto *config.AutoApproverConfig) (*Policy, error) {
 		return nil, fmt.Errorf("permissions.auto.eligible: %w", err)
 	}
 	return p, nil
+}
+
+// autoTaskFromConfig is permissions.auto.task_from, or nil.
+func autoTaskFromConfig(auto *config.AutoApproverConfig) []string {
+	if auto == nil {
+		return nil
+	}
+	return auto.TaskFrom
 }
 
 // Mode reports the active permission mode. Acquires g.mu to pair
@@ -661,6 +690,10 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		// model rewrite the approver's instructions with an ordinary
 		// write prompt, or none at all in yolo.
 		approverInstructions: template.approverInstructions,
+		// Read-only after construction, so shared by reference. A
+		// sub-gate without it would give its session no task, and
+		// every eligible call there would escalate.
+		autoTaskFrom: template.autoTaskFrom,
 	}
 }
 
@@ -859,6 +892,18 @@ func (g *Gate) SetApprover(a Approver, instructionsFile string) {
 	g.approver = a
 	g.autoProtected = protectedMentions(instructionsFile)
 	g.approverInstructions = resolvedInstructionsPath(instructionsFile)
+}
+
+// ApproverTaskSource reports whether a message from identity, which
+// authenticated as that identity directly, is the operator's task
+// (permissions.auto.task_from, #1175 decision 6). "" is never one.
+// Nil-safe.
+func (g *Gate) ApproverTaskSource(identity string) bool {
+	if g == nil || identity == "" {
+		return false
+	}
+	_, ok := g.autoTaskFrom[identity]
+	return ok
 }
 
 // AddAllowPatterns extends the live policy with additional allow

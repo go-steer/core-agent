@@ -829,6 +829,17 @@ type AutoApproverConfig struct {
 	// makes nothing eligible, so auto behaves exactly like ask.
 	Eligible []string `json:"eligible,omitempty"`
 
+	// TaskFrom lists the caller identities whose injected messages
+	// are the operator's task, the text the approver judges a call
+	// against. A message counts only when its caller authenticated as
+	// one of these identities directly: a proxy asserting the identity
+	// on someone's behalf (X-Asserted-Caller) does not count, nor does
+	// an anonymous caller. The -p prompt, the REPL, the local TUI and
+	// an autonomous run's goal are the task without being listed. Empty
+	// means no injected message is the task, so on a daemon every call
+	// escalates.
+	TaskFrom []string `json:"task_from,omitempty"`
+
 	// InstructionsFile is a file whose text is added to the approver's
 	// built-in instructions. A relative path resolves against the
 	// agents dir, like content_roots. The file is read once at startup
@@ -888,6 +899,14 @@ func (a *AutoApproverConfig) validate() error {
 	for i, e := range a.Eligible {
 		if strings.TrimSpace(e) == "" {
 			return fmt.Errorf("permissions.auto.eligible[%d] is empty", i)
+		}
+	}
+	for i, id := range a.TaskFrom {
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("permissions.auto.task_from[%d] is empty", i)
+		}
+		if id != strings.TrimSpace(id) {
+			return fmt.Errorf("permissions.auto.task_from[%d] %q has surrounding spaces, and identities match exactly", i, id)
 		}
 	}
 	if a.InstructionsFile != "" && strings.TrimSpace(a.InstructionsFile) == "" {

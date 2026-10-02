@@ -44,6 +44,33 @@ func authSourceFromContext(ctx context.Context) (string, bool) {
 	return s, ok
 }
 
+// DirectCaller returns the identity this server verified from the
+// request's own credential, or "" when it verified none (an anonymous
+// request carries a placeholder identity, not a verified one) or when a
+// proxy asserted the identity on someone's behalf (X-Asserted-Caller).
+//
+// It is how an inject tells an operator's own message from one a relay
+// sent under the operator's name: k8s-lookout and chat gateways inject
+// that way, and their text is relayed event or chat content, not the
+// operator's instruction (#1175 decision 6). The agent records it on
+// the queued message and checks it against permissions.auto.task_from.
+//
+// The auth source /whoami reports is not enough to decide this. A
+// listener's transport bearer token or a verified client certificate
+// upgrades the source, but the identity is then the configured
+// default (multi_session.default_identity, or "anon"), which every
+// holder of that token shares — the operator's TUI and a watcher
+// alike. Only an identity the per-caller authenticator derived from
+// the credential is one caller's.
+func DirectCaller(ctx context.Context) string {
+	id, _ := ctx.Value(directCallerCtxKey{}).(string)
+	return id
+}
+
+// directCallerCtxKey carries DirectCaller's answer, which only
+// callerMiddlewareWithConfig writes.
+type directCallerCtxKey struct{}
+
 // callerMiddlewareConfig packages the per-server settings the
 // middleware needs. Separated from Options so the middleware can be
 // constructed cheaply in tests without spinning up a full Server.
@@ -121,6 +148,11 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 		// transport bearer gate that already ran) — never a raw
 		// request header, which any client can forge (#385).
 		source := whoAmISourceAnonymous
+		// direct is the identity the authenticator derived from this
+		// request's own credential, or "" (see DirectCaller). Set before
+		// the transport-bearer and mTLS upgrades below, which change the
+		// source without changing whose identity this is.
+		direct := ""
 		c, err := authn.Authenticate(r)
 		if err != nil {
 			if cfg.enforceAuthentication {
@@ -133,6 +165,9 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 			}
 		} else {
 			source = credentialSource(authn)
+			if source != whoAmISourceAnonymous {
+				direct = c.Identity
+			}
 		}
 		if source == whoAmISourceAnonymous {
 			if cfg.transportBearerConfigured {
@@ -171,6 +206,7 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 				return
 			}
 			c, proxyBy = effective, by
+			direct = ""
 			// The assertion was validated (proxy allowlist + identity
 			// provisioning) — the asserted path is the audit-relevant
 			// source and wins over the underlying credential.
@@ -182,6 +218,9 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 			ctx = auth.WithProxyBy(ctx, proxyBy)
 		}
 		ctx = withAuthSource(ctx, source)
+		if direct != "" {
+			ctx = context.WithValue(ctx, directCallerCtxKey{}, direct)
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

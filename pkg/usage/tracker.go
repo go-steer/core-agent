@@ -58,6 +58,11 @@ type Turn struct {
 	// Pricing passed to AppendUsage; consumers rendering cost should
 	// show "$—" for unpriced turns instead of "$0.00". See #368.
 	Unpriced bool
+	// Side is true for a call recorded with AppendSideUsage: one that
+	// spent money on the session's behalf without sending the
+	// conversation (the auto-mode approver, #1175). It counts in
+	// Totals and TotalsByModel, and Last skips it.
+	Side bool
 }
 
 // TurnUsage is the per-call token breakdown a provider adapter hands
@@ -369,14 +374,51 @@ func (t *Tracker) AppendUsage(model string, u TurnUsage, p Pricing) Turn {
 	return turn
 }
 
-// Last returns the most recently appended turn, or zero if none yet.
+// Last returns the most recently appended turn that is not a side
+// call, or zero if none yet. Its model and input count stand for the
+// conversation (context window, compaction tier, the last-turn cost on
+// the wire), which a side call's do not.
 func (t *Tracker) Last() (Turn, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.turns) == 0 {
-		return Turn{}, false
+	return t.lastLocked()
+}
+
+// lastLocked is Last for a caller already holding t.mu.
+func (t *Tracker) lastLocked() (Turn, bool) {
+	for i := len(t.turns) - 1; i >= 0; i-- {
+		if !t.turns[i].Side {
+			return t.turns[i], true
+		}
 	}
-	return t.turns[len(t.turns)-1], true
+	return Turn{}, false
+}
+
+// AppendSideUsage records a model call that is not a measurement of
+// the conversation: its cost counts toward Totals, TotalsByModel and so
+// the cost ceilings, but Last skips it, the #975 context estimate is
+// left alone, and the SetOnAppend callback does not fire (it would
+// re-ship the previous turn as the last one). The next AppendUsage
+// brings the totals on the wire up to date.
+func (t *Tracker) AppendSideUsage(model string, u TurnUsage, p Pricing) Turn {
+	u = u.Clamped()
+	turn := Turn{
+		Model:                    model,
+		InputTokens:              u.InputTokens,
+		CachedInputTokens:        u.CachedInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
+		OutputTokens:             u.OutputTokens,
+		ThoughtsTokens:           u.ThoughtsTokens,
+		ToolUseTokens:            u.ToolUseTokens,
+		CostUSD:                  p.CostUSDForTurn(u),
+		At:                       time.Now(),
+		Unpriced:                 p.Unpriced,
+		Side:                     true,
+	}
+	t.mu.Lock()
+	t.turns = append(t.turns, turn)
+	t.mu.Unlock()
+	return turn
 }
 
 // Totals returns the cumulative usage across all turns.

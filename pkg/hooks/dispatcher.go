@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"google.golang.org/adk/session"
+
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 )
 
 // CommandGate is the subset of *permissions.Gate the dispatcher needs
@@ -260,6 +262,7 @@ func (d *Dispatcher) envelope(eventName string, extra map[string]any) map[string
 func (d *Dispatcher) execCommand(ctx context.Context, command string, envelope []byte) error {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command) //nolint:gosec // operator-authored config command
 	cmd.Stdin = bytes.NewReader(envelope)
+	cmd.Env = childenv.Environ() // a hook never holds the daemon's credentials (#1157)
 	// Capture combined output so failures include context in the stderr
 	// line the dispatcher logs. Successful runs discard it silently.
 	out, err := cmd.CombinedOutput()

@@ -16,10 +16,13 @@ package agentenv
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 )
 
 // Resolver interpolates ${env:NAME} in strings using an env-var lookup,
@@ -54,6 +57,7 @@ type Resolver struct {
 	mu       sync.Mutex
 	seenRefs map[string]struct{} // names encountered during interpolation
 	cfgRefs  map[string]struct{} // names a *_env config field refers to
+	refused  map[string]struct{} // withheld credential names refused, for once-only logging (#1157)
 }
 
 // NewResolver builds a Resolver from a parsed manifest and an env-var
@@ -133,7 +137,32 @@ func (r *Resolver) Interpolate(s string) string {
 		if r.seenRefs != nil {
 			r.seenRefs[name] = struct{}{}
 		}
+		// A daemon credential (#1157) is never spliced into text the
+		// model reads, declared in the manifest or not. Without this,
+		// `${env:THE_ATTACH_TOKEN}` in a skill resource the agent wrote
+		// — skill loads are exempt from prompting, and resources are
+		// read from disk on every call — handed the agent the token
+		// that answers its own permission prompts, more directly than
+		// any child process ever could. Checked before r.values on
+		// purpose: a deployment declaring the token in env.yaml so the
+		// drift report stays quiet is the common case, not an edge.
+		withheld := childenv.IsWithheld(name)
+		first := false
+		if withheld {
+			if r.refused == nil {
+				r.refused = make(map[string]struct{})
+			}
+			_, seen := r.refused[name]
+			first = !seen
+			r.refused[name] = struct{}{}
+		}
 		r.mu.Unlock()
+		if withheld {
+			if first {
+				log.Printf("agentenv: ${env:%s} not interpolated: %s is a daemon credential and never reaches the model (#1157)", name, name)
+			}
+			return ""
+		}
 		if v, ok := r.values[name]; ok {
 			return v
 		}

@@ -547,6 +547,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	}
 
 	attachCfg = mergeAttachOpts(attachCfg, cfg.Attach, flag.CommandLine)
+	withholdDaemonCredentials(cfg, attachCfg.TokenEnv, os.Stderr)
 	if modelOverride != "" {
 		cfg.Model.Name = modelOverride
 	}

@@ -151,6 +151,31 @@ Both routes count as a reference, so declaring a var in `env.yaml` and using it 
 
 Discovery is by JSON-tag convention (`*_env`), not a hand-maintained list, so a new `*_env` field is picked up with no wiring. The corollary: an env-name field tagged something else — `webhook_secret`, `token_var` — is invisible to the check. Name new fields with the suffix.
 
+### Those variables are the daemon's, not the agent's
+
+Every variable named by a `*_env` field, plus the one `--attach-token` names, is **withheld from every process the daemon starts**: `bash` tool commands, hooks, MCP stdio servers, and `sciontool`. Startup says which:
+
+```
+core-agent: child processes do not inherit ALERT_BEARER, CORE_AGENT_ATTACH_TOKEN
+```
+
+The attach token answers the agent's own permission prompts. Inherited, it let the agent approve its own pending prompt, add a standing allow rule, or reset a tripped guardrail — not by a direct `curl`, which is itself a gated call an operator sees, but through test code it wrote and an approved `go test` then ran ([#1157](https://github.com/go-steer/core-agent/issues/1157)). An alert bearer, inherited the same way, let it post as the daemon.
+
+Scrubbing the child's environment is not enough on its own. `/proc/<pid>/environ` holds the environment a process was *started* with, and any same-user process can read it, so a child could recover the token with `cat /proc/$PPID/environ`. While the daemon holds one of these credentials it therefore also makes itself non-dumpable on Linux (`prctl(PR_SET_DUMPABLE, 0)`), which closes that read along with `/proc/<pid>/mem` and same-user `ptrace`. The cost is no core dumps and no attaching a debugger to a running daemon as the same user; launching it under a debugger still works.
+
+The same names are never spliced into model-visible text either: `${env:NAME}` for a withheld name interpolates to nothing, with one log line, whether or not `env.yaml` declares it. Skill resources are re-read from disk on every load and loading them never prompts, so without this an agent could write `${env:…}` into a skill file and read the token back.
+
+**Behaviour change for hooks and MCP servers.** A hook that used one of these variables — say, posting to the alert webhook from a `*_env` field — no longer sees it, and hooks have no `env` block to hand it back. Read the secret from a file the hook owns instead. An MCP server can be handed a value explicitly through `mcp.json`'s `env` block, applied on top of the scrubbed environment — but that server is an ordinary, dumpable process, so the value is readable from *its* `/proc/<pid>/environ` by any same-user process, the agent's included. Hand over only what the server cannot work without.
+
+What this does not cover:
+
+- **An ancestor's environment.** A daemon started from a shell that `export`ed the token leaves it in that shell's `/proc/<pid>/environ`, which nothing in the daemon controls. In a container the daemon is PID 1 and has no such ancestor. On a workstation, put the token in the daemon's environment only (`CORE_AGENT_ATTACH_TOKEN=… core-agent …`), not in your shell's.
+- **Other processes on the same host that hold the token.** An attach client (`core-agent-tui`, `core-agent attach`) started with the token in its environment, or a file the token was written to, is readable by the agent like any other same-user process or file.
+- **No credential at all.** A loopback attach listener with no token, or a Unix socket whose only auth is the socket file's permissions, needs no credential to reach — the agent's `bash` can call `perms/respond` directly. If the agent has a shell, give the listener a token.
+- **A daemon running as root.** Non-dumpable only stops processes without `CAP_SYS_PTRACE`; a root daemon's children typically have it.
+- **Provider and cloud credentials** (`ANTHROPIC_API_KEY`, ADC, `GH_TOKEN`). SDKs consume them, not config by name, so they are not in the set, and a coding agent's own tooling legitimately needs them.
+- **Operator-triggered helpers in the local TUI** (`$EDITOR`, the clipboard helper) start from the full environment. The operator launches them, not the model — but an editor opened in a repository can run configuration that repository controls.
+
 ---
 
 ## Sensitive values

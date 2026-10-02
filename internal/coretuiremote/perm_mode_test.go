@@ -125,6 +125,9 @@ func TestPermModeChipMapping(t *testing.T) {
 		{permissions.ModeAcceptEdits, coretui.PermissionModeAcceptEdits},
 		{permissions.ModePlan, coretui.PermissionModePlan},
 		{permissions.ModeYolo, coretui.PermissionModeBypass},
+		// #1175 decision 13: auto has its own chip. Shown as default, an
+		// attached operator would read "ask" while a model approves calls.
+		{permissions.ModeAuto, coretui.PermissionModeAuto},
 	}
 	for _, c := range cases {
 		if got := permModeToChip(c.mode); got != c.chip {

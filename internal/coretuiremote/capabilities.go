@@ -765,6 +765,9 @@ func (a *Adapter) SessionApprovals() []coretui.ApprovalLog {
 			// #277) — so an unauthenticated listener's row is
 			// unchanged rather than labelled with a guess.
 			By: ap.By,
+			// Set when ModeAuto's approver model allowed the call
+			// without a person (#1175 decision 10).
+			Approver: ap.ApproverModel,
 		})
 	}
 	return out

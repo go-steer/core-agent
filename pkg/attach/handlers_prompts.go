@@ -123,6 +123,12 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		return
 	}
 	decision, downgraded := h.capAlways(r, decision)
+	// The gate applies any allow on an approver-escalated prompt as
+	// allow-once (#1175 decision 11). Say so, rather than acknowledge a
+	// standing grant that was never made.
+	if capped, ok := broker.escalationCap(req.ID, decision); ok {
+		decision, downgraded = capped, true
+	}
 	approver := verifiedApprover(r.Context())
 	if req.Approver != "" && req.Approver != approver {
 		if approver == "" {

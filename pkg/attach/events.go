@@ -323,7 +323,19 @@ import "time"
 // grant widens every session and survives a restart.
 // The 200 body gains `decision` (what was applied) and `downgraded`. A
 // pre-1.17.0 daemon omits both and applied the always.
-const protocolVersion = "1.17.0"
+//
+// v1.18.0 (#1175): auto mode's escalated prompt. A permission prompt
+// frame on `/perms/stream`, live or replayed on subscribe, gains
+// `approver_model` and `approver_reason` when ModeAuto's approver model
+// looked at the call and passed it to a person. The reason is model
+// output: a client quotes it as the approver's words and offers only
+// allow once and deny, since the daemon applies any allow on such a
+// prompt as allow-once, and `POST /perms/respond` now reports that with
+// `decision: "allow-once"`, `downgraded: true`. `GET /perms` approval
+// rows gain `approver_model` for a call the approver allowed without a
+// person. All additive and omitempty; a pre-1.18.0 daemon never sets
+// them.
+const protocolVersion = "1.18.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

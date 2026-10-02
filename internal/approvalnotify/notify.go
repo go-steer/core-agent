@@ -37,10 +37,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/tools/alert"
 )
 
@@ -161,6 +164,19 @@ func (n *Notifier) notify(ctx context.Context, session string, p attach.Unwatche
 		// identically otherwise, and they are not equally surprising.
 		details["source"] = p.Frame.Source
 	}
+	if p.Frame.ApproverModel != "" {
+		// ModeAuto's approver looked first and passed it on (#1175).
+		// The reader should know a model already had a view, and that
+		// only once or deny will be applied. Text targets render each
+		// detail as a line of the message, and the reason is model
+		// output the call's arguments can steer, so both values are
+		// held to one bounded line here: a newline in them would start
+		// a line of its own and could pass for one of the daemon's.
+		details["approver_model"] = oneLine(p.Frame.ApproverModel, 128)
+		if r := oneLine(p.Frame.ApproverReason, permissions.MaxApproverReasonBytes); r != "" {
+			details["approver_reason"] = r
+		}
+	}
 
 	// Why nobody has answered. A prompt that reached no client and one
 	// that sat unanswered on an attached one ask the reader different
@@ -202,4 +218,17 @@ func (n *Notifier) notify(ctx context.Context, session string, p attach.Unwatche
 	}
 	n.log.Info("approval notification sent",
 		"target", n.snd.Target(), "session", session, "request_id", p.Frame.ID, "tool", p.Frame.ToolName)
+}
+
+// oneLine collapses every whitespace run in s, newlines included, to
+// one space and caps the result at n bytes on a rune boundary.
+func oneLine(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }

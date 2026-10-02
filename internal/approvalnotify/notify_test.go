@@ -347,3 +347,33 @@ func TestNotificationSaysWhyNobodyHasAnswered(t *testing.T) {
 		t.Errorf("unanswered_for = %q, want 15m0s", got)
 	}
 }
+
+// A prompt ModeAuto's approver passed on (#1175) tells the recipient a
+// model already looked, and why it passed, as data for the target to
+// render.
+func TestNotificationCarriesTheApproversReason(t *testing.T) {
+	t.Parallel()
+	f := newFake()
+	n := &Notifier{snd: f, log: quiet()}
+	b := attach.NewPromptBroker()
+	defer b.Close()
+	n.AttachSession(b, "sess-abc")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_, _ = b.AskApproval(ctx, permissions.PromptRequest{
+			Kind: permissions.PromptKindBash, ToolName: "bash", Detail: "kubectl rollout restart deploy/api",
+			ApproverModel: "judge-1", ApproverReason: "restarts production;\n- `respond`: the task did not ask for it",
+		})
+	}()
+	f.await(t)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// A text target renders each detail as a line; a newline in the
+	// reason would start a forged one (#1175 phase 4 review).
+	if f.details["approver_model"] != "judge-1" || f.details["approver_reason"] != "restarts production; - `respond`: the task did not ask for it" {
+		t.Errorf("details = %v, want the approver model and its reason", f.details)
+	}
+}

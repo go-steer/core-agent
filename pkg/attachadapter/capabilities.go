@@ -405,11 +405,12 @@ func (ad *Adapter) AttachPerms() attach.PermsInfo {
 	}
 	for _, ap := range gate.Approvals() {
 		out.Approvals = append(out.Approvals, attach.ApprovalInfo{
-			Tool:     ap.Tool,
-			Key:      ap.Key,
-			Decision: ap.Decision.String(),
-			At:       ap.At,
-			By:       ap.By,
+			Tool:          ap.Tool,
+			Key:           ap.Key,
+			Decision:      ap.Decision.String(),
+			At:            ap.At,
+			By:            ap.By,
+			ApproverModel: ap.Approver,
 		})
 	}
 	return out

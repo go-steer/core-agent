@@ -1166,6 +1166,9 @@ func (a *coreAgentAdapter) SessionApprovals() []coretui.ApprovalLog {
 			// whoever is at the keyboard. core-tui renders an empty
 			// By as no suffix at all.
 			By: ap.By,
+			// The approver model, when it allowed the call without a
+			// person (#1175 decision 10).
+			Approver: ap.Approver,
 		})
 	}
 	return out
@@ -1916,6 +1919,7 @@ func (g *gatePrompterBridge) AskApprovalAttributed(ctx context.Context, req perm
 		Source:      req.Source,
 		PersistTool: req.PersistTool,
 		PersistKey:  req.PersistKey,
+		Escalation:  escalationFor(req),
 	}
 	var out coretui.PermissionOutcome
 	var err error
@@ -1982,6 +1986,17 @@ func translateDecision(d coretui.PermissionDecision) permissions.Decision {
 	}
 }
 
+// escalationFor is the core-tui escalation for a prompt ModeAuto's
+// approver passed on, or nil for an ordinary prompt (#1175 decision
+// 11): core-tui then offers only once and deny, and quotes the reason
+// as the approver's words.
+func escalationFor(req permissions.PromptRequest) *coretui.PermissionEscalation {
+	if req.ApproverModel == "" {
+		return nil
+	}
+	return &coretui.PermissionEscalation{Approver: req.ApproverModel, Reason: req.ApproverReason}
+}
+
 // translateMode / translateModeBack bridge the gate's Mode values
 // and core-tui's PermissionMode enum. Both sides now carry the
 // same four modes (default / acceptEdits / plan / bypass) since
@@ -1995,6 +2010,10 @@ func translateDecision(d coretui.PermissionDecision) permissions.Decision {
 // Operators who want ModeAllow set it via .agents/config.json.
 func translateMode(m permissions.Mode) coretui.PermissionMode {
 	switch m {
+	case permissions.ModeAuto:
+		// Its own chip (#1175 decision 13). The default arm below would
+		// show "ask" while a model approves calls.
+		return coretui.PermissionModeAuto
 	case permissions.ModeAcceptEdits:
 		return coretui.PermissionModeAcceptEdits
 	case permissions.ModePlan:
@@ -2008,6 +2027,8 @@ func translateMode(m permissions.Mode) coretui.PermissionMode {
 
 func translateModeBack(m coretui.PermissionMode) permissions.Mode {
 	switch m {
+	case coretui.PermissionModeAuto:
+		return permissions.ModeAuto
 	case coretui.PermissionModeAcceptEdits:
 		return permissions.ModeAcceptEdits
 	case coretui.PermissionModePlan:

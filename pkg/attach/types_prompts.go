@@ -33,6 +33,16 @@ type PromptFrame struct {
 	PersistKey  string    `json:"persist_key,omitempty"`
 	Access      string    `json:"access,omitempty"` // "" for non-path-scope prompts
 	At          time.Time `json:"at"`
+
+	// ApproverModel is set when ModeAuto's approver model looked at the
+	// call and passed it to a person rather than deciding it (#1175,
+	// protocol 1.18.0). ApproverReason is its reason, when it gave one
+	// the daemon used. The reason is model output the call's own
+	// arguments can steer: render it quoted as the approver's words.
+	// On such a prompt the daemon applies any allow as allow-once, so a
+	// client should offer only allow once and deny (decision 11).
+	ApproverModel  string `json:"approver_model,omitempty"`
+	ApproverReason string `json:"approver_reason,omitempty"`
 }
 
 // PromptResponse is the POST body for /perms/respond. Decision uses
@@ -74,8 +84,10 @@ const MaxDenyReasonBytes = 500
 // Downgraded is true when that differs from the one requested because
 // the caller may not give it (#1179): on a multi-session daemon an
 // "allow-always" from anyone but a daemon admin is applied as
-// "allow-session". Protocol 1.17.0; an older daemon
-// omits both, and applied what was sent.
+// "allow-session". Since 1.18.0 it is also true when the prompt was
+// one ModeAuto's approver passed on (PromptFrame.ApproverModel set):
+// any allow there is applied as "allow-once" (#1175). Protocol 1.17.0;
+// an older daemon omits both, and applied what was sent.
 type PromptRespondResponse struct {
 	Acknowledged bool   `json:"acknowledged"`
 	Approver     string `json:"approver,omitempty"`

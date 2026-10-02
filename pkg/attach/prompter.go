@@ -216,6 +216,10 @@ func (b *PromptBroker) AskApprovalAttributed(ctx context.Context, req permission
 		PersistKey:  req.PersistKey,
 		Access:      req.Access.String(),
 		At:          time.Now().UTC(),
+		// #1175 decision 11: an attached client shows the approver's
+		// reason and offers only once and deny.
+		ApproverModel:  req.ApproverModel,
+		ApproverReason: req.ApproverReason,
 	}
 
 	pending := &pendingPrompt{
@@ -488,6 +492,24 @@ func (b *PromptBroker) RespondWith(id string, a permissions.Approval) error {
 		// learns their decision was redundant.
 		return ErrPromptNotFound
 	}
+}
+
+// escalationCap is the decision the gate will actually apply to an
+// answer on prompt id: a prompt ModeAuto's approver passed on takes
+// any allow as allow-once (#1175 decision 11), so a session, verb,
+// tool or always answer comes back as allow-once with capped true.
+// Any other prompt, or an id no longer pending, is returned unchanged.
+func (b *PromptBroker) escalationCap(id string, d permissions.Decision) (permissions.Decision, bool) {
+	b.mu.Lock()
+	p, ok := b.pending[id]
+	b.mu.Unlock()
+	if !ok || p.frame.ApproverModel == "" {
+		return d, false
+	}
+	if d >= permissions.DecisionAllowSession && d <= permissions.DecisionAllowAlways {
+		return permissions.DecisionAllowOnce, true
+	}
+	return d, false
 }
 
 // Pending returns a snapshot of currently-pending prompts. Useful

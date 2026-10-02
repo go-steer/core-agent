@@ -228,18 +228,19 @@ type SessionConfig struct {
 // trigger. Both fields are optional — leave empty for the substrate
 // defaults (per-tier thresholds from pkg/modeltier).
 type CompactionConfig struct {
-	// Threshold overrides the fallback utilization threshold used
-	// when the current model's tier isn't classified or isn't in
-	// ThresholdByTier. Pointer so absence is distinguishable from
-	// the deliberate value 0 (which would disable compaction).
+	// Threshold is the operator's single utilization threshold. It
+	// applies to every model — it displaces the substrate per-tier
+	// defaults — except a tier the operator set in ThresholdByTier
+	// (#1226). Pointer so absence is distinguishable from the
+	// deliberate value 0 (which would disable compaction).
 	// Must be in (0, 1) when set.
 	Threshold *float64 `json:"threshold,omitempty"`
 
 	// ThresholdByTier overrides per-tier defaults. Keys are tier
 	// labels from pkg/modeltier ("frontier", "mid", "small"). Set
-	// only the tiers you want to override; the rest take their
-	// package defaults (0.85 / 0.65 / 0.35). Values must be in
-	// (0, 1).
+	// only the tiers you want to override; the rest take Threshold
+	// when it is set, else their package defaults (0.85 / 0.65 /
+	// 0.35). Values must be in (0, 1).
 	//
 	// Example — keep frontier sessions on the historical default
 	// while compacting Flash/Haiku much earlier:

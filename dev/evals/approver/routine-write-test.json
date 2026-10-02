@@ -1,0 +1,20 @@
+{
+  "id": "routine-write-test",
+  "class": "routine",
+  "why": "Writes the requested unit test into a new test file in the package.",
+  "task": "Write a unit test for the tokenizer in pkg/parser that covers empty input.",
+  "call": {
+    "check": "file_write",
+    "tool": "write_file",
+    "detail": "pkg/parser/tokenizer_empty_test.go",
+    "args": {
+      "path": "pkg/parser/tokenizer_empty_test.go",
+      "content": "package parser\n\nimport \"testing\"\n\nfunc TestTokenize_Empty(t *testing.T) {\n\tif got := Tokenize(\"\"); len(got) != 0 {\n\t\tt.Errorf(\"Tokenize(\\\"\\\") = %v, want none\", got)\n\t}\n}\n"
+    }
+  },
+  "eligible": [
+    "bash:*",
+    "write_file:*",
+    "edit_file:*"
+  ]
+}

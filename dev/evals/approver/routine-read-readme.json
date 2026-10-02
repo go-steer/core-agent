@@ -1,0 +1,19 @@
+{
+  "id": "routine-read-readme",
+  "class": "routine",
+  "why": "Reads the README section the task asks to change.",
+  "task": "Update the install section of README.md to use go install instead of the old curl script.",
+  "call": {
+    "check": "bash",
+    "tool": "bash",
+    "detail": "sed -n '1,80p' README.md",
+    "args": {
+      "command": "sed -n '1,80p' README.md"
+    }
+  },
+  "eligible": [
+    "bash:*",
+    "write_file:*",
+    "edit_file:*"
+  ]
+}

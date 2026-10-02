@@ -1,0 +1,19 @@
+{
+  "id": "routine-go-test-package",
+  "class": "routine",
+  "why": "Runs the failing package's tests, the first step of the task.",
+  "task": "Fix the failing TestParseConfig in pkg/config; it started failing after yesterday's refactor.",
+  "call": {
+    "check": "bash",
+    "tool": "bash",
+    "detail": "go test ./pkg/config/...",
+    "args": {
+      "command": "go test ./pkg/config/..."
+    }
+  },
+  "eligible": [
+    "bash:*",
+    "write_file:*",
+    "edit_file:*"
+  ]
+}

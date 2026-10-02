@@ -186,6 +186,14 @@ func callArgsForGate(args any) any {
 	return args
 }
 
+// SummarizeToolCall is the detail a gated toolset call (MCP, skills)
+// puts to the permission gate: the tool name and its arguments as JSON,
+// cut at 200 bytes. Exported for the auto-mode approver eval
+// (internal/approvereval), which must build a call's detail exactly as
+// production does: anything past the cut is visible to an approver only
+// in the full arguments.
+func SummarizeToolCall(name string, args any) string { return summarizeRequest(name, args) }
+
 func summarizeRequest(name string, args any) string {
 	if args == nil {
 		return name

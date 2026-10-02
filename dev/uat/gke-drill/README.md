@@ -544,8 +544,24 @@ records each session's `compactions` count from `GET …/context`, which
 `soak_verdict.py` prefers when present. A single low `window` is not a cliff:
 the per-turn ledger includes side calls (an agentic subtask, a digest, the
 auto-mode approver) whose input is one prompt, so a sample taken mid-subtask
-dips for one tick and recovers. The grader only credits a drop that the
-session's next sample still sits below the threshold for.
+dips for one tick and recovers — or, if the side call was the session's last,
+reads low for as long as the session idles. So when samples carry the
+`compactions` count the grader decides on the count alone; the drop heuristic
+(credited only if the next sample stays below the threshold) is kept for runs
+that predate it.
+
+Compaction is also only *owed* on a session's next turn: it is marked when a
+turn ends and runs when the next one starts. A per-incident session that
+crosses the threshold during its one incident and then sits idle owed nothing,
+and the grader says NOT EXERCISED for it, not FAIL. A crossing counts against
+compaction only once the session's turn count goes flat for two samples and
+then moves again.
+
+On a 1M-token-window model the default 0.85 threshold is out of reach of any
+eight-hour soak — the 2026-10-02 sessions plateau at 21–24K tokens on a ~16K
+floor — so A1's compaction clause is run with `--compaction-threshold=0.021`
+on the daemon (a local overlay edit, never committed) and graded with
+`--compaction-at 21000`.
 
 Rehearse it before you spend a night on it. The first four rehearsals found
 `bc` missing from the environment (the deadline computed to zero and the "run"

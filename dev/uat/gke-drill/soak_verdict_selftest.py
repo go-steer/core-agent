@@ -165,12 +165,13 @@ def real_run_cases(tmp: pathlib.Path) -> None:
     expect(nolog, "no drops", sv.UNKNOWN, "no daemon.log", "no daemon log: drops UNKNOWN, not PASS")
 
 
-def synthetic(tmp: pathlib.Path, name: str, windows: list[int], compactions: list[int] | None = None) -> pathlib.Path:
+def synthetic(tmp: pathlib.Path, name: str, windows: list[int], compactions: list[int] | None = None,
+              turns: list[int] | None = None) -> pathlib.Path:
     run = tmp / name
     run.mkdir()
     rows = [{"at": "2026-01-01T00:00:00+00:00", "kind": "start", "hours": "1"}]
     for i, w in enumerate(windows):
-        sess = {"id": "s", "turns": i + 1, "window": w, "halted": False,
+        sess = {"id": "s", "turns": turns[i] if turns else i + 1, "window": w, "halted": False,
                 "watchdog_tripped": False, "ceiling_tripped": False}
         if compactions is not None:
             sess["compactions"] = compactions[i]
@@ -188,21 +189,48 @@ def compaction_cases(tmp: pathlib.Path) -> None:
     def grade(run):
         return sv.grade(run, t)
 
+    # turns: a flat stretch of QUIET_SAMPLES or more marks a turn as over;
+    # turns rising after it is a NEW turn, the only point at which
+    # compaction is owed (it is marked at a turn's end, run at the next
+    # one's start).
+    resumed = [1, 2, 2, 2, 3, 4]
+
     expect(grade(synthetic(tmp, "cliff", [90_000, 105_000, 30_000, 34_000])),
-           "compaction", sv.PASS, "was compacted", "crossed, fell, and stayed down: PASS")
+           "compaction", sv.PASS, "were compacted", "crossed, fell, and stayed down: PASS")
+    expect(grade(synthetic(tmp, "counted", [90_000, 105_000, 108_000], compactions=[0, 0, 1])),
+           "compaction", sv.PASS, "were compacted", "a compactions count that rises: PASS without a cliff")
     # The side-row case: one mid-subtask sample reads a single prompt's
     # input, then the conversation is back. Credited as a cliff, this is
     # a disabled compactor graded PASS.
-    expect(grade(synthetic(tmp, "transient", [90_000, 105_000, 4_000, 112_000, 118_000])),
-           "compaction", sv.FAIL, "were not compacted", "a one-tick dip that recovers is not a compaction: FAIL")
-    expect(grade(synthetic(tmp, "counted", [90_000, 105_000, 108_000], compactions=[0, 0, 1])),
-           "compaction", sv.PASS, "was compacted", "a compactions count that rises: PASS without a cliff")
+    expect(grade(synthetic(tmp, "transient", [90_000, 105_000, 105_000, 105_000, 4_000, 112_000], turns=resumed)),
+           "compaction", sv.FAIL, "were not compacted",
+           "a new turn after crossing, and only a one-tick dip: FAIL, the dip is not a compaction")
+    expect(grade(synthetic(tmp, "flat", [90_000, 105_000, 105_000, 105_000, 110_000, 115_000], turns=resumed)),
+           "compaction", sv.FAIL, "were not compacted", "a new turn after crossing and the context kept climbing: FAIL")
+    # Also from the 2026-10-02 soak: with a count present, a persistent
+    # drop in `window` is a side call's prompt read for as long as the
+    # session idles, not a compaction. The count decides; it says zero.
+    expect(grade(synthetic(tmp, "sidedrop", [90_000, 105_000, 105_000, 105_000, 30_000, 31_000],
+                           compactions=[0, 0, 0, 0, 0, 0], turns=resumed)),
+           "compaction", sv.FAIL, "were not compacted",
+           "a persistent drop with a count of zero: FAIL, the count decides, not the window")
+    # The bug found on the 2026-10-02 soak: a per-incident session crosses
+    # the threshold inside its one turn and then sits idle. Compaction is
+    # never owed, and the first version of this grader called it a FAIL.
+    expect(grade(synthetic(tmp, "idle", [90_000, 105_000, 105_000, 105_000, 105_000], turns=[1, 2, 2, 2, 2])),
+           "compaction", sv.NOT_EXERCISED, "never owed",
+           "crossed, then never took another turn: NOT EXERCISED, not FAIL")
+    # One long turn still in flight (turns keep rising with no quiet
+    # stretch) is not a resumed session either.
+    expect(grade(synthetic(tmp, "oneturn", [90_000, 105_000, 110_000, 115_000])),
+           "compaction", sv.NOT_EXERCISED, "never owed",
+           "crossed mid-turn with the turn still running: NOT EXERCISED")
+    # A single flat interval is a long tool call, not the end of a turn.
+    expect(grade(synthetic(tmp, "pause", [90_000, 105_000, 105_000, 110_000], turns=[1, 2, 2, 3])),
+           "compaction", sv.NOT_EXERCISED, "never owed",
+           "one flat interval (a long tool call) is not a new turn: NOT EXERCISED")
     expect(grade(synthetic(tmp, "late", [80_000, 90_000, 105_000])),
-           "compaction", sv.NOT_EXERCISED, "too late in the run", "crossed on the last sample: NOT EXERCISED, not FAIL")
-    expect(grade(synthetic(tmp, "lastdip", [90_000, 105_000, 30_000])),
-           "compaction", sv.NOT_EXERCISED, "too late in the run", "a dip on the very last sample cannot be shown to persist: NOT EXERCISED")
-    expect(grade(synthetic(tmp, "flat", [90_000, 105_000, 110_000, 115_000])),
-           "compaction", sv.FAIL, "were not compacted", "crossed and kept climbing: FAIL")
+           "compaction", sv.NOT_EXERCISED, "never owed", "crossed on the last sample: NOT EXERCISED, not FAIL")
 
 
 def main() -> int:

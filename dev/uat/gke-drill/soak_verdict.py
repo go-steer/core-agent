@@ -31,7 +31,9 @@ afterwards, over the same artifacts.
   no wedge     no session halted or tripped; every incident the soak
                injected while a sample was watching got a response
   compaction   a session whose context crossed the compaction threshold
-               was compacted — not silently left to grow
+               and then took another turn was compacted — compaction is
+               marked when a turn ends and runs when the next one
+               starts, so a session that crossed and went idle owed none
   no drops     the daemon never discarded queued inbox input
 
 ## Verdicts, and why there are four of them
@@ -268,7 +270,8 @@ def check_compaction(rows: list[dict[str, Any]], lines: list[tuple[datetime.date
         return Clause("compaction", UNKNOWN,
                       "no compaction threshold: pass --compaction-at TOKENS (the recipe model's window x its threshold)", gaps)
 
-    series: dict[str, list[tuple[datetime.datetime, int, int | None]]] = {}
+    # Per session: (sample time, window, compactions count, turns).
+    series: dict[str, list[tuple[datetime.datetime, int, int | None, int | None]]] = {}
     for s in rows:
         if s.get("kind") != "sample" or s["_at"] is None:
             continue
@@ -276,47 +279,105 @@ def check_compaction(rows: list[dict[str, Any]], lines: list[tuple[datetime.date
             w = sess.get("window")
             if isinstance(w, int):
                 c = sess.get("compactions")
-                series.setdefault(sess["id"], []).append((s["_at"], w, c if isinstance(c, int) else None))
+                t = sess.get("turns")
+                series.setdefault(sess["id"], []).append(
+                    (s["_at"], w, c if isinstance(c, int) else None, t if isinstance(t, int) else None))
 
-    peak_id, peak = max(((sid, max(w for _, w, _ in pts)) for sid, pts in series.items()),
+    peak_id, peak = max(((sid, max(p[1] for p in pts)) for sid, pts in series.items()),
                         key=lambda p: p[1], default=(None, 0))
-    crossed = {sid: pts for sid, pts in series.items() if any(w >= threshold for _, w, _ in pts)}
+    crossed = {sid: pts for sid, pts in series.items() if any(p[1] >= threshold for p in pts)}
     if not crossed:
         return Clause("compaction", NOT_EXERCISED,
                       f"no session reached the threshold of {threshold:,} tokens; the peak was {peak:,} ({peak_id})", gaps)
 
     detail = []
-    failed = inconclusive = 0
+    compacted = failed = unowed = 0
     for sid, pts in crossed.items():
-        i = next(k for k, (_, w, _) in enumerate(pts) if w >= threshold)
-        at_cross, w_cross, c_cross = pts[i]
+        i = next(k for k, p in enumerate(pts) if p[1] >= threshold)
+        at_cross, w_cross, c_cross, _ = pts[i]
         later = pts[i + 1:]
-        if c_cross is not None and any(c is not None and c > c_cross for _, _, c in later):
+        if c_cross is not None and any(p[2] is not None and p[2] > c_cross for p in later):
+            compacted += 1
             detail.append(f"{sid}: crossed at {at_cross:%H:%M} ({w_cross:,}); compactions count rose afterwards")
             continue
-        cliff = next((k for k, (_, w, _) in enumerate(later)
-                      if w <= CLIFF_FRACTION * w_cross), None)
+        # With a count on the samples, the count is the whole answer and a
+        # drop in `window` proves nothing. `window` is the last per-turn
+        # row, and a session whose last call was a side call (a digest, an
+        # agentic subtask) reads that one prompt for as long as it stays
+        # idle — a PERSISTENT low reading the cliff rule below cannot tell
+        # from a compaction. Seen on the 2026-10-02 soak: sessions ending
+        # the night at ~15K, well under their crossing, with zero
+        # compactions. The cliff is kept only for runs that predate the
+        # count.
+        has_count = c_cross is not None
+        cliff = None if has_count else next(
+            (k for k, p in enumerate(later) if p[1] <= CLIFF_FRACTION * w_cross), None)
         # Persistent: the next sample after the drop must still be below
         # the threshold, so a mid-subtask side-row reading cannot pass.
         if cliff is not None and cliff + 1 < len(later) and later[cliff + 1][1] < threshold:
+            compacted += 1
             detail.append(f"{sid}: crossed at {at_cross:%H:%M} ({w_cross:,}); fell to {later[cliff][1]:,} "
                           f"at {later[cliff][0]:%H:%M} and stayed below the threshold")
             continue
-        if not later or (cliff is not None and cliff + 1 >= len(later)):
-            inconclusive += 1
-            detail.append(f"{sid}: crossed at {at_cross:%H:%M} ({w_cross:,}) too near the end of the run to tell")
+        resumed_at = resumed_after(pts, i)
+        if resumed_at is None:
+            # Compaction is marked when a turn ENDS and run when the NEXT
+            # one starts (pkg/agent: agent.go's post-turn hook, preturn's
+            # runPendingCompaction). A session that crossed and then never
+            # started another turn owed nothing: there was no next request
+            # for the context to overflow. Counting it as a failure graded
+            # correct behaviour as a defect — every per-incident session
+            # that finishes its one incident above the threshold.
+            unowed += 1
+            detail.append(f"{sid}: crossed at {at_cross:%H:%M} ({w_cross:,}) and never started another turn, "
+                          f"so no compaction was owed")
             continue
         failed += 1
-        detail.append(f"{sid}: crossed at {at_cross:%H:%M} ({w_cross:,}) and was never compacted — "
-                      f"it read {later[-1][1]:,} at {later[-1][0]:%H:%M}")
+        detail.append(f"{sid}: crossed at {at_cross:%H:%M} ({w_cross:,}), started a new turn at "
+                      f"{resumed_at:%H:%M}, and was never compacted — it read {pts[-1][1]:,} at {pts[-1][0]:%H:%M}")
     if failed:
         return Clause("compaction", FAIL,
-                      f"{failed} session(s) crossed the {threshold:,}-token threshold and were not compacted", detail + gaps)
-    if inconclusive:
-        return Clause("compaction", NOT_EXERCISED,
-                      f"{inconclusive} session(s) crossed the threshold too late in the run to observe a compaction", detail + gaps)
-    return Clause("compaction", PASS,
-                  f"every session that crossed {threshold:,} tokens was compacted", detail + gaps)
+                      f"{failed} session(s) crossed the {threshold:,}-token threshold, took another turn, "
+                      f"and were not compacted", detail + gaps)
+    if compacted:
+        return Clause("compaction", PASS,
+                      f"{compacted} session(s) crossed {threshold:,} tokens and were compacted"
+                      + (f"; {unowed} more crossed and never took another turn" if unowed else ""), detail + gaps)
+    return Clause("compaction", NOT_EXERCISED,
+                  f"{unowed} session(s) crossed {threshold:,} tokens but none took another turn afterwards, "
+                  f"so compaction was never owed", detail + gaps)
+
+
+# QUIET_SAMPLES consecutive samples with an unchanged turn count mark a
+# turn as over. Two intervals (~4 minutes at soak.sh's 2-minute cadence),
+# not one: a single tool call — a delegated subagent, a large MCP read —
+# can hold a turn still for longer than one interval, and mistaking that
+# pause for a new turn would grade a session that never resumed as a
+# compaction failure. The cost is the opposite error on a session resumed
+# within four minutes, which reads as never resumed and is NOT EXERCISED,
+# not PASS — the safe direction.
+QUIET_SAMPLES = 2
+
+
+def resumed_after(pts: list[tuple[datetime.datetime, int, int | None, int | None]], i: int) -> datetime.datetime | None:
+    """When the session started a new turn after sample i, or None.
+
+    A new turn is turns rising again after a quiet stretch: QUIET_SAMPLES
+    consecutive samples at or after i with no change in the count.
+    """
+    turns = [p[3] for p in pts]
+    quiet = 0
+    for k in range(max(i, 1), len(pts)):
+        if turns[k] is None or turns[k - 1] is None:
+            quiet = 0
+            continue
+        if turns[k] == turns[k - 1]:
+            quiet += 1
+        elif turns[k] > turns[k - 1]:
+            if quiet >= QUIET_SAMPLES:
+                return pts[k][0]
+            quiet = 0
+    return None
 
 
 def check_drops(lines: list[tuple[datetime.datetime | None, str]] | None) -> Clause:

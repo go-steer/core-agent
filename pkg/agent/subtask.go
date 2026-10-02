@@ -495,7 +495,18 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 			modelName := subModel.Name()
 			pricing := usage.PriceFor(modelName, nil)
 			if a.tracker != nil && !spec.SkipParentUsage {
-				turn := a.tracker.AppendUsage(modelName, u, pricing)
+				// Side usage, not a conversation turn (#1191): it
+				// counts toward Totals and so the cost ceilings, but
+				// Last() — the context gauge, the window and the
+				// compaction tier — keeps reading the parent's own
+				// call, and the #975 estimate of tool results appended
+				// since then survives. No usage frame fires for a side
+				// call: an attached client's totals catch up on the
+				// parent's next model call, normally right after this
+				// tool returns — but not if the turn ends first
+				// (interrupt, a #975 cut, a provider error, a ceiling
+				// trip), in which case on the next turn or re-attach.
+				turn := a.tracker.AppendSideUsage(modelName, u, pricing)
 				totalCostUSD += turn.CostUSD
 			} else {
 				// CostUSDForTurn, not CostUSD: the latter bills the

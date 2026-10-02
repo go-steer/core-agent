@@ -60,8 +60,9 @@ type Turn struct {
 	Unpriced bool
 	// Side is true for a call recorded with AppendSideUsage: one that
 	// spent money on the session's behalf without sending the
-	// conversation (the auto-mode approver, #1175). It counts in
-	// Totals and TotalsByModel, and Last skips it.
+	// conversation: the auto-mode approver (#1175), agentic_* subtask
+	// turns and digest-summarizer calls (#1191). It counts in Totals
+	// and TotalsByModel, and Last skips it.
 	Side bool
 }
 

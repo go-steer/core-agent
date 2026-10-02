@@ -129,7 +129,12 @@ func (a *Agent) chargeDigestSubagent(rec usage.DigestSavingsRecord) {
 	// --max-session-cost-usd by the same margin, because
 	// maybeEnforceCostCeiling reads these totals (#771).
 	u := rec.SubagentTurn()
-	a.tracker.AppendUsage(rec.SubagentModel, u, usage.PriceFor(rec.SubagentModel, nil))
+	// Side usage (#1191): the summarizer's prompt is one tool result,
+	// not the conversation, so it must not become Last() — that would
+	// report its input as the context fill, look the window up by the
+	// small digest model, and drop the #975 pending estimate. Its cost
+	// still lands in Totals, which is what the ceilings read.
+	a.tracker.AppendSideUsage(rec.SubagentModel, u, usage.PriceFor(rec.SubagentModel, nil))
 	a.recordSubtaskUsage(rec.SubagentInputTokens, rec.SubagentOutputTokens, rec.SubagentCostUSD)
 }
 

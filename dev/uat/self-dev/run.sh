@@ -812,13 +812,22 @@ attended_live() {
   fi
   ok "the daemon takes a task over the attach API"
 
-  ( umask 077 && printf 'export SELFDEV_ATTACH_TOKEN=%q\n' "${ATTACH_TOKEN}" >"${RUN_DIR}/attach.env" )
+  # The token goes to this terminal and nowhere else (#1201). It used to
+  # be written to ${RUN_DIR}/attach.env, which the agent runs as the same
+  # user and could simply `cat` — umask 077 keeps out other users, not
+  # it. Inline, as an env assignment on the TUI command line itself, it
+  # never sits in a file or in the shell environment of the operator; the
+  # TUI takes it out of its own environment and makes itself non-dumpable
+  # as soon as it reads it. The leading space keeps the line out of shell
+  # history wherever HISTCONTROL ignores space-prefixed commands (the bash
+  # default on Debian and Ubuntu); history is a file the agent can read too.
+  # No apostrophes in this comment: see #1209 on the pin gate lexer.
   head2 "Operator"
   cat <<EOF
   The agent is working in ${CLONE}
-  Attach from another terminal:
+  Attach from another terminal (keep the leading space):
 
-    source ${RUN_DIR}/attach.env && ${TUI_BIN} ${ATTACH_URL} --token-env=SELFDEV_ATTACH_TOKEN
+     SELFDEV_ATTACH_TOKEN=$(printf '%q' "${ATTACH_TOKEN}") ${TUI_BIN} ${ATTACH_URL} --token-env=SELFDEV_ATTACH_TOKEN
 
   Read the plan, then approve each call you agree with and deny the rest.
   A denial carries no reason to the agent. At least once, DETACH before the agent's next mutating call, so

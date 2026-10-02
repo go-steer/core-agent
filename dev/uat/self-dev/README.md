@@ -467,9 +467,11 @@ rig is, not just the task:
    Twenty PASS, no FAIL.
 2. Start the live run. When it prints the `Operator` block, attach from a
    second terminal with the command it shows:
-   `source RUN_DIR/attach.env && RUN_DIR/core-agent-tui URL --token-env=SELFDEV_ATTACH_TOKEN`.
-   Run it from outside the checkout, since anything it writes there
-   counts against A9.
+   ` SELFDEV_ATTACH_TOKEN=… RUN_DIR/core-agent-tui URL --token-env=SELFDEV_ATTACH_TOKEN`,
+   leading space included. The token is printed to the rig's terminal and
+   written to no file (#1201) — but run the rig outside tmux or screen,
+   whose scrollback the agent can read. Run it from outside the checkout, since
+   anything it writes there counts against A9.
 3. Read the plan, then approve the calls you agree with and deny the rest.
    A denial is an answer the task tells the agent to work with. It reaches
    the agent without a reason, because the attach API has no field for one
@@ -592,21 +594,38 @@ after the PR is resolved.
 
 ### What T2 can't promise
 
-**The daemon's environment holds both tokens, and everything the agent
-runs inherits it.** `SELFDEV_ATTACH_TOKEN` and `SELFDEV_SINK_TOKEN` are in
-the environment of every `bash` tool call, and `RUN_DIR/attach.env` is a
-file the agent can read. With the attach token, the agent can approve its
-own prompts (`perms/respond`), or add a standing allow rule
-(`perms/allow`, `allow-always`) that disarms the gate for the rest of the
-run. It can also read request ids off `perms/stream` and forge sink
-deliveries that match them, which A17c would then accept. None of this
-needs a `curl` you'd see. The task asks for the presubmit sweep, which
-runs `go test ./...`, so test code the agent wrote runs with the token in
-its environment. Reading what you approve narrows this; it doesn't close
-it. The rig can't grade a self-approval. This isn't only the rig's
-problem: any daemon started with `--attach-token` hands its token to the
-agent's shell the same way. That's
-[#1157](https://github.com/go-steer/core-agent/issues/1157).
+**The agent runs as the operator's user, so the rig can only take the
+tokens out of the obvious places, not out of reach.** With the attach
+token the agent could approve its own prompts (`perms/respond`) or add a
+standing allow rule that disarms the gate for the rest of the run; with
+the sink token it could forge deliveries matching request ids it reads
+off `perms/stream`, which A17c would accept. None of that needs a `curl`
+you'd see: the task runs the presubmit sweep, so test code the agent
+wrote runs on your behalf.
+
+What is closed, and by what:
+
+- **The daemon's children** no longer inherit either token, and cannot read
+  them back from the daemon's `/proc/<pid>/environ`
+  ([#1157](https://github.com/go-steer/core-agent/issues/1157)).
+- **`RUN_DIR/attach.env` is gone.** The rig printed the attach token into a
+  file the agent could `cat`; it now prints the attach command, token
+  inline, to this terminal only.
+- **The TUI and the sink take their token** — read it once, drop it from
+  their environment, and (on Linux) make themselves non-dumpable — so
+  neither hands it to a same-user reader of `/proc` once it has read it
+  ([#1201](https://github.com/go-steer/core-agent/issues/1201)). The few
+  milliseconds between the TUI starting and that read are still open, and
+  the agent is already running when you launch it.
+
+What is not: your shell history, if your shell records space-prefixed
+commands (keep the leading space; bash's Debian/Ubuntu default ignores
+them); a tmux or screen session, whose scrollback the agent can capture
+as the same user (`tmux capture-pane`) — run the rig outside one; and
+anything else the same user can read. The rig still can't
+grade a self-approval. The property a real unattended rung needs — the
+agent unable to reach any approval credential at all — takes a different
+user for the agent, not a different file layout.
 
 ## Reading a result
 

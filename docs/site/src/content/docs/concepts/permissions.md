@@ -16,6 +16,7 @@ The permission gate is the central chokepoint consulted before every tool call. 
 | Mode | Behavior |
 |---|---|
 | `ask` (default) | Allowlisted calls pass automatically; everything else prompts the user via the configured `Prompter`. With no `Prompter`, prompts fail closed with a clear error. |
+| `auto` | **Experimental.** `ask` with an approver model in front of the person ([#1175](https://github.com/go-steer/core-agent/issues/1175)). For calls on its `permissions.auto.eligible` list, the approver may allow the call once, deny it, or pass it to the person's ordinary prompt with its reason quoted. Everything else, and anything the approver passes on, prompts as in `ask`. Needs `permissions.auto` and `permissions.approval_timeout`. See [Configuration → permissions.auto](/reference/configuration/). |
 | `allow` | Only allowlisted calls pass. Everything else is rejected without prompting — useful for headless / automated runs. |
 | `yolo` | All calls pass except those caught by the bash denylist or a deny-pattern. Use with care; intended for trusted local dev. |
 | `plan` | All tool execution is disabled — read-and-think sessions. The TUI's permission chip cycles out of it (Shift+Tab). |
@@ -27,7 +28,7 @@ The permission gate is the central chokepoint consulted before every tool call. 
 
 No mode — not even `yolo` or `acceptEdits` — auto-approves a write to a **control-plane file** (see below).
 
-The mode can change while a session runs. In the TUI, Shift+Tab cycles `ask` → `acceptEdits` → `plan` → `yolo`. An attached `core-agent-tui` has the same chip, and it is backed by [`POST /perms/mode`](/core-agent/reference/attach-http/#changing-the-permission-mode-protocol-1160), which only the session owner or a daemon admin may call. Either way, on a session with a durable eventlog, each change writes an `attach-perm-mode` row. `allow` isn't on the chip; it is set in config only, and a session moved out of it can't be moved back without a restart. A restarted session comes back in its configured mode.
+The mode can change while a session runs. In the TUI, Shift+Tab cycles `ask` → `auto` → `acceptEdits` → `plan` → `yolo`; `auto` is in the cycle only for a session that can enter it, meaning one with an approver configured and `approval_timeout` set. An attached `core-agent-tui` has the same chip, and it is backed by [`POST /perms/mode`](/core-agent/reference/attach-http/#changing-the-permission-mode-protocol-1160), which only the session owner or a daemon admin may call. Either way, on a session with a durable eventlog, each change writes an `attach-perm-mode` row. `allow` isn't on the chip; it is set in config only, and a session moved out of it can't be moved back without a restart. A restarted session comes back in its configured mode.
 
 Set via `.agents/config.json`:
 

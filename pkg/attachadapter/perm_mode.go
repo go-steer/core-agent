@@ -15,10 +15,28 @@
 package attachadapter
 
 import (
+	"fmt"
+
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 var _ attach.PermModeController = (*Adapter)(nil)
+
+// settableModes is attach.RemotePermModes as this session can take
+// them: "auto" only when the gate can enter it. AttachSetPermMode
+// refuses exactly what this leaves out, so the chip a client builds
+// from it never offers a mode the switch would refuse.
+func settableModes(g *permissions.Gate) []string {
+	out := make([]string, 0, len(attach.RemotePermModes))
+	for _, m := range attach.RemotePermModes {
+		if m == permissions.ModeAuto && g.AutoSelectable() != nil {
+			continue
+		}
+		out = append(out, string(m))
+	}
+	return out
+}
 
 // AttachSetPermMode implements attach.PermModeController (#1168). It is
 // the one place a running session's mode changes: the HTTP endpoint and
@@ -38,6 +56,15 @@ func (ad *Adapter) AttachSetPermMode(req attach.PermModeRequest) (attach.PermMod
 		return attach.PermModeResponse{}, attach.ErrCapabilityNotRegistered
 	}
 	g := a.Gate()
+	// SwapMode drops a mode the gate refuses without a word, so check
+	// first: otherwise the answer would be 200 {"mode":"auto"} and an
+	// audit row recording a change that never happened, with the
+	// session still in its old mode (#1175 decision 12).
+	if to == permissions.ModeAuto {
+		if err := g.AutoSelectable(); err != nil {
+			return attach.PermModeResponse{}, fmt.Errorf("perms/mode: %w", err)
+		}
+	}
 	from := g.SwapMode(to)
 	a.RecordPermModeChange(from, to, req.Caller)
 	return attach.PermModeResponse{Previous: string(from), Mode: string(to)}, nil

@@ -32,7 +32,7 @@ pkg/
   instruction/        AGENTS.md / CLAUDE.md / GEMINI.md loader
                       (+ AGENTS.d overlay + @include; scoped).
   config/             .agents/config.json schema + discovery + atomic Save.
-  permissions/        ask/accept-edits/plan/yolo gate + bash denylist
+  permissions/        ask/auto/accept-edits/plan/yolo gate + bash denylist
                       + path scope + plan-first enforcement.
   tools/              Built-in tool suite + GateToolset wrapper
                       (bridges permissions to ADK toolsets).

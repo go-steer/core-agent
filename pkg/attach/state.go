@@ -642,6 +642,14 @@ type PermsInfo struct {
 	Allow     []string       `json:"allow,omitempty"`
 	Deny      []string       `json:"deny,omitempty"`
 	Approvals []ApprovalInfo `json:"approvals,omitempty"`
+	// SettableModes are the modes POST /perms/mode will accept for this
+	// session, in the chip's cycle order (protocol 1.18.0, #1175).
+	// "auto" is listed only when the session can enter it — an approver
+	// is configured and permissions.approval_timeout is set — so a
+	// client can build its cycle without offering a mode the switch
+	// would refuse. A pre-1.18.0 daemon omits it; a client then cycles
+	// through ask, acceptEdits, plan and yolo.
+	SettableModes []string `json:"settable_modes,omitempty"`
 }
 
 // ApprovalInfo is one row in the per-session approval log. Mirrors

@@ -33,7 +33,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 - Claude-compatible skills auto-discovered from `.agents/skills/<name>/SKILL.md` (project), `~/.agents/skills/` (portable user), and `~/.core-agent/skills/` (legacy user-global fallback). A skill may declare `requires: [shell, kubectl, gcloud]` in its frontmatter; one whose requirements this runtime can't meet is withheld from the toolset at startup and named on stderr, instead of instructing the model to do something a distroless image cannot do.
 
 **Permissions**
-- `ask` / `allow` / `yolo` modes with pattern-based allow/deny lists, path-scope enforcement on file tools, URL-scope allowlist for `fetch_url`, and a non-overridable `bash` denylist that catches `rm -rf /`-class mistakes.
+- `ask` / `allow` / `yolo` modes (plus an experimental `auto`, where an approver model decides some calls before a person is asked) with pattern-based allow/deny lists, path-scope enforcement on file tools, URL-scope allowlist for `fetch_url`, and a non-overridable `bash` denylist that catches `rm -rf /`-class mistakes.
 - **Plan-first enforcement** (`permissions.plan_mode` + `record_plan` tool + `/replan` slash): under `required`, denies mutating tool calls until the model has recorded a plan for the current turn — turns "research → approve → execute" from a prompt convention into a substrate primitive. Under `advisory` (v2.9+) the plan artifact is still recorded but nothing is blocked, for unattended runs with no operator to approve.
 - Pluggable `Prompter` interface so the same gate works in a TTY, headless (`--ask=auto`), the in-process TUI, or a custom web frontend.
 

@@ -53,6 +53,7 @@ func (a *Adapter) FetchPermissionMode(ctx context.Context) coretui.PermissionMod
 	}
 	return coretui.PermissionModeWiring{
 		Initial: permModeToChip(permissions.Mode(info.Mode)),
+		Cycle:   chipCycle(info.SettableModes),
 		Set: func(m coretui.PermissionMode) error {
 			if v := a.view.get(); !v.sameSession(a) {
 				return fmt.Errorf("the mode chip belongs to session %s, which this TUI is no longer showing; "+
@@ -62,6 +63,28 @@ func (a *Adapter) FetchPermissionMode(ctx context.Context) coretui.PermissionMod
 			return err
 		},
 	}
+}
+
+// chipCycle is the Shift+Tab order from the daemon's settable_modes
+// (protocol 1.18.0), so the attached chip offers exactly what
+// POST /perms/mode will accept for this session — auto only when the
+// session can enter it. A pre-1.18.0 daemon sends none, and nil leaves
+// core-tui's default four.
+func chipCycle(settable []string) []coretui.PermissionMode {
+	if len(settable) == 0 {
+		return nil
+	}
+	out := make([]coretui.PermissionMode, 0, len(settable))
+	for _, s := range settable {
+		m := permissions.Mode(s)
+		if m != permissions.ModeAsk && permModeToChip(m) == coretui.PermissionModeDefault {
+			// A mode this client has no chip for (a newer daemon's).
+			// Mapped, it would land on ask's chip and post "ask".
+			continue
+		}
+		out = append(out, permModeToChip(m))
+	}
+	return out
 }
 
 // permModeToChip / chipToPermMode mirror cmd/core-agent's

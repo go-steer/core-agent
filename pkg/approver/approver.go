@@ -23,8 +23,8 @@
 // package can fail — a timeout, a model error, an answer it cannot
 // parse — is an error, and the gate escalates an error to a person.
 //
-// EXPERIMENTAL, like permissions.Approver, until mode "auto" is
-// selectable.
+// EXPERIMENTAL, like permissions.Approver, until the auto-mode
+// evaluation (#1175 phase 5) has run against a real model.
 package approver
 
 import (

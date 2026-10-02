@@ -20,6 +20,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -803,10 +804,11 @@ type PermissionsConfig struct {
 
 	// Auto configures the approver model that permission mode "auto"
 	// puts in front of a person (#1175, docs/auto-mode-design.md).
-	// nil, the default, wires no approver: auto then asks a person
-	// about every prompt, exactly as ask does.
+	// nil, the default, wires no approver, and permissions.mode "auto"
+	// is then a config error.
 	//
-	// EXPERIMENTAL until mode "auto" is selectable.
+	// EXPERIMENTAL until the auto-mode evaluation (#1175 phase 5) has
+	// run against a real model.
 	Auto *AutoApproverConfig `json:"auto,omitempty"`
 }
 
@@ -911,6 +913,24 @@ func (a *AutoApproverConfig) validate() error {
 	}
 	if a.InstructionsFile != "" && strings.TrimSpace(a.InstructionsFile) == "" {
 		return fmt.Errorf("permissions.auto.instructions_file is blank; omit it, or name a file")
+	}
+	return nil
+}
+
+// validateAutoMode is what permissions.mode "auto" requires (#1175).
+// Without an approver it would ask a person about every call while the
+// chip said a model was approving them; without approval_timeout an
+// escalated call on a daemon would wait forever (decision 12).
+func (p PermissionsConfig) validateAutoMode() error {
+	if p.Auto == nil {
+		return errors.New(`config: permissions.mode "auto" requires a permissions.auto block: it configures the approver model that decides calls before a person is asked`)
+	}
+	d, err := p.ResolvedApprovalTimeout()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	if d <= 0 {
+		return errors.New(`config: permissions.mode "auto" requires permissions.approval_timeout: an escalated call would otherwise wait for an answer forever`)
 	}
 	return nil
 }
@@ -1715,10 +1735,10 @@ const (
 	PermissionModeYolo        = "yolo"
 	PermissionModePlan        = "plan"
 	PermissionModeAcceptEdits = "acceptEdits"
-
-	// permissionModeAuto is recognized so validation can say it is not
-	// selectable yet rather than unknown. Exported once it is (#1175).
-	permissionModeAuto = "auto"
+	// PermissionModeAuto is ask with an approver model in front of the
+	// person (#1175, docs/auto-mode-design.md). It needs
+	// permissions.auto and permissions.approval_timeout.
+	PermissionModeAuto = "auto"
 )
 
 // Provider names recognized by the resolver.
@@ -1828,11 +1848,10 @@ func (c *Config) Validate() error {
 	switch c.Permissions.Mode {
 	case "", PermissionModeAsk, PermissionModeAllow, PermissionModeYolo, PermissionModePlan, PermissionModeAcceptEdits:
 		// ok
-	case permissionModeAuto:
-		// The gate implements auto, but nothing may select it until the
-		// TUI can show it: today both TUIs would render it as "ask"
-		// while a model approves calls (#1175 decision 13).
-		return fmt.Errorf(`config: permissions.mode %q is not available yet (#1175): it can be selected once the TUI can display it`, c.Permissions.Mode)
+	case PermissionModeAuto:
+		if err := c.Permissions.validateAutoMode(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("config: unknown permissions.mode %q", c.Permissions.Mode)
 	}

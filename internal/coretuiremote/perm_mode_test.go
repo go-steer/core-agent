@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -199,5 +200,43 @@ func TestFetchPermissionMode_RefusesAfterSwitch(t *testing.T) {
 	defer mu.Unlock()
 	if len(posted) != 1 || posted[0] != "s1" {
 		t.Errorf("posted = %v, want [s1]", posted)
+	}
+}
+
+// The attached chip's cycle is the daemon's settable_modes (protocol
+// 1.18.0): auto when the session can enter it, and core-tui's default
+// four (nil) against a daemon that sends none (#1175 phase 4).
+func TestFetchPermissionMode_CycleFollowsSettableModes(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		settable []string
+		want     []coretui.PermissionMode
+	}{
+		"auto offered": {
+			[]string{"ask", "auto", "acceptEdits", "plan", "yolo"},
+			[]coretui.PermissionMode{coretui.PermissionModeDefault, coretui.PermissionModeAuto, coretui.PermissionModeAcceptEdits, coretui.PermissionModePlan, coretui.PermissionModeBypass},
+		},
+		"auto withheld": {
+			[]string{"ask", "acceptEdits", "plan", "yolo"},
+			[]coretui.PermissionMode{coretui.PermissionModeDefault, coretui.PermissionModeAcceptEdits, coretui.PermissionModePlan, coretui.PermissionModeBypass},
+		},
+		"pre-1.18.0 daemon": {nil, nil},
+		// A newer daemon's mode this client has no chip for is skipped,
+		// not mapped onto ask's chip (where a press would post "ask").
+		"unknown mode": {
+			[]string{"ask", "someday", "plan"},
+			[]coretui.PermissionMode{coretui.PermissionModeDefault, coretui.PermissionModePlan},
+		},
+	} {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /sessions/{sid}/perms", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(attach.PermsInfo{Mode: "ask", SettableModes: tc.settable})
+		})
+		srv := httptest.NewServer(mux)
+		got := newPauseAdapter(t, srv).FetchPermissionMode(context.Background()).Cycle
+		srv.Close()
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: cycle = %v, want %v", name, got, tc.want)
+		}
 	}
 }

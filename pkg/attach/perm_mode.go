@@ -64,18 +64,22 @@ type PermModeController interface {
 }
 
 // RemotePermModes are the modes an operator surface may switch a
-// session into: the four the core-tui chip cycles through. "allow"
-// (allowlist, fail everything else, never prompt) is a headless
-// posture chosen in .agents/config.json and stays config-only.
+// session into, in the core-tui chip's cycle order. "auto" is on the
+// list but a session takes it only when it can enter it
+// (permissions.Gate.AutoSelectable); GET /perms' settable_modes is the
+// per-session answer. "allow" (allowlist, fail everything else, never
+// prompt) is a headless posture chosen in .agents/config.json and
+// stays config-only.
 var RemotePermModes = []permissions.Mode{
 	permissions.ModeAsk,
+	permissions.ModeAuto,
 	permissions.ModeAcceptEdits,
 	permissions.ModePlan,
 	permissions.ModeYolo,
 }
 
 // ErrPermModeNotSettable rejects a mode outside RemotePermModes.
-var ErrPermModeNotSettable = errors.New(`mode must be one of "ask", "acceptEdits", "plan", "yolo"; "allow" is set in .agents/config.json only`)
+var ErrPermModeNotSettable = errors.New(`mode must be one of "ask", "auto", "acceptEdits", "plan", "yolo"; "allow" is set in .agents/config.json only`)
 
 // ParseRemotePermMode validates s against RemotePermModes.
 func ParseRemotePermMode(s string) (permissions.Mode, error) {
@@ -83,12 +87,6 @@ func ParseRemotePermMode(s string) (permissions.Mode, error) {
 		if string(m) == s {
 			return m, nil
 		}
-	}
-	if permissions.Mode(s) == permissions.ModeAuto {
-		// Not settable until both TUIs can display it: an attached
-		// operator would otherwise see "ask" while a model approves
-		// calls (#1175 decision 13).
-		return "", fmt.Errorf("perms/mode: %q is not available yet (#1175): %w", s, ErrPermModeNotSettable)
 	}
 	return "", fmt.Errorf("perms/mode: %q: %w", s, ErrPermModeNotSettable)
 }

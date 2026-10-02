@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -115,5 +116,27 @@ func TestSessionApprovals_CarriesTheApproverModel(t *testing.T) {
 	rows := (&coreAgentAdapter{deps: tuiDeps{Gate: g}}).SessionApprovals()
 	if len(rows) != 1 || rows[0].Approver != "judge-1" {
 		t.Errorf("rows = %+v, want one naming judge-1", rows)
+	}
+}
+
+// The local chip offers auto only to a session that can enter it
+// (#1175 phase 4). Offered without an approver or approval_timeout,
+// every press would land on auto, be refused, and roll back — and the
+// operator could never get past it to ask.
+func TestLocalChipCycle_OffersAutoOnlyWhenSelectable(t *testing.T) {
+	t.Parallel()
+	ready := permissions.New(permissions.Options{Mode: permissions.ModeAsk, Approver: allowingApprover{}, ApprovalTimeout: time.Minute})
+	want := []coretui.PermissionMode{coretui.PermissionModeDefault, coretui.PermissionModeAuto,
+		coretui.PermissionModeAcceptEdits, coretui.PermissionModePlan, coretui.PermissionModeBypass}
+	if got := localChipCycle(ready); !slices.Equal(got, want) {
+		t.Errorf("cycle = %v, want %v", got, want)
+	}
+	for name, g := range map[string]*permissions.Gate{
+		"no approver": permissions.New(permissions.Options{Mode: permissions.ModeAsk, ApprovalTimeout: time.Minute}),
+		"no timeout":  permissions.New(permissions.Options{Mode: permissions.ModeAsk, Approver: allowingApprover{}}),
+	} {
+		if got := localChipCycle(g); got != nil {
+			t.Errorf("%s: cycle = %v, want nil (core-tui's default four, no auto)", name, got)
+		}
 	}
 }

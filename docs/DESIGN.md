@@ -192,10 +192,10 @@ Turning it off: `WithPromptCache(CacheOptions{})` for a library consumer, `model
 
 ### Things the adapter explicitly doesn't do (yet)
 
-- **Extended / adaptive thinking** — `claude-opus-5` defaults to no thinking. We don't expose `Thinking` config. Adding it is a future M3+ item, controlled by genai's `ThinkingConfig` field if/when ADK starts using it.
+- **Adaptive thinking** — a positive `ThinkingConfig.ThinkingBudget` maps to enabled thinking with that budget (`convert.go`), and nothing in core-agent sets one. The adaptive thinking type isn't mapped.
 - **Server-side tools** (`web_search`, `code_execution`) — we don't surface them to genai callers because there's no genai equivalent.
 - **Vision / inline data** — `Part.InlineData` is currently dropped during conversion. Adding image support means mapping to Anthropic's `ImageBlockParam` (base64 PNG/JPG/etc.).
-- **Stop sequences, temperature, top_p** — current Opus (4.7 onward, including Opus 5) rejects `temperature`/`top_p`/`top_k`, so we don't pass them. Stop sequences could be plumbed through `Config.StopSequences` in a future change.
+- **Stop sequences, and a guard on sampling parameters** — the adapter forwards `temperature`/`top_p`/`top_k` when a caller sets them (`convert.go`), but current Claude models (Opus 4.7 onward, Sonnet 5) reject them with a 400. So nothing in core-agent sets one: the approver did, and decided nothing on Sonnet 5 until #1212 removed it. A library consumer who sets one on such a model gets the 400. Stop sequences could be plumbed through `Config.StopSequences` in a future change.
 - **Structured outputs** — `output_config.format` not exposed.
 - **Citations** — not exposed.
 

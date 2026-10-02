@@ -185,7 +185,13 @@ func TestJudge_RequestShape(t *testing.T) {
 	}
 	got := m.reqs[0]
 	if got.Config == nil || len(got.Config.Tools) != 0 {
-		t.Errorf("config = %+v, want a non-nil config with no tools", got.Config)
+		t.Fatalf("config = %+v, want a non-nil config with no tools", got.Config)
+	}
+	// No sampling parameters: newer Claude models reject temperature with
+	// a 400, which made every approver call on them escalate (#1212).
+	if got.Config.Temperature != nil || got.Config.TopP != nil || got.Config.TopK != nil {
+		t.Errorf("config sets sampling parameters (temperature %v, top_p %v, top_k %v); some models reject them outright",
+			got.Config.Temperature, got.Config.TopP, got.Config.TopK)
 	}
 	sys := got.Config.SystemInstruction.Parts[0].Text
 	if !strings.HasPrefix(sys, corePolicy) || !strings.Contains(sys, "Additional policy from this deployment") || !strings.HasSuffix(sys, "Never allow kubectl delete.") {

@@ -185,10 +185,18 @@ func (a *Approver) generate(ctx context.Context, user string) (string, error) {
 		Contents: []*genai.Content{genai.NewContentFromText(user, genai.RoleUser)},
 		// A non-nil Config with no tools: a nil one lets a provider
 		// wrapper add its built-ins (see AskSideQuestion).
+		//
+		// No sampling parameters. Newer Claude models reject temperature
+		// outright ("`temperature` is deprecated for this model", 400),
+		// and every refused call escalates: the approver silently decided
+		// nothing on those models (#1212). A pinned temperature was never
+		// fully deterministic on either provider anyway, and Gemini 3.x
+		// is meant to run at its default. Safety does not rest on it:
+		// which calls can reach the approver is decided in code, and an
+		// answer the gate cannot use escalates.
 		Config: &genai.GenerateContentConfig{
 			SystemInstruction: genai.NewContentFromText(a.system, genai.RoleUser),
 			MaxOutputTokens:   maxOutputTokens,
-			Temperature:       genai.Ptr[float32](0),
 		},
 	}
 	// Each prompt differs in the call it carries, so a cache write is a

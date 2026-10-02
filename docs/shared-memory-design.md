@@ -136,6 +136,9 @@ without an audit record.
   happen because the model called `persist_memory` (a tool), not
   because a background process scraped the turn. Revisit in v2
   once we have telemetry on adoption + a consumer asking.
+  *Amended 2026-10-01:* `external-state-design.md` decision 15 adds an
+  opt-in, audited exception for Memory Bank (`consolidate:
+  "session_end"`, default `"off"`). The default stays as written here.
 
 ## The `Memory` interface
 

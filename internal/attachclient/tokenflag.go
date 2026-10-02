@@ -42,8 +42,9 @@ package attachclient
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
+
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 )
 
 // looksLikeEnvName reports whether s has the shape of a shell
@@ -109,7 +110,15 @@ func ResolveTokenEnv(cmd, tokenEnv, legacy string, warn io.Writer) string {
 			"the value given is not a valid env-var name, so no token will be sent\n", cmd)
 		return ""
 	}
-	tok := os.Getenv(name)
+	// Take, not Getenv: an attach client holding the token in a dumpable
+	// process's environment hands it to any same-user process that reads
+	// /proc/<pid>/environ — including the agent it is attached to, if
+	// that agent has a shell on this machine (#1201). The token is read
+	// once here and never needed from the environment again.
+	tok, protectErr := childenv.Take(name)
+	if protectErr != nil {
+		fmt.Fprintf(warn, "%s: could not make this process non-dumpable (%v); a same-user process can still read the token from /proc\n", cmd, protectErr)
+	}
 	if tok == "" {
 		// The name is well-formed and resolves to nothing. Left alone this
 		// is the same bare 401 as above, one step further along, and it is

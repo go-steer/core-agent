@@ -117,6 +117,26 @@ func filter(env []string) []string {
 	return out
 }
 
+// Take is the client-side counterpart, for a process that reads a
+// secret from its environment once and never needs the variable again —
+// an attach client's bearer token, a test receiver's ingress token. It
+// returns the value, unsets the variable so this process's own children
+// (an $EDITOR, a clipboard helper) do not inherit it, and, when the
+// value was set, makes the process non-dumpable so a same-user process
+// cannot read it back out of /proc/<pid>/environ, which Unsetenv does
+// not change (#1201).
+//
+// The error is Protect's, and the value is returned either way: failing
+// to harden is a reason to warn, not to refuse to authenticate.
+func Take(name string) (string, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return "", nil
+	}
+	_ = os.Unsetenv(name)
+	return v, Protect()
+}
+
 // HoldsCredential reports whether any withheld name is actually set in
 // this process's environment — the condition under which Protect is
 // worth its cost.

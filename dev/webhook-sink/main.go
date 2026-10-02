@@ -55,6 +55,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 )
 
 // maxBody bounds one delivery. The alert templates render a few KiB at
@@ -229,8 +231,26 @@ func main() {
 	flag.StringVar(&o.bearerEnv, "bearer-env", "", "require Authorization: Bearer <value of this env var>")
 	flag.Parse()
 
+	// The ingress token is read once and the variable dropped, and the
+	// process made non-dumpable, so an agent with a shell on the same
+	// machine cannot read it back out of /proc/<pid>/environ and forge a
+	// delivery the rig would accept as the daemon's (#1201).
+	getenv := os.Getenv
+	if o.bearerEnv != "" {
+		tok, err := childenv.Take(o.bearerEnv)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "webhook-sink: warning: could not make this process non-dumpable (%v); the token is readable from /proc\n", err)
+		}
+		getenv = func(name string) string {
+			if name == o.bearerEnv {
+				return tok
+			}
+			return os.Getenv(name)
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := run(ctx, o, os.Getenv, nil)
+	err := run(ctx, o, getenv, nil)
 	stop()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "webhook-sink: %v\n", err)

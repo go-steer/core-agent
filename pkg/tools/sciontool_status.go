@@ -38,6 +38,8 @@ import (
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
+
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 )
 
 // validStickyTypes are the four state names accepted by
@@ -113,5 +115,6 @@ func runSciontoolStatus(statusType, message string) {
 	// #nosec G204 — bin comes from exec.LookPath; statusType is checked
 	// against validStickyTypes by the tool handler before reaching here.
 	cmd := exec.CommandContext(ctx, bin, "status", statusType, message)
+	cmd.Env = childenv.Environ() // #1157
 	_ = cmd.Run()
 }

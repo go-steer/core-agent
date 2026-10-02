@@ -24,6 +24,7 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
@@ -166,6 +167,9 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		// Bound how long we wait on inherited stdout/stderr after the
 		// shell exits or the context cancels. See bashWaitDelay docs.
 		cmd.WaitDelay = bashWaitDelay
+		// Never inherit the daemon's own credentials: the attach token
+		// answers this agent's permission prompts (#1157).
+		cmd.Env = childenv.Environ()
 		var stdout, stderr capBuffer
 		caps := capsFor(cfg, "bash", 64*1024, 2000)
 		stdout.maxBytes = caps.bytes

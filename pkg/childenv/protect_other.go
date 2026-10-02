@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mcp
+//go:build !linux
 
-import "github.com/go-steer/core-agent/v2/pkg/childenv"
+package childenv
 
-// osEnviron is the parent environment a stdio server starts from: the
-// daemon's, minus its own credentials (#1157). An MCP server is
-// third-party code, and the attach token answers the agent's permission
-// prompts. A server that genuinely needs one of those values still gets
-// it, explicitly, through mcp.json's `env`, which is applied on top.
-func osEnviron() []string { return childenv.Environ() }
+// Protect is a no-op off Linux. macOS has no /proc, so the read it
+// exists to stop is not available there in that form; other platforms
+// are not deployment targets. Callers report Supported rather than
+// claim protection that did not happen.
+func Protect() error { return nil }
+
+// Supported reports whether Protect does anything on this platform.
+const Supported = false

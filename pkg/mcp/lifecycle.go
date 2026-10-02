@@ -378,12 +378,13 @@ func transportFor(ctx context.Context, name string, spec ServerSpec) (mcpsdk.Tra
 		// Spec is sourced from the user's own .agents/mcp.json; spawning
 		// the configured command is the contract.
 		cmd := exec.Command(spec.Command, spec.Args...) // #nosec G204
-		env := InterpolateMap(spec.Env)
-		if len(env) > 0 {
-			cmd.Env = append(cmd.Env, append([]string{}, parentEnv()...)...)
-			for k, v := range env {
-				cmd.Env = append(cmd.Env, k+"="+v)
-			}
+		// Always set, never left nil: a nil Env inherits the daemon's
+		// whole environment, credentials included (#1157). Before, this
+		// was set only when the spec carried an `env` block, so every
+		// server without one inherited everything.
+		cmd.Env = parentEnv()
+		for k, v := range InterpolateMap(spec.Env) {
+			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 		return &mcpsdk.CommandTransport{Command: cmd}, cmd, nil
 	case "http":

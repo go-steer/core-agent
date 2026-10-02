@@ -594,7 +594,8 @@ func applyQueryFilters(tx *gorm.DB, q queryOpts) *gorm.DB {
 	// the tree query already implies the (app, user) pair.
 	if q.treeParentID != "" {
 		tx = tx.Where("app_name = ? AND user_id = ?", q.treeAppName, q.treeUserID).
-			Where("session_id = ? OR session_id LIKE ?", q.treeParentID, q.treeParentID+":sub:%")
+			Where("session_id = ? OR session_id LIKE ? ESCAPE '"+branchPrefixEscape+"'",
+				q.treeParentID, escapeLike(q.treeParentID)+":sub:%")
 	} else {
 		if q.appName != "" {
 			tx = tx.Where("app_name = ?", q.appName)

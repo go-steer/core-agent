@@ -265,6 +265,116 @@ func TestSince_ForSessionFiltersOtherSessions(t *testing.T) {
 	}
 }
 
+// TestSQLServesUnscopedQuery pins the half of the Stream contract that
+// the SQL implementation keeps and others may drop: a query that names
+// no session ID reads every session in the log, in seq order, and never
+// yields ErrUnscopedQuery, from Since or from Watch. Audit dashboards
+// built on the SQL default depend on it. Appends interleave B, A, B so
+// an implementation that grouped rows by session, or sorted by event ID,
+// fails the order check.
+func TestSQLServesUnscopedQuery(t *testing.T) {
+	t.Parallel()
+	h, err := Open(context.Background(), sqlite.Open(filepath.Join(t.TempDir(), "eventlog.db")),
+		WithWatchInterval(20*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	a := mustCreateSession(t, h, "app", "user", "A")
+	b := mustCreateSession(t, h, "app", "user", "B")
+	ctx := context.Background()
+
+	appends := []struct {
+		sess session.Session
+		id   string
+	}{{b, "z-b1"}, {a, "a-1"}, {b, "m-b2"}}
+	for _, ap := range appends {
+		if err := h.Service.AppendEvent(ctx, ap.sess, makeEvent(ap.id, "x", "", ap.id)); err != nil {
+			t.Fatalf("AppendEvent %s: %v", ap.id, err)
+		}
+	}
+	want := []string{"z-b1", "a-1", "m-b2"}
+
+	check := func(name string, it func(yield func(Entry, error) bool), stopAfter int, cancel func()) {
+		t.Helper()
+		var ids []string
+		var last int64
+		for e, err := range it {
+			if errors.Is(err, ErrUnscopedQuery) {
+				t.Fatalf("%s: SQL Stream refused an unscoped query: %v", name, err)
+			}
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					break
+				}
+				t.Fatalf("%s: iterator error: %v", name, err)
+			}
+			if e.Seq <= last {
+				t.Errorf("%s: seq not increasing: %d after %d", name, e.Seq, last)
+			}
+			last = e.Seq
+			ids = append(ids, e.Event.ID)
+			if len(ids) == stopAfter && cancel != nil {
+				cancel()
+			}
+		}
+		if fmt.Sprint(ids) != fmt.Sprint(want) {
+			t.Errorf("%s = %v; want %v (both sessions, in append order)", name, ids, want)
+		}
+	}
+
+	check("unscoped Since", h.Stream.Since(ctx, 0), 0, nil)
+	check("Since with ForSession(app, user, \"\")", h.Stream.Since(ctx, 0, ForSession("app", "user", "")), 0, nil)
+
+	wctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	check("unscoped Watch", h.Stream.Watch(wctx, 0), len(want), cancel)
+}
+
+// TestWithSessionTree_EscapesLikeMetacharacters is the regression test
+// for the tree filter passing the parent ID into SQL LIKE unescaped. "_"
+// is LIKE's single-character wildcard, so the tree of "task_A" used to
+// include "taskXA:sub:research", a session in a different root's tree.
+// Fails on the pre-fix code.
+func TestWithSessionTree_EscapesLikeMetacharacters(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	parent := mustCreateSession(t, h, "app", "u", "task_A")
+	child := mustCreateSession(t, h, "app", "u", "task_A:sub:research")
+	other := mustCreateSession(t, h, "app", "u", "taskXA:sub:research")
+	pct := mustCreateSession(t, h, "app", "u", "task%:sub:x")
+	ctx := context.Background()
+
+	for _, ap := range []struct {
+		sess session.Session
+		id   string
+	}{{parent, "p-1"}, {child, "c-1"}, {other, "o-1"}, {pct, "pct-1"}} {
+		if err := h.Service.AppendEvent(ctx, ap.sess, makeEvent(ap.id, "x", "", "")); err != nil {
+			t.Fatalf("AppendEvent %s: %v", ap.id, err)
+		}
+	}
+
+	ids := map[string]bool{}
+	for _, e := range drain(t, h.Stream.Since(ctx, 0, WithSessionTree("app", "u", "task_A"))) {
+		ids[e.Event.ID] = true
+	}
+	if !ids["p-1"] || !ids["c-1"] {
+		t.Errorf("tree of task_A missed its own sessions: %v", ids)
+	}
+	if ids["o-1"] {
+		t.Errorf("tree of task_A included taskXA:sub:research (unescaped '_' in LIKE): %v", ids)
+	}
+
+	pctIDs := map[string]bool{}
+	for _, e := range drain(t, h.Stream.Since(ctx, 0, WithSessionTree("app", "u", "task%"))) {
+		pctIDs[e.Event.ID] = true
+	}
+	if len(pctIDs) != 1 || !pctIDs["pct-1"] {
+		t.Errorf("tree of task%% = %v; want only pct-1 (unescaped '%%' in LIKE matches every task* tree)", pctIDs)
+	}
+}
+
 func TestSince_WithBranchPrefixFilters(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestHandle(t)

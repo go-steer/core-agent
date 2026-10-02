@@ -422,6 +422,8 @@ mostly failing is the instrument working.
 | `testdata/fakebin/` | the fake `kubectl`, `curl` and `gcloud` `dryrun.sh` uses |
 | `runs/` | committed scorecards (the artifacts live in `~/.gke-drill/runs/`) |
 | `soak.sh` | the overnight run — hours of incidents with nobody watching (box A1) |
+| `soak_verdict.py` | grades a finished soak against A1's four clauses, after the fact |
+| `testdata/soak-0914/` | the 2026-09-14 eight-hour soak, cut down; `soak_verdict_selftest.py` grades it and doctored copies |
 
 ## Reading a run as a trajectory
 
@@ -508,9 +510,27 @@ harness is not unattended. Artifacts land in
 | `console.log` | the scenario scripts' own output |
 | `summary.md` | the tables, the quoted log lines, and the four questions |
 
-**It scores nothing, deliberately.** `summary.md` ends with box A1's four
-clauses and what to read for each; a person writes the verdict into
-`dev/uat/gke-drill/runs/`, the same division of labour `SCORECARD.md` has.
+**It scores nothing, deliberately** — a harness that must run for eight hours
+with nobody watching must never invent a verdict mid-run. The verdict comes
+afterwards, from a separate tool over the same artifacts (#1199, box A5):
+
+```sh
+dev/uat/gke-drill/soak_verdict.py --run-dir ~/.gke-drill/soak/<stamp>-<cluster> \
+    --compaction-at <window x threshold, in tokens>
+```
+
+One row per A1 clause — survived, no wedge, compaction, no drops — each
+**PASS**, **FAIL**, **NOT EXERCISED** or **UNKNOWN**. Exit 0 only when all four
+pass; 1 on any failure; 2 when nothing failed but A1 is still not closable on
+this run. NOT EXERCISED is the verdict that matters most: the 2026-09-14 run
+peaked at 37,321 tokens of context and never reached a compaction threshold, so
+its compaction clause is *not exercised*, not passed, and the tool says so. The
+run note in `runs/` records the tool's output; a maintainer may override a
+verdict, in writing.
+
+The daemon log has blind windows — `soak.sh` reconnects a dropped log stream
+after five seconds with `--since=1s`, leaving a marker — and any clause that
+rests on "the log never says X" lists each one beside its verdict.
 
 Two columns in the sessions table are worth knowing about before you read one.
 `window` is the last turn's input-token count — the actual context occupancy —
@@ -518,7 +538,13 @@ and it is the one that answers "did compaction quietly stop happening": a
 compaction is a *cliff* in `window`. `cum_in` next to it is the session total
 over every turn, which only ever rises and in which a compaction is invisible.
 A successful compaction writes nothing to the daemon log, so on the healthy
-path the cliff is the only witness there is.
+path the cliff is the only witness there is — or was: the sampler now also
+records each session's `compactions` count from `GET …/context`, which
+`soak_verdict.py` prefers when present. A single low `window` is not a cliff:
+the per-turn ledger includes side calls (an agentic subtask, a digest, the
+auto-mode approver) whose input is one prompt, so a sample taken mid-subtask
+dips for one tick and recovers. The grader only credits a drop that the
+session's next sample still sits below the threshold for.
 
 Rehearse it before you spend a night on it. The first four rehearsals found
 `bc` missing from the environment (the deadline computed to zero and the "run"

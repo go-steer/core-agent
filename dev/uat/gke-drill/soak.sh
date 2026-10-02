@@ -22,9 +22,9 @@
 #
 # This is NOT the drill. The drill scores one incident against six
 # rubric boxes and needs a human for four of them. The soak scores
-# nothing: it produces a timeline, and box A1 is read off that timeline
-# by a person. The two things it must not do are invent a verdict and
-# require a human while it runs.
+# nothing: it produces a timeline, and box A1 is graded off that timeline
+# afterwards by soak_verdict.py (#1199). The two things it must not do
+# are invent a verdict and require a human while it runs.
 #
 # What A1 asks for, and what this records for each of them:
 #
@@ -265,21 +265,29 @@ soak_sample() {
         # disabled one as a straight line to the ceiling. window_max is
         # carried alongside because a cliff is only legible next to the
         # height it fell from.
-        local rows=() sid usage guards
+        # `compactions` is the one witness that can ACQUIT the compaction
+        # clause: a successful compaction logs nothing (only failures
+        # do), and `window` reads the last per-turn row, which can be a
+        # side call's single prompt for one tick. soak_verdict.py prefers
+        # the count when it is present (#1199).
+        local rows=() sid usage guards ctxinfo
         while IFS= read -r sid; do
             [[ -n "${sid}" ]] || continue
             usage=$(hub_get "/sessions/${DRILL_APP}/${sid}/usage" 2>/dev/null || echo '{}')
             guards=$(hub_get "/sessions/${DRILL_APP}/${sid}/guardrails" 2>/dev/null || echo '{}')
+            ctxinfo=$(hub_get "/sessions/${DRILL_APP}/${sid}/context" 2>/dev/null || echo '{}')
             rows+=("$(jq -cn --arg id "${sid}" \
                 --argjson s "$(printf '%s' "${sessions}" | jq -c --arg id "${sid}" \
                     '.sessions[] | select(.sessionID == $id)' 2>/dev/null || echo '{}')" \
                 --argjson u "$(printf '%s' "${usage}" | jq -c '.' 2>/dev/null || echo '{}')" \
                 --argjson g "$(printf '%s' "${guards}" | jq -c '.' 2>/dev/null || echo '{}')" \
+                --argjson c "$(printf '%s' "${ctxinfo}" | jq -c '.' 2>/dev/null || echo '{}')" \
                 '{id: $id, status: $s.status, touched: $s.last_touched_at,
                   turns: $u.overall.turns, input_tokens: $u.overall.input_tokens,
                   cost_usd: $u.overall.cost_usd,
                   window: ($u.per_turn // [] | last | .input_tokens),
                   window_max: ([$u.per_turn // [] | .[] | .input_tokens] | max),
+                  compactions: $c.compactions,
                   halted: $g.halted, watchdog_tripped: $g.watchdog.tripped,
                   ceiling_tripped: $g.cost_ceiling.tripped}')")
         done <<< "${ids}"
@@ -423,7 +431,10 @@ soak_summarize() {
         printf '```\n'
 
         printf '\n## Read this before writing the run note\n\n'
-        printf 'The soak asserts nothing. For box A1 the four questions are:\n\n'
+        printf 'The soak asserts nothing. The verdict comes from a separate grader\n'
+        printf 'over these artifacts — record its output in the run note:\n\n'
+        printf '    dev/uat/gke-drill/soak_verdict.py --run-dir %s --compaction-at <tokens>\n\n' "${SOAK_RUN_DIR}"
+        printf 'For box A1 the four questions it answers are:\n\n'
         printf '1. **Wedged session** — does any session sit in `working`, or `halted`,\n'
         printf '   across a whole quiet gap between two incidents? Sessions table.\n'
         printf '2. **Silently-disabled compaction** — read the `window` column, not\n'

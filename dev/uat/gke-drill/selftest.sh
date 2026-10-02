@@ -90,7 +90,7 @@ for f in lib.sh drill.sh soak.sh selftest.sh scenarios/*.sh; do
 done
 
 head_ "Python syntax"
-for f in sse2jsonl.py score.py; do
+for f in sse2jsonl.py score.py soak_verdict.py soak_verdict_selftest.py; do
     if python3 -m py_compile "${f}" 2>/dev/null; then
         ok "${f}"
     else
@@ -101,7 +101,7 @@ done
 rm -rf __pycache__
 
 head_ "Executable bits"
-for f in drill.sh soak.sh selftest.sh sse2jsonl.py score.py; do
+for f in drill.sh soak.sh selftest.sh sse2jsonl.py score.py soak_verdict.py soak_verdict_selftest.py; do
     [[ -x "${f}" ]] && ok "${f}" || bad "${f} is not executable"
 done
 
@@ -886,6 +886,29 @@ if printf '%s\n' "${SOAK_CODE}" | grep -q 'soak_require_metrics$'; then
     ok "soak.sh preflights kubectl top before spending a night on it"
 else
     bad "soak.sh no longer preflights kubectl top; an absent metrics-server reads as a flat memory line"
+fi
+
+head_ "Soak verdict (#1199)"
+# The soak records and decides nothing; soak_verdict.py grades A1 off what
+# it recorded. Its self-test reproduces the 2026-09-14 run's hand verdict
+# from testdata/soak-0914 and flips each clause by doctoring a copy, then
+# walks the compaction paths the real run never reached — including a
+# one-tick side-row dip, which must NOT be credited as a compaction.
+if out=$(python3 soak_verdict_selftest.py 2>&1); then
+    ok "soak_verdict.py self-test ($(grep -c '^  ok' <<<"${out}") cases)"
+else
+    bad "soak_verdict.py self-test failed"
+    printf '%s\n' "${out}" | grep -v '^  ok' | sed 's/^/      /'
+fi
+rm -rf __pycache__
+
+# A successful compaction logs nothing, so the count is the only witness
+# that can acquit the compaction clause; losing it from the sampler
+# silently weakens every future A1 verdict to the window heuristic.
+if printf '%s\n' "${SOAK_CODE}" | grep -q 'compactions: \$c.compactions'; then
+    ok "soak.sh records each session's compactions count"
+else
+    bad "soak.sh no longer records compactions; soak_verdict.py falls back to the window heuristic"
 fi
 
 head_ "Result"

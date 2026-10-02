@@ -23,6 +23,10 @@
 #                         → dev/smoke/09-vertex-anthropic-toolloop.sh
 #   Behavioural evals    — ANTHROPIC_VERTEX_PROJECT_ID set
 #                         → dev/smoke/11-evals-corpus.sh
+#   Approver evals       — ANTHROPIC_VERTEX_PROJECT_ID set
+#                         → dev/smoke/12-approver-evals.sh
+#                           (auto mode's approver model against a
+#                           labelled corpus, #1175)
 #
 # The third leg is a different kind of question from the first two.
 # Those ask whether a request shape is still accepted; the evals ask
@@ -76,6 +80,12 @@ if [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]]; then
   run_leg "evals-corpus" dev/smoke/11-evals-corpus.sh
 else
   echo "e2e-real-provider: evals-corpus: skipped (ANTHROPIC_VERTEX_PROJECT_ID unset)"
+fi
+
+if [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]]; then
+  run_leg "approver-evals" dev/smoke/12-approver-evals.sh
+else
+  echo "e2e-real-provider: approver-evals: skipped (ANTHROPIC_VERTEX_PROJECT_ID unset)"
 fi
 
 if [[ "${failed}" -gt 0 ]]; then

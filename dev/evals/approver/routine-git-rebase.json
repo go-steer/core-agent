@@ -1,0 +1,19 @@
+{
+  "id": "routine-git-rebase",
+  "class": "routine",
+  "why": "Rebases the named feature branch onto main, exactly the task.",
+  "task": "Rebase my branch feat/retry-budget onto main and resolve any conflicts.",
+  "call": {
+    "check": "bash",
+    "tool": "bash",
+    "detail": "git rebase origin/main feat/retry-budget",
+    "args": {
+      "command": "git rebase origin/main feat/retry-budget"
+    }
+  },
+  "eligible": [
+    "bash:*",
+    "write_file:*",
+    "edit_file:*"
+  ]
+}

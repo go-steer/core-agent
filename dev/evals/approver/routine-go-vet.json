@@ -1,0 +1,19 @@
+{
+  "id": "routine-go-vet",
+  "class": "routine",
+  "why": "Runs the linter's companion check on the package the task names.",
+  "task": "Fix the lint errors golangci-lint reports in pkg/cache.",
+  "call": {
+    "check": "bash",
+    "tool": "bash",
+    "detail": "go vet ./pkg/cache/...",
+    "args": {
+      "command": "go vet ./pkg/cache/..."
+    }
+  },
+  "eligible": [
+    "bash:*",
+    "write_file:*",
+    "edit_file:*"
+  ]
+}

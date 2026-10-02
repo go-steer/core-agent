@@ -45,11 +45,32 @@ import (
 
 // Stream is the append-only event log primitive. Implementations are
 // expected to be safe for concurrent use.
+//
+// What every implementation promises, and what it does not:
+//
+//   - Seq is unique and strictly increasing within one root session
+//     tree. A session ID's root is the part before its first ":sub:";
+//     its tree is the root plus every "<root>:sub:..." descendant, at
+//     any depth. An ID with no ":sub:" in it is its own root, which
+//     includes derived IDs such as "<sid>:digest". Seq is NOT
+//     promised to be unique across trees, so never compare or merge
+//     seqs from two different trees. The SQL implementation happens
+//     to assign one global sequence, which satisfies this.
+//   - A query scoped to one session is always served: ForSession or
+//     WithSessionTree with a non-empty session ID. Any other query
+//     (none of those options, or an empty session ID, which every
+//     option treats as a wildcard) may span trees, and may be refused
+//     with an error wrapping ErrUnscopedQuery by an implementation
+//     that cannot enumerate its whole store. The SQL implementation
+//     serves every query.
+//
+// docs/external-state-design.md is why the contract stops there.
 type Stream interface {
 	// Append writes ev to the log under sess. Returns the assigned
 	// seq number. The event itself is also expected to be persisted
-	// via the paired session.Service.AppendEvent — Stream.Append
-	// only writes the overlay row that carries the seq.
+	// via the paired session.Service.AppendEvent. In the SQL
+	// implementation Stream.Append only writes the overlay row that
+	// carries the seq.
 	//
 	// Most callers don't invoke this directly; agent.Run drives the
 	// session.Service which in turn calls Append internally.
@@ -58,15 +79,17 @@ type Stream interface {
 	// Since returns events with seq > fromSeq, in seq order. Bounded
 	// by current end-of-log; returns when caught up. Apply filters
 	// via QueryOption (ForSession, WithBranchPrefix, WithAuthor,
-	// WithLimit).
+	// WithLimit). An unscoped call may yield ErrUnscopedQuery; see
+	// the Stream doc.
 	Since(ctx context.Context, fromSeq int64, opts ...QueryOption) iter.Seq2[Entry, error]
 
 	// Watch returns events with seq > fromSeq, in seq order, blocking
 	// for new events as they're appended. Cancel ctx to stop. Same
-	// QueryOptions as Since.
+	// QueryOptions as Since, and the same scoping rule.
 	//
-	// The default poll interval is 200ms, configurable via Open's
-	// WithWatchInterval option.
+	// How new events are noticed is implementation-defined. The SQL
+	// implementation polls the database, by default every 200ms,
+	// configurable via Open's WithWatchInterval option.
 	Watch(ctx context.Context, fromSeq int64, opts ...QueryOption) iter.Seq2[Entry, error]
 
 	// Close releases resources held by the Stream (typically the
@@ -112,6 +135,8 @@ type BranchLister interface {
 // (key "proxy_by") from the request context. Rows persisted before
 // the sidecar column shipped read back as a nil Metadata map.
 type Entry struct {
+	// Seq orders entries within one root session tree; see the
+	// Stream doc for what it does and does not promise.
 	Seq      int64
 	Event    *session.Event
 	Metadata map[string]string
@@ -141,7 +166,13 @@ type Handle struct {
 	// substrates (e.g., pkg/attach.SessionACLStore) can share the
 	// same database without re-opening it. Read-only access from
 	// outside pkg/eventlog — mutations happen via the typed
-	// stores. Nil before Open returns and after Close.
+	// stores. Nil before Open returns. Close closes the pool but
+	// leaves the field set.
+	//
+	// DB is only ever set by a SQL-backed Handle; a Handle built on a
+	// non-SQL store leaves it nil. Read a nil DB as "this Handle has
+	// no SQL connection to share", never as "closed" or "unhealthy":
+	// use Ping for that.
 	DB *gorm.DB
 	// db is the same value as DB, kept as an unexported alias for
 	// the original lifecycle code in Close (so the cleanup nil-out
@@ -264,7 +295,10 @@ type queryOpts struct {
 
 // ForSession restricts results to one session triple. Without it,
 // queries scan across every session in the database — useful for
-// audit dashboards, dangerous for high-volume reads.
+// audit dashboards, dangerous for high-volume reads. An empty argument
+// is a wildcard, so ForSession(app, user, "") is unscoped too. Only
+// the SQL implementation is promised to serve unscoped queries; others
+// may refuse them with ErrUnscopedQuery (see the Stream doc).
 func ForSession(appName, userID, sessionID string) QueryOption {
 	return func(q *queryOpts) {
 		q.appName = appName
@@ -355,6 +389,17 @@ func WithLimit(n int) QueryOption {
 
 // ErrClosed is returned by Stream methods invoked after Close.
 var ErrClosed = errors.New("eventlog: stream is closed")
+
+// ErrUnscopedQuery is what a Stream returns (wrapped) from Since or
+// Watch when the query names no session ID (neither ForSession nor
+// WithSessionTree with a non-empty one) and the implementation cannot
+// serve a query across its whole store. It is yielded before any
+// entry and before Watch blocks. The SQL implementation never returns
+// it. It is exported ahead of the
+// first implementation that does, so a caller that reads across
+// sessions (an audit dashboard, say) can handle it with errors.Is from
+// the start.
+var ErrUnscopedQuery = errors.New("eventlog: query must be scoped to a session or session tree")
 
 // IsSessionNotFound reports whether err means "that session is not in
 // the log", as opposed to a real failure to read it.

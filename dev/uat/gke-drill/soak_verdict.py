@@ -286,12 +286,25 @@ def check_compaction(rows: list[dict[str, Any]], lines: list[tuple[datetime.date
     peak_id, peak = max(((sid, max(p[1] for p in pts)) for sid, pts in series.items()),
                         key=lambda p: p[1], default=(None, 0))
     crossed = {sid: pts for sid, pts in series.items() if any(p[1] >= threshold for p in pts)}
-    if not crossed:
+
+    # A compaction between two samples: the session crossed and compacted
+    # inside one 2-minute interval, so no sample ever shows it above the
+    # threshold — but its count does. soak.sh samples only sessions touched
+    # after the run started, so a non-zero count is a compaction during the
+    # run. Seen on the first run of the fixed image (2026-10-03): the very
+    # first sample of the first session already read compactions=1 at 15K,
+    # and the crossing-keyed logic below called the clause NOT EXERCISED.
+    unsampled = {sid: max(p[2] for p in pts if p[2] is not None)
+                 for sid, pts in series.items()
+                 if sid not in crossed and any(p[2] for p in pts)}
+
+    if not crossed and not unsampled:
         return Clause("compaction", NOT_EXERCISED,
                       f"no session reached the threshold of {threshold:,} tokens; the peak was {peak:,} ({peak_id})", gaps)
 
-    detail = []
-    compacted = failed = unowed = 0
+    detail = [f"{sid}: compacted {n} time(s) between samples (the crossing itself was never sampled)"
+              for sid, n in unsampled.items()]
+    compacted, failed, unowed = len(unsampled), 0, 0
     for sid, pts in crossed.items():
         i = next(k for k, p in enumerate(pts) if p[1] >= threshold)
         at_cross, w_cross, c_cross, _ = pts[i]

@@ -621,6 +621,17 @@ func (c *Client) Inject(ctx context.Context, sessionPath, message string) error 
 		map[string]string{"message": message}, nil)
 }
 
+// InjectTask is Inject for a message the client appended text to: the
+// first taskBytes bytes of message are what the operator wrote
+// (attach.InjectRequest.TaskBytes, protocol 1.18.0, #1230), and only
+// they count toward the auto-mode approver's task. 0 says none of
+// message is the operator's. A pre-1.18.0 daemon ignores the field and
+// counts the whole message, as Inject does.
+func (c *Client) InjectTask(ctx context.Context, sessionPath, message string, taskBytes int) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/inject",
+		attach.InjectRequest{Message: message, TaskBytes: &taskBytes}, nil)
+}
+
 // QueueContext calls POST <base>/sessions/<sid>/inject with
 // {"wake": false} — file the message for the next turn without causing
 // one (#698). Use it for context the agent should have but need not

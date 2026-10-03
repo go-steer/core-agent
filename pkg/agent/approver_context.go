@@ -101,9 +101,12 @@ func (a *Agent) captureApproverTask(tp *turnPrep) {
 		return
 	}
 	texts := []string{operatorTaskFrom(tp.ctx)}
-	for i, text := range tp.drained.texts {
-		if i < len(tp.drained.taskCallers) && a.gate.ApproverTaskSource(tp.drained.taskCallers[i]) {
-			texts = append(texts, text)
+	for i := range tp.drained.texts {
+		if i < len(tp.drained.taskCallers) && i < len(tp.drained.taskTexts) &&
+			a.gate.ApproverTaskSource(tp.drained.taskCallers[i]) {
+			// The words the operator wrote, not the whole message: a
+			// client may have added text of its own (#1230).
+			texts = append(texts, tp.drained.taskTexts[i])
 		}
 	}
 	a.recordApproverTask(texts...)

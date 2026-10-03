@@ -71,6 +71,18 @@ func DirectCaller(ctx context.Context) string {
 // callerMiddlewareWithConfig writes.
 type directCallerCtxKey struct{}
 
+// InjectTask returns the part of an injected message its client says
+// the operator wrote (InjectRequest.TaskBytes), and whether the client
+// said anything. Without it, the whole message is the operator's. Like
+// DirectCaller, only the inject handler sets it; the agent reads it
+// when it queues the message (#1230).
+func InjectTask(ctx context.Context) (string, bool) {
+	t, ok := ctx.Value(injectTaskCtxKey{}).(string)
+	return t, ok
+}
+
+type injectTaskCtxKey struct{}
+
 // callerMiddlewareConfig packages the per-server settings the
 // middleware needs. Separated from Options so the middleware can be
 // constructed cheaply in tests without spinning up a full Server.

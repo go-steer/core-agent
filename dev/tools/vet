@@ -17,4 +17,8 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 cd "$(repo_root)"
-exec go vet ./...
+go vet ./...
+# The slim build (-tags no_tui, cmd/core-agent's tui_disabled.go) drops
+# every TUI file. go build never compiles test files, so a TUI test
+# without the //go:build !no_tui tag only shows up here (#1227).
+exec go vet -tags no_tui ./...

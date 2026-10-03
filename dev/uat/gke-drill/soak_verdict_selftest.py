@@ -182,6 +182,27 @@ def synthetic(tmp: pathlib.Path, name: str, windows: list[int], compactions: lis
     return run
 
 
+def check_mixed(tmp: pathlib.Path, t: int) -> None:
+    """One session compacted between samples; another crossed, took a new
+    turn and never compacted. The failure must still win."""
+    run = tmp / "mixed"
+    run.mkdir()
+    rows = [{"at": "2026-01-01T00:00:00+00:00", "kind": "start", "hours": "1"}]
+    good = [(15_000, 1, 1), (16_000, 1, 2), (17_000, 1, 3), (17_500, 1, 4), (18_000, 1, 5), (18_500, 1, 6)]
+    bad = [(90_000, 0, 1), (105_000, 0, 2), (105_000, 0, 2), (105_000, 0, 2), (110_000, 0, 3), (115_000, 0, 4)]
+    for i, ((gw, gc, gt), (bw, bc, bt)) in enumerate(zip(good, bad)):
+        active = [{"id": "good", "turns": gt, "window": gw, "compactions": gc, "halted": False,
+                   "watchdog_tripped": False, "ceiling_tripped": False},
+                  {"id": "bad", "turns": bt, "window": bw, "compactions": bc, "halted": False,
+                   "watchdog_tripped": False, "ceiling_tripped": False}]
+        rows.append({"at": f"2026-01-01T00:{i + 1:02d}:00+00:00", "kind": "sample", "restarts": "0", "active": active})
+    rows.append({"at": "2026-01-01T01:00:00+00:00", "kind": "end"})
+    write_rows(run, rows)
+    (run / "daemon.log").write_text("")
+    expect(sv.grade(run, t), "compaction", sv.FAIL, "were not compacted",
+           "one session compacted between samples, another resumed uncompacted: the failure still wins")
+
+
 def compaction_cases(tmp: pathlib.Path) -> None:
     print("synthetic compaction timelines (threshold 100,000)")
     t = 100_000
@@ -214,6 +235,13 @@ def compaction_cases(tmp: pathlib.Path) -> None:
                            compactions=[0, 0, 0, 0, 0, 0], turns=resumed)),
            "compaction", sv.FAIL, "were not compacted",
            "a persistent drop with a count of zero: FAIL, the count decides, not the window")
+    # From the first soak of the fixed image (2026-10-03): the session
+    # crossed and compacted inside one sampling interval, so no sample shows
+    # it above the threshold. The count is the evidence.
+    expect(grade(synthetic(tmp, "between", [15_000, 16_000, 18_000], compactions=[1, 1, 1])),
+           "compaction", sv.PASS, "were compacted",
+           "compacted between samples, crossing never sampled: PASS on the count")
+    check_mixed(tmp, t)
     # The bug found on the 2026-10-02 soak: a per-incident session crosses
     # the threshold inside its one turn and then sits idle. Compaction is
     # never owed, and the first version of this grader called it a FAIL.

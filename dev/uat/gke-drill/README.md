@@ -516,9 +516,14 @@ with nobody watching must never invent a verdict mid-run. The verdict comes
 afterwards, from a separate tool over the same artifacts (#1199, box A5):
 
 ```sh
-dev/uat/gke-drill/soak_verdict.py --run-dir ~/.gke-drill/soak/<stamp>-<cluster> \
-    --compaction-at <window x threshold, in tokens>
+dev/uat/gke-drill/soak_verdict.py --run-dir ~/.gke-drill/soak/<stamp>-<cluster>
 ```
+
+The compaction threshold comes from the daemon itself: it states the figure at boot
+(`core-agent: compaction: fires at … = N tokens`), and `soak.sh` reads that line from
+the pod's log at start and records it as `compaction_at` on the timeline's start row
+(its log follower starts after the pod booted, so the line never reaches
+`daemon.log`). Pass `--compaction-at N` only for an image older than that line. Don't multiply it out by hand — the 2026-10-03 soak was first graded at 21,000 tokens because 0.021 was multiplied by 1,000,000, and `gemini-3.7-flash`'s window is 1,048,576.
 
 One row per A1 clause — survived, no wedge, compaction, no drops — each
 **PASS**, **FAIL**, **NOT EXERCISED** or **UNKNOWN**. Exit 0 only when all four

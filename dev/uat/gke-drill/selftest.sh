@@ -911,6 +911,15 @@ else
     bad "soak.sh no longer records compactions; soak_verdict.py falls back to the window heuristic"
 fi
 
+# The daemon states its compaction threshold once, at boot; soak.sh's
+# log follower starts after that (--since=1s) and never sees it. Without
+# the start-row copy every soak's compaction clause grades UNKNOWN.
+if printf '%s\n' "${SOAK_CODE}" | grep -q 'compaction_at: (\$compaction_at | tonumber)'; then
+    ok "soak.sh records the daemon's compaction threshold on the start row"
+else
+    bad "soak.sh no longer records compaction_at; soak_verdict.py cannot find the threshold"
+fi
+
 head_ "A2 failure-class count (#1200)"
 # a2_count.py counts each A2 failure class in the daemon log and in the
 # transcripts. No archived run pairs the two, so its self-test grades the

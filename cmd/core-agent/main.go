@@ -1853,7 +1853,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// remains available regardless of this flag — disabling only
 	// turns off the automatic trigger.
 	if !noCompact {
-		opts = append(opts, agent.WithCompactor(compose.BuildCompactor(cfg.Compaction)))
+		compactor := compose.BuildCompactor(cfg.Compaction)
+		if dc, ok := compactor.(*agent.DefaultCompactor); ok {
+			fmt.Fprintln(os.Stderr, compactionBootLine(dc, cfg.Model.Name))
+		}
+		opts = append(opts, agent.WithCompactor(compactor))
 	}
 	// Runaway backstops: the behavioral watchdog (#123/#623) and the
 	// cost ceilings (#145). Resolution is a pure function so the

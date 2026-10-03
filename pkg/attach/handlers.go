@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/adk/session"
 
@@ -544,6 +545,17 @@ func (h *handlers) streamEvents(w http.ResponseWriter, r *http.Request, entry *E
 // every field a protocol bump added.
 type InjectRequest struct {
 	Message string `json:"message"`
+	// TaskBytes is how many leading bytes of Message the operator
+	// wrote, for the auto-mode approver (protocol 1.18.0, #1230). A
+	// client that appends text of its own after what the operator typed
+	// — core-agent-tui inlines @-referenced files — sends the length of
+	// the operator's words, so file content never counts as the
+	// operator's instruction. A length, not a copy, so the body does not
+	// carry the typed text twice. nil (omitted) keeps the historical
+	// behaviour: the whole message counts, for a caller
+	// permissions.auto.task_from lists. 0 says none of it is the
+	// operator's. Must be within Message and end on a UTF-8 boundary.
+	TaskBytes *int `json:"task_bytes,omitempty"`
 	// Wake chooses between the two deliveries (#698). true, and
 	// omitted, is the historical one: queue and wake, so the message
 	// preempts a sleep and un-parks a paused loop. false queues only
@@ -599,6 +611,10 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 		http.Error(w, "inject: message is required", http.StatusBadRequest)
 		return
 	}
+	if n := req.TaskBytes; n != nil && (*n < 0 || *n > len(req.Message) || (*n < len(req.Message) && !utf8.RuneStart(req.Message[*n]))) {
+		http.Error(w, "inject: task_bytes must be a length within message that ends on a character boundary: it says how many of the message's leading bytes the operator wrote", http.StatusBadRequest)
+		return
+	}
 	wake := req.Wake == nil || *req.Wake
 	// Feature-detect before anything observable happens. A registrant
 	// that can't defer must not be handed the message anyway on the
@@ -628,10 +644,14 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 		promptID string
 		err      error
 	)
+	ctx := r.Context()
+	if req.TaskBytes != nil {
+		ctx = context.WithValue(ctx, injectTaskCtxKey{}, req.Message[:*req.TaskBytes])
+	}
 	if wake {
-		promptID, err = injectWithContext(r.Context(), entry.Agent, req.Message, caller)
+		promptID, err = injectWithContext(ctx, entry.Agent, req.Message, caller)
 	} else {
-		promptID, err = queueWithContext(r.Context(), deferred, req.Message, caller)
+		promptID, err = queueWithContext(ctx, deferred, req.Message, caller)
 	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf("inject: %v", err), http.StatusInternalServerError)

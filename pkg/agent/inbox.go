@@ -73,6 +73,12 @@ type inboxMessage struct {
 	// — anonymous, proxy-asserted, or not an HTTP inject at all. Only
 	// a message with one can be the auto-mode approver's task (#1175).
 	taskCaller string
+	// taskText is the part of text that counts toward the approver's
+	// task when taskCaller qualifies: text itself, unless the injecting
+	// client said which words the operator wrote (attach.InjectTask,
+	// #1230) — core-agent-tui's message carries @-inlined file content
+	// after them.
+	taskText string
 }
 
 // newPromptID returns a new prompt_id. UUID v7 is sortable by
@@ -694,12 +700,17 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 		// do, for example) we don't want to panic.
 		return "", errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
+	taskText := message
+	if t, ok := attach.InjectTask(ctx); ok {
+		taskText = t
+	}
 	id, err := a.inbox.enqueue(inboxMessage{
 		text:       message,
 		caller:     caller,
 		spanCtx:    trace.SpanContextFromContext(ctx),
 		quiet:      !mode.wake,
 		taskCaller: attach.DirectCaller(ctx),
+		taskText:   taskText,
 	})
 	if err != nil {
 		return "", err
@@ -808,6 +819,9 @@ type inboxDrain struct {
 	// taskCallers parallels texts: each message's directly verified
 	// caller (inboxMessage.taskCaller), for the approver's task.
 	taskCallers []string
+	// taskTexts parallels texts: the part of each that counts toward
+	// the approver's task (inboxMessage.taskText).
+	taskTexts []string
 	// originator is the last non-empty caller in the batch — the
 	// turn's originator per docs/multi-session-design.md ("the turn
 	// answers the most recent ask"). Zero when nothing carried an
@@ -872,6 +886,7 @@ func (a *Agent) drainInboxFull() inboxDrain {
 		texts:       make([]string, len(msgs)),
 		senders:     make([]string, len(msgs)),
 		taskCallers: make([]string, len(msgs)),
+		taskTexts:   make([]string, len(msgs)),
 	}
 	var deferredCaller auth.Caller
 	for i, m := range msgs {
@@ -882,6 +897,7 @@ func (a *Agent) drainInboxFull() inboxDrain {
 		d.texts[i] = m.text
 		d.senders[i] = m.caller.Identity
 		d.taskCallers[i] = m.taskCaller
+		d.taskTexts[i] = m.taskText
 		switch {
 		case m.caller.Identity == "":
 		case m.quiet:

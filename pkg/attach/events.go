@@ -337,6 +337,11 @@ import "time"
 // it (400 otherwise), and `GET /perms` gains `settable_modes`, the modes
 // it will accept for this session, in the chip's order. All additive and
 // omitempty; a pre-1.18.0 daemon never sets them and refuses "auto".
+// `POST /inject` also takes an optional `task_bytes` (#1230): how many
+// leading bytes of `message` the operator wrote, which alone count
+// toward the approver's task. core-agent-tui sends it so @-inlined file
+// content never does. A pre-1.18.0 daemon ignores it and counts the
+// whole message.
 const protocolVersion = "1.18.0"
 
 // SSE event-type names per the protocol spec (section 2).

@@ -306,10 +306,13 @@ func TestRun_UnmarkedPromptIsNotTheTask(t *testing.T) {
 func TestRun_InboxTaskNeedsADirectListedCaller(t *testing.T) {
 	t.Parallel()
 	r := newApproverRig(t, true, "go build ./...")
+	// taskText is what injectAs sets: the whole message unless the
+	// client named the operator's part (#1230). A zero taskText counts
+	// nothing, which is the safe default for a hand-built message.
 	for _, m := range []inboxMessage{
-		{text: "from alice", taskCaller: approverTaskUser},
-		{text: "from bob", taskCaller: "bob@example.com"},
-		{text: "relayed or anonymous"},
+		{text: "from alice", taskCaller: approverTaskUser, taskText: "from alice"},
+		{text: "from bob", taskCaller: "bob@example.com", taskText: "from bob"},
+		{text: "relayed or anonymous", taskText: "relayed or anonymous"},
 	} {
 		if _, err := r.a.inbox.enqueue(m); err != nil {
 			t.Fatal(err)

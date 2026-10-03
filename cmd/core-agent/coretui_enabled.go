@@ -653,6 +653,11 @@ func pathScopeToCoreTui(cfg *config.Config) coretui.PathScope {
 type coreAgentAdapter struct {
 	inner *agent.Agent
 
+	// turnInput reads what core-tui stamped on a Run's context. nil
+	// is coretui.TurnInputFrom; tests substitute it, since only core-tui
+	// can stamp its own context.
+	turnInput func(context.Context) (coretui.TurnInput, bool)
+
 	// For the auto-mode approver's task (#1175): which inbox texts
 	// this TUI's own keyboard queued, and whether the next Run is the
 	// auto-continue turn core-tui builds from a drain. See
@@ -799,7 +804,7 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 		// What the operator typed is the auto-mode approver's task
 		// (#1175); an auto-continue turn's prompt is not. See
 		// operatorTaskFor.
-		for ev, err := range a.inner.Run(agent.WithOperatorTask(ctx, a.operatorTaskFor(prompt)), prompt) {
+		for ev, err := range a.inner.Run(agent.WithOperatorTask(ctx, a.operatorTaskFor(ctx)), prompt) {
 			if err != nil {
 				yield(coretui.Event{}, err)
 				return
@@ -945,47 +950,47 @@ func (a *coreAgentAdapter) forgetTyped(message string) {
 	a.typedQueued[message]--
 }
 
-// operatorTaskFor is the text of prompt that the operator wrote, for
-// the auto-mode approver (#1175 decision 6).
+// operatorTaskFor is the text the operator wrote for the turn ctx
+// belongs to, for the auto-mode approver (#1175 decision 6). core-tui
+// says which turn that is on Run's context (coretui.TurnInputFrom,
+// core-tui#359), so nothing here parses the prompt.
 //
-// An ordinary prompt is what they typed. The turn after a non-empty
-// DrainInbox is the auto-continue turn core-tui builds from that
-// drain — it calls submitTurn straight after DrainInbox, and nothing
-// else in core-tui drains — and its prompt is the drained batch,
-// formatted. That batch holds whatever reached the inbox while the
-// turn ran: the operator's own typing, but also a watcher's wake
-// payload relayed over --attach-listen or an anonymous inject. So
-// only the drained texts this TUI's Inject queued are the operator's.
-// Pairing by order rather than matching the prompt's text is
-// deliberate: core-tui expands @-references in the prompt, so the
-// text Run receives need not equal the formatted batch.
-func (a *coreAgentAdapter) operatorTaskFor(prompt string) string {
+// An ordinary turn's task is TurnInput.Typed: the operator's text
+// before core-tui inlined any @-referenced file, whose content is not
+// their words and is exactly where an injection would sit.
+//
+// An auto-continue turn's prompt is the drained inbox batch, which
+// holds whatever reached the inbox while the turn ran: the operator's
+// own typing, but also a watcher's wake payload relayed over
+// --attach-listen or an anonymous inject. So its task is only the
+// drained texts this TUI's Inject queued, which DrainInbox worked out.
+// A pending drain that no auto-continue turn followed (core-tui skips
+// the turn when the formatted batch is blank) is dropped, so it can
+// never stand in for a later typed turn's task.
+//
+// A Run core-tui did not stamp has no task: the approver then sends
+// every call it would judge to a person.
+func (a *coreAgentAdapter) operatorTaskFor(ctx context.Context) string {
+	from := a.turnInput
+	if from == nil {
+		from = coretui.TurnInputFrom
+	}
+	in, ok := from(ctx)
 	a.approverMu.Lock()
 	defer a.approverMu.Unlock()
-	if a.autoTurnPending {
-		a.autoTurnPending = false
-		task := a.autoTurnTask
-		a.autoTurnTask = ""
+	pending, task := a.autoTurnPending, a.autoTurnTask
+	a.autoTurnPending, a.autoTurnTask = false, ""
+	switch {
+	case !ok:
+		return ""
+	case in.AutoContinue:
+		if !pending {
+			return ""
+		}
 		return task
+	default:
+		return in.Typed
 	}
-	return typedPart(prompt)
-}
-
-// coreTUIReferencedFiles is the header core-tui's submitTurn writes
-// after the operator's text when it inlines @-referenced files
-// (expandAtRefs, core-tui v0.28.0 tui/files.go).
-const coreTUIReferencedFiles = "\n\nReferenced files:\n"
-
-// typedPart is prompt without the files core-tui inlined after it.
-// File content is not the operator's words, and it is exactly where an
-// injection would sit. Cutting at the FIRST header is safe in both
-// directions: the operator's text comes first, so the cut can only
-// shorten what they wrote, never keep file content.
-func typedPart(prompt string) string {
-	if i := strings.Index(prompt, coreTUIReferencedFiles); i >= 0 {
-		return prompt[:i]
-	}
-	return prompt
 }
 
 // DrainInbox + PendingInboxCount satisfy coretui.InboxDrainer

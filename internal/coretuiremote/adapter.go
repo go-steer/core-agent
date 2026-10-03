@@ -56,6 +56,11 @@ type Adapter struct {
 	client      *attachclient.Client
 	sessionPath string // e.g., "/sessions/core-agent/abc123" or "/sessions/abc123"
 
+	// turnInput reads what core-tui stamped on a Run's context. nil is
+	// coretui.TurnInputFrom; tests substitute it, since only core-tui
+	// can stamp its own context.
+	turnInput func(context.Context) (coretui.TurnInput, bool)
+
 	// connectedAt is set at construction time and used to filter out
 	// the broadcaster's historical replay (since=0 streams every
 	// frame from the start of the log). Events with Timestamp older
@@ -426,6 +431,27 @@ func NewWithClientFactory(client *attachclient.Client, sessionPath string, facto
 	return a
 }
 
+// inject sends one turn's prompt, saying how much of it the operator
+// wrote (#1230). core-tui expands @-references by appending the files
+// after the operator's words, so TurnInput.Typed is a prefix of the
+// prompt, and only that prefix may count toward the daemon's auto-mode
+// approver task. Anything else claims none of the prompt: a Typed that
+// is not a prefix, a Run core-tui did not stamp, and an auto-continue
+// turn. That last one cannot happen here today (this adapter is no
+// InboxDrainer, so core-tui never builds one in attach mode); the check
+// is there for the day it can. A pre-1.18.0 daemon ignores the field.
+func (a *Adapter) inject(ctx context.Context, prompt string) error {
+	from := a.turnInput
+	if from == nil {
+		from = coretui.TurnInputFrom
+	}
+	n := 0
+	if in, ok := from(ctx); ok && !in.AutoContinue && strings.HasPrefix(prompt, in.Typed) {
+		n = len(in.Typed)
+	}
+	return a.client.InjectTask(ctx, a.sessionPath, prompt, n)
+}
+
 // Run satisfies coretui.Agent. Sends prompt as an inject to the
 // remote agent, then ranges over the SSE stream translating each
 // session.Event into a coretui.Event until ev.TurnComplete fires
@@ -451,7 +477,7 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 			return
 		}
 
-		if err := a.client.Inject(ctx, a.sessionPath, prompt); err != nil {
+		if err := a.inject(ctx, prompt); err != nil {
 			yield(coretui.Event{}, fmt.Errorf("inject: %w", err))
 			return
 		}

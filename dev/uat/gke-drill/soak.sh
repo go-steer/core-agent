@@ -433,7 +433,7 @@ soak_summarize() {
         printf '\n## Read this before writing the run note\n\n'
         printf 'The soak asserts nothing. The verdict comes from a separate grader\n'
         printf 'over these artifacts — record its output in the run note:\n\n'
-        printf '    dev/uat/gke-drill/soak_verdict.py --run-dir %s --compaction-at <tokens>\n\n' "${SOAK_RUN_DIR}"
+        printf '    dev/uat/gke-drill/soak_verdict.py --run-dir %s\n\n' "${SOAK_RUN_DIR}"
         printf 'For box A1 the four questions it answers are:\n\n'
         printf '1. **Wedged session** — does any session sit in `working`, or `halted`,\n'
         printf '   across a whole quiet gap between two incidents? Sessions table.\n'
@@ -530,14 +530,31 @@ soak_follow_daemon &
 SOAK_LOG_PID=$!
 soak_note "daemon log → ${SOAK_DAEMON_LOG} (pid ${SOAK_LOG_PID})"
 
+# The daemon states its effective compaction threshold, in tokens, once at
+# boot. The log follower above starts at the run (`--since=1s`) and the
+# pod booted before it, so that line never reaches daemon.log; read it here
+# from the pod's whole log, once, and record it on the start row, which
+# soak_verdict.py consults before anything else. Empty on an image older
+# than the line — the verdict then asks for --compaction-at explicitly.
+SOAK_COMPACTION_AT="$(kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" logs deploy/core-agent 2>/dev/null \
+    | grep -o 'compaction: fires at .*-token window = [0-9]* tokens' | tail -1 \
+    | sed -E 's/.* = ([0-9]+) tokens$/\1/' || true)"
+if [[ -n "${SOAK_COMPACTION_AT}" ]]; then
+    soak_note "daemon compacts at ${SOAK_COMPACTION_AT} tokens (from its boot line)"
+else
+    soak_note "daemon log has no compaction boot line (older image); grade with --compaction-at"
+fi
+
 soak_emit start "$(jq -cn \
     --arg cluster "${CLUSTER_NAME}" --arg project "${PROJECT_ID}" \
     --arg demo_ns "${DEMO_NS}" --arg target_ns "${TARGET_NS}" \
     --arg workload "${WORKLOAD}" --arg hours "${SOAK_HOURS}" \
+    --arg compaction_at "${SOAK_COMPACTION_AT}" \
     --arg image "$(kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" get deploy core-agent \
         -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo '?')" \
     '{cluster: $cluster, project: $project, demo_ns: $demo_ns, target_ns: $target_ns,
-      workload: $workload, hours: $hours, image: $image}')"
+      workload: $workload, hours: $hours, image: $image}
+     + (if $compaction_at == "" then {} else {compaction_at: ($compaction_at | tonumber)} end)')"
 
 soak_set_since
 soak_sample

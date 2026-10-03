@@ -159,16 +159,31 @@ func (c *DefaultCompactor) ShouldCompact(_ context.Context, a *Agent) bool {
 // package — kept lowercase because the resolution policy is an
 // implementation detail of this Compactor.
 func (c *DefaultCompactor) resolveThreshold(a *Agent) float64 {
-	if len(c.ThresholdByTier) > 0 {
+	model := ""
+	if last, ok := a.tracker.Last(); ok {
+		model = last.Model
+	}
+	return c.ThresholdFor(model)
+}
+
+// ThresholdFor is the utilization fraction at which this compactor fires
+// for model; "" (no turn yet, or an unknown model) gets the fallback. It
+// is the one resolution path: resolveThreshold calls it with the session's
+// current model, and cmd/core-agent calls it at boot to print the
+// effective threshold. Sharing the path is the point — a startup line
+// computed separately could disagree with the decision it describes, and
+// #1226 (an operator threshold silently outranked by the tier defaults)
+// would have been visible the first time anyone read that line, had it
+// existed.
+func (c *DefaultCompactor) ThresholdFor(model string) float64 {
+	if len(c.ThresholdByTier) > 0 && model != "" {
 		classifier := c.TierClassifier
 		if classifier == nil {
 			classifier = modeltier.Classify
 		}
-		if last, ok := a.tracker.Last(); ok {
-			if tier := classifier(last.Model); tier != "" {
-				if v, present := c.ThresholdByTier[tier]; present && v > 0 {
-					return v
-				}
+		if tier := classifier(model); tier != "" {
+			if v, present := c.ThresholdByTier[tier]; present && v > 0 {
+				return v
 			}
 		}
 	}

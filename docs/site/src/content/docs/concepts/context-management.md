@@ -53,6 +53,14 @@ A single 0.85 threshold worked for frontier-tier models (Opus, Pro) but fired fa
 
 Tier classification is by substring match against the model ID — see `pkg/modeltier`. These are what you get when you haven't said: setting the single `compaction.threshold` (or `--compaction-threshold`, or a task class's threshold) replaces them for **every** tier, and only your own `threshold_by_tier` entries outrank it for their tier. Precedence: your `threshold_by_tier` entry → your `threshold` → the tier default above → `0.85`. (Before [#1226](https://github.com/go-steer/core-agent/issues/1226) the single threshold ranked *below* the tier defaults, so it governed only unclassified models — none of the supported ones — and a lowered threshold silently did nothing.)
 
+The daemon states the threshold in force at startup, in tokens, for its configured model:
+
+```
+core-agent: compaction: fires at 0.85 of gemini-3.7-flash's 1048576-token window = 891289 tokens
+```
+
+Read the token figure rather than multiplying it out yourself: model windows are not round numbers. A session that switches model at runtime resolves its own threshold per turn; the line describes the boot model.
+
 Override per-tier defaults in `.agents/config.json`:
 
 ```json

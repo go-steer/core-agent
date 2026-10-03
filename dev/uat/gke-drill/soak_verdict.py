@@ -80,6 +80,7 @@ import argparse
 import datetime
 import json
 import pathlib
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -268,7 +269,7 @@ def check_compaction(rows: list[dict[str, Any]], lines: list[tuple[datetime.date
                 for d in degraded[:5]] + gaps
     if threshold is None:
         return Clause("compaction", UNKNOWN,
-                      "no compaction threshold: pass --compaction-at TOKENS (the recipe model's window x its threshold)", gaps)
+                      "no compaction threshold: no --compaction-at, no compaction_at on the timeline's start row (soak.sh reads it from the daemon's boot line), and no boot line in daemon.log — an image older than that line; pass --compaction-at TOKENS", gaps)
 
     # Per session: (sample time, window, compactions count, turns).
     series: dict[str, list[tuple[datetime.datetime, int, int | None, int | None]]] = {}
@@ -407,6 +408,25 @@ def check_drops(lines: list[tuple[datetime.datetime | None, str]] | None) -> Cla
     return Clause("no drops", PASS, reason, gaps)
 
 
+# cmd/core-agent/compaction_line.go — the daemon states its effective
+# compaction threshold in tokens at boot. Reading it back removes the
+# window arithmetic that mis-graded the 2026-10-03 soak at 21,000 when the
+# daemon's real figure was 22,020 (0.021 of a 1,048,576-token window, not
+# 1,000,000). The LAST such line wins: a log that spans a pod restart
+# holds one per boot, and the later boot is the one that served the rest
+# of the run.
+BOOT_THRESHOLD_RE = re.compile(r"core-agent: compaction: fires at \S+ of .*-token window = (\d+) tokens")
+
+
+def boot_compaction_at(lines: list[tuple[datetime.datetime | None, str]]) -> int | None:
+    found = None
+    for _, text in lines:
+        m = BOOT_THRESHOLD_RE.search(text)
+        if m:
+            found = int(m.group(1))
+    return found
+
+
 def grade(run: pathlib.Path, compaction_at: int | None) -> list[Clause]:
     timeline = run / "timeline.jsonl"
     if not timeline.is_file():
@@ -418,6 +438,8 @@ def grade(run: pathlib.Path, compaction_at: int | None) -> list[Clause]:
         start = next((r for r in rows if r.get("kind") == "start"), {})
         v = start.get("compaction_at")
         compaction_at = int(v) if isinstance(v, (int, str)) and str(v).isdigit() else None
+    if compaction_at is None and lines is not None:
+        compaction_at = boot_compaction_at(lines)
     return [
         check_survived(rows),
         check_wedge(rows),

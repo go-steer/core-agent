@@ -161,6 +161,26 @@ def real_run_cases(tmp: pathlib.Path) -> None:
     expect(sv.grade(FIXTURE, None), "compaction", sv.UNKNOWN, "--compaction-at",
            "no threshold given or recorded: compaction UNKNOWN")
 
+    # The daemon states its threshold at boot (cmd/core-agent's
+    # compaction boot line); with no --compaction-at, the grader reads it.
+    # 20,000 is a threshold this run's real windows cross, so a FAIL here
+    # proves the line was read rather than ignored.
+    def boot(text, *figures):
+        return "".join(f"2026-09-14T12:45:0{i}Z core-agent: compaction: fires at 0.019 of gemini-3.7-flash's 1048576-token window = {f} tokens\n"
+                       for i, f in enumerate(figures)) + text
+    expect(sv.grade(doctored(tmp, "bootline", log_fn=lambda t: boot(t, 20000)), None),
+           "compaction", sv.FAIL, "20,000-token threshold", "no --compaction-at: the threshold is read from the daemon's boot line")
+    expect(sv.grade(doctored(tmp, "twoboots", log_fn=lambda t: boot(t, 900000, 20000)), None),
+           "compaction", sv.FAIL, "20,000-token threshold", "two boot lines (a restart): the later one wins")
+    # soak.sh records the figure on the start row, because its log
+    # follower starts after the pod booted and never sees the boot line.
+    def start_row(rows):
+        next(r for r in rows if r.get("kind") == "start")["compaction_at"] = 20000
+    expect(sv.grade(doctored(tmp, "startrow", start_row), None),
+           "compaction", sv.FAIL, "20,000-token threshold", "no --compaction-at: the start row's compaction_at is used")
+    expect(sv.grade(doctored(tmp, "override", log_fn=lambda t: boot(t, 20000)), THRESHOLD),
+           "compaction", sv.NOT_EXERCISED, "108,800", "an explicit --compaction-at overrides the boot line")
+
     nolog = sv.grade(doctored(tmp, "nolog", drop_log=True), THRESHOLD)
     expect(nolog, "no drops", sv.UNKNOWN, "no daemon.log", "no daemon log: drops UNKNOWN, not PASS")
 

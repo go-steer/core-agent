@@ -821,7 +821,6 @@ attended_live() {
   # as soon as it reads it. The leading space keeps the line out of shell
   # history wherever HISTCONTROL ignores space-prefixed commands (the bash
   # default on Debian and Ubuntu); history is a file the agent can read too.
-  # No apostrophes in this comment: see #1209 on the pin gate lexer.
   head2 "Operator"
   cat <<EOF
   The agent is working in ${CLONE}

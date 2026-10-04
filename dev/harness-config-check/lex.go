@@ -30,6 +30,17 @@ type tok struct {
 	// quoted argument is one whole token and a `-c` inside it cannot
 	// appear as a token of its own.
 	quoted bool
+	// pend holds heredocs opened inside one of this word's
+	// substitutions whose `)` closed before the line ended — bash reads
+	// their bodies after the next newline all the same, so lexShell must.
+	pend []pending
+}
+
+// pending is a heredoc whose operator has been seen and whose body
+// begins after the next newline.
+type pending struct {
+	delim string
+	strip bool // <<- form: leading tabs allowed before the terminator
 }
 
 // span is a stretch of a script that the shell may later execute even
@@ -57,10 +68,6 @@ func lexShell(src string, startLine int) (toks []tok, heredocs []span) {
 	i, n := 0, len(src)
 	// Delimiters seen on the current line, whose bodies begin after the
 	// next newline.
-	type pending struct {
-		delim string
-		strip bool // <<- form: leading tabs allowed before the terminator
-	}
 	var pend []pending
 
 	for i < n {
@@ -97,10 +104,11 @@ func lexShell(src string, startLine int) (toks []tok, heredocs []span) {
 		default:
 			var t tok
 			t, i, line = lexWord(src, i, line)
+			pend = append(pend, t.pend...)
 			// A herestring (<<<) is not a heredoc. Check the longer
 			// operator first or the scan lands on the second '<' and
 			// consumes the rest of the file as a heredoc body.
-			if d, strip, ok := heredocDelim(t.text); ok {
+			if d, strip, ok := heredocDelim(heredocOperatorWord(t.text)); ok {
 				pend = append(pend, pending{delim: d, strip: strip})
 			}
 			toks = append(toks, t)
@@ -142,38 +150,18 @@ func lexWord(src string, i, line int) (tok, int, int) {
 			i = min(j+1, n)
 		case '"':
 			j, l := i+1, line
-			for j < n && src[j] != '"' {
-				if src[j] == '\\' && j+1 < n {
-					if src[j+1] == '\n' {
-						line++
-					}
-					j += 2
-					continue
-				}
-				if src[j] == '\n' {
-					line++
-				}
-				j++
-			}
+			var hd []pending
+			j, line, hd = skipDoubleQuoted(src, j, line)
+			t.pend = append(t.pend, hd...)
 			t.spans = append(t.spans, span{text: src[i+1 : min(j, n)], line: l})
 			i = min(j+1, n)
 		case '$':
 			if i+1 < n && src[i+1] == '(' {
-				j, l, depth := i+2, line, 1
-				for j < n {
-					switch src[j] {
-					case '(':
-						depth++
-					case ')':
-						depth--
-					case '\n':
-						line++
-					}
-					if depth == 0 {
-						break
-					}
-					j++
-				}
+				l := line
+				var j int
+				var hd []pending
+				j, line, hd = skipSubstitution(src, i+2, line)
+				t.pend = append(t.pend, hd...)
 				t.spans = append(t.spans, span{text: src[i+2 : min(j, n)], line: l})
 				i = min(j+1, n)
 			} else {
@@ -195,6 +183,210 @@ func lexWord(src string, i, line int) (tok, int, int) {
 	}
 	t.text = src[start:i]
 	return t, i, line
+}
+
+// heredocOperatorWord returns word when its `<<` is a heredoc operator at THIS
+// level of the script, and "" when the `<<` sits inside a quote or a
+// substitution.
+//
+// Without it, a word like `X="$(python3 - <<'PY' || echo e …PY\n)"`
+// matched heredocDelim on the `<<` inside the substitution, registered a
+// top-level heredoc with a delimiter assembled from the rest of the word,
+// and — that delimiter never matching any line — swallowed the remainder
+// of the file as a heredoc body at the next newline (#1209). Everything
+// after it was then scanned under the wrong rules, which is why a comment
+// apostrophe 30 lines later on dev/uat/self-dev/run.sh flipped two pins.
+// The heredoc inside the substitution is still handled: skipSubstitution
+// reads it, and the substitution's span is scanned as its own document.
+//
+// So the word is walked with its quoting: the first `<<` outside every
+// quote and substitution is the operator, and the word is returned from
+// there, because a quoted delimiter (`<<'EOF'`, `<<"EOF"`) is exactly the
+// quote that follows the operator and heredocDelim needs it. A quote
+// BEFORE the operator does not demote it — `cat >"$f"<<EOF` is a heredoc,
+// and an earlier "before the first quote" rule dropped its body into the
+// code scan.
+func heredocOperatorWord(word string) string {
+	n := len(word)
+	for i := 0; i < n; {
+		switch c := word[i]; {
+		case c == '\\':
+			i += 2
+		case c == '\'':
+			k := strings.IndexByte(word[i+1:], '\'')
+			if k < 0 {
+				return ""
+			}
+			i += k + 2
+		case c == '`':
+			k := strings.IndexByte(word[i+1:], '`')
+			if k < 0 {
+				return ""
+			}
+			i += k + 2
+		case c == '"':
+			j, _, _ := skipDoubleQuoted(word, i+1, 0)
+			i = j + 1
+		case c == '$' && i+1 < n && word[i+1] == '(':
+			j, _, _ := skipSubstitution(word, i+2, 0)
+			i = j + 1
+		case c == '<' && strings.HasPrefix(word[i:], "<<<"):
+			i += 3
+		case c == '<' && strings.HasPrefix(word[i:], "<<"):
+			return word[i:]
+		default:
+			i++
+		}
+	}
+	return ""
+}
+
+// skipDoubleQuoted scans from just inside an opening `"` to its closing
+// `"`, returning that index (or len(src)) and the updated line.
+//
+// A `$(` inside double quotes opens a FRESH quoting context in bash: in
+// `"$(cmd "arg")"` the inner quotes belong to the substitution, and the
+// outer string ends at the last `"`. Scanning straight to the next `"`
+// — what this did before #1209 — closes the outer string inside the
+// substitution and leaves the rest of the file with inverted quote
+// parity. On dev/uat/self-dev/run.sh that let an apostrophe in a later
+// comment decide whether two pinned invocations were credited, and the
+// nested-substitution oracle case shows the same skew dropping an
+// invocation from the scan entirely, which is the fatal direction for a
+// violation scanner.
+//
+// It also returns the heredocs its substitutions opened and left unread;
+// see skipSubstitution.
+func skipDoubleQuoted(src string, j, line int) (int, int, []pending) {
+	n := len(src)
+	var left []pending
+	for j < n && src[j] != '"' {
+		switch {
+		case src[j] == '\\' && j+1 < n:
+			if src[j+1] == '\n' {
+				line++
+			}
+			j += 2
+			continue
+		case src[j] == '$' && j+1 < n && src[j+1] == '(':
+			var hd []pending
+			j, line, hd = skipSubstitution(src, j+2, line)
+			left = append(left, hd...)
+			j++ // past the closing ')'
+			continue
+		case src[j] == '\n':
+			line++
+		}
+		j++
+	}
+	return j, line, left
+}
+
+// skipSubstitution scans from just inside `$(` to its matching `)`,
+// returning that index (or len(src)) and the updated line. A `)` only
+// closes it outside quotes, outside a nested substitution and outside a
+// heredoc body, so `$(cat <<'EOF'\n)\nEOF\n)` and `$(echo ")")` both end
+// at their last `)`. A heredoc's body starts after the newline that ends
+// the line its `<<WORD` is on and runs to a line equal to the delimiter.
+//
+// A word-initial `#` starts a comment that runs to the newline, and a
+// comment's apostrophe or `"` opens nothing: reading it as a quote ran the
+// scan to the next one, closed on a `)` inside that string, and dropped an
+// invocation from the line after. `$'…'` honours its backslash escapes, and
+// `<<<` is a herestring, not a heredoc whose delimiter never arrives.
+//
+// A heredoc can outlive its substitution: in `x=$(cat <<EOF)\nbody\nEOF`
+// the `)` closes first and bash reads the body after the newline anyway.
+// Those still-unread delimiters are returned for the caller to read at its
+// next newline; dropping them left the body to be lexed as code, where its
+// apostrophe hid a later invocation from the scan.
+func skipSubstitution(src string, j, line int) (int, int, []pending) {
+	n := len(src)
+	depth := 1
+	var pend []pending // heredocs waiting for the end of this line
+	for j < n {
+		c := src[j]
+		switch {
+		case c == '\\' && j+1 < n:
+			if src[j+1] == '\n' {
+				line++
+			}
+			j += 2
+			continue
+		case c == '#' && j > 0 && strings.IndexByte(" \t\n;|&(", src[j-1]) >= 0:
+			for j < n && src[j] != '\n' {
+				j++
+			}
+			continue // the newline arm below still reads pending heredocs
+		case c == '$' && j+1 < n && src[j+1] == '\'':
+			k := j + 2
+			for k < n && src[k] != '\'' {
+				if src[k] == '\\' {
+					k++
+				}
+				if k < n && src[k] == '\n' {
+					line++
+				}
+				k++
+			}
+			j = k + 1
+			continue
+		case c == '<' && strings.HasPrefix(src[j:], "<<<"):
+			j += 3
+			continue
+		case c == '\'':
+			k := j + 1
+			for k < n && src[k] != '\'' {
+				if src[k] == '\n' {
+					line++
+				}
+				k++
+			}
+			j = k + 1
+			continue
+		case c == '"':
+			var hd []pending
+			j, line, hd = skipDoubleQuoted(src, j+1, line)
+			pend = append(pend, hd...)
+			j++
+			continue
+		case c == '$' && j+1 < n && src[j+1] == '(':
+			var hd []pending
+			j, line, hd = skipSubstitution(src, j+2, line)
+			pend = append(pend, hd...)
+			j++
+			continue
+		case c == '<' && strings.HasPrefix(src[j:], "<<"):
+			k := j + 2
+			for k < n && strings.IndexByte(" \t\n;|&()", src[k]) < 0 {
+				k++
+			}
+			if d, strip, ok := heredocDelim(src[j:k]); ok {
+				pend = append(pend, pending{delim: d, strip: strip})
+			}
+			j = k
+			continue
+		case c == '\n':
+			line++
+			j++
+			for _, p := range pend {
+				_, consumed, lines := readHeredoc(src[j:], p.delim, p.strip)
+				j += consumed
+				line += lines
+			}
+			pend = nil
+			continue
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return j, line, pend
+			}
+		}
+		j++
+	}
+	return j, line, pend
 }
 
 // heredocDelim recognises the <<WORD / <<-WORD forms and returns the

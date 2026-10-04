@@ -39,6 +39,7 @@ research + friction logs, or handover notes.
 - [`scion-research-demo-design.md`](scion-research-demo-design.md) — Scion `RemoteAgentSpawner` reference + parallel-research demo
 - [`subagent-return-contract-design.md`](subagent-return-contract-design.md) — how a subagent hands a value back: `return_result`, terminating loops for bounded delegations, typed stop reasons
 - [`self-development-design.md`](self-development-design.md) — pointing core-agent at core-agent: a committed `/.agents/` recipe, the T0→T3 ladder, and the harness re-parenting the root config causes
+- [`self-development-t3-design.md`](self-development-t3-design.md) — **draft:** the unattended T3 rung and box A7 — the daemon as harness, a deny-by-default gate, a credential that cannot merge, and #1234 as the task
 
 ### Sessions, durability + multi-tenancy
 

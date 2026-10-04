@@ -64,7 +64,28 @@ type SelfClassifyingError interface {
 // The hint field is populated with the most actionable next step
 // when one is obvious — operators reading these in a chat-bubble
 // shouldn't need to leave the TUI to know what to try.
+//
+// A provider retry that did not rescue its call leads its message with
+// its outcome (models.RetryError, #1206), and the frame keeps that lead
+// even where a branch below replaces the message with fixed text — a
+// recovered stream cut by a deadline would otherwise read "model call
+// timed out" and the transcript would lose the retry the log counted.
 func ClassifyTurnError(err error) TurnError {
+	te := classifyTurnError(err)
+	var rp retryPrefixer
+	if errors.As(err, &rp) {
+		if p := rp.RetryPrefix(); p != "" && !strings.HasPrefix(te.Message, p) {
+			te.Message = p + te.Message
+		}
+	}
+	return te
+}
+
+// retryPrefixer is models.RetryError's view here; an interface rather
+// than an import, as with SelfClassifyingError.
+type retryPrefixer interface{ RetryPrefix() string }
+
+func classifyTurnError(err error) TurnError {
 	if err == nil {
 		return TurnError{Kind: TurnErrorUnknown, Message: "nil error", Retryable: false}
 	}

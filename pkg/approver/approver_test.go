@@ -30,6 +30,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
@@ -45,6 +46,7 @@ type fakeLLM struct {
 	mu      sync.Mutex
 	reqs    []*adkmodel.LLMRequest
 	streams []bool
+	side    []string // models.SideCallName per request (#1206)
 }
 
 func (f *fakeLLM) Name() string { return f.name }
@@ -53,6 +55,7 @@ func (f *fakeLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest,
 	f.mu.Lock()
 	f.reqs = append(f.reqs, req)
 	f.streams = append(f.streams, stream)
+	f.side = append(f.side, models.SideCallName(ctx))
 	f.mu.Unlock()
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		if f.hang {
@@ -182,6 +185,11 @@ func TestJudge_RequestShape(t *testing.T) {
 	}
 	if m.n() != 1 || m.streams[0] {
 		t.Fatalf("calls = %d (streamed: %v), want one non-streaming call", m.n(), m.streams)
+	}
+	// A retry on this call has no transcript surface, so its log line
+	// must say whose it is (#1206).
+	if m.side[0] != "approver" {
+		t.Errorf("approver call marked as side call %q, want \"approver\"", m.side[0])
 	}
 	got := m.reqs[0]
 	if got.Config == nil || len(got.Config.Tools) != 0 {

@@ -606,7 +606,8 @@ answered that by hand — 13 provider retries in the log, 0 in any transcript �
 `a2_count.py` makes the next batch produce the number:
 
 ```sh
-dev/uat/gke-drill/a2_count.py --log <daemon.log> --events <run>/events.sse [<run>/events.sse ...]
+dev/uat/gke-drill/a2_count.py --log <daemon.log> --events <run>/events.sse [<run>/events.sse ...] \
+    --subagent-events <run>/subagents.json [<run>/subagents.json ...]
 ```
 
 One row per class: provider retry, guardrail trip, turn error (which is where a
@@ -615,9 +616,26 @@ transcript count and a verdict. **FAIL** means the log saw more than the
 transcripts did — the A2 finding. Two classes cannot be compared, and the tool
 says why rather than inventing a number: the daemon logs nothing when a
 delegation fails, and since #1040 a wedge leaves no per-event line on either
-side (`soak_verdict.py` grades wedges). Provider retries have **no transcript
-surface at all** today, so any retry in the log fails A2 until one exists
-([#1206](https://github.com/go-steer/core-agent/issues/1206)).
+side (`soak_verdict.py` grades wedges).
+
+Provider retries are counted on the transcript side
+([#1206](https://github.com/go-steer/core-agent/issues/1206)) through:
+- a `provider_retry` stamp on the event a retry recovered with;
+- a `provider retry persisted|abandoned|skipped|failed|interrupted` prefix on
+  the error any other retry surfaced, in a `turn-error` frame, a function
+  response, or a `[Background reports]` block.
+
+A retry inside a subagent sits on the **child's** events, which the parent's
+`events.sse` does not carry. Every drill run already writes them to
+`<run>/subagents.json` (`drill_capture_subagents`); pass those files with
+`--subagent-events`. A single `GET …/agents/{name}/events` body is accepted
+too. Without the input, a retry in a child is log-only, and the row says the
+input is missing. An input that yields no frames is named in the row as well.
+
+Retries in side calls (the approver, the summarizer, the session title, `/btw`,
+an MCP digest, an agentic subtask) log `side call (<name>): …` and get their own NOT COUNTABLE row. The
+design doc lists the remaining log-only gaps. A capture from before #1206
+records no retry at all, so every retry in its log is a FAIL.
 
 Capture the daemon log for the whole batch — `kubectl logs -f --timestamps
 deploy/core-agent` to a file — and pass the `events.sse` of every run in the

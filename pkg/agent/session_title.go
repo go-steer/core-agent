@@ -248,7 +248,7 @@ func (a *Agent) GenerateSessionTitle(ctx context.Context, prompt string) (string
 	var lastMeta *genai.GenerateContentResponseUsageMetadata
 	var lastCustom map[string]any
 	var b strings.Builder
-	for resp, err := range m.GenerateContent(ctx, req, false) {
+	for resp, err := range m.GenerateContent(models.AsSideCall(ctx, "session title"), req, false) {
 		if err != nil {
 			a.recordInternalLLMUsage(lastIn, lastOut, lastMeta, lastCustom)
 			return "", err

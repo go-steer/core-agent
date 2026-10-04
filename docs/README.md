@@ -79,6 +79,7 @@ research + friction logs, or handover notes.
 ### Observability, safety + scheduling
 
 - [`metrics-design.md`](metrics-design.md) — OTel MeterProvider (primary) + Prometheus scrape (secondary)
+- [`provider-retry-transcript-design.md`](provider-retry-transcript-design.md) — a provider retry reaches the session transcript: a `provider_retry` stamp on the event a retry recovered with, a `provider retry …` prefix on the error one did not rescue ([#1206](https://github.com/go-steer/core-agent/issues/1206), box A2)
 - [`alert-tool-design.md`](alert-tool-design.md) — native `alert` tool for headless escalation (*shipped* in v2.9, with one addition the doc did not anticipate: the `switchboard` destination class alongside `generic`, `slack`, `discord` and `pagerduty_events_v2`)
 - [`auto-mode-design.md`](auto-mode-design.md) — permission mode `auto`: an approver model allows-once, denies with a reason, or escalates the calls `ask` would prompt for; opt-in eligibility, fails closed, never reads tool output, never decides path-scope or control-plane calls (proposed, [#1175](https://github.com/go-steer/core-agent/issues/1175))
 - [`plan-first-design.md`](plan-first-design.md) — gate-level "plan before action" enforcement

@@ -139,7 +139,7 @@ func BuildMCPDigestLLMFallback(
 			effectiveModel = a.ModelName()
 		}
 
-		res, err := a.RunSubtask(spanCtx, agent.SubtaskSpec{
+		res, err := a.RunSubtask(models.AsSideCall(spanCtx, "mcp digest"), agent.SubtaskSpec{
 			Name:            "mcp_digest",
 			SystemPrompt:    mcpDigestSubagentSystemPrompt,
 			UserMessage:     string(raw),

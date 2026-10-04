@@ -32,10 +32,34 @@ wording change elsewhere silently disarms a count.
   provider retry   log: pkg/models/retry.go — "transient provider error
                    (…) — retrying once after" and "… NOT retried: …",
                    one per transient error that reached the retry policy.
-                   transcript: NONE. No event carries a retry today, which
-                   is the gap the 2026-09-13 batch found. Any retry in the
-                   log is therefore missing from the transcript, and this
-                   class fails until a surface exists (#1206).
+                   transcript (#1206): a recovered retry stamps
+                   `CustomMetadata.provider_retry` on the event it recovered
+                   with; any other retry surfaces as an error led by
+                   "provider retry persisted|abandoned|skipped|failed|
+                   interrupted", counted in a `turn-error` frame's message,
+                   in a function response's own fields (a failed delegation
+                   carries its child's error verbatim; the nested `calls`
+                   digest is skipped, since it repeats a grandchild's), or
+                   in a `[Background reports]` block (a background
+                   subagent's terminal alert). A retry inside a subagent is
+                   on the CHILD's events, which the parent's stream does not
+                   carry: pass the drill's subagents.json with
+                   --subagent-events.
+                   A side call (approver, summarizer, session title, /btw,
+                   an MCP digest, an agentic tool's subtask) logs
+                   "side call (<name>): " before the line. Its response
+                   is never an event and its error never a turn error, so
+                   those retries are reported in their own NOT COUNTABLE row
+                   rather than failing this one.
+                   Known gaps, each log-only: a retry whose consumer stopped
+                   reading (a cancelled turn, a guardrail cut mid-stream);
+                   an abandoned retry inside a subagent that its parent
+                   reports only as a stop reason. An agentic tool's failed
+                   retry reaches the parent's function response while its log
+                   line is a side call's: TRANSCRIPT-ONLY, the safe side.
+                   Overcounting is possible and is the safe direction (an
+                   async child whose result is delivered both inline and as
+                   a report), but it can mask an undercount of equal size.
   guardrail trip   log: pkg/agent/guardrail_halt.go (#1131) — "<name>
                    guardrail cut the turn in flight" / "<name> guardrail
                    tripped:".  transcript: a `guardrail-trip` frame, or for
@@ -91,6 +115,10 @@ from typing import Any, Iterator
 PASS, FAIL, TRANSCRIPT_ONLY = "PASS", "FAIL", "TRANSCRIPT-ONLY"
 NOT_EXERCISED, NOT_COUNTABLE = "NOT EXERCISED", "NOT COUNTABLE"
 
+RETRY_MARK_RE = re.compile(r"provider retry (persisted|abandoned|skipped|failed|interrupted)")
+REPORTS_HEADER, REPORTS_SEP = "[Background reports]\n", "\n\n---\n\n"
+SIDE_CALL = "side call ("
+
 RETRY_RE = re.compile(r"transient provider error \(.*?\) (— retrying once after|NOT retried)")
 GUARDRAIL_RE = re.compile(r"agent:(?: \[session [^\]]+\])? (\w+) guardrail (cut the turn in flight|tripped:)")
 TURN_ERROR_RE = re.compile(r"core-agent: (?:session \S+ )?turn: ")
@@ -124,6 +152,84 @@ def sse_frames(path: pathlib.Path) -> Iterator[tuple[str, Any]]:
             event, data = "", []
 
 
+def subagent_frames(path: pathlib.Path) -> Iterator[tuple[str, Any]]:
+    """Yield ("agent", frame) from a subagent capture.
+
+    Two shapes: the drill's own <run>/subagents.json ({name: [frames]},
+    written by lib.sh's drill_capture_subagents), and one GET
+    …/agents/{name}/events body ({"events": [frames], ...}).
+    """
+    try:
+        body = json.loads(path.read_text(errors="replace"))
+    except json.JSONDecodeError:
+        return
+    if not isinstance(body, dict):
+        return
+    if isinstance(body.get("events"), list):
+        lists = [body["events"]]
+    else:
+        lists = [v for v in body.values() if isinstance(v, list)]
+    for frames in lists:
+        for frame in frames:
+            yield "agent", frame
+
+
+def report_block(text: str) -> str:
+    """The [Background reports] block of a user prompt, or "".
+
+    It ends at the LAST separator, not the first: an alert body is often
+    model-written markdown with a `---` rule in it, and stopping at that
+    hid every later report. The reports are the innermost prepend
+    (watchdog and inbox blocks go before them), so the only text after
+    the last separator is the operator's own prompt.
+    """
+    h = text.find(REPORTS_HEADER)
+    if h < 0:
+        return ""
+    body = text[h + len(REPORTS_HEADER):]
+    end = body.rfind(REPORTS_SEP)
+    return body if end < 0 else body[:end]
+
+
+def strings_in(v: Any, skip: str = "calls") -> Iterator[str]:
+    """Every string in a function response, skipping the nested `calls`
+    digest, which repeats a grandchild's errors the child already counted."""
+    if isinstance(v, str):
+        yield v
+    elif isinstance(v, dict):
+        for k, x in v.items():
+            if k != skip:
+                yield from strings_in(x, skip)
+    elif isinstance(v, list):
+        for x in v:
+            yield from strings_in(x, skip)
+
+
+def retry_marks(ev: str, data: Any) -> int:
+    """How many provider retries one frame records (#1206)."""
+    if ev == "turn-error":
+        msg = data.get("message", "") if isinstance(data, dict) else ""
+        return 1 if RETRY_MARK_RE.match(msg or "") else 0
+    if ev != "agent":
+        return 0
+    event = data.get("event") if isinstance(data, dict) else None
+    if not isinstance(event, dict):
+        return 0
+    n = 0
+    meta = event.get("CustomMetadata")
+    if isinstance(meta, dict) and isinstance(meta.get("provider_retry"), dict):
+        n += 1
+    for fr in function_responses(data):
+        n += sum(len(RETRY_MARK_RE.findall(x)) for x in strings_in(fr.get("response")))
+    if event.get("Author") == "user":
+        # Only the report block: the operator's prompt and watchdog
+        # feedback ("Last error: …") may quote a retry already counted.
+        for part in ((event.get("Content") or {}).get("parts")) or []:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                n += len(RETRY_MARK_RE.findall(report_block(part["text"])))
+    return n
+
+
 def function_responses(payload: Any) -> Iterator[dict[str, Any]]:
     ev = payload.get("event") if isinstance(payload, dict) else None
     parts = (((ev or {}).get("Content") or {}).get("parts")) or []
@@ -138,19 +244,31 @@ def line_session(line: str) -> str | None:
     return (m.group(1) or m.group(2)) if m else None
 
 
-def count(log: pathlib.Path, events: list[pathlib.Path], session: str | None) -> list[Count]:
+def count(log: pathlib.Path, events: list[pathlib.Path], session: str | None,
+          subagent_events: list[pathlib.Path] | None = None) -> list[Count]:
     lines = log.read_text(errors="replace").splitlines()
 
     def scoped(line: str) -> bool:
         return session is None or line_session(line) == session
 
-    retries = [l for l in lines if RETRY_RE.search(l)]
+    all_retries = [l for l in lines if RETRY_RE.search(l)]
+    side_retries = [l for l in all_retries if SIDE_CALL in l]
+    retries = [l for l in all_retries if SIDE_CALL not in l]
     log_trips = [l for l in lines if GUARDRAIL_RE.search(l) and scoped(l)]
     log_turn_errors = [l for l in lines if TURN_ERROR_RE.search(l) and scoped(l)]
 
-    t_trips = t_turn_errors = t_failed = 0
+    t_trips = t_turn_errors = t_failed = t_retries = 0
+    empty_inputs = []
+    for path in subagent_events or []:
+        frames = 0
+        for ev, data in subagent_frames(path):
+            frames += 1
+            t_retries += retry_marks(ev, data)
+        if frames == 0:
+            empty_inputs.append(path.name)
     for path in events:
         for ev, data in sse_frames(path):
+            t_retries += retry_marks(ev, data)
             if ev == "guardrail-trip":
                 t_trips += 1
             elif ev == "turn-error":
@@ -164,10 +282,16 @@ def count(log: pathlib.Path, events: list[pathlib.Path], session: str | None) ->
                         t_failed += 1
 
     out = [
-        Count("provider retry", len(retries), None,
-              note="no transcript surface exists for a retry"
-                   + ("; retry lines name no session, so this counts the whole log" if session else ""),
+        Count("provider retry", len(retries), t_retries,
+              note="; ".join(x for x in [
+                  "" if subagent_events else "no --subagent-events: a retry inside a subagent is not counted on the transcript side",
+                  f"--subagent-events input with no frames: {', '.join(empty_inputs)}" if empty_inputs else "",
+                  "retry lines name no session, so this counts the whole log" if session else "",
+              ] if x),
               detail=[r[:160] for r in retries[:3]]),
+        Count("provider retry (side call)", None, None,
+              note=f"{len(side_retries)} in the log; a side call's response is never an event and its error never a turn error",
+              detail=[r[:160] for r in side_retries[:3]]),
         Count("guardrail trip", len(log_trips), t_trips, detail=[r[:160] for r in log_trips[:3]]),
         Count("turn error", len(log_turn_errors), t_turn_errors, detail=[r[:160] for r in log_turn_errors[:3]]),
         Count("failed delegation", None, t_failed, note="the daemon logs nothing when a delegation fails"),
@@ -228,10 +352,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--log", required=True, type=pathlib.Path, help="captured daemon log (kubectl logs --timestamps)")
     ap.add_argument("--events", required=True, nargs="+", type=pathlib.Path,
                     help="SSE captures (events.sse) for the same sessions and window")
+    ap.add_argument("--subagent-events", nargs="*", type=pathlib.Path, default=[],
+                    help="GET /sessions/{id}/agents/{name}/events bodies for the same sessions' subagents")
     ap.add_argument("--session", help="only count log lines that name this session")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
-    counts = count(args.log.expanduser(), [p.expanduser() for p in args.events], args.session)
+    counts = count(args.log.expanduser(), [p.expanduser() for p in args.events], args.session,
+                   [p.expanduser() for p in args.subagent_events])
     if args.json:
         print(json.dumps([c.__dict__ for c in counts], indent=2))
     else:

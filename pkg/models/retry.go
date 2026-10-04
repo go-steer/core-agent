@@ -17,6 +17,8 @@ package models
 import (
 	"context"
 	"iter"
+	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +48,93 @@ const (
 // of three extra requests per window rather than one.
 const RetryBurst = 3
 
+// ProviderRetryMetadataKey marks the response a retry recovered with
+// (#1206). Its value is a map with "outcome" ("recovered"), "attempts"
+// and "error" (the rejection the retry fired for). It is stamped on the
+// first NON-partial response after recovery, because that is the one
+// ADK persists as the session event; a partial chunk never reaches the
+// transcript, and the stream aggregator builds its final response
+// fresh, so a stamp on a chunk would be lost.
+const ProviderRetryMetadataKey = "provider_retry"
+
+// RetryPrefix returns the text Error puts before the provider error,
+// so a surface that replaces the message — the turn-error frame's fixed
+// text for a timeout or a cancel — can keep it.
+func (e *RetryError) RetryPrefix() string {
+	return strings.TrimSuffix(e.Error(), e.Err.Error())
+}
+
+// RetryError is how a retry that did not rescue its call reaches the
+// caller (#1206): the rejection, persisted after one retry, abandoned
+// during the backoff, or not retried because the budget was spent.
+//
+// Before it, the daemon log was the only place a retry existed: a turn
+// error read the same whether or not a retry had been tried, and the
+// 2026-09-13 batch counted 13 retries in the log and 0 in 21
+// transcripts. The outcome is a prefix, not a suffix, because the
+// turn-error frame keeps only the first 240 characters and a provider
+// error is often longer than that; and it names no word the turn-error
+// classifier keys on, so the frame's kind and code are the
+// rejection's own. Unwrap keeps errors.As / errors.Is working on the
+// provider error underneath.
+//
+// Two outcomes are not the rejection at all, and still name the retry
+// because the daemon log counted it: "failed" is a retry answered by a
+// different error (a 400, an empty response), and "interrupted" is a
+// retry that recovered and whose stream then failed before the final
+// response that would have carried the ProviderRetryMetadataKey stamp.
+type RetryError struct {
+	// Outcome is "persisted", "abandoned", "skipped", "failed" or
+	// "interrupted".
+	Outcome string
+	Err     error
+}
+
+func (e *RetryError) Error() string {
+	switch e.Outcome {
+	case "skipped":
+		return "provider retry skipped, budget spent: " + e.Err.Error()
+	case "failed":
+		return "provider retry failed with another error: " + e.Err.Error()
+	case "interrupted":
+		return "provider retry interrupted after recovering: " + e.Err.Error()
+	default:
+		return "provider retry " + e.Outcome + ": " + e.Err.Error()
+	}
+}
+
+func (e *RetryError) Unwrap() error { return e.Err }
+
+type sideCallKey struct{}
+
+// AsSideCall marks ctx as a one-shot internal call — the approver, the
+// compaction summarizer, a session title, a /btw question — so a retry
+// it triggers logs as one (#1206). A side call's response is never a
+// session event and its error never a turn error, so its retry has no
+// transcript surface by construction; labelling the log line lets box
+// A2's counter tell those retries from the ones a transcript must show,
+// instead of failing the run on them.
+func AsSideCall(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, sideCallKey{}, name)
+}
+
+// SideCallName returns the name AsSideCall gave ctx, or "".
+func SideCallName(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	name, _ := ctx.Value(sideCallKey{}).(string)
+	return name
+}
+
+// sideCallPrefix is the log prefix for a call AsSideCall marked.
+func sideCallPrefix(ctx context.Context) string {
+	if name := SideCallName(ctx); name != "" {
+		return "side call (" + name + "): "
+	}
+	return ""
+}
+
 // retryOutcome is what became of a retry that fired, for the one
 // summary line Wrap logs on the way out. outcomeUnset is a real
 // answer, not a missing one: it means the retry neither recovered nor
@@ -57,6 +146,7 @@ const (
 	outcomeRecovered
 	outcomePersisted
 	outcomeAbandoned
+	outcomeFailed
 )
 
 // RetryPolicy retries a streaming model call once when the provider
@@ -172,6 +262,8 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 		return fn()
 	}
 	const maxAttempts = 2
+	pfx := sideCallPrefix(ctx)
+	logf := func(format string, args ...any) { p.logf(pfx+format, args...) }
 
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		type pending struct {
@@ -193,19 +285,21 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 		// because a call that never retried has no outcome to report.
 		var retriedFor error
 		outcome, outcomeAttempt := outcomeUnset, 0
-		defer func() {
-			if retriedFor == nil {
-				return
+		budgetSpent := false
+
+		// out is yield for the content path. After a recovery it stamps
+		// the first non-partial response — the one that becomes the
+		// session event — so the transcript carries the retry (#1206).
+		stamped := false
+		out := func(resp *adkmodel.LLMResponse, err error) bool {
+			if outcome == outcomeRecovered && !stamped {
+				resp, err, stamped = recordRecovery(resp, err, retriedFor, outcomeAttempt)
 			}
-			switch outcome {
-			case outcomeRecovered:
-				p.logf("transient provider error recovered on retry (attempt %d/%d)", outcomeAttempt, maxAttempts)
-			case outcomePersisted:
-				p.logf("transient provider error persisted after retry — surfacing to caller: %v", retriedFor)
-			case outcomeAbandoned:
-				p.logf("transient provider error retry abandoned: context ended during the %s backoff, surfacing the original error: %v", p.backoff(), retriedFor)
-			default:
-				p.logf("transient provider error retry ended with no outcome: the consumer stopped reading, or the retry returned nothing usable (original error: %v)", retriedFor)
+			return yield(resp, err)
+		}
+		defer func() {
+			if retriedFor != nil {
+				logOutcome(logf, outcome, outcomeAttempt, maxAttempts, p.backoff(), retriedFor)
 			}
 		}()
 
@@ -217,7 +311,7 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 
 			for resp, err := range fn() {
 				if flushed {
-					if !yield(resp, err) {
+					if !out(resp, err) {
 						return
 					}
 					continue
@@ -244,13 +338,13 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 						outcome, outcomeAttempt = outcomeRecovered, attempt
 					}
 					for _, b := range buf {
-						if !yield(b.resp, b.err) {
+						if !out(b.resp, b.err) {
 							return
 						}
 					}
 					buf = nil
 					flushed = true
-					if !yield(resp, err) {
+					if !out(resp, err) {
 						return
 					}
 					continue
@@ -276,10 +370,11 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 			}
 			if transient != nil && !hardErr && attempt < maxAttempts {
 				if !p.allowRetry() {
-					p.logf("transient provider error (%v) NOT retried: the shared retry budget is spent (burst %d, one refill per %s)", transient, RetryBurst, p.cooldown())
+					budgetSpent = true
+					logf("transient provider error (%v) NOT retried: the shared retry budget is spent (burst %d, one refill per %s)", transient, RetryBurst, p.cooldown())
 				} else {
 					retriedFor = transient
-					p.logf("transient provider error (%v) — retrying once after %s", transient, p.backoff())
+					logf("transient provider error (%v) — retrying once after %s", transient, p.backoff())
 					if !p.wait(ctx, p.backoff()) {
 						// Context died during the backoff. Surface the
 						// original error rather than a context one:
@@ -292,7 +387,7 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 								return
 							}
 						}
-						yield(nil, transient)
+						yield(nil, &RetryError{Outcome: "abandoned", Err: transient})
 						return
 					}
 					continue
@@ -303,6 +398,12 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 			// non-transient errors that must not be swallowed — then
 			// surface the transient error if that is how it ended.
 			for _, b := range buf {
+				if attempt > 1 && transient == nil && outcome == outcomeUnset {
+					var done bool
+					if b.resp, b.err, done = recordOtherAnswer(b.resp, b.err, retriedFor, attempt); done {
+						outcome = outcomeFailed
+					}
+				}
 				if !yield(b.resp, b.err) {
 					return
 				}
@@ -311,11 +412,90 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 				if attempt > 1 {
 					outcome = outcomePersisted
 				}
-				yield(nil, transient)
+				yield(nil, surfaced(transient, attempt > 1, budgetSpent))
 			}
 			return
 		}
 	}
+}
+
+// recordRecovery puts a recovered retry on the transcript (#1206): a
+// stamp on the first non-partial response, the one that becomes the
+// session event — or, when the stream fails before that response
+// arrives, on the error that ended it. done reports that the retry is
+// now recorded and nothing later may record it again.
+func recordRecovery(resp *adkmodel.LLMResponse, err, retriedFor error, attempts int) (_ *adkmodel.LLMResponse, _ error, done bool) {
+	switch {
+	case err != nil:
+		return resp, &RetryError{Outcome: "interrupted", Err: err}, true
+	case resp != nil && !resp.Partial:
+		return stampRetryAs(resp, "recovered", retriedFor, attempts), nil, true
+	}
+	return resp, err, false
+}
+
+// recordOtherAnswer records a retry answered by something other than
+// usable content: a different error (a 400, an empty response), which
+// is wrapped, or a final response with no parts — a SAFETY or
+// MAX_TOKENS finish — which ADK still persists as the session event,
+// so it is stamped (#1206). The log counted the retry either way.
+func recordOtherAnswer(resp *adkmodel.LLMResponse, err, retriedFor error, attempts int) (_ *adkmodel.LLMResponse, _ error, done bool) {
+	switch {
+	case err != nil:
+		return resp, &RetryError{Outcome: "failed", Err: err}, true
+	case resp != nil && !resp.Partial:
+		return stampRetryAs(resp, "no content", retriedFor, attempts), nil, true
+	}
+	return resp, err, false
+}
+
+// surfaced is the error a transient rejection reaches the caller as:
+// named as a retry outcome when the log counted one, bare otherwise.
+func surfaced(transient error, retried, budgetSpent bool) error {
+	switch {
+	case retried:
+		return &RetryError{Outcome: "persisted", Err: transient}
+	case budgetSpent:
+		return &RetryError{Outcome: "skipped", Err: transient}
+	}
+	return transient
+}
+
+// logOutcome writes the one outcome line a retry that fired gets.
+func logOutcome(logf func(string, ...any), outcome retryOutcome, attempt, maxAttempts int, backoff time.Duration, retriedFor error) {
+	switch outcome {
+	case outcomeRecovered:
+		logf("transient provider error recovered on retry (attempt %d/%d)", attempt, maxAttempts)
+	case outcomePersisted:
+		logf("transient provider error persisted after retry — surfacing to caller: %v", retriedFor)
+	case outcomeAbandoned:
+		logf("transient provider error retry abandoned: context ended during the %s backoff, surfacing the original error: %v", backoff, retriedFor)
+	case outcomeFailed:
+		logf("transient provider error retry was answered by something other than content — surfacing it (original error: %v)", retriedFor)
+	default:
+		logf("transient provider error retry ended with no outcome: the consumer stopped reading, or the retry returned nothing usable (original error: %v)", retriedFor)
+	}
+}
+
+// stampRetryAs returns a copy of resp carrying ProviderRetryMetadataKey
+// with the given outcome. A copy, so the provider's own response value
+// is never mutated.
+func stampRetryAs(resp *adkmodel.LLMResponse, outcome string, retriedFor error, attempts int) *adkmodel.LLMResponse {
+	cp := *resp
+	cp.CustomMetadata = maps.Clone(resp.CustomMetadata)
+	if cp.CustomMetadata == nil {
+		cp.CustomMetadata = map[string]any{}
+	}
+	msg := retriedFor.Error()
+	if len(msg) > 240 {
+		msg = strings.ToValidUTF8(msg[:240], "")
+	}
+	cp.CustomMetadata[ProviderRetryMetadataKey] = map[string]any{
+		"outcome":  outcome,
+		"attempts": attempts,
+		"error":    msg,
+	}
+	return &cp
 }
 
 // allowRetry reports whether a retry may fire now, spending a token

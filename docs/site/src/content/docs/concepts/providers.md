@@ -256,7 +256,7 @@ Once any content has reached the caller the stream is pass-through: a later erro
 
 The predicate is deliberately narrow — only `429`/`RESOURCE_EXHAUSTED` and `503`/`UNAVAILABLE`, matched on the status code *and* its status word. A `400 INVALID_ARGUMENT` is never retried, including the shape tracked in [#898](https://github.com/go-steer/core-agent/issues/898): its cause is unknown, and re-sending a request the server has already said it cannot parse spends a second request to be told the same thing.
 
-The retry logs to the daemon's stderr — `kubectl logs deploy/core-agent` on a cluster deploy. It is not in the session transcript, so a run that recovers from a 429 leaves no trace of it in its own history:
+The retry logs to the daemon's stderr — `kubectl logs deploy/core-agent` on a cluster deploy:
 
 ```
 core-agent: gemini: transient provider error (Error 429, …, Status: RESOURCE_EXHAUSTED, Details: []) — retrying once after 2s
@@ -269,14 +269,31 @@ and so is a retry the budget suppressed:
 core-agent: gemini: transient provider error (…) NOT retried: the shared retry budget is spent (burst 3, one refill per 30s)
 ```
 
-**Every retry that fires logs exactly one outcome line.** There are four, and one of them always appears:
+**Every retry that fires logs exactly one outcome line**, from this table:
 
 | Outcome line | What happened |
 |---|---|
 | `recovered on retry (attempt 2/2)` | The retry produced usable content. |
 | `persisted after retry — surfacing to caller` | The retry was rejected too; the caller got the error. |
 | `retry abandoned: context ended during the 2s backoff` | The turn was cancelled or timed out mid-backoff; the original provider error surfaced. |
+| `retry was answered by something other than content — surfacing it` | The retry got a different error (a 400, an empty response), or a final response with no content (a safety block); the caller got that. |
 | `retry ended with no outcome` | The consumer stopped reading, or the retry returned nothing usable. |
+
+**The session transcript records it too.** Before v2.10.0 the daemon log was the only place a retry existed: a GKE drill batch counted 13 retries in the log and none in 21 transcripts.
+
+- A retry that **recovered** stamps `CustomMetadata.provider_retry` on the event it recovered with. That event is the turn's persisted, non-partial model response. The stamp is `{"outcome": "recovered", "attempts": 2, "error": "<the rejection>"}`, and it appears in the `agent` frame on the attach stream.
+- A retry that **did not rescue** its call surfaces as an error that says so, with the provider error unchanged after a prefix:
+  - `provider retry persisted: …`
+  - `provider retry abandoned: …`
+  - `provider retry skipped, budget spent: …`
+  - `provider retry failed with another error: …` (the retry was answered by a different error, such as a 400)
+  - `provider retry interrupted after recovering: …` (the retry recovered, then the stream failed before its final response)
+
+  That text reaches the `turn-error` frame's `message`, a failed delegation's result, and a background subagent's report. The frame's `kind` and `code` are the rejection's own; the prefix changes no classification. In Go, `errors.As(err, &*models.RetryError)` finds the outcome, and the provider error still unwraps beneath it.
+- A retry inside a subagent is recorded in the **subagent's** events (`GET /sessions/{id}/agents/{name}/events`), not the parent's stream. The parent sees it only if the child's call failed.
+- `retry ended with no outcome` has no transcript record. Nothing reached the caller to carry one.
+- A retry answered by a response with no content, such as a safety block, is stamped with `"outcome": "no content"` on that response.
+- A retry in an internal call has no transcript record either. That covers the auto-mode approver, the compaction summarizer, the session title, `/btw`, an MCP digest, and an agentic tool's subtask: none of their responses are events in your session. Their log lines start with `side call (<name>): ` so you can tell them apart.
 
 So a `retrying once` line with no outcome after it means the process died between the two, and nothing else. Before v2.10.0 this was not true — the outcome was logged only where the stream happened to finish tidily, and in a 90-minute drill batch that logged 13 retries only 3 reported what came of them ([#1039](https://github.com/go-steer/core-agent/issues/1039)).
 

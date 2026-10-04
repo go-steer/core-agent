@@ -202,7 +202,7 @@ func (a *Approver) generate(ctx context.Context, user string) (string, error) {
 	// Each prompt differs in the call it carries, so a cache write is a
 	// surcharge for a read that does not come.
 	ctx = models.WithoutPromptCache(ctx)
-	ctx = models.WithoutBuiltins(ctx)
+	ctx = models.AsSideCall(models.WithoutBuiltins(ctx), "approver")
 
 	var usage *genai.GenerateContentResponseUsageMetadata
 	defer func() {

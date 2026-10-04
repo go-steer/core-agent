@@ -61,6 +61,9 @@ type captureLLM struct {
 	// noBuiltins records, per request, whether the caller marked its
 	// context as tool-less (models.WithoutBuiltins). Parallel to reqs.
 	noBuiltins []bool
+	// sideCall records, per request, the name the caller gave its
+	// context with models.AsSideCall (#1206). Parallel to reqs.
+	sideCall []string
 	// thoughtsTokens, when > 0, is the reasoning bucket, reported where
 	// Gemini reports it: genai's ThoughtsTokenCount. ADDITIVE to
 	// outputTokens rather than a subset of it (#927).
@@ -77,6 +80,7 @@ func (l *captureLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMReque
 	l.reqs = append(l.reqs, req)
 	l.noPromptCache = append(l.noPromptCache, models.PromptCacheSuppressed(ctx))
 	l.noBuiltins = append(l.noBuiltins, models.BuiltinsSuppressed(ctx))
+	l.sideCall = append(l.sideCall, models.SideCallName(ctx))
 	resp := l.response
 	err := l.err
 	in := l.inputTokens

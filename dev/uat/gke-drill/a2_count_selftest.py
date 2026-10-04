@@ -103,9 +103,86 @@ def main() -> int:
 
         print("provider retry — the 2026-09-13 shape")
         c, _ = run(tmp, "retry", [RETRY, RETRY_RECOVERED, RETRY_SUPPRESSED], [REAL.read_text()])
-        expect(c, "provider retry", 2, None, a2.FAIL,
-               "two retries reached the policy; no transcript surface exists, so both are missing (recovered line not double-counted)")
+        expect(c, "provider retry", 2, 0, a2.FAIL,
+               "two retries reached the policy; a pre-#1206 capture records neither (recovered line not double-counted)")
         check(a2.exit_code(list(c.values())) == 1, "a log-only retry fails A2: exit 1", str(a2.exit_code(list(c.values()))))
+
+        print("provider retry — the #1206 surfaces")
+        recovered = ("agent", {"seq": 7, "event": {"Author": "core-agent", "Partial": False,
+                                                   "Content": {"role": "model", "parts": [{"text": "pods are fine"}]},
+                                                   "CustomMetadata": {"provider_retry": {"outcome": "recovered", "attempts": 2, "error": "Error 429"}}}})
+        skipped_err = ("turn-error", {"kind": "rate_limited", "retryable": True,
+                                      "message": "provider retry skipped, budget spent: Error 429, Message: Resource exhausted."})
+        c, _ = run(tmp, "retry-1206", [RETRY, RETRY_RECOVERED, RETRY_SUPPRESSED], [sse(recovered, skipped_err)])
+        expect(c, "provider retry", 2, 2, a2.PASS,
+               "a stamped recovery and a skipped retry's turn-error pair with the two log lines")
+        persisted_fr = ("agent", {"seq": 9, "event": {"Author": "core-agent", "Content": {"role": "user", "parts": [
+            {"functionResponse": {"name": "spawn_agent", "response": {
+                "status": "failed", "stop_reason": "error",
+                "output": "agent: RunSubtask: provider retry persisted: Error 429, Message: Resource exhausted."}}}]}}})
+        c, _ = run(tmp, "retry-delegation", [RETRY], [sse(persisted_fr)])
+        expect(c, "provider retry", 1, 1, a2.PASS, "a child's persisted retry, carried verbatim in the failed delegation's result")
+        alert = ("agent", {"seq": 11, "event": {"Author": "user", "Content": {"role": "user", "parts": [
+            {"text": "[Background reports]\ncluster-2 failed: provider retry abandoned: Error 429"}]}}})
+        echo = ("agent", {"seq": 12, "event": {"Author": "core-agent", "Content": {"role": "model", "parts": [
+            {"text": "The subagent hit 'provider retry abandoned: Error 429', so I'll retry."}]}}})
+        c, _ = run(tmp, "retry-alert", [RETRY], [sse(alert, echo)])
+        expect(c, "provider retry", 1, 1, a2.PASS,
+               "a background alert (user-authored) counts; the model quoting it does not count again")
+
+        print("provider retry — inside a subagent")
+        child = tmp / "child-cluster-2.json"
+        child.write_text(json.dumps({"agent": "cluster-2", "events": [recovered[1]], "next_since": 7, "truncated": False}))
+        drill_shape = tmp / "subagents.json"
+        drill_shape.write_text(json.dumps({"cluster": [recovered[1]], "infra": []}))
+        log = tmp / "child.log"
+        log.write_text(RETRY + "\n" + RETRY_RECOVERED + "\n")
+        parent = tmp / "child-parent.sse"
+        parent.write_text(sse())
+        c = {x.name: x for x in a2.count(log, [parent], None, [child])}
+        expect(c, "provider retry", 1, 1, a2.PASS, "a child's recovered retry is found in its --subagent-events body")
+        c = {x.name: x for x in a2.count(log, [parent], None, [drill_shape])}
+        expect(c, "provider retry", 1, 1, a2.PASS, "…and in the drill's own subagents.json ({name: [frames]})")
+        bogus = tmp / "bogus.json"
+        bogus.write_text(json.dumps({"unexpected": {"shape": True}}))
+        c = {x.name: x for x in a2.count(log, [parent], None, [bogus])}
+        expect(c, "provider retry", 1, 0, a2.FAIL, "an input in neither shape counts nothing…")
+        check("bogus.json" in c["provider retry"].note, "…and the report names it instead of passing silently",
+              c["provider retry"].note)
+        c = {x.name: x for x in a2.count(log, [parent], None)}
+        expect(c, "provider retry", 1, 0, a2.FAIL, "…and without that body it is missing, which is a real gap in the capture")
+        check("--subagent-events" in c["provider retry"].note, "the report names the missing input",
+              c["provider retry"].note)
+
+        print("provider retry — side calls and duplicates")
+        side = RETRY.replace("gemini: transient", "gemini: side call (approver): transient")
+        c, _ = run(tmp, "retry-side", [side, RETRY], [sse(recovered)])
+        expect(c, "provider retry", 1, 1, a2.PASS, "a side call's retry is not held against the transcript")
+        check(c["provider retry (side call)"].verdict == a2.NOT_COUNTABLE and "1 in the log" in c["provider retry (side call)"].note,
+              "…it is reported in its own NOT COUNTABLE row", f'{c["provider retry (side call)"].verdict}: {c["provider retry (side call)"].note}')
+        nested = ("agent", {"seq": 13, "event": {"Author": "core-agent", "Content": {"role": "user", "parts": [
+            {"functionResponse": {"name": "spawn_agent", "response": {
+                "status": "completed", "output": "fine",
+                "calls": [{"name": "subagent", "error": "subagent \"g\": run: provider retry persisted: Error 429"}]}}}]}}})
+        c, _ = run(tmp, "retry-nested", [], [sse(nested)])
+        expect(c, "provider retry", 0, 0, a2.NOT_EXERCISED,
+               "a grandchild's error repeated in the calls digest is not counted again")
+        feedback = ("agent", {"seq": 14, "event": {"Author": "user", "Content": {"role": "user", "parts": [
+            {"text": "[watchdog] tool failure streak. Last error: provider retry persisted: Error 429\n\nnext prompt"}]}}})
+        c, _ = run(tmp, "retry-feedback", [], [sse(feedback)])
+        expect(c, "provider retry", 0, 0, a2.NOT_EXERCISED,
+               "watchdog feedback quoting a retry in the user prompt is not a report block")
+        both = ("agent", {"seq": 15, "event": {"Author": "user", "Content": {"role": "user", "parts": [
+            {"text": "[Background reports]\n- [c] (failed) provider retry skipped, budget spent: Error 429\n\n---\n\n"
+                     "operator says: provider retry persisted is fine"}]}}})
+        c, _ = run(tmp, "retry-block", [RETRY_SUPPRESSED], [sse(both)])
+        expect(c, "provider retry", 1, 1, a2.PASS, "only the report block counts, not the prompt after its separator")
+        ruled = ("agent", {"seq": 16, "event": {"Author": "user", "Content": {"role": "user", "parts": [
+            {"text": "[Background reports]\n- [a] (completed) ## Findings\n\n---\n\nall fine\n"
+                     "- [c] (failed) partial notes\n\nrun_error: provider retry interrupted after recovering: stream reset"
+                     "\n\n---\n\nwhat did they find?"}]}}})
+        c, _ = run(tmp, "retry-ruled", [RETRY], [sse(ruled)])
+        expect(c, "provider retry", 1, 1, a2.PASS, "a markdown rule inside an earlier report does not hide a later one")
 
         print("guardrail trip")
         trip = ("guardrail-trip", {"guardrail": "watchdog", "reason": "looping", "halted_turn": True})

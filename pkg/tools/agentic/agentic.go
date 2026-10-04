@@ -139,7 +139,7 @@ func agenticTool(opts AgenticToolOpts, name, description, systemPrompt string) t
 			}
 		}
 
-		res, err := a.RunSubtask(toolCtx, agent.SubtaskSpec{
+		res, err := a.RunSubtask(models.AsSideCall(toolCtx, "agentic "+name), agent.SubtaskSpec{
 			Name:         name,
 			SystemPrompt: systemPrompt,
 			UserMessage:  args.Request,

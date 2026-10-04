@@ -81,6 +81,8 @@ import (
 	"google.golang.org/genai"
 
 	adkmodel "google.golang.org/adk/model"
+
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 // ErrEmptySummary is the sentinel every text-less summarizer result
@@ -266,7 +268,7 @@ func (a *Agent) summarizeOnce(ctx context.Context, req *adkmodel.LLMRequest) (su
 	var lastIn, lastOut int
 	var lastMeta *genai.GenerateContentResponseUsageMetadata
 	var lastCustom map[string]any
-	for resp, err := range a.model.GenerateContent(ctx, req, false) {
+	for resp, err := range a.model.GenerateContent(models.AsSideCall(ctx, "summarizer"), req, false) {
 		if err != nil {
 			// Record what the failed attempt already burned before
 			// bailing — a partial stream that then errors still cost

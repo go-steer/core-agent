@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/adk/model"
 	"google.golang.org/genai"
@@ -408,7 +409,8 @@ func outcomeLines(logs []string) []string {
 		case strings.Contains(l, "recovered on retry"),
 			strings.Contains(l, "persisted after retry"),
 			strings.Contains(l, "retry abandoned"),
-			strings.Contains(l, "retry ended with no outcome"):
+			strings.Contains(l, "retry ended with no outcome"),
+			strings.Contains(l, "answered by something other than content"):
 			out = append(out, l)
 		}
 	}
@@ -541,4 +543,286 @@ func TestRetryPolicy_ConcurrentUse(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// partial builds a streamed chunk: content the caller sees, which ADK
+// never persists as an event.
+func partial(s string) *model.LLMResponse {
+	r := text(s)
+	r.Partial = true
+	return r
+}
+
+func retryStamps(resps []*model.LLMResponse) []map[string]any {
+	var out []map[string]any
+	for _, r := range resps {
+		if m, ok := r.CustomMetadata[ProviderRetryMetadataKey].(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func collect(seq iter.Seq2[*model.LLMResponse, error]) (resps []*model.LLMResponse, errs []error) {
+	for resp, err := range seq {
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		resps = append(resps, resp)
+	}
+	return resps, errs
+}
+
+// #1206. A retry that rescued its call is stamped on exactly one
+// response: the final, non-partial one, because that is the response
+// ADK persists as the session event. Stamping a chunk would be lost
+// (partials are never persisted), and stamping every response would
+// count one retry many times.
+func TestRetryPolicy_RecoveryIsStampedOnTheFinalResponseOnly(t *testing.T) {
+	p, _, _ := testPolicy(t)
+	final := text("a b")
+	final.CustomMetadata = map[string]any{"usage": 1}
+	fn, _ := scripted(
+		[]step{{nil, errTransient}},
+		[]step{{partial("a"), nil}, {partial(" b"), nil}, {final, nil}},
+	)
+
+	resps, errs := collect(p.Wrap(context.Background(), fn))
+
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	stamps := retryStamps(resps)
+	if len(stamps) != 1 {
+		t.Fatalf("%d responses stamped, want exactly 1", len(stamps))
+	}
+	last := resps[len(resps)-1]
+	if _, ok := last.CustomMetadata[ProviderRetryMetadataKey]; !ok {
+		t.Fatal("the stamp is not on the final, non-partial response")
+	}
+	if last.CustomMetadata["usage"] != 1 {
+		t.Error("stamping dropped the response's existing metadata")
+	}
+	if got := stamps[0]; got["outcome"] != "recovered" || got["attempts"] != 2 || got["error"] != errTransient.Error() {
+		t.Errorf("stamp = %v, want outcome recovered, attempts 2, error %q", got, errTransient.Error())
+	}
+	if _, ok := final.CustomMetadata[ProviderRetryMetadataKey]; ok {
+		t.Error("the provider's own response was mutated; the stamp belongs on a copy")
+	}
+}
+
+func TestRetryPolicy_UnaryRecoveryIsStamped(t *testing.T) {
+	p, _, _ := testPolicy(t)
+	fn, _ := scripted([]step{{nil, errTransient}}, []step{{text("ok"), nil}})
+	resps, _ := collect(p.Wrap(context.Background(), fn))
+	if n := len(retryStamps(resps)); n != 1 {
+		t.Fatalf("a recovered unary call carries %d stamps, want 1", n)
+	}
+}
+
+func TestRetryPolicy_NoStampWithoutARetry(t *testing.T) {
+	p, _, _ := testPolicy(t)
+	fn, _ := scripted([]step{{partial("a"), nil}, {text("a"), nil}})
+	resps, _ := collect(p.Wrap(context.Background(), fn))
+	if n := len(retryStamps(resps)); n != 0 {
+		t.Fatalf("%d stamps on a call that never retried, want 0", n)
+	}
+}
+
+// #1206. A retry that did not rescue its call says so in the error the
+// caller sees — that text is what reaches the turn-error frame and a
+// failed delegation's result — and the provider error stays reachable.
+func TestRetryPolicy_SurfacedErrorsNameTheRetry(t *testing.T) {
+	cases := []struct {
+		name, prefix string
+		run          func(t *testing.T, p *RetryPolicy) []error
+	}{
+		{"persisted after one retry", "provider retry persisted: ", func(_ *testing.T, p *RetryPolicy) []error {
+			fn, _ := scripted([]step{{nil, errTransient}}, []step{{nil, errTransient}})
+			_, errs := collect(p.Wrap(context.Background(), fn))
+			return errs
+		}},
+		{"abandoned during the backoff", "provider retry abandoned: ", func(_ *testing.T, p *RetryPolicy) []error {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			fn, _ := scripted([]step{{nil, errTransient}})
+			_, errs := collect(p.Wrap(ctx, fn))
+			return errs
+		}},
+		{"not retried: the budget is spent", "provider retry skipped, budget spent: ", func(t *testing.T, p *RetryPolicy) []error {
+			p.Cooldown = time.Hour
+			for range RetryBurst {
+				oneFailingCall(t, p)
+			}
+			fn, _ := scripted([]step{{nil, errTransient}})
+			_, errs := collect(p.Wrap(context.Background(), fn))
+			return errs
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _ := testPolicy(t)
+			errs := tc.run(t, p)
+			if len(errs) != 1 {
+				t.Fatalf("errs = %v, want exactly one", errs)
+			}
+			var re *RetryError
+			if !errors.As(errs[0], &re) {
+				t.Fatalf("error %T does not name the retry", errs[0])
+			}
+			if !errors.Is(errs[0], errTransient) {
+				t.Error("the provider error is no longer reachable through Unwrap")
+			}
+			if !strings.HasPrefix(errs[0].Error(), tc.prefix) {
+				t.Errorf("error = %q, want prefix %q", errs[0], tc.prefix)
+			}
+		})
+	}
+}
+
+// The daemon log has no retry line when a hard error suppresses the
+// retry, so the caller's error must not claim one either: the two
+// sides of box A2 count the same events.
+func TestRetryPolicy_SuppressedByAHardErrorClaimsNoRetry(t *testing.T) {
+	p, logs, _ := testPolicy(t)
+	hard := errors.New("malformed request")
+	fn, _ := scripted([]step{{nil, hard}, {nil, errTransient}})
+	_, errs := collect(p.Wrap(context.Background(), fn))
+	for _, err := range errs {
+		var re *RetryError
+		if errors.As(err, &re) {
+			t.Errorf("error %q claims a retry outcome, but no retry was considered", err)
+		}
+	}
+	if len(*logs) != 0 {
+		t.Errorf("log = %v, want nothing", *logs)
+	}
+}
+
+// #1206 review F2. A retry answered by a DIFFERENT error — a 400, an
+// empty response — was counted in the log and surfaced bare, so the
+// transcript had nothing to count. The error now names the retry, and
+// the log says what became of it instead of "no outcome".
+func TestRetryPolicy_RetryAnsweredByAnotherErrorNamesTheRetry(t *testing.T) {
+	p, logs, _ := testPolicy(t)
+	hard := errors.New("Error 400, Message: Request contains an invalid argument.")
+	fn, _ := scripted([]step{{nil, errTransient}}, []step{{nil, hard}})
+
+	_, errs := collect(p.Wrap(context.Background(), fn))
+
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly one", errs)
+	}
+	var re *RetryError
+	if !errors.As(errs[0], &re) || re.Outcome != "failed" {
+		t.Fatalf("error %q does not name the retry as failed", errs[0])
+	}
+	if !errors.Is(errs[0], hard) {
+		t.Error("the 400 is no longer reachable through Unwrap")
+	}
+	assertOneOutcome(t, *logs, "answered by something other than content")
+}
+
+// #1206 review F3. A retry that recovered and whose stream then failed
+// never reaches the final response the stamp goes on; the error that
+// ended the stream carries the retry instead.
+func TestRetryPolicy_RecoveryInterruptedBeforeTheFinalResponseNamesTheRetry(t *testing.T) {
+	p, _, _ := testPolicy(t)
+	later := errors.New("stream reset")
+	fn, _ := scripted([]step{{nil, errTransient}}, []step{{partial("a"), nil}, {nil, later}})
+
+	resps, errs := collect(p.Wrap(context.Background(), fn))
+
+	if n := len(retryStamps(resps)); n != 0 {
+		t.Errorf("%d stamps, want 0: no final response arrived", n)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly one", errs)
+	}
+	var re *RetryError
+	if !errors.As(errs[0], &re) || re.Outcome != "interrupted" {
+		t.Fatalf("error %q does not name the interrupted retry", errs[0])
+	}
+	if !errors.Is(errs[0], later) {
+		t.Error("the stream error is no longer reachable through Unwrap")
+	}
+}
+
+// An error AFTER the stamped final response belongs to nothing the
+// retry did; it must not be wrapped a second time.
+func TestRetryPolicy_ErrorAfterTheStampIsNotWrapped(t *testing.T) {
+	p, _, _ := testPolicy(t)
+	later := errors.New("late")
+	fn, _ := scripted([]step{{nil, errTransient}}, []step{{text("done"), nil}, {nil, later}})
+	resps, errs := collect(p.Wrap(context.Background(), fn))
+	if len(retryStamps(resps)) != 1 {
+		t.Fatalf("want the final response stamped")
+	}
+	var re *RetryError
+	if len(errs) != 1 || errors.As(errs[0], &re) {
+		t.Fatalf("errs = %v, want the late error bare: the retry is already recorded once", errs)
+	}
+}
+
+// #1206 review F1. A side call's retry has no transcript surface, so
+// its log lines say whose they are; the agentic loop's do not.
+func TestRetryPolicy_SideCallRetriesAreLabelled(t *testing.T) {
+	p, logs, _ := testPolicy(t)
+	fn, _ := scripted([]step{{nil, errTransient}}, []step{{text("ok"), nil}})
+	collect(p.Wrap(AsSideCall(context.Background(), "approver"), fn))
+	if len(*logs) == 0 {
+		t.Fatal("no log lines")
+	}
+	for _, l := range *logs {
+		if !strings.HasPrefix(l, "side call (approver): ") {
+			t.Errorf("log line %q is not labelled as the approver's", l)
+		}
+	}
+
+	p2, logs2, _ := testPolicy(t)
+	fn2, _ := scripted([]step{{nil, errTransient}}, []step{{text("ok"), nil}})
+	collect(p2.Wrap(context.Background(), fn2))
+	for _, l := range *logs2 {
+		if strings.HasPrefix(l, "side call") {
+			t.Errorf("an unmarked call logged %q as a side call", l)
+		}
+	}
+}
+
+// #1206 review F7. The stamp's error is cut at 240 bytes; the cut must
+// not split a rune.
+func TestRetryPolicy_StampedErrorIsValidUTF8(t *testing.T) {
+	// A one-byte lead puts byte 240 in the middle of an "é".
+	long := errors.New("a" + strings.Repeat("é", 200))
+	r := stampRetryAs(text("x"), "recovered", long, 2)
+	msg, _ := r.CustomMetadata[ProviderRetryMetadataKey].(map[string]any)["error"].(string)
+	if !utf8.ValidString(msg) || len(msg) > 240 {
+		t.Errorf("stamped error is %d bytes, valid UTF-8 %v", len(msg), utf8.ValidString(msg))
+	}
+}
+
+// #1206 review round 2. A retry answered by a final response with no
+// parts — a SAFETY or MAX_TOKENS finish, which the Gemini adapter counts
+// as usable and ADK persists as the session event — is stamped on that
+// response, with an outcome saying it was not content.
+func TestRetryPolicy_RetryAnsweredWithNoContentIsStamped(t *testing.T) {
+	p, logs, _ := testPolicy(t)
+	blocked := &model.LLMResponse{Content: &genai.Content{Role: genai.RoleModel}, FinishReason: genai.FinishReasonSafety}
+	heartbeat := &model.LLMResponse{Partial: true, Content: &genai.Content{Role: genai.RoleModel}}
+	fn, _ := scripted([]step{{nil, errTransient}}, []step{{heartbeat, nil}, {blocked, nil}})
+
+	resps, errs := collect(p.Wrap(context.Background(), fn))
+
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	stamps := retryStamps(resps)
+	if len(stamps) != 1 || stamps[0]["outcome"] != "no content" {
+		t.Fatalf("stamps = %v, want exactly one with outcome \"no content\"", stamps)
+	}
+	if _, ok := resps[len(resps)-1].CustomMetadata[ProviderRetryMetadataKey]; !ok {
+		t.Error("the stamp is not on the final response")
+	}
+	assertOneOutcome(t, *logs, "answered by something other than content")
 }

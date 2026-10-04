@@ -116,7 +116,7 @@ func (a *Agent) AskSideQuestion(ctx context.Context, question string) (string, e
 	var lastCustom map[string]any
 	var b strings.Builder
 	var detail string
-	for resp, err := range a.model.GenerateContent(ctx, req, false) {
+	for resp, err := range a.model.GenerateContent(models.AsSideCall(ctx, "btw"), req, false) {
 		if err != nil {
 			// "The model produced nothing" is an answer here, not a
 			// failure. The Gemini adapter raises it as an error on

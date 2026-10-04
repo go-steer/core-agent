@@ -48,6 +48,37 @@ type oracleCase struct {
 var oracleCases = []oracleCase{
 	// --- executes, and the scanner must see it ---
 	{name: "plain", script: `"${CORE_AGENT}" -p hi`},
+	// #1209. A heredoc inside a command substitution inside double quotes
+	// — dev/uat/self-dev/run.sh's wake_with. Bash opens a fresh quoting
+	// context at `$(`, so the `"` before `$1` does not close the outer
+	// quote; a lexer that thinks it does carries inverted quote parity for
+	// the rest of the file, and an apostrophe in a later comment then
+	// decides whether the invocation after it is seen at all.
+	{name: "heredoc in a substitution in double quotes", script: "body=\"$(cat - \"x\" <<'PY'\nprint({\"a\": 1})\nPY\n)\"\n" + `"${CORE_AGENT}" -p hi`},
+	{name: "…then a comment with one apostrophe", script: "body=\"$(cat - \"x\" <<'PY'\nprint({\"a\": 1})\nPY\n)\"\n# it's one apostrophe\n" + `"${CORE_AGENT}" -p hi`},
+	{name: "nested substitution with quotes in double quotes", script: `v="$(echo "$(echo ")")")"` + "\n" + `"${CORE_AGENT}" -p hi`},
+	// The inner quotes of a substitution inside a double-quoted string
+	// hold a space: a lexer that closes the outer string at the inner `"`
+	// also splits the word there, and the parity it carries hides the
+	// invocation on the next line.
+	{name: "substitution with spaced inner quotes in double quotes", script: `x="a $(echo "b c") d"` + "\n" + `"${CORE_AGENT}" -p hi`},
+	// A quoted delimiter must still open a heredoc: its body is not code,
+	// so the apostrophe in it must not open a quote that swallows the
+	// invocation after EOF.
+	{name: "apostrophe inside a quoted-delimiter heredoc body", script: "cat <<'EOF' >/dev/null\nit's\nEOF\n" + `"${CORE_AGENT}" -p hi`},
+	// A comment inside a multi-line substitution is bash's to ignore. A
+	// substitution scanner that reads its apostrophe or `"` as a quote
+	// runs to the next one, closes on the `)` inside that string, and
+	// resumes at a `#` that drops the invocation from the line.
+	{name: "apostrophe comment inside a multi-line substitution", script: "x=$(\n  # it's\n  echo hi\n)\necho \"it's )  #\"; " + `"${CORE_AGENT}" -p hi`},
+	{name: "double-quote comment inside a multi-line substitution", script: "x=$(\n  # say \"hi\n  echo hi\n)\necho \"a )  #\"; " + `"${CORE_AGENT}" -p hi`},
+	// A quote BEFORE a top-level `<<` in the same word does not make it
+	// any less a heredoc operator; its body is not code.
+	{name: "top-level heredoc after a quoted redirect target", script: "f=/dev/null\ncat >\"$f\"<<EOF\nit's prose\nEOF\necho 'a #'; " + `"${CORE_AGENT}" -p hi`},
+	// A heredoc outlives the substitution that opened it: the `)` closes
+	// on the operator's line and bash reads the body after the newline.
+	{name: "heredoc opened in a substitution that closes on the same line", script: "x=$(cat <<EOF)\nit's\nEOF\necho 'a #'; " + `"${CORE_AGENT}" -p hi`},
+	{name: "…the same in double quotes", script: "x=\"$(cat <<EOF)\"\nit's\nEOF\necho 'a #'; " + `"${CORE_AGENT}" -p hi`},
 	{name: "timeout wrapper", script: `timeout 5 "${CORE_AGENT}" -p hi`},
 	{name: "timeout with flags", script: `timeout --signal=INT 5s "${CORE_AGENT}" -p hi`},
 	// A wrapper argument that is a variable, not a literal. isDuration
@@ -235,9 +266,10 @@ func TestPositiveCasesActuallyExecute(t *testing.T) {
 			executed++
 		}
 	}
-	// 20 positives plus the divergent third-level case, which executes
-	// under bash and is exactly why it is divergent.
-	if want := 21; executed != want {
+	// 30 positives (ten added for #1209: substitution-in-quotes, comment and heredoc shapes)
+	// plus the divergent third-level case, which executes under bash and
+	// is exactly why it is divergent.
+	if want := 31; executed != want {
 		t.Errorf("%d oracle cases reached the stub, want %d — a case stopped executing and is now agreeing with the scanner for the wrong reason", executed, want)
 	}
 }

@@ -23,21 +23,21 @@ The rig's T0–T2 runs were attended runs on the maintainer's workstation, under
   │   │  polls issues              │  workspace PVC: a clone of the mirror        │
   │   │  pushes + opens PRs ◀──────┘  eventlog PVC: sessions, gate/approver rows  │
   │   │  (GitHub App token)          │                                            │
-  │   └── harvest ◀── eventlog       └── approval_notify ──▶ switchboard ──▶ Chat │
+  │   └── harvest ◀── eventlog       └── approval_notify ──▶ switchboard ──▶ Slack│
   └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **The mirror** is `mastersingh24/core-agent-selfdev`: private, owned by the maintainer's personal (Pro) account, so `main` is protected. Merging needs a PR, the six required checks core-agent itself requires, and linear history; force-push and deletion are off. Admins aren't enforced, so the maintainer merges. Release, deploy, scheduled and secret-dependent workflows are disabled. A scheduled job fast-forwards a `upstream` branch from `go-steer/core-agent`, and the maintainer merges it into the mirror's `main` when they choose.
 - **The daemon** is `core-agent --no-repl --attach-listen` with a durable session database, `permissions.mode: auto`, `watchdog: enforce`, and per-turn, per-session and per-day cost ceilings. It runs in a new namespace on the existing drill cluster.
 - **The dispatcher** is a small process in its own pod. It hands the daemon one issue at a time, and does the outward-facing steps the agent's policy won't: pushing the branch and opening the PR. It also runs the harvest.
-- **switchboard** carries escalations to Google Chat.
+- **switchboard** carries escalations to Slack.
 
 ## Settled decisions (do not relitigate)
 
 1. **GKE, not a VM or the workstation.** Pods survive node upgrades and restarts, and the workstation restarts. The drill cluster (`std-simian-test`, project `gke-demos-345619`) is reused, in a new namespace.
 2. **A private mirror, owned by the maintainer's account.** core-agent's own `main` requires checks but no approving review and doesn't enforce rules on admins, so any write token can merge a green PR there. A mirror plus credentials that reach only the mirror makes "the agent never merges" a property of the setup, not a grading rule.
 3. **The agent's PRs never reach `go-steer/core-agent` automatically.** A good one is cherry-picked upstream by a person, through the normal review gate.
-4. **Escalations go to the maintainer through switchboard on Google Chat.** v1 is one-way notification; answering from Chat with buttons is v2 (see Prerequisites, P4).
+4. **Escalations go to the maintainer through switchboard on Slack.** Slack's Socket Mode buttons need no public endpoint, where Google Chat's would. v1 starts as one-way notification; answering from the thread lands with the switchboard issues under P4.
 5. **Work comes from a seeded issue queue, served one at a time.** The maintainer approves a seed list ([`selfdev-soak-seeds.md`](selfdev-soak-seeds.md), with 30 mergeable, 6 should-escalate and 7 should-stop candidates, plus seed 0 for A7). A script creates the issues in the mirror under the maintainer's account, labeled `soak:queue`. The dispatcher assigns the next one to the bot when the daemon is idle. Running several at once, and letting the agent choose from the queue, are v2. They add a planning question the soak isn't measuring.
 6. **Only issues the maintainer wrote become the operator's task.** The dispatcher forwards an issue only if `mastersingh24` authored it, applied `soak:queue` to it, and assigned it. An issue or comment from anyone else is never forwarded. This is decision 6 of the auto-mode design applied to issues: the approver judges calls against words a person wrote.
 7. **The agent commits; the dispatcher pushes.** The approver's built-in policy refuses outward-facing actions, so an agent `git push` or `gh pr create` would page the maintainer on every issue. And the push credential would sit where the agent's `bash` can read it. Instead, the agent ends its work with local commits on `agent/issue-N`. The dispatcher pushes that branch with the GitHub App's token and opens the PR. The token never enters the daemon's pod.
@@ -82,12 +82,14 @@ Each of these blocks the soak or makes its result meaningless. Each becomes its 
   - hashed bearer tokens in the table (#1201 item 4);
   - running the agent's tools as a different user from the daemon, which #1201 names as the only complete answer.
 - **P3. An image that can do the work.** The release image is distroless (no shell, git, go or gh). The soak needs an image with git, the pinned Go toolchain, and core-agent built from the mirror's `main`. `gh` isn't needed, because the dispatcher opens the PRs. It's a soak-only Dockerfile under `dev/uat/selfdev-soak/`; the release image is untouched.
-- **P4. switchboard for escalations.** v1 needs switchboard deployed with an ingress `core-agent`'s `switchboard` alert template can post to, and a Chat space. v2, answering from Chat, needs switchboard changes, filed there:
-  - render `approver_model` and `approver_reason` from the prompt frame (protocol 1.18.0);
-  - offer only once and deny on an approver-escalated prompt;
-  - read `decision` and `downgraded` from `/perms/respond`;
-  - bind a session from an `approval_notify` delivery: core-agent sends it in `X-Agent-Session`, which switchboard doesn't read;
-  - HTTP ingress for Chat buttons, which needs a public HTTPS endpoint (Pub/Sub carries no clicks).
+- **P4. switchboard for escalations, on Slack.** Slack takes its button clicks over Socket Mode, an outbound WebSocket, so the namespace needs no ingress. Google Chat buttons need a public HTTPS endpoint, which switchboard's README calls a public attack surface. Slack also already confirms a broad answer before applying it (go-steer/switchboard#92 is Chat-only). The gaps are in switchboard's platform-independent approval code:
+  - [switchboard#115](https://github.com/go-steer/switchboard/issues/115): render `approver_model` and `approver_reason` (protocol 1.18.0);
+  - [switchboard#116](https://github.com/go-steer/switchboard/issues/116): offer only once and deny on an approver-escalated prompt;
+  - [switchboard#117](https://github.com/go-steer/switchboard/issues/117): show what the daemon applied (`decision`, `downgraded` from `/perms/respond`);
+  - [switchboard#118](https://github.com/go-steer/switchboard/issues/118): bind a session on its first approval notification, and route later ones into the same thread. core-agent can't fix this by sending the session in the body: switchboard enforces one conversation per session, so a session's second notification would get 409 and be lost. Once #118 lands, core-agent's `switchboard` alert template sends `"session": "<app>/<id>"`.
+
+  v1 can start before all four land. Without #118, notifications arrive one-way, and the maintainer answers through `core-agent-tui` attached to the session. With #118, they answer from the Slack thread. Google Chat stays possible later, with the public endpoint and #92.
+
 
 ## The dispatcher
 
@@ -137,7 +139,7 @@ The first seeded issue is #1234's recovery half, kept unfixed upstream for this,
 2. **The rig:** the soak Dockerfile, the kustomize overlay for namespace `core-agent-selfdev` (Workload Identity for Vertex, PVCs, NetworkPolicy allowing egress only to Vertex, GitHub and switchboard), the dispatcher, the GitHub App, and the seed script.
 3. **A7:** seed #1234's recovery half alone, run it, and grade it.
 4. **The soak:** seed the approved list, run for 2 weeks or more, harvest weekly.
-5. **v2, on evidence:** Chat buttons (P4 v2), parallel issues, self-selection.
+5. **v2, on evidence:** answering from the Slack thread (P4's switchboard issues), parallel issues, self-selection.
 
 ## Open questions
 

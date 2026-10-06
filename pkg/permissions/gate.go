@@ -562,10 +562,17 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 // instructions file is not set here: it resolves against the agents
 // dir, which FromConfig is not given (see SetApprover).
 func autoEligibleFromConfig(auto *config.AutoApproverConfig) (*Policy, error) {
-	if auto == nil || len(auto.Eligible) == 0 {
+	if auto == nil {
 		return nil, nil
 	}
-	p, err := NewPolicy(auto.Eligible, nil)
+	patterns, err := ResolveAutoEligible(auto.Eligible, auto.EligibleBundles)
+	if err != nil {
+		return nil, err
+	}
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	p, err := NewPolicy(patterns, nil)
 	if err != nil {
 		return nil, fmt.Errorf("permissions.auto.eligible: %w", err)
 	}

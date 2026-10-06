@@ -39,8 +39,8 @@ func wireApprover(ctx context.Context, provider models.Provider, cfg *config.Con
 		return err
 	}
 	template.SetApprover(a, auto.InstructionsPath(agentsDir))
-	if len(auto.Eligible) == 0 {
-		fmt.Fprintln(stderr, "core-agent: permissions.auto.eligible is empty, so the approver decides nothing and mode \"auto\" asks a person about every call, as \"ask\" does")
+	if len(auto.Eligible) == 0 && len(auto.EligibleBundles) == 0 {
+		fmt.Fprintln(stderr, "core-agent: permissions.auto.eligible and eligible_bundles are both empty, so the approver decides nothing and mode \"auto\" asks a person about every call, as \"ask\" does")
 	}
 	return nil
 }

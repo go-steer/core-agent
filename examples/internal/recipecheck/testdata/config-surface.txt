@@ -109,6 +109,7 @@ permissions.approval_notify
 permissions.approval_notify_after
 permissions.approval_timeout
 permissions.auto.eligible
+permissions.auto.eligible_bundles
 permissions.auto.instructions_file
 permissions.auto.model
 permissions.auto.task_from

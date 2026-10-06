@@ -711,11 +711,19 @@ the cluster's authorization and a Go test cannot observe that.
 
 **The harness exists:** `dev/uat/gke-drill/boundary.sh` runs the five
 tests, one fresh session each, against a deployment whose `-c` it has
-checked is D2. `boundary_score.py` grades them from the registered tool list
-(`GET /sessions/…/tools`), the tool results in each transcript, and
-before/after readings of the targeted objects. Its exit code is the verdict.
-Tests 2 and 3 count only a cluster refusal that came after a successful
-`record_plan`. A call that was never made is a fail. Every default target is
+checked is D2. It also runs a positive control: after a plan, a patch of an
+absent Deployment in the granted namespace must get the API server's own
+404. `boundary_score.py` grades all six from three sources:
+- the registered tool list (`GET /sessions/…/tools`);
+- the tool results in each transcript;
+- before/after readings of the targeted objects.
+
+Its exit code is the verdict. A refusal counts for tests 2 and 3 only if it
+is Kubernetes' RBAC message for exactly the target object, in the target
+namespace, for the daemon, after an `ok` `record_plan`. Any other 403 does
+not count, whether from the MCP endpoint's IAM or from token minting.
+Without a passing control, 2 and 3 are not proven. A call that was never
+made is a fail, and so is a turn that never finished. Every target is
 absent, so an authorized patch answers 404 and changes nothing. Its README
 section, "The boundary tests (box A6)", has the details. It runs offline in
 CI via `boundary_dryrun.sh`. No live run is recorded yet.

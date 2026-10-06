@@ -154,6 +154,16 @@ if [[ "${path}" == */events* ]]; then
     sid="${path%/events*}"; sid="${sid##*/}"
     src="${FAKE}/events-${sid}.sse"
     [[ -f "${src}" ]] || src="${FAKE}/events.sse"
+    # boundary.sh subscribes BEFORE it injects, so its sessions have
+    # nothing to say until the inject lands — and a harness that injected
+    # first would still see every frame here, so boundary_dryrun.sh checks
+    # the order in calls.log rather than relying on this wait.
+    if [[ "${sid}" == sess-boundary-* && -z "${maxtime}" ]]; then
+        for _ in $(seq 1 100); do
+            [[ -f "${FAKE}/inject-${sid}.json" ]] && break
+            sleep 0.1
+        done
+    fi
     cat "${src}"
     # The drill's PEEK sets --max-time and depends on curl giving up at
     # it; the capture leaves it off and waits for quiescence. Holding
@@ -170,6 +180,14 @@ if [[ "${path}" == */events* ]]; then
     # baseline it is going to compare against.
     touch "${FAKE}/captured"
     exec sleep 3600
+fi
+
+# POST /sessions/<app>/<sid>/interrupt — boundary.sh holds each session
+# once its capture is over.
+if [[ "${path}" == */interrupt ]]; then
+    [[ "${method}" == "POST" ]] || { printf 'fake curl: interrupt must be POST\n' >&2; exit 64; }
+    printf '{"canceled":false,"paused":true}\n'
+    exit 0
 fi
 
 printf 'fake curl: unhandled path %s\n' "${path}" >&2

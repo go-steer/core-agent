@@ -181,6 +181,12 @@ fi
 # object move during a test without anything patching it.
 if has '--ignore-not-found' && has '{.metadata.resourceVersion}|{.metadata.generation}'; then
     key="${2:-}/${3:-}"
+    # FAKE_BOUNDARY_APPEARS: absent until boundary.sh has opened its first
+    # session — after the preflight looked, before a later test's inject.
+    if [[ " ${FAKE_BOUNDARY_APPEARS:-} " == *" ${key} "* && -s "${FAKE}/session-counter" ]]; then
+        printf '5150|1'
+        exit 0
+    fi
     if [[ " ${FAKE_BOUNDARY_UNREADABLE:-} " == *" ${key} "* ]]; then
         printf 'Error from server (Forbidden): %s is forbidden\n' "${key}" >&2
         exit 1
@@ -197,7 +203,7 @@ if has '--ignore-not-found' && has '{.metadata.resourceVersion}|{.metadata.gener
 fi
 
 # boundary.sh: the RBAC lists test 1 is graded on.
-if [[ "${1:-}" == "get" && ${#argv[@]} -eq 4 && "${3:-}" == "-o" && "${4:-}" == "json" ]]; then
+if [[ "${1:-}" == "get" && "${j}" == *" -o json" ]] && { [[ ${#argv[@]} -eq 4 ]] || [[ ${#argv[@]} -eq 5 && "${3:-}" == "-A" ]]; }; then
     case "${2:-}" in
         rolebindings|roles|clusterrolebindings|clusterroles)
             src="${FAKE}/rbac-${2}.json"

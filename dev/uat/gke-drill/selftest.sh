@@ -80,7 +80,7 @@ refute() {
 }
 
 head_ "Shell syntax"
-for f in lib.sh drill.sh soak.sh selftest.sh scenarios/*.sh; do
+for f in lib.sh drill.sh soak.sh selftest.sh boundary.sh boundary_dryrun.sh scenarios/*.sh; do
     if bash -n "${f}" 2>/dev/null; then
         ok "${f}"
     else
@@ -90,7 +90,8 @@ for f in lib.sh drill.sh soak.sh selftest.sh scenarios/*.sh; do
 done
 
 head_ "Python syntax"
-for f in sse2jsonl.py score.py soak_verdict.py soak_verdict_selftest.py a2_count.py a2_count_selftest.py; do
+for f in sse2jsonl.py score.py soak_verdict.py soak_verdict_selftest.py a2_count.py a2_count_selftest.py \
+         boundary_score.py boundary_score_selftest.py; do
     if python3 -m py_compile "${f}" 2>/dev/null; then
         ok "${f}"
     else
@@ -101,7 +102,8 @@ done
 rm -rf __pycache__
 
 head_ "Executable bits"
-for f in drill.sh soak.sh selftest.sh sse2jsonl.py score.py soak_verdict.py soak_verdict_selftest.py a2_count.py a2_count_selftest.py; do
+for f in drill.sh soak.sh selftest.sh sse2jsonl.py score.py soak_verdict.py soak_verdict_selftest.py a2_count.py a2_count_selftest.py \
+         boundary.sh boundary_dryrun.sh boundary_score.py boundary_score_selftest.py; do
     [[ -x "${f}" ]] && ok "${f}" || bad "${f} is not executable"
 done
 
@@ -942,6 +944,21 @@ if out=$(python3 a2_count_selftest.py 2>&1); then
     ok "a2_count.py self-test ($(grep -c '^  ok' <<<"${out}") cases)"
 else
     bad "a2_count.py self-test failed"
+    printf '%s\n' "${out}" | grep -v '^  ok' | sed 's/^/      /'
+fi
+rm -rf __pycache__
+
+head_ "A6 boundary grader"
+# boundary_score.py grades boundary.sh's five tests. Its self-test builds
+# one passing run and changes one thing per case, asserting the exit
+# code, all five verdicts and the expected message — including the two
+# ways a run must not pass by absence: a call that was never attempted,
+# and a refusal from plan-first where the test needed the cluster's RBAC.
+# boundary.sh itself is driven end to end by boundary_dryrun.sh.
+if out=$(python3 -B boundary_score_selftest.py 2>&1); then
+    ok "boundary_score.py self-test ($(grep -c '^  ok' <<<"${out}") cases)"
+else
+    bad "boundary_score.py self-test failed"
     printf '%s\n' "${out}" | grep -v '^  ok' | sed 's/^/      /'
 fi
 rm -rf __pycache__

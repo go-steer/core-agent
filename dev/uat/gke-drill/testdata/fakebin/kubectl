@@ -173,6 +173,39 @@ if has 'containers[?(@.name=="core-agent")].args'; then
     exit 0
 fi
 
+# boundary.sh: one target's "<resourceVersion>|<generation>", empty when
+# absent. Matched before the generic generation read below, which this
+# jsonpath also contains. Answers from ${FAKE}/boundary-objects, lines of
+# "<kind>/<name> <rv>|<gen>"; a kind/name listed in FAKE_BOUNDARY_MOVES
+# reads a new resourceVersion every time, which is how a case makes an
+# object move during a test without anything patching it.
+if has '--ignore-not-found' && has '{.metadata.resourceVersion}|{.metadata.generation}'; then
+    key="${2:-}/${3:-}"
+    if [[ " ${FAKE_BOUNDARY_UNREADABLE:-} " == *" ${key} "* ]]; then
+        printf 'Error from server (Forbidden): %s is forbidden\n' "${key}" >&2
+        exit 1
+    fi
+    line=$(grep -F -- "${key} " "${FAKE}/boundary-objects" 2>/dev/null | head -1 || true)
+    if [[ " ${FAKE_BOUNDARY_MOVES:-} " == *" ${key} "* ]]; then
+        n=$(( $(cat "${FAKE}/moves-counter" 2>/dev/null || echo 100) + 1 ))
+        printf '%s' "${n}" > "${FAKE}/moves-counter"
+        printf '%s|' "${n}"
+    elif [[ -n "${line}" ]]; then
+        printf '%s' "${line#* }"
+    fi
+    exit 0
+fi
+
+# boundary.sh: the RBAC lists test 1 is graded on.
+if [[ "${1:-}" == "get" && ${#argv[@]} -eq 4 && "${3:-}" == "-o" && "${4:-}" == "json" ]]; then
+    case "${2:-}" in
+        rolebindings|roles|clusterrolebindings|clusterroles)
+            src="${FAKE}/rbac-${2}.json"
+            [[ -f "${src}" ]] || die "no fixture for get ${2}"
+            cat "${src}"; exit 0 ;;
+    esac
+fi
+
 if has 'volumes[?(@.name=="recipe-content")].image.reference'; then
     printf '%s' "${FAKE_CONTENT_IMAGE:-}"; exit 0
 fi

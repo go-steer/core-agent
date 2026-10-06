@@ -46,6 +46,30 @@ path="/${url#*://*/}"
 
 # ── The hub ──────────────────────────────────────────────────────────
 
+# POST /sessions — boundary.sh opens one session per test. Ids are
+# handed out in order (sess-boundary-1, -2, …) so boundary_dryrun.sh can
+# lay down each test's transcript under the id that test will get.
+if [[ "${path}" == "/sessions" && "${method}" == "POST" ]]; then
+    n=$(( $(cat "${FAKE}/session-counter" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "${n}" > "${FAKE}/session-counter"
+    if [[ "${FAKE_CREATE_FAILS:-}" == "1" ]]; then
+        printf 'POST /sessions not supported: this daemon does not have a SessionFactory configured\n'
+        exit 22
+    fi
+    printf '{"app":"core-agent","user":"platform-oncall@example.com","sessionID":"sess-boundary-%s","url":"/sessions/core-agent/sess-boundary-%s"}\n' "${n}" "${n}"
+    exit 0
+fi
+
+# GET /sessions/<app>/<sid>/tools — the registered catalog.
+if [[ "${path}" == */tools ]]; then
+    sid="${path%/tools}"; sid="${sid##*/}"
+    src="${FAKE}/tools-${sid}.json"
+    [[ -f "${src}" ]] || src="${FAKE}/tools.json"
+    [[ -f "${src}" ]] || { printf 'fake curl: no tools fixture\n' >&2; exit 64; }
+    cat "${src}"
+    exit 0
+fi
+
 # GET /sessions. The incident session only appears once something has
 # actually broken the cluster — the fake kubectl drops the marker — so
 # drill_wait_new_session is exercised rather than short-circuited.
@@ -62,6 +86,8 @@ fi
 if [[ "${path}" == */inject ]]; then
     [[ "${method}" == "POST" ]] || { printf 'fake curl: inject must be POST\n' >&2; exit 64; }
     printf '%s\n' "${body}" > "${FAKE}/inject-body.json"
+    isid="${path%/inject}"; isid="${isid##*/}"
+    printf '%s\n' "${body}" > "${FAKE}/inject-${isid}.json"
     touch "${FAKE}/injected"
     if [[ "${FAKE_INJECT_FAILS:-}" == "1" ]]; then
         printf '{"error":"session not accepting input"}\n'

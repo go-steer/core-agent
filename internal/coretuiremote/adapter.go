@@ -91,6 +91,13 @@ type Adapter struct {
 	protocolKnown chan struct{}
 	protocolOnce  sync.Once
 
+	// failureSeen / failureOrder are the event ids of the durable
+	// failure rows already rendered, from either the row or the typed
+	// frame naming it (#1258), so a cut seen both ways renders once.
+	// Bounded FIFO; see failure_rows.go. Protected by mu.
+	failureSeen  map[string]struct{}
+	failureOrder []string
+
 	// usage caches the remote's totals (see capabilities.go).
 	// coretui.UsageTracker is queried on every TUI render; the cache
 	// keeps the network traffic bounded.
@@ -529,7 +536,7 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 				if isReplay(frame.Event.Timestamp, a.connectedAt) {
 					continue
 				}
-				ev := translateEvent(frame.Event)
+				ev := a.translateStreamEvent(frame.Event)
 				a.applyPricing(&ev)
 				// Remember the per-event usage so LastTurn() can
 				// surface it after the iterator ends. The final
@@ -743,7 +750,7 @@ func (a *Adapter) events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 						debugf("Events: frame seq=%d has nil Event (skipped)", frame.Seq)
 						continue
 					}
-					ev := translateEvent(frame.Event)
+					ev := a.translateStreamEvent(frame.Event)
 					a.applyPricing(&ev)
 					if ev.Usage != nil && !ev.Partial {
 						a.mu.Lock()
@@ -1063,7 +1070,10 @@ func usageFromMetadata(meta map[string]any) (*coretui.Usage, float64, string) {
 // in the TUI. Used to skip frames that don't move the chat forward
 // — e.g., the inject's own echo before the model starts speaking.
 func isEmptyEvent(ev coretui.Event) bool {
-	return ev.Text == "" && len(ev.ToolCalls) == 0 && len(ev.ToolResults) == 0 && ev.Usage == nil
+	// A durable failure row (#1258) projects to GuardrailTrip or
+	// TurnError and nothing else; it is not empty.
+	return ev.Text == "" && len(ev.ToolCalls) == 0 && len(ev.ToolResults) == 0 && ev.Usage == nil &&
+		ev.GuardrailTrip == nil && ev.TurnError == nil
 }
 
 // isReplay reports whether an event's timestamp marks it as part of

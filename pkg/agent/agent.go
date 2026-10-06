@@ -459,6 +459,13 @@ type Agent struct {
 	// See guardrail_persist.go.
 	pendingOutOfBandEvents []*session.Event
 	guardrailRestored      bool
+	// outOfBandDrainMu serializes drainOutOfBandEvents end to end, so
+	// two drains racing (an operator's reset on an HTTP goroutine and
+	// a turn's cleanup) append in queue order. #1258's rows are read
+	// back in order — a replayed trip arms core-tui's absorb of the
+	// `canceled` that follows it — so a reversed pair is a wrong
+	// rendering, not just an untidy log. Never held with a.mu.
+	outOfBandDrainMu sync.Mutex
 
 	// guardrailHaltKind names the guardrail that cut the turn now in
 	// flight (a turn-error kind; empty = none), so Run's cleanup
@@ -1567,6 +1574,11 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	if err := a.runPreTurn(tp, preTurnSteps); err != nil {
 		return func(yield func(*session.Event, error) bool) {
 			a.recordInvocation(0, err)
+			// A refused turn is a turn error the driver logs, so it
+			// gets a transcript row too (#1258). Still no frame: the
+			// refusal never opened a turn, so there is nothing for a
+			// terminal frame to terminate.
+			a.recordTurnError(attach.ClassifyTurnError(err), "", "")
 			yield(nil, err)
 		}
 	}
@@ -1804,10 +1816,21 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// The approver's verdicts (#1175 decision 10), same window and
 		// same reasoning.
 		approverTurn.drainAudits()
-		// Durable guardrail rows (#643) for anything the two hooks
-		// above just tripped. Same window and same reasoning as the
-		// interrupt audit: the stream has drained and runCtx is
-		// cancelled, so this write can't race the runner.
+		// The turn error's durable row (#1258), queued before the drain
+		// below so it lands in the log before the typed frame goes out:
+		// the terminal barrier then delivers the row to every attached
+		// client ahead of the frame that names it. The guardrail marker
+		// is consumed here, not beside the metric, because the row
+		// records which guardrail cut the turn (cut_by).
+		guardrailHalt := a.consumeGuardrailHalt(turnErr)
+		var turnError attach.TurnError
+		if turnErr != nil {
+			turnError = a.recordTurnError(attach.ClassifyTurnError(turnErr), promptID, guardrailHalt)
+		}
+		// Durable guardrail rows (#643, #1258) for anything the hooks
+		// above just tripped, and the turn-error row. Same window and
+		// same reasoning as the interrupt audit: the stream has drained
+		// and runCtx is cancelled, so this write can't race the runner.
 		a.drainOutOfBandEvents()
 		if a.onTurnEnd != nil {
 			a.onTurnEnd()
@@ -1835,7 +1858,6 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// here — exemplar linkage is lost for this instrument;
 		// acceptable, the terminal SSE event carries prompt_id for
 		// correlation.
-		guardrailHalt := a.consumeGuardrailHalt(turnErr)
 		if guardrailHalt != "" {
 			// error.type says which guardrail, not `canceled`: the
 			// cancel is how the halt was carried out, not what
@@ -1847,7 +1869,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 
 		switch {
 		case turnErr != nil:
-			a.emit(attach.EventTurnError, attach.ClassifyTurnError(turnErr))
+			a.emit(attach.EventTurnError, turnError)
 		default:
 			a.emit(attach.EventTurnComplete, attach.TurnComplete{
 				PromptID:  promptID,

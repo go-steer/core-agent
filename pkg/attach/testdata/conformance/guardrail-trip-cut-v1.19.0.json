@@ -1,0 +1,6 @@
+{
+  "guardrail": "cost_ceiling",
+  "reason": "per-turn cost ceiling exceeded: this turn cost $0.0112, ceiling is $0.0100. The turn was stopped with its work unfinished; the session is NOT halted.",
+  "halted_turn": true,
+  "event_id": "5b0f3c1e-7a52-4d0e-9a3b-2f1d7c9e8a40"
+}

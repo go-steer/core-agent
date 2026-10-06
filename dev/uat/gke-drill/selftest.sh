@@ -80,7 +80,7 @@ refute() {
 }
 
 head_ "Shell syntax"
-for f in lib.sh drill.sh soak.sh selftest.sh boundary.sh boundary_dryrun.sh scenarios/*.sh; do
+for f in lib.sh drill.sh soak.sh selftest.sh boundary.sh boundary_dryrun.sh replay_sessions.sh replay_dryrun.sh scenarios/*.sh; do
     if bash -n "${f}" 2>/dev/null; then
         ok "${f}"
     else
@@ -103,7 +103,8 @@ rm -rf __pycache__
 
 head_ "Executable bits"
 for f in drill.sh soak.sh selftest.sh sse2jsonl.py score.py soak_verdict.py soak_verdict_selftest.py a2_count.py a2_count_selftest.py \
-         boundary.sh boundary_dryrun.sh boundary_score.py boundary_score_selftest.py; do
+         boundary.sh boundary_dryrun.sh boundary_score.py boundary_score_selftest.py \
+         replay_sessions.sh replay_dryrun.sh; do
     [[ -x "${f}" ]] && ok "${f}" || bad "${f} is not executable"
 done
 

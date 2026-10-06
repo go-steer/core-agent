@@ -35,7 +35,8 @@
 //     runaway a fresh budget. Reset is operator-driven via
 //     Agent.ResetCostCeiling and wants AddSessionCostBudget beside it.
 //   - A per-TURN trip ends its turn and nothing more. No flag, no
-//     durable row, next turn starts from a fresh baseline. One
+//     halt row (its own guardrail-turn-trip row is a record, not
+//     state — #1258), next turn starts from a fresh baseline. One
 //     expensive turn in an eight-hour unattended run should not end the
 //     run, and a single turn's spend should not outlive the pod that
 //     spent it.
@@ -341,8 +342,9 @@ func (a *Agent) CostCeilingTripped() (bool, string) {
 // trip ends its turn and nothing more — the bound is named for a turn,
 // the next turn starts from a fresh baseline, and one expensive turn in
 // an eight-hour unattended run should not end the run. It sets no flag
-// and writes no durable row; a client learns about it from the
-// `guardrail-trip` event, which is exactly what that event is for.
+// and writes no halt row; a client learns about it from the
+// `guardrail-trip` event, or from the guardrail-turn-trip row it leaves
+// in the transcript (#1258), which nothing restores.
 //
 // What stops a driver from re-driving into the ceiling forever is
 // maxConsecutiveTurnCeilingTrips, not the per-turn halt that used to be
@@ -423,13 +425,16 @@ func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) bool {
 
 		// Durable halt (#643): the trip outlives this process, so a
 		// crash or pod roll can't hand the runaway a fresh budget. Only
-		// a halt is written. A per-turn trip that ends its own turn has
-		// nothing to restore — re-arming it on the next process would
-		// mean one turn's spend halting a session it never halted.
-		a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, reason))
+		// a halt writes the halt row. A per-turn trip that ends its own
+		// turn has nothing to restore — re-arming it on the next process
+		// would mean one turn's spend halting a session it never halted
+		// — so its row (#1258) is a different kind the fold ignores.
 	}
 
-	a.emitGuardrailTrip(attach.GuardrailCostCeiling, reason, haltedTurn)
+	// The durable row — the halt row when halt, a per-turn trip row
+	// otherwise (#1258) — is written by emitGuardrailTrip, so the log
+	// line, the row and the frame come from one site.
+	a.emitGuardrailTrip(attach.GuardrailCostCeiling, reason, haltedTurn, halt)
 	return true
 }
 

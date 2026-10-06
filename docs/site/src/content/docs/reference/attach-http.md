@@ -497,7 +497,29 @@ The field is always present, including when false. Do not read its absence as `f
 
 Detect it the normal way: `"guardrail-trip"` in the `capabilities` frame's `event_types`. A pre-1.13.0 daemon omits the key and reports trips the old way, so one client can handle both — match the event where it is advertised, and fall back to the turn-error kinds where it is not.
 
-The durable half is unchanged and predates this: a trip has appended a `guardrail-trip` event row (`Author=agent/guardrail-trip`) to the session log since [#643](https://github.com/go-steer/core-agent/issues/643), and that is still how a client that attaches *after* the halt finds out — along with `GET /guardrails`, which is the authoritative answer. The wire event deliberately reuses the row's name. The stream frame is the live notification; it is not replayed.
+The stream frame is the live notification; it is not replayed. A client that attaches *after* a trip finds it in the session's event log instead: since protocol 1.19.0 every trip leaves a row there, which replays from `?since=0` — see [Trips and turn errors are durable](#trips-and-turn-errors-are-durable-protocol-1190). For whether the session is halted *now*, `GET /guardrails` is the authoritative answer.
+
+### Trips and turn errors are durable (protocol 1.19.0)
+
+Before 1.19.0 a guardrail trip that did not halt the session — a per-turn cost trip, a turn-scoped watchdog cut — and every `turn-error` reached only the clients attached at that moment and a line in the daemon log. A client that attached a minute later, or replayed the session afterwards, saw a turn that simply stopped ([#1258](https://github.com/go-steer/core-agent/issues/1258)). Now each one appends a row to the session's event log, written at the same moment as the log line and the frame. The rows reach every client as ordinary `agent` frames on `/events`, live and on replay, and are readable from `GET /sessions/{app}/{sid}/events?since=0` after the fact.
+
+| Failure | Row (`InvocationID`, `Author`) |
+|---|---|
+| A trip that halted the session | `guardrail-trip`, `agent/guardrail-trip` — the halt row that has existed since [#643](https://github.com/go-steer/core-agent/issues/643), and the one a restart restores |
+| A trip that did not halt it | `guardrail-turn-trip`, `agent/guardrail-turn-trip` — nothing restores it, so it can never come back as a halt |
+| A refusal-storm cut | `gate-refusal-storm`, `gate/refusal-storm` — unchanged since [#1081](https://github.com/go-steer/core-agent/issues/1081) |
+| Any turn error, including a turn refused at the top because the session is halted | `turn-error`, `agent/turn-error` |
+
+Exactly one row per failure. The `guardrail-turn-trip` row's metadata is `source`, `guardrail`, `reason` (the same text as the frame) and `halted_turn`. The halt row now carries `halted_turn` too, so a client replaying a halt that cut a turn knows the `canceled` after it is the cut's (an older halt row has no key; read it as `false`). The `turn-error` row carries `kind`, `code`, `message`, `retryable` and `hint`, the frame's payload, plus `prompt_id` for the turn and `cut_by` when a guardrail's cut caused the error. `cut_by` is `cost_ceiling`, `watchdog` or `refusal_storm`. For a refusal storm it is the only in-band sign that a `canceled` was the gate's doing. Optional keys are omitted when empty. None of the rows has content, so none of them enters the model's context, and compaction, usage and auto-continue skip them. Go clients can read them with `attach.GuardrailTurnTrip`, `attach.GuardrailHaltRow` and `attach.TurnErrorRow`.
+
+**A client that is attached receives each failure twice**: the typed `guardrail-trip` or `turn-error` frame, and the row's `agent` frame. Both typed payloads gain an optional `event_id` holding the row's event `ID`, so a client can count the failure once:
+
+```
+event: guardrail-trip
+data: {"guardrail":"cost_ceiling","reason":"per-turn cost ceiling exceeded: …","halted_turn":true,"event_id":"5b0f3c1e-7a52-4d0e-9a3b-2f1d7c9e8a40"}
+```
+
+Render whichever arrives first and drop the other. The order differs by kind. A trip's frame goes out when the guardrail fires, and its row lands when the turn's cleanup runs. A turn error's row is written before its frame, and the [terminal barrier](#frame-ordering) delivers the row first. `core-agent-tui` does this against a 1.19.0+ daemon. `event_id` is absent when the session has no event log, in which case nothing was written and there is nothing to pair. A pre-1.19.0 daemon never sets the field and writes only the halt row.
 
 ### Side questions (`/slash/btw`)
 
@@ -791,7 +813,7 @@ One consequence worth knowing: a cancel and a **timeout** are now on opposite si
 **`cost_ceiling` and `watchdog` leave the stream (protocol 1.13.0, [#891](https://github.com/go-steer/core-agent/issues/891)).** Both kinds describe two different events, and only one of them was ever a turn outcome:
 
 - **The trip** — the halt itself. Through 1.12.0 this was a `turn-error`, and for an in-turn trip that meant a **second** terminal frame behind the cancellation it caused; [#818](https://github.com/go-steer/core-agent/issues/818) bought time by suppressing that cancel. It is now a [`guardrail-trip`](#guardrail-trips-protocol-1130), the suppression is gone with the thing that needed it, and the cut turn reports the plain `canceled` below.
-- **The refusal** — a later turn declined at the top because the session is still halted. That genuinely *is* the turn's outcome, and the kind still names it. But it has never reached the stream as a frame: the refusal short-circuits above the point where a turn installs the cleanup that emits its terminal frame, so it arrives as the error the call returns and as `error.type` on the invocation metric. The kinds stay in the table because that is what a host classifying that error will get.
+- **The refusal** — a later turn declined at the top because the session is still halted. That genuinely *is* the turn's outcome, and the kind still names it. But it has never reached the stream as a frame: the refusal short-circuits above the point where a turn installs the cleanup that emits its terminal frame, so it arrives as the error the call returns and as `error.type` on the invocation metric. Since 1.19.0 it also leaves a [`turn-error` row](#trips-and-turn-errors-are-durable-protocol-1190) with this kind in the session's event log. The kinds stay in the table because that is what a host classifying that error will get.
 
 Net effect for a consumer: on a 1.13.0 daemon these two values stop appearing on `/events` entirely. Two follow-on consequences:
 
@@ -802,7 +824,7 @@ The same value rides `error.type` on the `gen_ai.agent.invocation.duration` metr
 
 **Guardrail-refused turns are labelled (v2.9.0-dev, [#818](https://github.com/go-steer/core-agent/issues/818)).** A turn refused at the top by an already-tripped guardrail emits no frame of its own — it points back at the `guardrail-trip` that halted the session — but it *is* recorded on `gen_ai.agent.invocation.duration`. Before this change that record carried `error.type: unknown`: the classifier is substring-based and a guardrail reason matches none of its patterns, so `cost_ceiling` and `watchdog` were the only kinds in the table above that no classifier path could produce, and the spend-cap and runaway series went dark during exactly the incidents they exist for. Refusals now carry their own kind, and so does the turn a guardrail *halted* — labelling that one by the `canceled` its cancellation classifies as would leave the same series dark for the same reason, one turn earlier. Nothing on the wire changes.
 
-**One label has no kind behind it: `refusal_storm` (v3.0, [#1081](https://github.com/go-steer/core-agent/issues/1081)).** The permission gate ends a turn in which the agent re-issued three calls the operator had already refused. It is deliberately absent from the table above, because unlike `cost_ceiling` and `watchdog` it is not a value any host will ever classify an error into: the cut is a plain cancellation, the turn reports `canceled`, and no `guardrail-trip` goes out — there is nothing to reset, and a client offered a reset for it would be wrong. The name exists only as `error.type` on `gen_ai.agent.invocation.duration`, where it is the single thing distinguishing this stop from an operator's. A client that wants the reason in-band should read the eventlog row the cut appends (`Author=gate/refusal-storm`, carrying the suppressed-call count) rather than watching for a frame that is not coming.
+**One label has no kind behind it: `refusal_storm` (v3.0, [#1081](https://github.com/go-steer/core-agent/issues/1081)).** The permission gate ends a turn in which the agent re-issued three calls the operator had already refused. It is deliberately absent from the table above, because unlike `cost_ceiling` and `watchdog` it is not a value any host will ever classify an error into: the cut is a plain cancellation, the turn reports `canceled`, and no `guardrail-trip` goes out — there is nothing to reset, and a client offered a reset for it would be wrong. The name exists only as `error.type` on `gen_ai.agent.invocation.duration`, where it is the single thing distinguishing this stop from an operator's. A client that wants the reason in-band should read the eventlog row the cut appends (`Author=gate/refusal-storm`, carrying the suppressed-call count) rather than watching for a frame that is not coming. Since 1.19.0 the cut turn's [`turn-error` row](#trips-and-turn-errors-are-durable-protocol-1190) also says `cut_by: refusal_storm`.
 
 ### Protocol version negotiation
 

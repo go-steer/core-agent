@@ -22,6 +22,9 @@
 #                 fake kubectl, curl and gcloud
 #   boundary_dryrun.sh
 #                 box A6's boundary.sh, driven end to end on the same fakes
+#   replay_dryrun.sh
+#                 box A2's replay_sessions.sh (#1258) on the same fakes,
+#                 graded with a2_count.py
 #
 # The drill is the instrument v2.9 is measured with, and until now
 # nothing checked it on a PR. A regression in it does not show up as a
@@ -44,3 +47,4 @@ done
 "${DRILL}/selftest.sh"
 "${DRILL}/dryrun.sh"
 "${DRILL}/boundary_dryrun.sh"
+"${DRILL}/replay_dryrun.sh"

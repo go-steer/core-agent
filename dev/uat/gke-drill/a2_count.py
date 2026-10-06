@@ -85,13 +85,16 @@ wording change elsewhere silently disarms a count.
   FAIL             more in the log than in the transcript: a failure only
                    the daemon log witnessed, which is what A2 forbids
   TRANSCRIPT-ONLY  more in the transcript than the log. Visible to anyone
-                   reading the session, so not what A2 is about, but A2's
-                   text says "equal" and this is reported, not hidden
+                   reading the session, so it satisfies A2 (settled
+                   2026-10-04: "no class has more entries in the daemon log
+                   than in the transcripts"); the counter overcounts where
+                   it cannot be exact, and "equal" would fail on that
   NOT EXERCISED    zero on both sides — a run in which nothing failed
                    proves nothing about A2
   NOT COUNTABLE    the class has no signature on one side
 
-Exit 0 when every countable class passes, 1 on any FAIL, 2 otherwise.
+Exit 0 when every countable class is PASS or TRANSCRIPT-ONLY, 1 on any
+FAIL, 2 otherwise (a class NOT EXERCISED leaves A2 unproven on this run).
 
 ## Scope
 
@@ -324,7 +327,7 @@ def exit_code(counts: list[Count]) -> int:
     if any(c.verdict == FAIL for c in counts):
         return 1
     countable = [c for c in counts if c.verdict != NOT_COUNTABLE]
-    if countable and all(c.verdict == PASS for c in countable):
+    if countable and all(c.verdict in (PASS, TRANSCRIPT_ONLY) for c in countable):
         return 0
     return 2
 
@@ -341,7 +344,7 @@ def render(counts: list[Count]) -> str:
         out.append(f"| {c.name} | {cell(c.log)} | {cell(c.transcript)} | {delta} | **{c.verdict}** | {c.note} |")
     code = exit_code(counts)
     out.append("")
-    out.append({0: "A2: **every countable class agrees.**",
+    out.append({0: "A2: **met on this run** — no countable class has more entries in the log than in the transcripts.",
                 1: "A2: **failed** — at least one failure was witnessed only by the daemon log.",
                 2: "A2: **not closable on this run** — nothing was log-only, but not every class was exercised."}[code])
     return "\n".join(out) + "\n"

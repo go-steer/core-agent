@@ -114,9 +114,12 @@ with the call, so it rides the call's context, the same way
    a case.
 8. **The classification is unchanged.** A bare 400 that persists
    through its retry reaches the turn-error frame as
-   `provider retry persisted: Error 400, …`. It is still `config_error`,
-   code `400`, not retryable, with the same hint
-   (`TestClassifyTurnError_Bare400IsClassifiedTheSameRetriedOrNot`).
+   `provider retry persisted: Error 400, …`. One that finds the shared
+   budget spent is not retried, logs `NOT retried`, and reaches the
+   frame as `provider retry skipped, budget spent: Error 400, …`. Both
+   are still `config_error`, code `400`, not retryable, with the same
+   hint (`TestClassifyTurnError_Bare400IsClassifiedTheSameRetriedOrNot`,
+   `TestClassifyTurnError_Bare400SkippedForBudgetIsClassifiedTheSame`).
 9. **Anthropic is untouched on purpose.** Its adapter has no
    `RetryPolicy` and reads no `PriorSuccess`. `anthropic-sdk-go` does
    not retry a 400. An Anthropic 400 is an `invalid_request_error` that
@@ -139,6 +142,13 @@ a genuine malformation fails the same way on the retry, so the operator
 learns the same thing one round-trip later. The budget caps the worst
 case for the whole process at RetryBurst extra requests, then one per
 30s.
+
+The budget is process-wide, so in a multi-session daemon the cost is
+shared. A session whose history went bad after its first success
+spends one retry from the shared bucket on every turn that hits the
+bare 400. That can leave other sessions' 429/503 retries facing an
+empty budget (burst 3, one refill per 30s); the burst cap is what
+bounds it.
 
 ## Out of scope
 

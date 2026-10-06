@@ -85,6 +85,22 @@ func TestClassifyTurnError_Bare400IsClassifiedTheSameRetriedOrNot(t *testing.T) 
 	}
 }
 
+// A spent budget is the other way a bare 400 on a served session
+// reaches the frame: "provider retry skipped, budget spent: Error 400 …".
+// Pinned on its own, with the frame text, because it is the form an
+// operator sees when another session drained the shared budget.
+func TestClassifyTurnError_Bare400SkippedForBudgetIsClassifiedTheSame(t *testing.T) {
+	t.Parallel()
+	bare := errors.New("Error 400, Message: Request contains an invalid argument., Status: INVALID_ARGUMENT, Details: []")
+	got := ClassifyTurnError(&models.RetryError{Outcome: "skipped", Err: bare})
+	if got.Kind != TurnErrorConfig || got.Code != "400" || got.Retryable {
+		t.Errorf("classified %s/%s/%v, want config_error/400/false", got.Kind, got.Code, got.Retryable)
+	}
+	if !strings.HasPrefix(got.Message, "provider retry skipped, budget spent: Error 400") {
+		t.Errorf("frame message %q, want it to lead with the skipped prefix and the 400", got.Message)
+	}
+}
+
 // #1206 review round 2. The context branches replace the message with
 // fixed text; a retry that recovered and was then cut by a deadline
 // must still lead with its outcome, or the transcript loses it.

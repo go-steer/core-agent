@@ -832,6 +832,12 @@ type AutoApproverConfig struct {
 	// makes nothing eligible, so auto behaves exactly like ask.
 	Eligible []string `json:"eligible,omitempty"`
 
+	// EligibleBundles names built-in eligibility presets merged with
+	// Eligible (#1252): "coding", "k8s_read", "github". See
+	// permissions.AutoBundles for what each contains. An unknown name
+	// is a startup error. Empty adds nothing.
+	EligibleBundles []string `json:"eligible_bundles,omitempty"`
+
 	// TaskFrom lists the caller identities whose injected messages
 	// are the operator's task, the text the approver judges a call
 	// against. A message counts only when its caller authenticated as
@@ -902,6 +908,11 @@ func (a *AutoApproverConfig) validate() error {
 	for i, e := range a.Eligible {
 		if strings.TrimSpace(e) == "" {
 			return fmt.Errorf("permissions.auto.eligible[%d] is empty", i)
+		}
+	}
+	for i, b := range a.EligibleBundles {
+		if strings.TrimSpace(b) == "" {
+			return fmt.Errorf("permissions.auto.eligible_bundles[%d] is empty", i)
 		}
 	}
 	for i, id := range a.TaskFrom {

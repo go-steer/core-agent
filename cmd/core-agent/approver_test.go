@@ -81,8 +81,19 @@ func TestWireApprover(t *testing.T) {
 	if err := sub.CheckFileWrite(context.Background(), "write_file", instructions); !errors.Is(err, permissions.ErrControlPlaneWrite) {
 		t.Errorf("yolo write to the instructions file = %v, want ErrControlPlaneWrite", err)
 	}
-	if !strings.Contains(stderr.String(), "permissions.auto.eligible is empty") {
+	if !strings.Contains(stderr.String(), "permissions.auto.eligible and eligible_bundles are both empty") {
 		t.Errorf("stderr = %q, want the empty-eligible warning", stderr.String())
+	}
+
+	// A bundle alone is an eligible list: no warning (#1252).
+	var quiet bytes.Buffer
+	cfg.Permissions.Auto = &config.AutoApproverConfig{InstructionsFile: "approver.md", EligibleBundles: []string{permissions.AutoBundleCoding}}
+	g = approverTemplate(t, cfg, root)
+	if err := wireApprover(context.Background(), provider, cfg, agentsDir, g, &quiet); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(quiet.String(), "both empty") {
+		t.Errorf("stderr = %q; a bundle-only auto block is not empty", quiet.String())
 	}
 
 	// A missing instructions file fails startup and wires nothing.

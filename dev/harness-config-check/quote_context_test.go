@@ -14,7 +14,54 @@
 
 package main
 
-import "testing"
+import (
+	"os/exec"
+	"testing"
+)
+
+// #1241. A heredoc delimiter is compared after bash's quote removal, and
+// a delimiter computed wrongly never matches: the body then swallows the
+// rest of the file. Each row is checked against bash as well as against
+// heredocDelim — bash must end the body at want, and so must we.
+func TestHeredocDelimiterMatchesBash(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash not available: %v", err)
+	}
+	cases := []struct{ word, want string }{
+		{"<<EOF", "EOF"},
+		{"<<'EOF'", "EOF"},
+		{`<<"EOF"`, "EOF"},
+		{`<<\EOF`, "EOF"},
+		{`<<E"O"F`, "EOF"},
+		{`<<"E'F"`, "E'F"},
+		{`<<"E\F"`, `E\F`},
+		{`<<'E\F'`, `E\F`},
+		{"<<$'EOF'", "EOF"},
+		{`<<$'E\'F'`, "E'F"},
+		{`<<$'E\\F'`, `E\F`},
+		{`<<$'E\x41F'`, "EAF"},
+		{`<<$"EOF"`, "EOF"},
+		{"<<-$'EOF'", "EOF"},
+		// `$$` is a name, not a quote opener: the `'` after it is an
+		// ordinary quote and the `$$` stays in the delimiter.
+		{"<<$$'EOF'", "$$EOF"},
+		{`<<$$"EOF"`, "$$EOF"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.word, func(t *testing.T) {
+			got, _, ok := heredocDelim(tc.word)
+			if !ok || got != tc.want {
+				t.Errorf("heredocDelim(%q) = %q, %v; want %q", tc.word, got, ok, tc.want)
+			}
+			script := "cat " + tc.word + "\nBODY\n" + tc.want + "\necho AFTER\n"
+			out, _ := exec.Command(bash, "-c", script).CombinedOutput()
+			if string(out) != "BODY\nAFTER\n" {
+				t.Errorf("bash does not end %q at %q: the row is wrong\n%s", tc.word, tc.want, out)
+			}
+		})
+	}
+}
 
 // #1209. The bash oracle compares invocation COUNTS, and the scanner
 // deliberately descends into quoted spans, so a lexer that loses its
@@ -55,6 +102,29 @@ func TestAPinAfterAQuotingConstructIsStillCredited(t *testing.T) {
 			"x=\"$(\n  # it's\n  echo hi\n)\""},
 		{"ANSI-C string with an escaped apostrophe in a substitution",
 			"x=$(echo $'it\\'s')"},
+		// #1241: the same ANSI-C shapes at the top level, where lexWord
+		// rather than skipSubstitution reads them, and as a heredoc
+		// delimiter, where bash removes the ANSI-C quoting.
+		// The `"it's"` after it is what makes the inverted parity reach
+		// the pin: alone, the stray quote swallows the rest into one span
+		// whose quotes balance, and the pin is credited by accident.
+		{"top-level ANSI-C string with an escaped apostrophe",
+			"x=$'it\\'s'; echo \"it's\""},
+		{"top-level ANSI-C string ending in an escaped backslash",
+			"x=$'it\\\\' y='s'"},
+		{"PID parameter before a single quote",
+			"echo $$'\\'"},
+		// The two below recover their COUNT in the oracle — the swallowed
+		// text is still scanned as a span or a heredoc body — so only the
+		// pin shows the lexer went wrong.
+		{"heredoc operator inside an ANSI-C string",
+			"echo $'\\'<<EOF' >/dev/null\n# it's"},
+		{"PID parameter before a paren in double quotes",
+			"x=\"$$(\"; echo \"it's\""},
+		{"ANSI-C heredoc delimiter",
+			"cat <<$'EOF' >/dev/null\nit's\nEOF"},
+		{"ANSI-C heredoc delimiter with an escaped apostrophe",
+			"cat <<$'E\\'F' >/dev/null\nit's\nE'F"},
 		{"herestring in a substitution in double quotes",
 			"x=\"$(\n  tr a b <<<\"$v\"\n  echo z\n)\""},
 		// A heredoc body inside a substitution is not code: its apostrophe

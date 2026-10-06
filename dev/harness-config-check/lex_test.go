@@ -79,6 +79,38 @@ var oracleCases = []oracleCase{
 	// on the operator's line and bash reads the body after the newline.
 	{name: "heredoc opened in a substitution that closes on the same line", script: "x=$(cat <<EOF)\nit's\nEOF\necho 'a #'; " + `"${CORE_AGENT}" -p hi`},
 	{name: "…the same in double quotes", script: "x=\"$(cat <<EOF)\"\nit's\nEOF\necho 'a #'; " + `"${CORE_AGENT}" -p hi`},
+	// #1241. `$'…'` is ANSI-C quoting, where `\'` is an escaped
+	// apostrophe rather than the end of the string. Ended there, the rest
+	// of the line has inverted quote parity: `#` reads as a comment start
+	// and the invocation after the next string is never seen.
+	{name: "top-level ANSI-C string with an escaped apostrophe", script: "x=$'\\''#\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	// An escaped backslash before the closing quote: `\\` is one escape,
+	// so the `'` after it closes the string. A lexer that only looks one
+	// byte back takes it for `\'` and never closes.
+	{name: "ANSI-C string ending in an escaped backslash", script: "x=$'a\\\\'\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	// A hex-escaped apostrophe is not a quote character at all.
+	{name: "ANSI-C hex-escaped apostrophe", script: "x=$'\\x27'#\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	// Inside double quotes `$'` is literal text, not ANSI-C: the `'` opens
+	// nothing and the string ends at the next `"`.
+	{name: "dollar-apostrophe inside double quotes is literal", script: "echo \"$'\" >/dev/null\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	// `$$` is the PID parameter, so the `'` after it opens an ordinary
+	// single-quoted string in which a backslash is literal.
+	{name: "PID parameter before a single quote", script: "echo $$'\\''#' >/dev/null\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	{name: "PID parameter before a single quote in a substitution", script: "x=$(echo $$'\\'' )' )\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	{name: "PID parameter before a heredoc operator", script: "cat $$'\\'<<EOF'x' >/dev/null 2>&1\n'#\nEOFx\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	// …and inside double quotes `$$(` is the PID then a literal paren,
+	// not a substitution.
+	{name: "PID parameter before a paren in double quotes", script: "x=\"$$(\"\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	// A `<<` inside an ANSI-C string is text, not a heredoc operator.
+	{name: "heredoc operator inside an ANSI-C string", script: "echo $'\\'<<EOF' >/dev/null\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	// bash removes ANSI-C quoting from a heredoc delimiter: the body of
+	// `<<$'EOF'` ends at a line reading EOF, not `$EOF`.
+	{name: "ANSI-C heredoc delimiter", script: "cat <<$'EOF' >/dev/null\nit's\nEOF\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	{name: "ANSI-C heredoc delimiter with an escaped apostrophe", script: "cat <<$'E\\'F' >/dev/null\nit's\nE'F\necho 'a #'; " + `"${CORE_AGENT}" -c /tmp/x.json -p hi`},
+	// An ANSI-C command string is dispatched like any other quoted one.
+	{name: "bash -c with an ANSI-C string", script: `bash -c $'"$CORE_AGENT" -p \'hi there\''`},
+	// …and bash -c receives it decoded: the `\n` separates two commands.
+	{name: "bash -c with an ANSI-C newline before the call", script: `bash -c $'cd /tmp\n"$CORE_AGENT" -p hi'`},
 	{name: "timeout wrapper", script: `timeout 5 "${CORE_AGENT}" -p hi`},
 	{name: "timeout with flags", script: `timeout --signal=INT 5s "${CORE_AGENT}" -p hi`},
 	// A wrapper argument that is a variable, not a literal. isDuration
@@ -266,10 +298,11 @@ func TestPositiveCasesActuallyExecute(t *testing.T) {
 			executed++
 		}
 	}
-	// 30 positives (ten added for #1209: substitution-in-quotes, comment and heredoc shapes)
+	// 43 positives (ten added for #1209: substitution-in-quotes, comment and heredoc shapes;
+	// thirteen for #1241: ANSI-C strings, `$$`, `"$'"` and ANSI-C heredoc delimiters)
 	// plus the divergent third-level case, which executes under bash and
 	// is exactly why it is divergent.
-	if want := 31; executed != want {
+	if want := 44; executed != want {
 		t.Errorf("%d oracle cases reached the stub, want %d — a case stopped executing and is now agreeing with the scanner for the wrong reason", executed, want)
 	}
 }

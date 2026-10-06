@@ -156,7 +156,8 @@ func lexWord(src string, i, line int) (tok, int, int) {
 			t.spans = append(t.spans, span{text: src[i+1 : min(j, n)], line: l})
 			i = min(j+1, n)
 		case '$':
-			if i+1 < n && src[i+1] == '(' {
+			switch {
+			case i+1 < n && src[i+1] == '(':
 				l := line
 				var j int
 				var hd []pending
@@ -164,7 +165,24 @@ func lexWord(src string, i, line int) (tok, int, int) {
 				t.pend = append(t.pend, hd...)
 				t.spans = append(t.spans, span{text: src[i+2 : min(j, n)], line: l})
 				i = min(j+1, n)
-			} else {
+			case i+1 < n && src[i+1] == '\'':
+				// ANSI-C quoting (#1241): `\'` does not close it. The
+				// interior is recorded like a single-quoted span so a
+				// `bash -c $'…'` command string is still scanned, and
+				// recorded DECODED, because that is the text bash -c
+				// receives: `\n` separates two commands and `\x27` is
+				// a quote. Raw, `$'cd /tmp\n"$BIN" -p hi'` hid the
+				// invocation behind `/tmp\n"$BIN"`, one word. The cost
+				// is that a finding after a decoded `\n` reports a line
+				// past the real one — loud and still in the right span.
+				l := line
+				var j int
+				j, line = skipANSIC(src, i+2, line)
+				t.spans = append(t.spans, span{text: decodeANSIC(src[i+2 : min(j, n)]), line: l})
+				i = min(j+1, n)
+			case i+1 < n && src[i+1] == '$':
+				i += 2 // $$ is the PID; a `'` after it is an ordinary quote
+			default:
 				i++
 			}
 		case '`':
@@ -230,6 +248,11 @@ func heredocOperatorWord(word string) string {
 		case c == '$' && i+1 < n && word[i+1] == '(':
 			j, _, _ := skipSubstitution(word, i+2, 0)
 			i = j + 1
+		case c == '$' && i+1 < n && word[i+1] == '\'':
+			j, _ := skipANSIC(word, i+2, 0)
+			i = j + 1
+		case c == '$' && i+1 < n && word[i+1] == '$':
+			i += 2
 		case c == '<' && strings.HasPrefix(word[i:], "<<<"):
 			i += 3
 		case c == '<' && strings.HasPrefix(word[i:], "<<"):
@@ -268,6 +291,9 @@ func skipDoubleQuoted(src string, j, line int) (int, int, []pending) {
 			}
 			j += 2
 			continue
+		case src[j] == '$' && j+1 < n && src[j+1] == '$':
+			j += 2 // the PID, so a `(` after it opens nothing
+			continue
 		case src[j] == '$' && j+1 < n && src[j+1] == '(':
 			var hd []pending
 			j, line, hd = skipSubstitution(src, j+2, line)
@@ -282,6 +308,34 @@ func skipDoubleQuoted(src string, j, line int) (int, int, []pending) {
 	return j, line, left
 }
 
+// skipANSIC scans from just inside `$'` to the `'` that closes it,
+// returning that index (or len(src)) and the updated line.
+//
+// `$'…'` is ANSI-C quoting, where a backslash escapes the next byte: in
+// `$'it\'s'` the string runs to the last `'`, and in `$'a\\'` the `\\` is
+// one escaped backslash, so the `'` after it closes the string. Ending
+// it at the first `'` — what lexWord did before #1241 — inverts quote
+// parity for the rest of the line, and a `#` after it then hides the
+// next invocation from the scan.
+//
+// Callers reach this only from an unquoted `$` that is not itself the
+// second half of `$$` (the PID, after which `'` is an ordinary quote).
+// Inside double quotes `$'` is literal text, so skipDoubleQuoted has no
+// such arm.
+func skipANSIC(src string, j, line int) (int, int) {
+	n := len(src)
+	for j < n && src[j] != '\'' {
+		if src[j] == '\\' && j+1 < n {
+			j++
+		}
+		if src[j] == '\n' {
+			line++
+		}
+		j++
+	}
+	return j, line
+}
+
 // skipSubstitution scans from just inside `$(` to its matching `)`,
 // returning that index (or len(src)) and the updated line. A `)` only
 // closes it outside quotes, outside a nested substitution and outside a
@@ -292,8 +346,9 @@ func skipDoubleQuoted(src string, j, line int) (int, int, []pending) {
 // A word-initial `#` starts a comment that runs to the newline, and a
 // comment's apostrophe or `"` opens nothing: reading it as a quote ran the
 // scan to the next one, closed on a `)` inside that string, and dropped an
-// invocation from the line after. `$'…'` honours its backslash escapes, and
-// `<<<` is a herestring, not a heredoc whose delimiter never arrives.
+// invocation from the line after. `$'…'` honours its backslash escapes
+// (skipANSIC) unless the `$` ends a `$$`, and `<<<` is a herestring, not a
+// heredoc whose delimiter never arrives.
 //
 // A heredoc can outlive its substitution: in `x=$(cat <<EOF)\nbody\nEOF`
 // the `)` closes first and bash reads the body after the newline anyway.
@@ -318,18 +373,12 @@ func skipSubstitution(src string, j, line int) (int, int, []pending) {
 				j++
 			}
 			continue // the newline arm below still reads pending heredocs
+		case c == '$' && j+1 < n && src[j+1] == '$':
+			j += 2
+			continue
 		case c == '$' && j+1 < n && src[j+1] == '\'':
-			k := j + 2
-			for k < n && src[k] != '\'' {
-				if src[k] == '\\' {
-					k++
-				}
-				if k < n && src[k] == '\n' {
-					line++
-				}
-				k++
-			}
-			j = k + 1
+			j, line = skipANSIC(src, j+2, line)
+			j++
 			continue
 		case c == '<' && strings.HasPrefix(src[j:], "<<<"):
 			j += 3
@@ -412,11 +461,115 @@ func heredocDelim(word string) (delim string, strip bool, ok bool) {
 	if rest != "" && rest[0] >= '0' && rest[0] <= '9' {
 		return "", false, false
 	}
-	d := strings.NewReplacer(`"`, "", `'`, "", `\`, "").Replace(rest)
+	d := unquoteDelim(rest)
 	if d == "" && !strings.ContainsAny(rest, `"'\`) {
 		return "", false, false // bare `<<` with no word: not a heredoc
 	}
 	return d, strip, true
+}
+
+// unquoteDelim performs bash's quote removal on a heredoc delimiter
+// word, which is what the terminator line has to equal: `<<$'EOF'` ends
+// at a line reading EOF, and `<<"E'F"` at one reading E'F. Deleting
+// every quote character, as this did before #1241, turned the first into
+// `$EOF` — a delimiter no line matches, so the heredoc swallowed the rest
+// of the file and the invocations after it were lexed as heredoc text.
+//
+// ANSI-C escapes are decoded only where bash maps them to one byte by
+// letter, or by \xHH; any other (\u, \c, octal) is kept verbatim. Such a
+// delimiter never matches, the body runs to the end of the file, and
+// that body is still scanned (see Scan).
+func unquoteDelim(w string) string {
+	var b strings.Builder
+	n := len(w)
+	for i := 0; i < n; i++ {
+		switch c := w[i]; {
+		case c == '\\' && i+1 < n:
+			i++
+			b.WriteByte(w[i])
+		case c == '$' && i+1 < n && w[i+1] == '$':
+			b.WriteString("$$") // the PID's name; a quote after it is ordinary
+			i++
+		case c == '$' && i+1 < n && w[i+1] == '\'':
+			j, _ := skipANSIC(w, i+2, 0)
+			b.WriteString(decodeANSIC(w[i+2 : min(j, n)]))
+			i = j
+		case c == '$' && i+1 < n && w[i+1] == '"':
+			// $"…" is a locale-translated "…": drop the `$`, and the
+			// next iteration reads the double-quoted string.
+		case c == '\'':
+			j := i + 1
+			for j < n && w[j] != '\'' {
+				j++
+			}
+			b.WriteString(w[i+1 : j])
+			i = j
+		case c == '"':
+			j := i + 1
+			for ; j < n && w[j] != '"'; j++ {
+				if w[j] == '\\' && j+1 < n && strings.IndexByte("$`\"\\\n", w[j+1]) >= 0 {
+					j++
+				}
+				b.WriteByte(w[j])
+			}
+			i = j
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// decodeANSIC decodes the escapes of a `$'…'` interior that unquoteDelim
+// handles; see there for the ones it leaves alone.
+func decodeANSIC(s string) string {
+	var b strings.Builder
+	n := len(s)
+	for i := 0; i < n; i++ {
+		if s[i] != '\\' || i+1 >= n {
+			b.WriteByte(s[i])
+			continue
+		}
+		if r, ok := ansiCSimple[s[i+1]]; ok {
+			b.WriteByte(r)
+			i++
+			continue
+		}
+		if s[i+1] == 'x' {
+			v, m := 0, 0
+			for m < 2 && i+2+m < n && isHex(s[i+2+m]) {
+				v = v*16 + hexVal(s[i+2+m])
+				m++
+			}
+			if m > 0 {
+				b.WriteByte(byte(v))
+				i += 1 + m
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// ansiCSimple maps the letter after a backslash in `$'…'` to its byte.
+var ansiCSimple = map[byte]byte{
+	'a': '\a', 'b': '\b', 'e': 0x1b, 'E': 0x1b, 'f': '\f', 'n': '\n',
+	'r': '\r', 't': '\t', 'v': '\v', '\\': '\\', '\'': '\'', '"': '"', '?': '?',
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+func hexVal(c byte) int {
+	switch {
+	case c >= 'a':
+		return int(c-'a') + 10
+	case c >= 'A':
+		return int(c-'A') + 10
+	}
+	return int(c - '0')
 }
 
 // readHeredoc returns the body up to the terminator line, how many

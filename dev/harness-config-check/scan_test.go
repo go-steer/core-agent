@@ -103,6 +103,24 @@ func TestNestedPinsAreNotCreditedFromInsideAnArgument(t *testing.T) {
 			`cmd="cd /tmp && '${BIN}' -c /tmp/x/.agents/config.json -p hi"`,
 			true,
 		},
+		// #1241. An ANSI-C command string is scanned as bash -c receives
+		// it, decoded: `\x27` is a quote around the prompt, and `\n` ends
+		// the command before the -c.
+		{
+			"-c inside an ANSI-C hex-quoted prompt",
+			`bash -c $'"$CORE_AGENT" -p \x27explain -c /x.json \x27'`,
+			false,
+		},
+		{
+			"-c after an ANSI-C newline belongs to the next command",
+			`bash -c $'"$CORE_AGENT" -p hi\n -c /x.json'`,
+			false,
+		},
+		{
+			"a real pin in an ANSI-C command string",
+			`bash -c $'cd /tmp\n"$CORE_AGENT" -c /x.json -p hi'`,
+			true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

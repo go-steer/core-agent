@@ -62,8 +62,14 @@ import (
 // TUI attaching to an already-held session render the banner at all.
 // `capabilities` is absorbed for its protocol_version, which the prompt
 // bridge reads to decide whether this daemon can take a deny's reason
-// (#1165); it never renders.
+// (#1165), and failure_rows.go reads to decide whether to render the
+// durable failure rows (#1258); it never renders.
 func (a *Adapter) consumeTypedFrame(frame attach.Frame) (coretui.Event, bool) {
+	// A guardrail-trip or turn-error whose durable row already rendered
+	// (#1258) is the same failure a second time.
+	if !a.firstSighting(typedFailureEventID(frame)) {
+		return coretui.Event{}, false
+	}
 	if frame.Type == attach.EventWake {
 		a.signalWake()
 		return coretui.Event{}, false

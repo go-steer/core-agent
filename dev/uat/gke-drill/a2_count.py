@@ -62,15 +62,25 @@ wording change elsewhere silently disarms a count.
                    a report), but it can mask an undercount of equal size.
   guardrail trip   log: pkg/agent/guardrail_halt.go (#1131) — "<name>
                    guardrail cut the turn in flight" / "<name> guardrail
-                   tripped:".  transcript: a `guardrail-trip` frame, or for
-                   the refusal storm — which withholds that frame on
-                   purpose (#1081) — a `turn-error` whose kind is
-                   `refusal_storm`.
+                   tripped:".  transcript (#1258): one eventlog row per trip,
+                   on an `agent` frame — `agent/guardrail-trip` (the trip
+                   halted the session), `agent/guardrail-turn-trip` (it did
+                   not), or `gate/refusal-storm` (the refusal storm, which
+                   withholds the typed frame on purpose, #1081). A live
+                   capture also holds the typed `guardrail-trip` frame; it
+                   counts only when its `event_id` names no row in any
+                   capture (a pre-#1258 daemon, or a row the captures
+                   missed).
   turn error       log: pkg/runner/wakeloop.go "session <id> turn: <err>"
-                   and the REPL's "core-agent: turn: <err>".  transcript: a
-                   `turn-error` frame (pkg/agent/agent.go emits one for every
-                   turn error). A refused turn is a turn error, so this is
-                   where #1042's "refused turn" is counted.
+                   and the REPL's "core-agent: turn: <err>".  transcript
+                   (#1258): one `agent/turn-error` row per error Run
+                   reports, including a refused turn — this is where
+                   #1042's "refused turn" is counted. The typed `turn-error`
+                   frame counts only when its `event_id` names no row, as
+                   for the trip. A refusal storm is one trip AND one turn
+                   error on both sides: one cut line and one turn line in
+                   the log; one refusal-storm row and one turn-error row
+                   (`cut_by: refusal_storm`) in the transcript.
   failed delegation log: NONE — the daemon logs nothing when a delegation
                    fails.  transcript: a function response whose result has
                    `status: failed` and a `stop_reason` (the subagent return
@@ -95,6 +105,19 @@ wording change elsewhere silently disarms a count.
 
 Exit 0 when every countable class is PASS or TRANSCRIPT-ONLY, 1 on any
 FAIL, 2 otherwise (a class NOT EXERCISED leaves A2 unproven on this run).
+
+## Live captures and server-side replays
+
+--events takes any mix of live captures (the drill's events.sse) and
+server-side replays (replay_sessions.sh's replay-<sid>.sse, a
+`GET …/events?since=0` read after the fact). A replay carries every
+durable row and no typed frame; a live capture carries both. Every
+`agent` frame is counted once across all inputs, keyed on its event ID,
+so a session passed both live and replayed is not counted twice, and a
+typed frame is dropped when its `event_id` names a row already counted.
+Replays are the better input for A2: a live capture holds only the
+sessions the drill attached to, and an incident can open more than one
+(2026-10-06 run 2 opened two; the drill captured one).
 
 ## Scope
 
@@ -209,10 +232,11 @@ def strings_in(v: Any, skip: str = "calls") -> Iterator[str]:
 
 
 def retry_marks(ev: str, data: Any) -> int:
-    """How many provider retries one frame records (#1206)."""
-    if ev == "turn-error":
-        msg = data.get("message", "") if isinstance(data, dict) else ""
-        return 1 if RETRY_MARK_RE.match(msg or "") else 0
+    """How many provider retries one `agent` frame records (#1206).
+
+    A turn error's retry mark is counted by Transcript.turn_errors(),
+    once per turn error, because since #1258 the same error can arrive
+    as a typed frame AND as a row."""
     if ev != "agent":
         return 0
     event = data.get("event") if isinstance(data, dict) else None
@@ -242,6 +266,113 @@ def function_responses(payload: Any) -> Iterator[dict[str, Any]]:
             yield fr
 
 
+GUARDRAIL_ROW_AUTHORS = ("agent/guardrail-trip", "agent/guardrail-turn-trip", "gate/refusal-storm")
+TURN_ERROR_ROW_AUTHOR = "agent/turn-error"
+
+
+@dataclass
+class Transcript:
+    """Everything the transcript side counts, deduplicated across inputs."""
+    retries: int = 0
+    failed: int = 0
+    seen: set[str] = field(default_factory=set)
+    trip_rows: set[str] = field(default_factory=set)
+    halt_keys: list[tuple[str, str]] = field(default_factory=list)
+    error_rows: dict[str, str] = field(default_factory=dict)
+    typed_trips: list[tuple[str | None, tuple[str, str]]] = field(default_factory=list)
+    typed_errors: list[tuple[str | None, str]] = field(default_factory=list)
+    anon: int = 0
+
+    def agent_frame(self, data: Any) -> None:
+        event = data.get("event") if isinstance(data, dict) else None
+        if not isinstance(event, dict):
+            return
+        eid = event.get("ID") if isinstance(event.get("ID"), str) and event.get("ID") else None
+        if eid is not None:
+            if eid in self.seen:
+                return  # the same event in a second capture of the session
+            self.seen.add(eid)
+        else:
+            self.anon += 1
+            eid = f"<no id {self.anon}>"
+        self.retries += retry_marks("agent", data)
+        for fr in function_responses(data):
+            resp = fr.get("response")
+            if isinstance(resp, dict) and resp.get("status") == "failed" and "stop_reason" in resp:
+                self.failed += 1
+        author = event.get("Author")
+        meta = event.get("CustomMetadata") if isinstance(event.get("CustomMetadata"), dict) else {}
+        if author in GUARDRAIL_ROW_AUTHORS:
+            self.trip_rows.add(eid)
+            if author == "agent/guardrail-trip":
+                self.halt_keys.append((str(meta.get("guardrail") or ""), str(meta.get("reason") or "")))
+        elif author == TURN_ERROR_ROW_AUTHOR:
+            self.error_rows[eid] = str(meta.get("message") or "")
+
+    def typed_frame(self, ev: str, data: Any) -> None:
+        if not isinstance(data, dict):
+            return
+        eid = data.get("event_id") if isinstance(data.get("event_id"), str) and data.get("event_id") else None
+        if ev == "guardrail-trip":
+            self.typed_trips.append((eid, (str(data.get("guardrail") or ""), str(data.get("reason") or ""))))
+        elif ev == "turn-error":
+            self.typed_errors.append((eid, str(data.get("message") or "")))
+
+    def _unmatched(self, ids: list[str | None], rows: Any) -> list[int]:
+        """Indexes of typed frames that name no row and no earlier frame."""
+        out, counted = [], set()
+        for i, eid in enumerate(ids):
+            if eid is None:
+                out.append(i)
+            elif eid not in rows and eid not in counted:
+                counted.add(eid)
+                out.append(i)
+        return out
+
+    def trips(self) -> int:
+        """Rows, plus the typed frames no row accounts for.
+
+        A frame with no event_id comes from a pre-#1258 daemon, which
+        wrote no per-turn rows but DID write the #643 halt row. Such a
+        frame is the same trip as a halt row with the same guardrail and
+        reason, so it pairs with one (each row once) instead of counting
+        a halt twice when an old capture is re-graded."""
+        unpaired = list(self.halt_keys)
+        n = len(self.trip_rows)
+        for i in self._unmatched([eid for eid, _ in self.typed_trips], self.trip_rows):
+            eid, key = self.typed_trips[i]
+            if eid is None and key in unpaired:
+                unpaired.remove(key)
+                continue
+            n += 1
+        return n
+
+    def turn_errors(self) -> list[str]:
+        """The message of every distinct turn error, row or frame."""
+        msgs = list(self.error_rows.values())
+        ids = [eid for eid, _ in self.typed_errors]
+        msgs += [self.typed_errors[i][1] for i in self._unmatched(ids, self.error_rows)]
+        return msgs
+
+
+def scan(events: list[pathlib.Path], subagent_events: list[pathlib.Path]) -> tuple[Transcript, list[str]]:
+    t, empty_inputs = Transcript(), []
+    for path in subagent_events:
+        frames = 0
+        for ev, data in subagent_frames(path):
+            frames += 1
+            t.retries += retry_marks(ev, data)
+        if frames == 0:
+            empty_inputs.append(path.name)
+    for path in events:
+        for ev, data in sse_frames(path):
+            if ev == "agent":
+                t.agent_frame(data)
+            else:
+                t.typed_frame(ev, data)
+    return t, empty_inputs
+
+
 def line_session(line: str) -> str | None:
     m = SESSION_RE.search(line)
     return (m.group(1) or m.group(2)) if m else None
@@ -260,29 +391,10 @@ def count(log: pathlib.Path, events: list[pathlib.Path], session: str | None,
     log_trips = [l for l in lines if GUARDRAIL_RE.search(l) and scoped(l)]
     log_turn_errors = [l for l in lines if TURN_ERROR_RE.search(l) and scoped(l)]
 
-    t_trips = t_turn_errors = t_failed = t_retries = 0
-    empty_inputs = []
-    for path in subagent_events or []:
-        frames = 0
-        for ev, data in subagent_frames(path):
-            frames += 1
-            t_retries += retry_marks(ev, data)
-        if frames == 0:
-            empty_inputs.append(path.name)
-    for path in events:
-        for ev, data in sse_frames(path):
-            t_retries += retry_marks(ev, data)
-            if ev == "guardrail-trip":
-                t_trips += 1
-            elif ev == "turn-error":
-                t_turn_errors += 1
-                if isinstance(data, dict) and data.get("kind") == "refusal_storm":
-                    t_trips += 1
-            elif ev == "agent":
-                for fr in function_responses(data):
-                    resp = fr.get("response")
-                    if isinstance(resp, dict) and resp.get("status") == "failed" and "stop_reason" in resp:
-                        t_failed += 1
+    t, empty_inputs = scan(events, subagent_events or [])
+    turn_errors = t.turn_errors()
+    t_retries = t.retries + sum(1 for m in turn_errors if RETRY_MARK_RE.match(m))
+    t_trips, t_turn_errors, t_failed = t.trips(), len(turn_errors), t.failed
 
     out = [
         Count("provider retry", len(retries), t_retries,
@@ -354,7 +466,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--log", required=True, type=pathlib.Path, help="captured daemon log (kubectl logs --timestamps)")
     ap.add_argument("--events", required=True, nargs="+", type=pathlib.Path,
-                    help="SSE captures (events.sse) for the same sessions and window")
+                    help="SSE captures for the same sessions and window: live (events.sse) and/or "
+                         "server-side replays (replay_sessions.sh); an event in several is counted once")
     ap.add_argument("--subagent-events", nargs="*", type=pathlib.Path, default=[],
                     help="GET /sessions/{id}/agents/{name}/events bodies for the same sessions' subagents")
     ap.add_argument("--session", help="only count log lines that name this session")

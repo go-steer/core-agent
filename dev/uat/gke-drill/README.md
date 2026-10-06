@@ -517,6 +517,8 @@ mostly failing is the instrument working.
 | `soak.sh` | the overnight run — hours of incidents with nobody watching (box A1) |
 | `soak_verdict.py` | grades a finished soak against A1's four clauses, after the fact |
 | `a2_count.py` | counts each box-A2 failure class in the daemon log and in the transcripts; a log-only failure is the A2 finding |
+| `replay_sessions.sh` | saves the server-side `?since=0` replay of every session the hub touched in a window, for `a2_count.py` (#1258) |
+| `replay_dryrun.sh` | offline run of `replay_sessions.sh` against the fakes, graded with `a2_count.py` |
 | `testdata/soak-0914/` | the 2026-09-14 eight-hour soak, cut down; `soak_verdict_selftest.py` grades it and doctored copies |
 | `boundary.sh` | box A6's five adversarial boundary tests, plus a positive control, against the D2 deployment |
 | `boundary_score.py` | grades a boundary run into `verdict.md`; exit 0 only if the control and all five pass |
@@ -734,9 +736,39 @@ an MCP digest, an agentic subtask) log `side call (<name>): …` and get their o
 design doc lists the remaining log-only gaps. A capture from before #1206
 records no retry at all, so every retry in its log is a FAIL.
 
+Guardrail trips and turn errors are counted on the transcript side from the
+event log rows a daemon writes for each one since
+[#1258](https://github.com/go-steer/core-agent/issues/1258):
+`agent/guardrail-trip` (a halt), `agent/guardrail-turn-trip` (a trip that left
+the session running), `gate/refusal-storm`, and `agent/turn-error`. A refusal
+storm is one of each class on both sides. A live capture also holds the typed
+`guardrail-trip` / `turn-error` frames, and a frame counts only when its
+`event_id` names no row in any input — so a failure seen live and replayed is
+counted once, and a capture from a pre-#1258 daemon (frames, no rows) is still
+counted from its frames.
+
 Capture the daemon log for the whole batch — `kubectl logs -f --timestamps
-deploy/core-agent` to a file — and pass the `events.sse` of every run in the
-same window. The tool cannot check that the two cover the same sessions;
+deploy/core-agent` to a file — and grade on **server-side replays of every
+session the batch touched**, not only on the drill's live capture:
+
+```sh
+dev/uat/gke-drill/replay_sessions.sh --since 2026-10-06T17:30:00Z --out /tmp/a2-replays
+dev/uat/gke-drill/a2_count.py --log daemon.log --events /tmp/a2-replays/replay-*.sse \
+    --subagent-events <run>/subagents.json [...]
+```
+
+The drill captures the one session it took for its incident, from the moment it
+attached. An incident can open more than one: on 2026-10-06, run 2 opened two and
+the drill captured one, so every failure in the other was log-only whatever the
+daemon did. `replay_sessions.sh` lists every session on the hub whose
+`last_touched_at` is in the window, and saves each one's
+`GET …/events?since=0` to `replay-<sid>.sse` with a `sessions.tsv` manifest. It
+reads only. It skips idle sessions unless `--include-idle`, because reading an
+idle session's events resumes it, and a resume can run auto-continue. Live
+captures and replays can be passed together: every `agent` frame is counted
+once, keyed on its event ID.
+
+The tool cannot check that the log and the captures cover the same sessions;
 `--session ID` narrows the log to one session's lines, except retry lines, which
 name no session.
 
@@ -747,7 +779,8 @@ name no session.
 ./dryrun.sh       # the whole thing, with no cluster
 ```
 
-`./boundary_dryrun.sh` does the same for `boundary.sh`.
+`./boundary_dryrun.sh` does the same for `boundary.sh`, and `./replay_dryrun.sh`
+for `replay_sessions.sh`.
 
 Or all of them at once, which is what CI runs on every PR:
 

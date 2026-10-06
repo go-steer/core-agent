@@ -99,10 +99,16 @@ func (a *Agent) queueOutOfBandEvent(ev *session.Event) {
 // HTTP request context whose client may hang up before the write lands.
 // A row this one is written FOR must not be droppable by the caller it
 // records.
+//
+// Serialized by outOfBandDrainMu across the take AND the writes: with
+// only the take under a.mu, two concurrent drains could each take a
+// batch and append them in the reverse of the order they were queued.
 func (a *Agent) drainOutOfBandEvents() {
 	if a == nil || a.eventLog == nil {
 		return
 	}
+	a.outOfBandDrainMu.Lock()
+	defer a.outOfBandDrainMu.Unlock()
 	a.mu.Lock()
 	pending := a.pendingOutOfBandEvents
 	a.pendingOutOfBandEvents = nil

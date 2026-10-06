@@ -54,6 +54,12 @@ TURN_ERR = "2026-09-14T19:18:52Z core-agent: session s-1 turn: Error 400, Messag
 REPL_TURN_ERR = "2026-09-14T19:18:52Z core-agent: turn: context canceled"
 
 
+def row_frame(seq: int, author: str, eid: str, meta: dict) -> tuple[str, dict]:
+    """A durable row (#1258) as an `agent` frame carries it."""
+    return ("agent", {"seq": seq, "event": {"ID": eid, "Author": author, "InvocationID": author.split("/")[-1],
+                                            "CustomMetadata": meta}})
+
+
 def sse(*frames: tuple[str, dict]) -> str:
     return "".join(f"event: {e}\ndata: {json.dumps(d)}\n\n" for e, d in frames)
 
@@ -205,10 +211,13 @@ def main() -> int:
         c, _ = run(tmp, "boundary", [BOUNDARY], [sse(("guardrail-trip", {"guardrail": "cost_ceiling", "reason": "x", "halted_turn": False}))])
         expect(c, "guardrail trip", 1, 1, a2.PASS, "a boundary trip ('guardrail tripped:') pairs with its frame")
         # The refusal storm withholds guardrail-trip on purpose (#1081);
-        # its transcript witness is the turn-error kind.
-        storm_err = ("turn-error", {"kind": "refusal_storm", "message": "refused", "retryable": False})
-        c, _ = run(tmp, "storm", [STORM, TURN_ERR], [sse(storm_err)])
-        expect(c, "guardrail trip", 1, 1, a2.PASS, "a refusal storm pairs with its turn-error kind, not a guardrail-trip frame")
+        # its transcript witness is its own audit row, and its turn error
+        # is an ordinary `canceled` whose row says which guardrail cut it.
+        storm_row = row_frame(20, "gate/refusal-storm", "rs-1", {"source": "gate", "repeats": 3})
+        storm_err_row = row_frame(21, "agent/turn-error", "te-rs", {"kind": "canceled", "message": "turn canceled",
+                                                                     "retryable": False, "cut_by": "refusal_storm"})
+        c, _ = run(tmp, "storm", [STORM, TURN_ERR], [sse(storm_row, storm_err_row)])
+        expect(c, "guardrail trip", 1, 1, a2.PASS, "a refusal storm pairs with its refusal-storm row, not a guardrail-trip frame")
         expect(c, "turn error", 1, 1, a2.PASS, "…and its turn error is counted once on each side")
 
         print("turn error (includes refused turns)")
@@ -220,6 +229,76 @@ def main() -> int:
         # The 2026-09-13 note: two 400s landed after the capture stopped.
         c, _ = run(tmp, "te-logonly", [TURN_ERR, TURN_ERR.replace("19:18:52", "19:40:00")], [sse(err)])
         expect(c, "turn error", 2, 1, a2.FAIL, "a turn error the capture missed: FAIL, delta 1")
+
+        print("durable rows — server-side replay (#1258)")
+        # The 2026-10-06 fault batch: 7 cuts and 7 turn errors in the
+        # log across three sessions; the drill's live capture held 3 of
+        # each (a pre-#1258 daemon: typed frames, no event_id, no rows).
+        cuts7 = [CUT.replace("s-1", f"s-{i % 3}") for i in range(7)]
+        errs7 = [TURN_ERR.replace("s-1", f"s-{i % 3}") for i in range(7)]
+        live_old = sse(*([trip, ("turn-error", {"kind": "canceled", "message": "turn canceled", "retryable": False})] * 3))
+        c, _ = run(tmp, "fault-old", cuts7 + errs7, [live_old])
+        expect(c, "guardrail trip", 7, 3, a2.FAIL, "the 2026-10-06 shape: live-only frames, 3 of 7 cuts")
+        expect(c, "turn error", 7, 3, a2.FAIL, "…and 3 of 7 turn errors")
+        # The same run on a #1258 daemon, graded on replays of every
+        # session the incidents opened.
+        replays = []
+        for sid in range(3):
+            n = len([i for i in range(7) if i % 3 == sid])
+            frames = []
+            for k in range(n):
+                frames.append(row_frame(10 * k + 1, "agent/guardrail-turn-trip", f"tt-{sid}-{k}",
+                                        {"guardrail": "cost_ceiling", "reason": "per-turn", "halted_turn": True}))
+                frames.append(row_frame(10 * k + 2, "agent/turn-error", f"te-{sid}-{k}",
+                                        {"kind": "canceled", "message": "turn canceled", "retryable": False,
+                                         "cut_by": "cost_ceiling"}))
+            replays.append(sse(*frames))
+        c, _ = run(tmp, "fault-replay", cuts7 + errs7, replays)
+        expect(c, "guardrail trip", 7, 7, a2.PASS, "replay-only captures: every cut is a row")
+        expect(c, "turn error", 7, 7, a2.PASS, "…and every turn error is a row")
+        # A halt is recorded by the halt row alone.
+        halt_row = row_frame(30, "agent/guardrail-trip", "halt-1", {"guardrail": "cost_ceiling", "reason": "3 in a row"})
+        c, _ = run(tmp, "halt-replay", [CUT], [sse(halt_row)])
+        expect(c, "guardrail trip", 1, 1, a2.PASS, "the third per-turn trip halts the session: one halt row, one cut line")
+
+        # A pre-#1258 daemon wrote the halt row but no event_id on the
+        # frame: the frame and the row are one halt, not two.
+        old_halt_frame = ("guardrail-trip", {"guardrail": "cost_ceiling", "reason": "3 in a row", "halted_turn": True})
+        c, _ = run(tmp, "old-halt", [CUT], [sse(old_halt_frame, halt_row)])
+        expect(c, "guardrail trip", 1, 1, a2.PASS, "an old capture's id-less halt frame pairs with its halt row")
+        other_frame = ("guardrail-trip", {"guardrail": "watchdog", "reason": "looping", "halted_turn": True})
+        c, _ = run(tmp, "old-halt-other", [CUT, CUT], [sse(other_frame, halt_row)])
+        expect(c, "guardrail trip", 2, 2, a2.PASS, "…but an id-less frame for a different trip still counts")
+
+        print("durable rows — live and replay together, never twice")
+        trip_id = ("guardrail-trip", {"guardrail": "cost_ceiling", "reason": "per-turn", "halted_turn": True, "event_id": "tt-a"})
+        trip_row = row_frame(40, "agent/guardrail-turn-trip", "tt-a", {"guardrail": "cost_ceiling", "reason": "per-turn", "halted_turn": True})
+        err_row = row_frame(41, "agent/turn-error", "te-a", {"kind": "canceled", "message": "turn canceled", "retryable": False})
+        err_id = ("turn-error", {"kind": "canceled", "message": "turn canceled", "retryable": False, "event_id": "te-a"})
+        live_new = sse(trip_id, trip_row, err_row, err_id)
+        c, _ = run(tmp, "live-new", [CUT, TURN_ERR], [live_new])
+        expect(c, "guardrail trip", 1, 1, a2.PASS, "a live capture holds the frame and the row: counted once by event_id")
+        expect(c, "turn error", 1, 1, a2.PASS, "…the turn error too, whichever arrived first")
+        c, _ = run(tmp, "live-and-replay", [CUT, TURN_ERR], [live_new, sse(trip_row, err_row)])
+        expect(c, "guardrail trip", 1, 1, a2.PASS, "the same session live AND replayed: each row counted once")
+        expect(c, "turn error", 1, 1, a2.PASS, "…for both classes")
+        recovered_id = ("agent", {"seq": 50, "event": {
+            "ID": "ev-r", "Author": "core-agent", "Content": {"role": "model", "parts": [{"text": "ok"}]},
+            "CustomMetadata": {"provider_retry": {"outcome": "recovered"}}}})
+        c, _ = run(tmp, "replay-twice", [], [sse(recovered_id), sse(recovered_id)])
+        expect(c, "provider retry", 0, 1, a2.TRANSCRIPT_ONLY, "a retry stamp in two captures of one session is one retry")
+        c, _ = run(tmp, "frame-row-missing", [CUT], [sse(trip_id)])
+        expect(c, "guardrail trip", 1, 1, a2.PASS, "a typed frame whose row no capture holds still counts")
+        two_frames = sse(err_id, err_id)
+        c, _ = run(tmp, "frame-twice", [TURN_ERR], [two_frames])
+        expect(c, "turn error", 1, 1, a2.PASS, "two live captures of one frame (same event_id) count once")
+        retry_row = row_frame(60, "agent/turn-error", "te-r", {"kind": "rate_limited", "retryable": True,
+                                                              "message": "provider retry persisted: Error 429"})
+        retry_typed = ("turn-error", {"kind": "rate_limited", "retryable": True, "event_id": "te-r",
+                                      "message": "provider retry persisted: Error 429"})
+        c, _ = run(tmp, "retry-row", [RETRY, TURN_ERR], [sse(retry_row, retry_typed)])
+        expect(c, "provider retry", 1, 1, a2.PASS, "a persisted retry on a turn error seen as row and frame: one retry")
+        expect(c, "turn error", 1, 1, a2.PASS, "…and one turn error")
 
         print("scope")
         c, _ = run(tmp, "session", [CUT, CUT_OTHER], [sse(trip)], session="s-1")

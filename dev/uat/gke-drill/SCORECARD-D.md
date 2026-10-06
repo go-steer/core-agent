@@ -239,7 +239,7 @@ witnesses do not reach. D4's fourth witness only sees what the agent *tried*;
 it cannot tell a boundary that held from one that was never approached. The five
 denial probes (cannot delete, cannot cross
 namespaces, cannot patch a non-Deployment, cannot reach `apply_k8s_manifest`,
-cannot patch before planning) are a separate artifact; if this run bumped into
+cannot patch before planning) are a separate artifact, `boundary.sh`; if this run bumped into
 one of them by accident, that is worth more than the probe.
 
 ## Recording the run

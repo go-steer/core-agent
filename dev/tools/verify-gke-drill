@@ -20,6 +20,8 @@
 #                 recorded transcripts
 #   dryrun.sh     the whole thing: drill.sh driven end to end against a
 #                 fake kubectl, curl and gcloud
+#   boundary_dryrun.sh
+#                 box A6's boundary.sh, driven end to end on the same fakes
 #
 # The drill is the instrument v2.9 is measured with, and until now
 # nothing checked it on a PR. A regression in it does not show up as a
@@ -41,3 +43,4 @@ done
 
 "${DRILL}/selftest.sh"
 "${DRILL}/dryrun.sh"
+"${DRILL}/boundary_dryrun.sh"

@@ -251,6 +251,12 @@ verification below.
 ./scripts/verify-gated-apply.sh            # after applying  — the grant
 ```
 
+A `LEG=readonly ./scripts/set-up-demo.sh` runs the `denied` form itself,
+after it deletes this component's `Role` and `RoleBinding` from
+`TARGET_NS`. That covers switching back from `d1`/`d2`: `kubectl apply -k`
+of a read-only overlay does not prune, so without the delete the grant
+outlives the leg. A failed probe fails the deploy.
+
 That script is the only valid check *of the RBAC leg* — it talks to the
 API server directly, so a green run says the daemon's identity is
 authorized, not that the GKE MCP endpoint will issue the patch on its

@@ -88,12 +88,7 @@ kubectl --context "${KUBE_CONTEXT}" -n kube-system delete role,rolebinding \
 # watcher's objects are cluster-scoped or in kube-system, but this one sits
 # in the namespace the agent was pointed AT. Left behind it is a standing
 # deployment-patch grant on a cluster that looks torn down. Harmless if the
-# component was never composed.
-#
-# NOTE the comma type-list. `delete role X rolebinding Y` parses X,
-# "rolebinding" and Y as three ROLES, and --ignore-not-found then silences
-# the two that do not exist — so it deletes the Role, leaves the
-# RoleBinding, and still exits 0.
+# component was never composed. It is deleted last, below.
 if [[ "${1:-}" == "--images" ]]; then
     for tag in "${CONTENT_TAG}" "${CONTENT_TAG}-copy"; do
         echo "→ deleting ${CONTENT_IMAGE}:${tag}"
@@ -107,22 +102,10 @@ fi
 # likely to 403 and abort the script. Everything that can be cleaned up
 # without permission in TARGET_NS has been by now.
 #
-# The name is READ from the component, not reconstructed from DEMO_NS. A
-# reconstructed name is a guess about what set-up-demo.sh wrote, and on the
-# `kubectl apply -k` path set-up-demo.sh wrote nothing at all — the guess
-# would then delete a name that never existed and exit 0, which is the whole
-# failure this step exists to prevent.
-GATED_APPLY_NAME=$(sed -nE 's/^  name: (gated-apply-.*)$/\1/p' \
-    "${DEMO_DEPLOY_DIR}/components/gated-apply/role.yaml" | head -1)
-if [[ -z "${GATED_APPLY_NAME}" ]]; then
-    echo "✗ could not read the gated-apply Role name from deploy/components/gated-apply/role.yaml" >&2
-    echo "  Delete it by hand if the component was ever applied:" >&2
-    echo "    kubectl -n ${TARGET_NS} delete role,rolebinding <name>" >&2
-    exit 1
-fi
-echo "→ deleting gated-apply RBAC (${GATED_APPLY_NAME}) in ${TARGET_NS} (if present)"
-kubectl --context "${KUBE_CONTEXT}" -n "${TARGET_NS}" delete role,rolebinding \
-    "${GATED_APPLY_NAME}" --ignore-not-found
+# revoke_gated_apply_grant (prereqs.sh) reads the name from the component
+# rather than reconstructing it, and is the same call a LEG=readonly
+# set-up-demo.sh makes — one name lookup, not two that can drift.
+revoke_gated_apply_grant || exit $?
 
 echo "✓ teardown complete."
 echo "  Content images kept in ${AR_REPO} (pass --images to delete them)."

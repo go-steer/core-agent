@@ -15,7 +15,8 @@
 
 # Shared environment for the gke-platform-agent rig. `source` this from
 # every other script in this directory; nothing here executes anything
-# against a cluster.
+# against a cluster at source time (the functions below that do run only
+# when a script calls them).
 #
 # Everything is overridable from the environment, so the normal way to
 # point the rig at your cluster is an env file you keep outside the repo:
@@ -214,6 +215,53 @@ renders_gated_apply() {
         /^  name:[[:space:]]/ { if (name == "") name = $2; next }
         END { emit(); if (found) exit 0; exit 1 }
     '
+}
+
+# The name of the gated-apply Role and RoleBinding, printed on stdout.
+#
+# READ from the component, not reconstructed from DEMO_NS. A reconstructed
+# name is a guess about what set-up-demo.sh wrote, and on the
+# `kubectl apply -k` path set-up-demo.sh wrote nothing at all — the guess
+# would then delete a name that never existed and exit 0, which is the
+# whole failure revoke_gated_apply_grant exists to prevent. Prints nothing
+# (and the caller must refuse) if role.yaml no longer carries the name in
+# the shape this reads.
+gated_apply_grant_name() {
+    sed -nE 's/^  name: (gated-apply-.*)$/\1/p' \
+        "${DEMO_DEPLOY_DIR}/components/gated-apply/role.yaml" | head -1
+}
+
+# Delete the gated-apply Role and RoleBinding from TARGET_NS, if present.
+# Called by teardown.sh, and by set-up-demo.sh on a LEG=readonly deploy so
+# that switching back from d1/d2 does not leave the daemon holding a
+# standing patch grant that the read-only posture claims it lacks (#1249).
+# Defining it here runs nothing; it touches the cluster only when called.
+#
+# The grant lives in TARGET_NS — the namespace the agent is pointed AT —
+# so neither `kubectl apply -k` of a read-only overlay (no pruning) nor a
+# delete of DEMO_NS ever reaches it. Harmless if the component was never
+# composed: --ignore-not-found.
+#
+# NOTE the comma type-list. `delete role X rolebinding Y` parses X,
+# "rolebinding" and Y as three ROLES, and --ignore-not-found then silences
+# the two that do not exist — so it deletes the Role, leaves the
+# RoleBinding, and still exits 0.
+#
+# Returns non-zero if the name cannot be read or the delete fails (most
+# likely a 403: TARGET_NS is by construction a namespace this recipe does
+# not own). The caller decides how loud that is.
+revoke_gated_apply_grant() {
+    local name
+    name=$(gated_apply_grant_name)
+    if [[ -z "${name}" ]]; then
+        echo "✗ could not read the gated-apply Role name from deploy/components/gated-apply/role.yaml" >&2
+        echo "  Delete it by hand if the component was ever applied:" >&2
+        echo "    kubectl -n ${TARGET_NS} delete role,rolebinding <name>" >&2
+        return 1
+    fi
+    echo "→ deleting gated-apply RBAC (${name}) in ${TARGET_NS} (if present)"
+    kubectl --context "${KUBE_CONTEXT}" -n "${TARGET_NS}" delete role,rolebinding \
+        "${name}" --ignore-not-found
 }
 
 # ── Content source ───────────────────────────────────────────────────

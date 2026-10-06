@@ -31,7 +31,9 @@
 #   denied             the component is NOT applied (or has been torn
 #            down). Asserts the daemon cannot patch anywhere. Run this
 #            BEFORE applying to establish the baseline, and after
-#            teardown to prove the grant is really gone.
+#            teardown to prove the grant is really gone. Every
+#            LEG=readonly set-up-demo.sh runs it too, after deleting
+#            the grant, and fails the deploy if it fails.
 #
 # WHY THIS SCRIPT HAS TO EXIST. A RoleBinding whose subject string is
 # wrong does not fail — it simply never matches. There is no error, no

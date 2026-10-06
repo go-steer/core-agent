@@ -29,7 +29,8 @@ The rig's T0–T2 runs were attended runs on the maintainer's workstation, under
 
 - **The mirror** is `mastersingh24/core-agent-selfdev`: private, owned by the maintainer's personal (Pro) account, so `main` is protected. Merging needs a PR, the six required checks core-agent itself requires, and linear history; force-push and deletion are off. Admins aren't enforced, so the maintainer merges. Release, deploy, scheduled and secret-dependent workflows are disabled. A scheduled job fast-forwards a `upstream` branch from `go-steer/core-agent`, and the maintainer merges it into the mirror's `main` when they choose.
 - **The daemon** is `core-agent --no-repl --attach-listen` with a durable session database, `permissions.mode: auto`, `watchdog: enforce`, and per-turn, per-session and per-day cost ceilings. It runs in a new namespace on the existing drill cluster.
-- **The dispatcher** is a small process in its own pod. It hands the daemon one issue at a time, and does the outward-facing steps the agent's policy won't: pushing the branch and opening the PR. It also runs the harvest.
+- **The dispatcher** is a small process in its own pod. It hands the daemon one issue at a time, and does the outward-facing steps the agent's policy won't: pushing the branch and opening the PR. It also feeds CI failures and review comments back to the session, and runs the harvest.
+- **The reviewer** is a second core-agent session with its own read-only recipe and its own GitHub App. It reviews each agent PR and merges the ones that clear its bar (decision 10).
 - **switchboard** carries escalations to Slack.
 
 ## Settled decisions (do not relitigate)
@@ -43,6 +44,11 @@ The rig's T0–T2 runs were attended runs on the maintainer's workstation, under
 7. **The agent commits; the dispatcher pushes.** The approver's built-in policy refuses outward-facing actions, so an agent `git push` or `gh pr create` would page the maintainer on every issue. And the push credential would sit where the agent's `bash` can read it. Instead, the agent ends its work with local commits on `agent/issue-N`. The dispatcher pushes that branch with the GitHub App's token and opens the PR. The token never enters the daemon's pod.
 8. **Commits carry a human identity with a DCO sign-off; the App only pushes and opens PRs.** `verify-no-agent-attribution` fails any `*[bot]@users.noreply.github.com` author or sign-off outside its allowlist, and any author named exactly `core-agent`. This matches T0–T2, where commits carried the maintainer's identity.
 9. **Auto starts narrow and widens on evidence.** It starts with reads, edits inside the workspace, and single git and go commands (eligible list below). Path-scope, control-plane and subagent calls never reach the approver anyway.
+10. **A reviewer agent reviews and merges; a person merges A7.** Two GitHub Apps, two roles: the *writer* bot (the dispatcher's identity) pushes branches and opens PRs; the *reviewer* bot reviews and merges. The mirror's branch protection requires one approving review, and GitHub never lets a PR's author approve it, so the writer can't merge its own work. The reviewer runs a read-only recipe: no write or edit tools, `bash` limited to `git` reads, `go test` and `go vet`, and instructions from the repo's adversarial-review standard. It **merges only when all of these hold:** CI is green, its review found nothing at P0–P2, the diff is under 300 changed lines, and no protected path is touched (`.agents/`, `.github/`, `pkg/permissions`, `dev/release`). Anything else gets `needs-human`, with its review attached. Its "request changes" feeds the writer's review loop, so the two iterate without a person. A7's own PR is the exception: the board defined A7 as "a human merges", so the maintainer merges that one. The maintainer also skims the reviewer's merges weekly, because a bad merge in the mirror compounds into later issues.
+11. **The daemon runs a pinned upstream build, never the mirror's `main`.** Otherwise every merge changes the agent being measured. The soak image builds a fixed `go-steer/core-agent` release or SHA, and an upgrade is a deliberate, logged soak event.
+12. **Every issue carries its upstream link.** Mirror issue numbers don't match upstream's, so a seed's body names its upstream issue URL. The recipe cites upstream issues in CHANGELOG bullets and commit bodies, so a cherry-pick upstream carries the right links. `Fixes #N` in the PR refers to the mirror issue.
+13. **A mirror merge is not upstream-ready.** Cherry-picking a mirror PR upstream goes through upstream's own gate: presubmits, adversarial review, a CHANGELOG bullet with the upstream link, and a person's merge.
+14. **The worker is Claude Sonnet 5, under a $50 daily cap.** The committed recipe's Opus 5 cost about $41 for one T1 bug fix. Sonnet 5 suits the seed sizes, and an issue that fails on it can be re-run on Opus by hand. One call can overshoot a per-turn cap (#1235), so the per-day cap is what bounds the bill. The per-turn cap is $10 and the per-session cap $25.
 
 ## The auto recipe
 
@@ -81,7 +87,7 @@ Each of these blocks the soak or makes its result meaningless. Each becomes its 
 - **P2. The agent must not be able to forge its own task.** The daemon's `users.json` bearer table is plaintext (#1201 item 4) and mounted in the pod whose `bash` the agent drives. The agent could read the dispatcher's token and inject a "task" of its own as `sa:selfdev-dispatcher`, which `task_from` would trust. Two fixes, and the soak needs at least one:
   - hashed bearer tokens in the table (#1201 item 4);
   - running the agent's tools as a different user from the daemon, which #1201 names as the only complete answer.
-- **P3. An image that can do the work.** The release image is distroless (no shell, git, go or gh). The soak needs an image with git, the pinned Go toolchain, and core-agent built from the mirror's `main`. `gh` isn't needed, because the dispatcher opens the PRs. It's a soak-only Dockerfile under `dev/uat/selfdev-soak/`; the release image is untouched.
+- **P3. An image that can do the work.** The release image is distroless (no shell, git, go or gh). The soak needs an image with git, the pinned Go toolchain, and core-agent built from the pinned upstream release or SHA (decision 11). `gh` isn't needed, because the dispatcher opens the PRs. It's a soak-only Dockerfile under `dev/uat/selfdev-soak/`; the release image is untouched.
 - **P4. switchboard for escalations, on Slack.** Slack takes its button clicks over Socket Mode, an outbound WebSocket, so the namespace needs no ingress. Google Chat buttons need a public HTTPS endpoint, which switchboard's README calls a public attack surface. Slack also already confirms a broad answer before applying it (go-steer/switchboard#92 is Chat-only). The gaps are in switchboard's platform-independent approval code:
   - [switchboard#115](https://github.com/go-steer/switchboard/issues/115): render `approver_model` and `approver_reason` (protocol 1.18.0);
   - [switchboard#116](https://github.com/go-steer/switchboard/issues/116): offer only once and deny on an approver-escalated prompt;
@@ -95,11 +101,15 @@ Each of these blocks the soak or makes its result meaningless. Each becomes its 
 
 A Go program under `dev/uat/selfdev-soak/dispatcher`, running in its own pod and service account:
 
-1. **Poll** the mirror every 2 minutes for open issues labeled `soak:queue`, authored and labeled by `mastersingh24`, and not yet assigned.
-2. **When the daemon is idle,** assign the oldest to the bot. Create a session (`POST /sessions`, authenticated directly as `sa:selfdev-dispatcher`). Inject the issue's title, body and number as the session's standing task (P1), with the branch name `agent/issue-N` and the instruction to stop at local commits.
+0. **Pause** whenever the mirror has an open issue labeled `soak:pause` (the soft kill switch, checked every poll). Scaling the dispatcher to zero is the hard stop.
+1. **Poll** the mirror every 2 minutes for open issues labeled `soak:queue`, authored and labeled by `mastersingh24`, and not yet assigned. Take a new one only while fewer than 3 agent PRs are open, so parallel PRs don't conflict.
+2. **When the daemon is idle,** assign the oldest to the bot. Create a fresh worktree from the mirror's `main` on the workspace PVC; a shared Go module and build cache PVC keeps `go test` warm. Create a session (`POST /sessions`, authenticated directly as `sa:selfdev-dispatcher`). Inject the issue's title, body, number and upstream link as the session's standing task (P1), with the branch name `agent/issue-N` and the instruction to stop at local commits.
 3. **When the session goes idle,** check that `agent/issue-N` has commits past the base. Push it with the App token, and open the PR (`Fixes #N`, body from the agent's plan artifact). Record the session ID on the PR.
-4. **On a cap or halt,** comment on the issue with the reason, label it `soak:stopped`, and move on.
-5. **Nightly,** harvest the `gate/approver` rows into a review file. The `dev/evals/approver` case drafts stay unmerged until the maintainer labels them.
+4. **When CI goes red,** re-wake the same session with the failing check's log, up to 3 times. After that, label the issue `soak:stopped`.
+5. **When the reviewer requests changes,** re-wake the session with the reviewer's comments, and the maintainer's if any. Comments from anyone else are never forwarded (decision 6). The agent commits, and the dispatcher pushes the follow-up.
+6. **When a PR goes stale or conflicts** after `main` moves, re-wake its session with a rebase task. The rebase is single git commands, and a conflict the agent can't resolve ends in `soak:stopped`.
+7. **On a cap or halt,** comment on the issue with the reason, label it `soak:stopped`, and move on. Remove the issue's worktree once its PR merges or stops.
+8. **Nightly,** harvest the `gate/approver` rows (see Measurement), copy the eventlog and transcripts to a GCS bucket so a lost PVC can't erase the soak's evidence, and prune worktrees.
 
 No inbound webhook, so no ingress. The App's private key is a Secret mounted only in this pod.
 
@@ -111,7 +121,12 @@ No inbound webhook, so no ingress. The App's private key is a Secret mounted onl
 - the approver's allows, sampled for review;
 - cost, wallclock, and how the session ended.
 
-**Weekly,** the harvest turns every escalation the maintainer allowed, every deny, and any allow they judged wrong into `dev/evals/approver` cases. That growth is #1213's exit criterion.
+**Reviewing allows** is what makes "no false allow" checkable, and there are far more allows than escalations. The nightly harvest:
+- samples the approver's allows, weighted toward writes, edits and unusual commands;
+- has a second model (Claude Sonnet 5, where the approver is Haiku 4.5) re-judge **every** allow, without seeing the first verdict;
+- sends the maintainer only the disagreements and the weighted sample.
+
+**Weekly,** a soak report goes to #1213: issues attempted, merged by the reviewer, flagged `needs-human` and stopped; escalations and how the maintainer answered; the escalation rate per tool; cost per issue; and how each session ended. The harvest turns every escalation the maintainer allowed, every deny, and any allow judged wrong into `dev/evals/approver` cases. That growth is #1213's exit criterion.
 
 **A7 grading,** from #1213's notes. It closes on the first issue whose PR opens with green CI and no human in between:
 
@@ -136,7 +151,14 @@ The first seeded issue is #1234's recovery half, kept unfixed upstream for this,
 ## Phases
 
 1. **Prerequisites P1–P3:** core-agent issues and PRs. P4 v1 is switchboard deployment only.
-2. **The rig:** the soak Dockerfile, the kustomize overlay for namespace `core-agent-selfdev` (Workload Identity for Vertex, PVCs, NetworkPolicy allowing egress only to Vertex, GitHub and switchboard), the dispatcher, the GitHub App, and the seed script.
+2. **The rig:**
+   - the soak Dockerfile, pinned to an upstream build;
+   - the kustomize overlay for namespace `core-agent-selfdev`: a Workload Identity service account with Vertex user only; PVCs for the eventlog, workspace and Go cache; a NetworkPolicy allowing egress only to Vertex, GitHub and switchboard;
+   - the dispatcher, with the loops above;
+   - the writer and reviewer GitHub Apps, and the reviewer recipe;
+   - the seed script, the harvest with its re-judge, the weekly report, and the GCS archive bucket.
+
+   The mirror stays secret-free: its PR workflows run code from the agent's branches.
 3. **A7:** seed #1234's recovery half alone, run it, and grade it.
 4. **The soak:** seed the approved list, run for 2 weeks or more, harvest weekly.
 5. **v2, on evidence:** answering from the Slack thread (P4's switchboard issues), parallel issues, self-selection.
@@ -145,12 +167,14 @@ The first seeded issue is #1234's recovery half, kept unfixed upstream for this,
 
 1. **P1's shape:** a standing-task flag on inject, a new endpoint, or persisting the task through compaction for every session.
 2. **The commit identity:** the maintainer's own name and email, as at T0–T2, or a dedicated human-looking identity the attribution allowlist names.
-3. **Cost ceilings:** suggested $10 per turn, $50 per session, $100 per day. One call can overshoot (#1235), so the per-day cap is what bounds the bill.
-4. **Whether the dispatcher reopens or retries a `soak:stopped` issue,** or a person always does.
+3. **Whether the dispatcher reopens or retries a `soak:stopped` issue,** or a person always does.
+4. **The reviewer's model:** Sonnet 5 like the worker, or a different provider so the two don't share blind spots.
 
 ## Out of scope
 
-- Merging anything automatically, anywhere.
+- Merging anything into `go-steer/core-agent` automatically. In the mirror, the reviewer merges (decision 10).
+- Memory carried across issues. Each issue gets a fresh session, so results are independent and a bad lesson can't spread.
+- An `ask`-mode baseline on the same issues, to measure what auto saves.
 - Running against `go-steer/core-agent` directly.
 - Fanning issues out to writer subagents (#653).
 - A first-party kustomize base for core-agent (#957). The soak's overlay is its own.

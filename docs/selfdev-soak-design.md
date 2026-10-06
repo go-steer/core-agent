@@ -62,22 +62,22 @@ The committed self-recipe (`/.agents/config.json`, `mode: ask`, `plan_mode: requ
   "approval_notify_after": "5m",
   "auto": {
     "model": "claude-haiku-4-5",
-    "eligible": [
-      "read_file:*", "read_many_files:*", "grep:*", "glob:*", "list_dir:*",
-      "write_file:*", "edit_file:*",
-      "bash:go test *", "bash:go vet *", "bash:go build *", "bash:gofmt *",
-      "bash:git status*", "bash:git diff*", "bash:git log*", "bash:git add *",
-      "bash:git commit *", "bash:git checkout -b *", "bash:git switch *",
-      "bash:dev/ci/presubmits/*", "bash:dev/tools/*"
-    ],
+    "eligible_bundles": ["coding"],
+    "eligible": ["bash:dev/ci/presubmits/*", "bash:dev/tools/*"],
     "task_from": ["sa:selfdev-dispatcher"]
   }
 }
 ```
 
-- **Prefix patterns never match a compound command.** Prefix bash patterns carry the safe-command guard, so `git add -A && git commit …` always goes to a person. The recipe's instructions tell the agent to run git and go commands one at a time. That's a property the soak measures; the escalation rate shows it.
-- **`go test` runs code the agent wrote.** Its eligibility shapes the work; it doesn't sandbox it. Containment is the pod and the mirror boundary, not the eligible list.
-- **The approver is Haiku 4.5,** which passed the 34-case corpus. Sonnet 5 also passed after #1212.
+- **`coding` is the built-in eligibility preset (#1252).** It covers edits in the workspace, single test, build, vet and format commands, and committing on a new local branch. The two explicit patterns add the repo's own presubmit and tool scripts. Reading git state is already allowed outright by the `dev_tools` allow bundle, and the read tools never prompt. The soak doesn't use the `github` preset: the agent never pushes or opens PRs (decision 7).
+- **The approver is the only check on an eligible call.** It sees the whole command line, so flags like `git commit --amend` or `go test -exec` are in front of it, but not the code a test runs. `go test` runs code the agent wrote; the pod and the mirror boundary contain that, not the list.
+- **Prefix patterns never match a compound command.** A chained, piped, redirected or env-prefixed command always goes to a person, so the recipe's instructions tell the agent to run commands one at a time. The escalation rate measures how well that holds.
+- **`task_from` lists a service identity, deliberately.** The docs say to list only people, because a relay's identity there turns relayed text into permission (#1251). The dispatcher is the guarded exception:
+  - it forwards only issues the maintainer authored, labelled and assigned (decision 6), and reviewer or maintainer review comments (dispatcher step 5), never anyone else's;
+  - P2 stops the agent reading its token.
+
+  Issue text is therefore the maintainer's words, and can grant the agent permission ("you may update the CHANGELOG", "you have my permission to touch pkg/permissions"). Write seed issues knowing that.
+- **The approver is Haiku 4.5.** It passes the 50-case corpus, including the explicit-permission and destructive cases added in #1251, and so do Sonnet 5 and Gemini 3.7 Flash.
 
 ## Prerequisites
 

@@ -107,6 +107,16 @@ def main() -> int:
                "two retries reached the policy; a pre-#1206 capture records neither (recovered line not double-counted)")
         check(a2.exit_code(list(c.values())) == 1, "a log-only retry fails A2: exit 1", str(a2.exit_code(list(c.values()))))
 
+        print("exit code — the settled wording (2026-10-04)")
+        def row(name, verdict):
+            return a2.Count(name, 1, 1, verdict=verdict)
+        check(a2.exit_code([row("x", a2.PASS), row("y", a2.TRANSCRIPT_ONLY), row("z", a2.PASS)]) == 0,
+              "an overcount (TRANSCRIPT-ONLY) does not keep A2 open: exit 0", "")
+        check(a2.exit_code([row("x", a2.PASS), row("y", a2.NOT_EXERCISED)]) == 2,
+              "an unexercised class leaves A2 unproven: exit 2", "")
+        check(a2.exit_code([row("x", a2.TRANSCRIPT_ONLY), row("y", a2.FAIL)]) == 1,
+              "a FAIL wins over everything: exit 1", "")
+
         print("provider retry — the #1206 surfaces")
         recovered = ("agent", {"seq": 7, "event": {"Author": "core-agent", "Partial": False,
                                                    "Content": {"role": "model", "parts": [{"text": "pods are fine"}]},

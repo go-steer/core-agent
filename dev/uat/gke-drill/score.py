@@ -448,6 +448,23 @@ def _parse_ready(v: Any) -> tuple[int | None, int | None]:
     return (int(m.group(1)), int(m.group(2))) if m else (None, None)
 
 
+def _bare_principal(email: str) -> str:
+    """The audit log's principal without its member-type prefix.
+
+    GKE writes a Workload Identity caller as
+    `serviceAccount:<project>.svc.id.goog[<ns>/<ksa>]`, with the IAM
+    member prefix, while the expected principal is the bare identity. The
+    first live D1 run (2026-10-06) failed this witness on exactly that:
+    the daemon's granted patch was in the table, after the break, and an
+    exact comparison read it as somebody else's. The fixtures carried the
+    bare form, so nothing offline could see it.
+    """
+    for prefix in ("serviceAccount:", "user:"):
+        if email.startswith(prefix):
+            return email[len(prefix):]
+    return email
+
+
 def _ts(v: Any) -> datetime.datetime | None:
     """RFC3339 as the audit log writes it, including fractional seconds.
 
@@ -586,7 +603,7 @@ def d4_witnesses(
         return r["resource"].endswith(suffix)
 
     matched = [r for r in (rows or []) if _is_this_patch(r)]
-    by_daemon = [r for r in matched if principal and r["email"] == principal]
+    by_daemon = [r for r in matched if principal and _bare_principal(r["email"]) == principal]
     after_break: list[dict[str, str]] = []
     undated: list[dict[str, str]] = []
     for r in by_daemon:

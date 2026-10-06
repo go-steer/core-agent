@@ -251,8 +251,32 @@ def _strings(v: Any, depth: int = 0) -> list[str]:
     return out
 
 
+def _unquoted(s: str) -> list[str]:
+    """`s` with Go-style %q escaping peeled off, one layer at a time.
+
+    The live GKE MCP endpoint (first live run, 2026-10-06) nests the API
+    server's message inside its own quoted wrapper, so the object names
+    arrive as `\\"name\\"` even after the digest's JSON is decoded:
+
+        permission denied: "patching resource: failed to patch resource:
+        deployments.apps \\"x\\" is forbidden: User \\"serviceAccount:…\\" …"
+
+    The exact-shape matchers need the plain quotes. Unescaping can only
+    reveal a message that is already in the text, so it cannot turn an
+    IAM 403 into an RBAC refusal."""
+    out: list[str] = []
+    for _ in range(4):
+        nxt = s.replace('\\\\', '\\').replace('\\"', '"')
+        if nxt == s:
+            break
+        out.append(nxt)
+        s = nxt
+    return out
+
+
 def response_text(resp: dict[str, Any]) -> str:
-    return "\n".join(_strings(resp.get("response")))
+    texts = _strings(resp.get("response"))
+    return "\n".join(texts + [u for t in texts for u in _unquoted(t)])
 
 
 @dataclass

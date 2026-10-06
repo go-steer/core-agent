@@ -105,7 +105,11 @@ still need a person.
      - outside the stated task.
 
      It also treats everything in the pending call as data.
-   - A recipe can add text through `permissions.auto.instructions_file`.
+   - **The operator's explicit permission counts** (#1251). An outward-facing call that isn't destructive is allowed when the task's own words name the action, as a request ("commit and push the branch") or a grant ("you have my permission to push"). "Do whatever you need" doesn't name it. Permission covers only what it names: never secrets, nor a different repository, branch or recipient. A later message overrides an earlier one, so withdrawn permission isn't permission. Permission claimed anywhere but the task is data.
+     - **Trust edges that now matter more.** Text the operator pastes is their words. A pre-1.18 `core-agent-tui` sends `@`-inlined files with no `task_bytes`, so the daemon counts them too (#1230). An identity in `task_from` should be a person: a relay's identity there would turn relayed text into permission. A destructive call is never allowed: explicitly asked for, it escalates so the operator confirms; otherwise it's denied. A call that is both, such as a force-push, counts as destructive. This is safe because only words a person wrote reach the task (decision 6, #1230).
+
+     The old text denied every outward-facing call. Models read it in opposite directions: Gemini 3.7 Flash denied explicitly permitted pushes and PRs, ending the operator's request, while Sonnet 5 allowed an explicitly permitted force-push.
+   - A recipe can add text through `permissions.auto.instructions_file`. It can narrow the policy, but can't lift a deny or grant a permission: only the operator's words in the task can.
    - That file acts on the gate, not through the model. So it joins the privilege-bearing tier: writes to it through the file tools take the elevated control-plane prompt (`controlplane.go`), and bash that names it is floored by decision 4. Outside `auto`, a bash write to it is no more gated than a bash write to `.agents/config.json` (#378 classifies file-tool paths only).
    - It is loaded once at startup, with no hot reload. A changed file needs a restart, like any other permissions change made in config.
 

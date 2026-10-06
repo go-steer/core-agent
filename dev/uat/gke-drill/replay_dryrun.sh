@@ -147,8 +147,12 @@ A2LOG="${WORKDIR}/daemon.log"
         printf '2026-10-06T17:36:31Z core-agent: session %s turn: context canceled\n' "${s}"
     done
 } > "${A2LOG}"
+grep_ "the window is recorded next to the replays" "${OUT_DIR}/window.env" '^WINDOW_START=2026-10-06T17:30:00Z$'
+grep_ "…with its end" "${OUT_DIR}/window.env" '^WINDOW_END=2026-10-06T18:00:00Z$'
+grep_ "the printed a2_count line carries the window" "${LOG}" 'a2_count.py --log <daemon.log> --events .*/replay-\*\.sse --since 2026-10-06T17:30:00Z --until 2026-10-06T18:00:00Z'
 set +e
-python3 a2_count.py --log "${A2LOG}" --events "${OUT_DIR}"/replay-*.sse > "${WORKDIR}/a2.out" 2>&1
+python3 a2_count.py --log "${A2LOG}" --events "${OUT_DIR}"/replay-*.sse \
+    --since 2026-10-06T17:30:00Z --until 2026-10-06T18:00:00Z > "${WORKDIR}/a2.out" 2>&1
 A2RC=$?
 python3 a2_count.py --log "${A2LOG}" --events "${OUT_DIR}/replay-sess-inc-1.sse" > "${WORKDIR}/a2-one.out" 2>&1
 A2ONE=$?
@@ -166,6 +170,8 @@ have "the idle session is replayed when asked" "${OUT_DIR}/replay-sess-idle.sse"
 head_ "3. --all takes every active session"
 run_case all --all
 eq "exit 0" "${RC}" "0"
+grep_ "--all warns that it records no window start" "${LOG}" 'records no window start'
+grep_ "…and an open --until ends at the replay time" "${OUT_DIR}/window.env" '^WINDOW_END_IS_REPLAY_TIME=yes$'
 eq "four active sessions replayed" "$(find "${OUT_DIR}" -name 'replay-*.sse' | wc -l | tr -d ' ')" "4"
 
 head_ "4. a window nothing falls in is an error, not an empty pass"

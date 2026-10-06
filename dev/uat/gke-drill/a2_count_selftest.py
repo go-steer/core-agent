@@ -27,6 +27,8 @@ source it names. Each case asserts the class's counts AND its verdict.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import pathlib
 import sys
@@ -299,6 +301,65 @@ def main() -> int:
         c, _ = run(tmp, "retry-row", [RETRY, TURN_ERR], [sse(retry_row, retry_typed)])
         expect(c, "provider retry", 1, 1, a2.PASS, "a persisted retry on a turn error seen as row and frame: one retry")
         expect(c, "turn error", 1, 1, a2.PASS, "…and one turn error")
+
+        print("the window (--since / --until) — both sides, same span")
+        since, until = a2.parse_ts("2026-09-14T21:00:00Z"), a2.parse_ts("2026-09-14T23:00:00Z")
+
+        def run_w(name, log_lines, events):
+            log = tmp / f"{name}.log"
+            log.write_text("\n".join(log_lines) + "\n")
+            paths = []
+            for i, e in enumerate(events):
+                pth = tmp / f"{name}-{i}.sse"
+                pth.write_text(e)
+                paths.append(pth)
+            return ({x.name: x for x in a2.count(log, paths, None, None)},
+                    {x.name: x for x in a2.count(log, paths, None, None, since, until)})
+
+        def dated(frame, ts):
+            event, data = frame
+            data = json.loads(json.dumps(data))
+            data["event"]["Timestamp"] = ts
+            return (event, data)
+
+        old_row = dated(row_frame(70, "agent/guardrail-turn-trip", "tt-old",
+                                  {"guardrail": "cost_ceiling", "reason": "yesterday", "halted_turn": True}),
+                        "2026-09-13T08:00:00.5Z")
+        # Today's cut is log-only; a replay also holds yesterday's cut.
+        # Without the window, yesterday's row covers today's failure.
+        bare, win = run_w("window-mask", [CUT], [sse(old_row)])
+        expect(bare, "guardrail trip", 1, 1, a2.PASS, "no window: an old row masks today's log-only cut (the bug)")
+        expect(win, "guardrail trip", 1, 0, a2.FAIL, "with --since: the old row is dropped and the cut is log-only")
+        check("dropped 1 transcript event(s)" in win["guardrail trip"].note,
+              "…and the note says the window dropped it", win["guardrail trip"].note)
+        today_row = dated(row_frame(71, "agent/guardrail-turn-trip", "tt-today",
+                                    {"guardrail": "watchdog", "reason": "looping", "halted_turn": True}),
+                          "2026-09-14T21:50:42.123456789Z")
+        old_line = CUT.replace("2026-09-14T21:50:42Z", "2026-09-13T08:00:00Z")
+        bare, win = run_w("window-line", [old_line, CUT], [sse(today_row)])
+        expect(bare, "guardrail trip", 2, 1, a2.FAIL, "no window: a log line from before the batch is counted")
+        expect(win, "guardrail trip", 1, 1, a2.PASS, "with --since: a log line outside the window is not counted")
+        check("1 log line(s)" in win["guardrail trip"].note, "…and the note counts it", win["guardrail trip"].note)
+        late_line = CUT.replace("2026-09-14T21:50:42Z", "2026-09-15T01:00:00Z")
+        _, win = run_w("window-until", [CUT, late_line], [sse(today_row)])
+        expect(win, "guardrail trip", 1, 1, a2.PASS, "--until drops a log line after the window")
+        _, win = run_w("window-typed", [CUT], [sse(trip)])
+        expect(win, "guardrail trip", 1, 1, a2.PASS, "a typed frame has no timestamp: kept under a window")
+        check("1 typed frame(s) carry no timestamp" in win["guardrail trip"].note,
+              "…and the note says so", win["guardrail trip"].note)
+        undated = "agent: [session s-1] watchdog guardrail cut the turn in flight — x"
+        _, win = run_w("window-undated", [undated], [sse(today_row)])
+        expect(win, "guardrail trip", 1, 1, a2.PASS, "an undated log line is kept, never dropped")
+        check("1 log line(s) carry no timestamp" in win["guardrail trip"].note,
+              "…and counted in the note", win["guardrail trip"].note)
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                a2.main(["--log", str(tmp / "window-mask.log"), "--events", str(tmp / "window-mask-0.sse"), "--since", "yesterday"])
+            check(False, "a --since that is not RFC 3339 is refused", "accepted")
+        except SystemExit as e:
+            check(e.code == 2, "a --since that is not RFC 3339 is refused (exit 2)", str(e.code))
+        check("--tui and -p" in win["turn error"].note,
+              "the turn-error row says which hosts log no turn line", win["turn error"].note)
 
         print("scope")
         c, _ = run(tmp, "session", [CUT, CUT_OTHER], [sse(trip)], session="s-1")

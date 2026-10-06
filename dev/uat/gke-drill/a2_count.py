@@ -80,7 +80,12 @@ wording change elsewhere silently disarms a count.
                    for the trip. A refusal storm is one trip AND one turn
                    error on both sides: one cut line and one turn line in
                    the log; one refusal-storm row and one turn-error row
-                   (`cut_by: refusal_storm`) in the transcript.
+                   (`cut_by: refusal_storm`) in the transcript. A refused
+                   turn writes its row whatever drove it, but only the wake
+                   loop and the REPL log the line counted here: under the
+                   local --tui host or a headless -p run it is
+                   TRANSCRIPT-ONLY by construction. The daemon and the
+                   drill run the wake loop.
   failed delegation log: NONE — the daemon logs nothing when a delegation
                    fails.  transcript: a function response whose result has
                    `status: failed` and a `stop_reason` (the subagent return
@@ -119,10 +124,24 @@ Replays are the better input for A2: a live capture holds only the
 sessions the drill attached to, and an incident can open more than one
 (2026-10-06 run 2 opened two; the drill captured one).
 
+## The window: --since / --until
+
+A replay holds a session's whole history, and the daemon log only the
+span it was captured over. A row from an earlier batch then sits on the
+transcript side with no log to answer it, and can cover one of today's
+log-only failures — the masking direction. --since/--until (RFC 3339,
+what replay_sessions.sh writes to window.env) apply to BOTH sides: log
+lines by their `kubectl logs --timestamps` prefix, `agent` frames (rows,
+retry stamps, function responses, subagent events) by `event.Timestamp`.
+Typed `guardrail-trip` / `turn-error` frames carry no timestamp and are
+kept; so are undated log lines. Each comparable row's note says how many
+were dropped and how many undated ones were kept. Grade replays with the
+window, always.
+
 ## Scope
 
 The log and the event streams must cover the same sessions over the same
-window; the tool cannot check that for you. `--session ID` keeps only log
+window; --since/--until enforce the window, not the sessions. `--session ID` keeps only log
 lines that name that session. Provider-retry lines carry no session id,
 so under --session they are still counted across the whole log, and the
 report says so.
@@ -136,6 +155,7 @@ import pathlib
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 PASS, FAIL, TRANSCRIPT_ONLY = "PASS", "FAIL", "TRANSCRIPT-ONLY"
@@ -149,6 +169,80 @@ RETRY_RE = re.compile(r"transient provider error \(.*?\) (— retrying once afte
 GUARDRAIL_RE = re.compile(r"agent:(?: \[session [^\]]+\])? (\w+) guardrail (cut the turn in flight|tripped:)")
 TURN_ERROR_RE = re.compile(r"core-agent: (?:session \S+ )?turn: ")
 SESSION_RE = re.compile(r"\[session ([^\]]+)\]|session (\S+) turn:")
+FRACTION_RE = re.compile(r"\.(\d+)")
+
+
+def parse_ts(ts: Any) -> datetime | None:
+    """An RFC 3339 timestamp, as Go and `kubectl logs --timestamps` write
+    it (up to nine fractional digits, Z or an offset), or None."""
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    v = FRACTION_RE.sub(lambda m: "." + (m.group(1) + "000000")[:6], ts.strip().replace("Z", "+00:00"), count=1)
+    try:
+        t = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if t.year <= 1:
+        return None  # Go's zero time: unset, not "the year 1"
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+@dataclass
+class Window:
+    """--since / --until, applied to BOTH sides so they cover the same span.
+
+    A replay reads a session from seq 0, so without this a row from an
+    earlier batch (a session that survived a pod roll, or was touched
+    before) sits on the transcript side against a log that does not
+    cover it — and covers one of today's log-only failures. That is the
+    masking direction for A2, so the window is not optional when
+    grading replays. Everything undated is KEPT and counted, because
+    dropping it could only hide entries."""
+    since: datetime | None = None
+    until: datetime | None = None
+    rows_dropped: int = 0
+    lines_dropped: int = 0
+    lines_undated: int = 0
+    frames_undated: int = 0
+
+    @property
+    def active(self) -> bool:
+        return self.since is not None or self.until is not None
+
+    def outside(self, t: datetime | None) -> bool:
+        if t is None:
+            return False
+        return (self.since is not None and t < self.since) or (self.until is not None and t > self.until)
+
+    def keep_line(self, line: str) -> bool:
+        if not self.active:
+            return True
+        t = parse_ts(line.split(" ", 1)[0])
+        if t is None:
+            self.lines_undated += 1
+            return True
+        if self.outside(t):
+            self.lines_dropped += 1
+            return False
+        return True
+
+    def keep_event(self, event: Any) -> bool:
+        if not self.active or not isinstance(event, dict):
+            return True
+        if self.outside(parse_ts(event.get("Timestamp"))):
+            self.rows_dropped += 1
+            return False
+        return True
+
+    def note(self) -> str:
+        if not self.active:
+            return ""
+        parts = [f"window dropped {self.rows_dropped} transcript event(s) and {self.lines_dropped} log line(s)"]
+        if self.frames_undated:
+            parts.append(f"{self.frames_undated} typed frame(s) carry no timestamp and were kept")
+        if self.lines_undated:
+            parts.append(f"{self.lines_undated} log line(s) carry no timestamp and were kept")
+        return "; ".join(parts)
 
 
 @dataclass
@@ -282,10 +376,11 @@ class Transcript:
     typed_trips: list[tuple[str | None, tuple[str, str]]] = field(default_factory=list)
     typed_errors: list[tuple[str | None, str]] = field(default_factory=list)
     anon: int = 0
+    window: Window = field(default_factory=Window)
 
     def agent_frame(self, data: Any) -> None:
         event = data.get("event") if isinstance(data, dict) else None
-        if not isinstance(event, dict):
+        if not isinstance(event, dict) or not self.window.keep_event(event):
             return
         eid = event.get("ID") if isinstance(event.get("ID"), str) and event.get("ID") else None
         if eid is not None:
@@ -312,6 +407,10 @@ class Transcript:
     def typed_frame(self, ev: str, data: Any) -> None:
         if not isinstance(data, dict):
             return
+        if ev in ("guardrail-trip", "turn-error") and self.window.active:
+            # Neither payload carries a timestamp, so a window cannot
+            # place them; they are kept, and the note says how many.
+            self.window.frames_undated += 1
         eid = data.get("event_id") if isinstance(data.get("event_id"), str) and data.get("event_id") else None
         if ev == "guardrail-trip":
             self.typed_trips.append((eid, (str(data.get("guardrail") or ""), str(data.get("reason") or ""))))
@@ -355,12 +454,15 @@ class Transcript:
         return msgs
 
 
-def scan(events: list[pathlib.Path], subagent_events: list[pathlib.Path]) -> tuple[Transcript, list[str]]:
-    t, empty_inputs = Transcript(), []
+def scan(events: list[pathlib.Path], subagent_events: list[pathlib.Path],
+         window: Window | None = None) -> tuple[Transcript, list[str]]:
+    t, empty_inputs = Transcript(window=window or Window()), []
     for path in subagent_events:
         frames = 0
         for ev, data in subagent_frames(path):
             frames += 1
+            if isinstance(data, dict) and not t.window.keep_event(data.get("event")):
+                continue
             t.retries += retry_marks(ev, data)
         if frames == 0:
             empty_inputs.append(path.name)
@@ -373,14 +475,23 @@ def scan(events: list[pathlib.Path], subagent_events: list[pathlib.Path]) -> tup
     return t, empty_inputs
 
 
+# #1258: every refused turn writes a turn-error row whoever drove it, but
+# only the wake loop (daemon, drill) and the REPL log the line this class
+# matches. A refused turn under the local --tui host or a headless -p run
+# is TRANSCRIPT-ONLY by construction — the safe side, but not evidence.
+TURN_ERROR_LOG_NOTE = "log side is the wake loop's/REPL's turn line; --tui and -p runs log none"
+
+
 def line_session(line: str) -> str | None:
     m = SESSION_RE.search(line)
     return (m.group(1) or m.group(2)) if m else None
 
 
 def count(log: pathlib.Path, events: list[pathlib.Path], session: str | None,
-          subagent_events: list[pathlib.Path] | None = None) -> list[Count]:
-    lines = log.read_text(errors="replace").splitlines()
+          subagent_events: list[pathlib.Path] | None = None,
+          since: datetime | None = None, until: datetime | None = None) -> list[Count]:
+    window = Window(since=since, until=until)
+    lines = [l for l in log.read_text(errors="replace").splitlines() if window.keep_line(l)]
 
     def scoped(line: str) -> bool:
         return session is None or line_session(line) == session
@@ -391,7 +502,7 @@ def count(log: pathlib.Path, events: list[pathlib.Path], session: str | None,
     log_trips = [l for l in lines if GUARDRAIL_RE.search(l) and scoped(l)]
     log_turn_errors = [l for l in lines if TURN_ERROR_RE.search(l) and scoped(l)]
 
-    t, empty_inputs = scan(events, subagent_events or [])
+    t, empty_inputs = scan(events, subagent_events or [], window)
     turn_errors = t.turn_errors()
     t_retries = t.retries + sum(1 for m in turn_errors if RETRY_MARK_RE.match(m))
     t_trips, t_turn_errors, t_failed = t.trips(), len(turn_errors), t.failed
@@ -402,13 +513,16 @@ def count(log: pathlib.Path, events: list[pathlib.Path], session: str | None,
                   "" if subagent_events else "no --subagent-events: a retry inside a subagent is not counted on the transcript side",
                   f"--subagent-events input with no frames: {', '.join(empty_inputs)}" if empty_inputs else "",
                   "retry lines name no session, so this counts the whole log" if session else "",
+                  window.note(),
               ] if x),
               detail=[r[:160] for r in retries[:3]]),
         Count("provider retry (side call)", None, None,
               note=f"{len(side_retries)} in the log; a side call's response is never an event and its error never a turn error",
               detail=[r[:160] for r in side_retries[:3]]),
-        Count("guardrail trip", len(log_trips), t_trips, detail=[r[:160] for r in log_trips[:3]]),
-        Count("turn error", len(log_turn_errors), t_turn_errors, detail=[r[:160] for r in log_turn_errors[:3]]),
+        Count("guardrail trip", len(log_trips), t_trips, note=window.note(), detail=[r[:160] for r in log_trips[:3]]),
+        Count("turn error", len(log_turn_errors), t_turn_errors,
+              note="; ".join(x for x in [window.note(), TURN_ERROR_LOG_NOTE] if x),
+              detail=[r[:160] for r in log_turn_errors[:3]]),
         Count("failed delegation", None, t_failed, note="the daemon logs nothing when a delegation fails"),
         Count("wedged session", None, None, note="no per-event signature since #1040; graded by soak_verdict.py"),
     ]
@@ -471,10 +585,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--subagent-events", nargs="*", type=pathlib.Path, default=[],
                     help="GET /sessions/{id}/agents/{name}/events bodies for the same sessions' subagents")
     ap.add_argument("--session", help="only count log lines that name this session")
+    ap.add_argument("--since", help="RFC 3339: drop log lines and transcript events before this (both sides)")
+    ap.add_argument("--until", help="RFC 3339: drop log lines and transcript events after this (both sides)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
+    bounds = []
+    for name in ("since", "until"):
+        raw = getattr(args, name)
+        t = parse_ts(raw) if raw else None
+        if raw and t is None:
+            ap.error(f"--{name} {raw!r} is not an RFC 3339 timestamp")
+        bounds.append(t)
     counts = count(args.log.expanduser(), [p.expanduser() for p in args.events], args.session,
-                   [p.expanduser() for p in args.subagent_events])
+                   [p.expanduser() for p in args.subagent_events], bounds[0], bounds[1])
     if args.json:
         print(json.dumps([c.__dict__ for c in counts], indent=2))
     else:

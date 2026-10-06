@@ -33,13 +33,22 @@
 #
 # So: list the sessions on the hub, keep those whose last_touched_at is
 # inside the window, and write each one's replay to
-# <out>/replay-<sid>.sse, plus a sessions.tsv manifest. Then:
+# <out>/replay-<sid>.sse, plus a sessions.tsv manifest and window.env
+# (the window's start and end). Then grade with the window — the script
+# prints the exact line:
 #
-#   ./a2_count.py --log daemon.log --events <out>/replay-*.sse
+#   ./a2_count.py --log daemon.log --events <out>/replay-*.sse \
+#       --since <start> --until <end>
 #
 # A session touched in the window is a SUPERSET of the sessions opened
-# in it — the hub has no created_at — which is the safe direction: an
-# extra transcript can only add transcript-side entries for the same log.
+# in it (the hub has no created_at), and every replay reads from seq 0,
+# so the replays hold history from before the window too. For A2 that
+# is the MASKING direction, not the safe one: an extra transcript-side
+# entry with no log to answer it covers one of the window's log-only
+# failures and turns a FAIL into a PASS. That is why a2_count must be
+# given the same window, which drops transcript events and log lines
+# outside it on both sides. With --all there is no window to give; the
+# script says so, and a grade from it is a read, not a verdict.
 #
 # Idle sessions are skipped unless --include-idle. Requesting /events on
 # an idle session lazily resumes it, and a resume can run auto-continue,
@@ -70,9 +79,10 @@ usage: ./replay_sessions.sh (--since <RFC3339> [--until <RFC3339>] | --all)
 
 Saves GET /sessions/<app>/<sid>/events?since=0 for every session on the
 hub whose last_touched_at falls in the window, to <dir>/replay-<sid>.sse,
-with a sessions.tsv manifest. Grade with:
+with a sessions.tsv manifest and the window in window.env. Grade with
+the line it prints, which passes the same window to a2_count:
 
-  ./a2_count.py --log daemon.log --events <dir>/replay-*.sse
+  ./a2_count.py --log daemon.log --events <dir>/replay-*.sse --since <start> --until <end>
 
 Environment (all optional):
   DRILL_REPLAY_SECS=20   how long to read each replay before stopping
@@ -101,6 +111,7 @@ if [[ "${ALL}" == "1" && -n "${SINCE}${UNTIL}" ]] || [[ "${ALL}" == "0" && -z "$
 fi
 
 DRILL_REPLAY_SECS="${DRILL_REPLAY_SECS:-20}"
+REPLAY_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 OUT="${OUT:-${DRILL_RUN_ROOT}/replays-$(date -u +%Y%m%dT%H%M%SZ)}"
 mkdir -p "${OUT}"
 chmod 700 "${OUT}" 2>/dev/null || true
@@ -200,4 +211,24 @@ done < "${OUT}/selection.tsv"
 
 drill_log "${taken} replayed, ${skipped} skipped — manifest ${MANIFEST}"
 (( taken > 0 )) || drill_die "no session on the hub matched the window; nothing to grade."
-printf '\nGrade box A2 with:\n  %s/a2_count.py --log <daemon.log> --events %s/replay-*.sse\n' "${DRILL_SELF_DIR}" "${OUT}"
+
+# The window a2_count must be given. An open --until ends now: the log a
+# grader passes was captured up to about now, and nothing in a replay
+# can be newer.
+WINDOW_END="${UNTIL:-${REPLAY_STARTED_AT}}"
+{
+    printf 'WINDOW_START=%q\n' "${SINCE}"
+    printf 'WINDOW_END=%q\n' "${WINDOW_END}"
+    printf 'WINDOW_END_IS_REPLAY_TIME=%q\n' "$([[ -z "${UNTIL}" ]] && echo yes || echo no)"
+} > "${OUT}/window.env"
+
+printf '\nGrade box A2 with (window recorded in %s/window.env):\n' "${OUT}"
+if [[ -n "${SINCE}" ]]; then
+    printf '  %s/a2_count.py --log <daemon.log> --events %s/replay-*.sse --since %s --until %s\n' \
+        "${DRILL_SELF_DIR}" "${OUT}" "${SINCE}" "${WINDOW_END}"
+else
+    printf '  %s/a2_count.py --log <daemon.log> --events %s/replay-*.sse --since <batch start> --until %s\n' \
+        "${DRILL_SELF_DIR}" "${OUT}" "${WINDOW_END}"
+    drill_warn "--all records no window start. Replays hold every session's whole history, so grading"
+    drill_warn "  without --since lets rows from before the batch mask its log-only failures."
+fi

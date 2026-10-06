@@ -199,6 +199,19 @@ Readers in `pkg/attach`: `GuardrailTurnTrip`, `GuardrailHaltRow`,
     the helper is meant to run right after a batch, well inside the
     idle-eviction window.
 
+13. **Replays are graded inside a window, on both sides.** A session
+    touched in the window is a superset of those opened in it, and every
+    replay reads from seq 0, so replays carry history from before the
+    batch. For A2 that is the **masking** direction: a row with no log
+    to answer it covers a log-only failure of the same class. So
+    `a2_count.py --since/--until` drops `agent` frames by
+    `event.Timestamp` and daemon-log lines by their `--timestamps`
+    prefix, outside the window, and the row's note reports how many.
+    Undated entries — the typed frames, which carry no timestamp, and
+    any undated log line — are kept and counted in the note, because
+    dropping them could only hide entries. `replay_sessions.sh` records
+    the window in `window.env` and prints the exact invocation.
+
 ## Out of scope
 
 - core-tui rendering of the refusal-storm row. Its turn error renders
@@ -214,6 +227,10 @@ Readers in `pkg/attach`: `GuardrailTurnTrip`, `GuardrailHaltRow`,
 - Subagent turn errors in `a2_count`. A child's rows land in the child's
   session; the daemon logs no turn line for them, so counting them
   would only add TRANSCRIPT-ONLY entries.
+- A refused turn under the local `--tui` host or a headless `-p` run.
+  It writes its row whatever the caller, but only the wake loop (the
+  daemon, the drill) and the REPL log the `turn:` line `a2_count`
+  matches, so there it is TRANSCRIPT-ONLY by construction.
 - A daemon log that reports several errors for one turn. The wake loop
   logs every error `Run` yields; the turn has one `turnErr` and one row.
   ADK yields at most one error per run today, so this is theoretical.

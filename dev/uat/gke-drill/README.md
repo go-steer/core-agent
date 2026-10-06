@@ -754,8 +754,19 @@ session the batch touched**, not only on the drill's live capture:
 ```sh
 dev/uat/gke-drill/replay_sessions.sh --since 2026-10-06T17:30:00Z --out /tmp/a2-replays
 dev/uat/gke-drill/a2_count.py --log daemon.log --events /tmp/a2-replays/replay-*.sse \
+    --since 2026-10-06T17:30:00Z --until <end from window.env> \
     --subagent-events <run>/subagents.json [...]
 ```
+
+**Always grade replays with the window.** A replay holds a session's whole
+history from seq 0, and the daemon log only the span it was captured over. A
+row from an earlier batch (a session that survived a pod roll, or was touched
+before) then has no log line to answer it, and covers one of this batch's
+log-only failures, turning a FAIL into a PASS. `--since`/`--until` drop log
+lines (by their `--timestamps` prefix) and transcript events (by
+`event.Timestamp`) outside the window on both sides, and the row's note says
+how many. Typed frames carry no timestamp and are kept. `replay_sessions.sh`
+writes the window to `window.env` and prints the exact `a2_count.py` line.
 
 The drill captures the one session it took for its incident, from the moment it
 attached. An incident can open more than one: on 2026-10-06, run 2 opened two and

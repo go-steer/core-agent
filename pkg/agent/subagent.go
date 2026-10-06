@@ -31,6 +31,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -404,6 +405,11 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		// parent tool call and by reference — under one name, so the
 		// guard has to see the synchronous half of the stack too.
 		childCtx = subsession.WithLineage(childCtx, name)
+		// The parent's served calls say nothing about this subagent's
+		// own instruction and tools, so the delegation gets a record of
+		// its own, marked from the loop below (#1247; prior_success.go).
+		served := models.NewPriorSuccess()
+		childCtx = models.WithPriorSuccess(childCtx, served)
 
 		msg := genai.NewContentFromText(args.Request, genai.RoleUser)
 		var sb strings.Builder
@@ -476,6 +482,7 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 				return subagentResult{}, turnErr
 			}
 			collectFinalText(&sb, ev)
+			markIfServed(served, ev, err)
 			calls.Observe(ev)
 			tap.Observe(ev)
 			u, ok := tap.Commit(ev)

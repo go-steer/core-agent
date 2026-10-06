@@ -51,6 +51,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
@@ -283,6 +284,11 @@ type Agent struct {
 	streaming      adkagent.StreamingMode
 	appName        string
 	agentName      string
+	// priorSuccess is marked once a model call in this session has
+	// succeeded, and rides every turn's context so the provider's retry
+	// policy can see it (#1247; prior_success.go). Nil on
+	// hand-constructed Agents, which is valid and never succeeded.
+	priorSuccess *models.PriorSuccess
 	// invocationHist + toolInstrumenter are the #338 gen_ai.*
 	// instruments; both are non-nil after New (noop-backed when
 	// metrics are off; nil only on hand-constructed Agents, which
@@ -1168,6 +1174,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		streaming:            o.streaming,
 		appName:              o.appName,
 		agentName:            o.name,
+		priorSuccess:         models.NewPriorSuccess(),
 		description:          o.description,
 		userID:               o.userID,
 		sessionID:            o.sessionID,
@@ -1645,6 +1652,10 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// permissions.WithSessionGate(nil) is a no-op so the guard is
 	// covered by the helper.
 	runCtx = permissions.WithSessionGate(runCtx, a.gate)
+	// This session's record of a served model call (#1247), for the
+	// provider's retry policy. Always installed, even nil, so a Run
+	// nested under another agent's turn never reads that agent's.
+	runCtx = models.WithPriorSuccess(runCtx, a.priorSuccess)
 	// And the auto-mode approver's view of this turn (#1175): the
 	// operator's task, the turn's earlier calls, the bill and the
 	// audit. Only with an approver wired; without it the gate never
@@ -1706,6 +1717,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			if err != nil {
 				turnErr = err
 			}
+			// A served model call licenses the provider's retry of an
+			// ambiguous rejection later in this session (#1247).
+			markIfServed(a.priorSuccess, ev, err)
 			// The approver's record of earlier calls: a call is
 			// pending until its result arrives. Nil-safe.
 			approverTurn.observe(ev)
@@ -2005,6 +2019,10 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		cancelGen := a.setCancelInFlight(cancel)
 		defer cancel()
 		defer a.clearCancelInFlight(cancelGen)
+		// No served call precedes this one: the session was created
+		// above. Shadow any record inherited from a caller's turn, so a
+		// bare 400 here is never retried (#1247).
+		runCtx = models.WithPriorSuccess(runCtx, nil)
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {

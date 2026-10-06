@@ -45,6 +45,7 @@ failures = 0
 RETRY = "2026-09-13T10:14:32.106Z core-agent: gemini: transient provider error (Error 429, RESOURCE_EXHAUSTED) — retrying once after 2s"
 RETRY_SUPPRESSED = ("2026-09-13T10:14:38.653Z core-agent: gemini: transient provider error (Error 429, RESOURCE_EXHAUSTED) "
                     "NOT retried: the shared retry budget is spent (burst 2, one refill per 30s)")
+BARE_400 = "Error 400, Message: Request contains an invalid argument., Status: INVALID_ARGUMENT, Details: []"
 RETRY_RECOVERED = "2026-09-13T10:14:34.200Z core-agent: gemini: transient provider error recovered on retry (attempt 2/2)"
 CUT = ("2026-09-14T21:50:42Z agent: [session s-1] watchdog guardrail cut the turn in flight — the cancellation "
        "error that follows is this cut, not a provider failure: looping")
@@ -147,6 +148,20 @@ def main() -> int:
         c, _ = run(tmp, "retry-alert", [RETRY], [sse(alert, echo)])
         expect(c, "provider retry", 1, 1, a2.PASS,
                "a background alert (user-authored) counts; the model quoting it does not count again")
+
+        print("provider retry — the bare 400 after a served call (#1247)")
+        # Same format string as a 429's; the error in the parentheses is
+        # the only difference, and it has no parentheses of its own.
+        retry_400 = RETRY.replace("(Error 429, RESOURCE_EXHAUSTED)", "(" + BARE_400 + ")")
+        check(a2.RETRY_RE.search(retry_400) is not None, "RETRY_RE matches the bare-400 retry line", retry_400)
+        recovered_400 = ("agent", {"seq": 17, "event": {"Author": "core-agent", "Partial": False,
+                                                        "Content": {"role": "model", "parts": [{"text": "pods are fine"}]},
+                                                        "CustomMetadata": {"provider_retry": {"outcome": "recovered", "attempts": 2, "error": BARE_400}}}})
+        persisted_400 = ("turn-error", {"kind": "config_error", "code": "400", "retryable": False,
+                                        "message": "provider retry persisted: " + BARE_400})
+        c, _ = run(tmp, "retry-400", [retry_400, RETRY_RECOVERED, retry_400], [sse(recovered_400, persisted_400)])
+        expect(c, "provider retry", 2, 2, a2.PASS,
+               "a bare-400 retry pairs like a 429's: the stamp, and the persisted turn-error's prefix")
 
         print("provider retry — inside a subagent")
         child = tmp / "child-cluster-2.json"

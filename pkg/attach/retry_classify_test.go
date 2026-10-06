@@ -59,6 +59,32 @@ func TestClassifyTurnError_ARetryPrefixChangesNoClassification(t *testing.T) {
 	}
 }
 
+// #1247. The Gemini adapter now retries a bare 400 INVALID_ARGUMENT
+// once on a served session. What reaches the turn-error frame after
+// that must be classified exactly as the bare 400 always was —
+// config_error, code 400, not retryable — so the frame, auto-continue
+// and the A2 counter see the same kind whether or not a retry ran.
+func TestClassifyTurnError_Bare400IsClassifiedTheSameRetriedOrNot(t *testing.T) {
+	t.Parallel()
+	for _, bare := range []error{
+		genai.APIError{Code: 400, Message: "Request contains an invalid argument.", Status: "INVALID_ARGUMENT"},
+		errors.New("Error 400, Message: Request contains an invalid argument., Status: INVALID_ARGUMENT, Details: []"),
+	} {
+		plain := ClassifyTurnError(bare)
+		if plain.Kind != TurnErrorConfig || plain.Code != "400" || plain.Retryable {
+			t.Errorf("%v: classified %s/%s/%v, want config_error/400/false — the bare 400's classification moved",
+				bare, plain.Kind, plain.Code, plain.Retryable)
+		}
+		for _, outcome := range []string{"persisted", "skipped", "abandoned"} {
+			got := ClassifyTurnError(&models.RetryError{Outcome: outcome, Err: bare})
+			if got.Kind != plain.Kind || got.Code != plain.Code || got.Retryable != plain.Retryable || got.Hint != plain.Hint {
+				t.Errorf("%s %v: classified %s/%s/%v, want %s/%s/%v with the same hint",
+					outcome, bare, got.Kind, got.Code, got.Retryable, plain.Kind, plain.Code, plain.Retryable)
+			}
+		}
+	}
+}
+
 // #1206 review round 2. The context branches replace the message with
 // fixed text; a retry that recovered and was then cut by a deadline
 // must still lead with its outcome, or the transcript loses it.

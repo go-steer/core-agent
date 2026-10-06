@@ -417,6 +417,11 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// loop below since ADK's runner doesn't expose a turn cap.
 	subCtx, cancel := context.WithTimeout(ctx, maxWallclock)
 	defer cancel()
+	// The parent's served calls say nothing about this subtask's own
+	// instruction and tools, so it gets a record of its own, marked
+	// from the loop below (#1247; prior_success.go).
+	served := models.NewPriorSuccess()
+	subCtx = models.WithPriorSuccess(subCtx, served)
 
 	msg := genai.NewContentFromText(spec.UserMessage, genai.RoleUser)
 	start := time.Now()
@@ -464,6 +469,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		if ev == nil {
 			continue
 		}
+		markIfServed(served, ev, nil)
 		// Capture final text. collectFinalText filters out
 		// partials so we don't double-count streaming chunks.
 		collectFinalText(&digest, ev)

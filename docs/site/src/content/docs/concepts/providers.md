@@ -254,7 +254,21 @@ A 429 or 503 that delivers **no usable content** is now retried once, after a sh
 
 Once any content has reached the caller the stream is pass-through: a later error surfaces unchanged rather than replaying a turn you have already partly seen.
 
-The predicate is deliberately narrow — only `429`/`RESOURCE_EXHAUSTED` and `503`/`UNAVAILABLE`, matched on the status code *and* its status word. A `400 INVALID_ARGUMENT` is never retried, including the shape tracked in [#898](https://github.com/go-steer/core-agent/issues/898): its cause is unknown, and re-sending a request the server has already said it cannot parse spends a second request to be told the same thing.
+The predicate is deliberately narrow — only `429`/`RESOURCE_EXHAUSTED` and `503`/`UNAVAILABLE`, matched on the status code *and* its status word.
+
+**One kind of `400 INVALID_ARGUMENT` is retried too, but only on a session that has already been served** ([#1247](https://github.com/go-steer/core-agent/issues/1247)). Vertex sometimes rejects a request with a 400 that names nothing:
+
+```
+Error 400, Message: Request contains an invalid argument., Status: INVALID_ARGUMENT, Details: []
+```
+
+It has twice arrived straight after a successful call on the same session, config and model, and the session kept working afterwards ([#898](https://github.com/go-steer/core-agent/issues/898)). On its own, though, it can't be told apart from a malformed request. So it gets one retry only when all of these hold:
+
+- the status is `INVALID_ARGUMENT`, there are no details, and the message is exactly `Request contains an invalid argument.` A 400 whose details or message say what is wrong is never retried.
+- an earlier model call in the same agent session has already succeeded. A 400 on a session's first call fails exactly as before, so a request that is malformed from the start costs nothing extra. A subagent needs a success of its own, because the parent's says nothing about the child's instruction and tools.
+- the call is not an internal one (the approver, the summarizer, a session title, `/btw`, an MCP digest, an agentic tool's subtask).
+
+That retry is an ordinary one. It spends the same budget, writes the same log lines, and is recorded in the transcript the same way as a 429's. If it persists, the `turn-error` frame reads `provider retry persisted: Error 400, …` and is still `config_error` with code `400`. A history that became malformed after the first success can also produce this 400. That turn now costs one extra request before it fails the same way. The Anthropic adapter is unaffected: an Anthropic 400 names what was invalid, and it is never retried.
 
 The retry logs to the daemon's stderr — `kubectl logs deploy/core-agent` on a cluster deploy:
 

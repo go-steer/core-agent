@@ -32,6 +32,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 // rejectThenServe answers the first reject requests with status, then
@@ -135,5 +137,48 @@ func TestSDKStopsRetryingAndSurfacesTheError(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(n); got != 3 {
 		t.Errorf("server saw %d requests, want 3 (initial + two retries)", got)
+	}
+}
+
+// #1247 retries Vertex's bare 400 once a session has been served. This
+// adapter deliberately does not: the record rides ctx and nothing here
+// reads it, and the SDK does not retry a 400. A marked record on ctx
+// must leave a 400 exactly as it was — one request, error surfaced.
+func TestGenerateContent_Bare400AfterSuccessIsNotRetried(t *testing.T) {
+	var n int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&n, 1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Request contains an invalid argument."}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(messagesSSEFixture))
+	}))
+	t.Cleanup(srv.Close)
+	l := &llm{
+		client:   sdk.NewClient(option.WithAPIKey("test-key-not-real"), option.WithBaseURL(srv.URL)),
+		modelID:  "claude-test",
+		builtins: BuiltinTools{},
+	}
+	rec := models.NewPriorSuccess()
+	rec.Mark()
+	ctx := models.WithPriorSuccess(context.Background(), rec)
+	req := &adkmodel.LLMRequest{Contents: []*genai.Content{{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hello"}}}}}
+
+	var errs []error
+	for _, err := range l.GenerateContent(ctx, req, false) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want the 400 surfaced once", errs)
+	}
+	if got := atomic.LoadInt32(&n); got != 1 {
+		t.Errorf("server saw %d requests, want 1 — nothing may retry an Anthropic 400", got)
 	}
 }

@@ -17,3 +17,8 @@
 # tracked so the read-only image volume has a mount point for it.
 .agents/plans/*
 !.agents/plans/.gitkeep
+# The gated-apply content root (#1105) is a second agents dir; a local
+# `-c gated-apply/.agents/config.d1.json` run writes the same state there.
+gated-apply/.agents/sessions/
+gated-apply/.agents/plans/*
+!gated-apply/.agents/plans/.gitkeep

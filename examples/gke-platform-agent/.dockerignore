@@ -30,6 +30,9 @@
 .agents/plans/*
 !.agents/plans/.gitkeep
 .agents/config.hub.local.json
+gated-apply/.agents/sessions/
+gated-apply/.agents/plans/*
+!gated-apply/.agents/plans/.gitkeep
 *.db
 *.db-shm
 *.db-wal

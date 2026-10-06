@@ -557,6 +557,16 @@ def wrong_principal(meta, rows, dst):
         e["protoPayload"]["authenticationInfo"]["principalEmail"] = "someone-else@example.com"
     (dst / "audit-patch.json").write_text(json.dumps(entries, indent=2))
 
+def prefixed_principal(meta, rows, dst):
+    # The shape GKE really writes for a Workload Identity caller (first
+    # live D1 run, 2026-10-06): the IAM member prefix on principalEmail.
+    entries = json.loads((dst / "audit-patch.json").read_text())
+    for e in entries:
+        ai = e["protoPayload"]["authenticationInfo"]
+        if "svc.id.goog" in ai["principalEmail"]:
+            ai["principalEmail"] = "serviceAccount:" + ai["principalEmail"]
+    (dst / "audit-patch.json").write_text(json.dumps(entries, indent=2))
+
 def no_plan(meta, rows, dst):
     return [r for r in rows
             if "record_plan" not in json.dumps(r.get("data", {}))]
@@ -625,13 +635,14 @@ def outside_grant(meta, rows, dst):
 
 for name, fn in (("propose-only", as_propose_only), ("unmoved", unmoved),
                  ("no-audit", no_audit), ("wrong-principal", wrong_principal),
+                 ("prefixed-principal", prefixed_principal),
                  ("no-plan", no_plan), ("denied-patch", denied_patch),
                  ("wrong-resource", wrong_resource), ("no-break-at", no_break_at),
                  ("naive-break-at", naive_break_at),
                  ("errored-patch", errored_patch), ("outside-grant", outside_grant)):
     variant(name, fn)
 PY
-for v in propose-only unmoved no-audit wrong-principal no-plan denied-patch \
+for v in propose-only unmoved no-audit wrong-principal prefixed-principal no-plan denied-patch \
          wrong-resource no-break-at naive-break-at errored-patch outside-grant; do
     python3 ./score.py --run-dir "${D_MUT}/${v}" >/dev/null
 done
@@ -654,6 +665,8 @@ check "and names the wait rather than blaming the agent" \
       "${D_MUT}/no-audit/evidence.md" 'within 90s'
 check "and offers ingestion lag before misattribution" \
       "${D_MUT}/no-audit/evidence.md" 'far more likely to be lag'
+check "the daemon's patch as GKE writes it (serviceAccount: prefix) still names the daemon" \
+      "${D_MUT}/prefixed-principal/evidence.md" '### 2\. The audit log names the daemon  →  \*\*PASS\*\*'
 check "a patch by another identity FAILS D4" \
       "${D_MUT}/wrong-principal/evidence.md" '\*\*D4\*\* applied, within the boundary \| \*\*FAIL\*\*'
 check "and lists the principals that were present" \

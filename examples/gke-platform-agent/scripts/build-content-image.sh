@@ -45,7 +45,12 @@ for required in \
     "AGENTS.md" \
     "cluster/AGENTS.md" \
     "cluster/mcp.json" \
-    "cluster/skills"
+    "cluster/skills" \
+    "gated-apply/AGENTS.md" \
+    "gated-apply/.agents/mcp.json" \
+    "gated-apply/.agents/config.d1.json" \
+    "gated-apply/.agents/config.d2.json" \
+    "gated-apply/.agents/plans/.gitkeep"
 do
     if [[ ! -e "${RECIPE_ROOT}/${required}" ]]; then
         echo "✗ missing ${required} under ${RECIPE_ROOT}"
@@ -80,6 +85,12 @@ trap 'rm -rf "${STAGE}"' EXIT
 cp -a "${RECIPE_ROOT}/.agents"   "${STAGE}/.agents"
 cp -a "${RECIPE_ROOT}/AGENTS.md" "${STAGE}/AGENTS.md"
 cp -a "${RECIPE_ROOT}/cluster"   "${STAGE}/cluster"
+# The second content root (#1105). The Dockerfile COPYs it, and when it
+# was added there and not here every build failed at that COPY, so no
+# content image after v4 carried gated-apply/ — and a gated-leg deploy on
+# v4 cannot start: its plans emptyDir has no mountpoint in the
+# read-only image volume.
+cp -a "${RECIPE_ROOT}/gated-apply" "${STAGE}/gated-apply"
 
 # LOCAL RUN STATE MUST NOT REACH THE CONTEXT. Two layers, because this
 # one fails open and quietly.
@@ -101,12 +112,13 @@ cp -a "${RECIPE_ROOT}/.dockerignore" "${STAGE}/.dockerignore"
 rm -rf "${STAGE}/.agents/sessions"
 rm -f  "${STAGE}/.agents/config.hub.local.json"
 find "${STAGE}" \( -name '*.db' -o -name '*.db-shm' -o -name '*.db-wal' \) -type f -delete
-find "${STAGE}/.agents/plans" -type f ! -name '.gitkeep' -delete 2>/dev/null
+find "${STAGE}/.agents/plans" "${STAGE}/gated-apply/.agents/plans" -type f ! -name '.gitkeep' -delete 2>/dev/null
+rm -rf "${STAGE}/gated-apply/.agents/sessions"
 
 leaked=$(find "${STAGE}" \( -path '*/.agents/sessions/*' -o -name '*.db' \
              -o -name '*.db-shm' -o -name '*.db-wal' \
              -o -name 'config.hub.local.json' \) -type f -print)
-leaked+=$(find "${STAGE}/.agents/plans" -type f ! -name '.gitkeep' -print 2>/dev/null)
+leaked+=$(find "${STAGE}/.agents/plans" "${STAGE}/gated-apply/.agents/plans" -type f ! -name '.gitkeep' -print 2>/dev/null)
 if [[ -n "${leaked}" ]]; then
     echo "✗ local run state reached the build context:" >&2
     echo "${leaked}" | sed 's|^|    |' >&2

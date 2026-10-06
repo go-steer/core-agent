@@ -73,20 +73,27 @@ func useFastRetryPolicy(t *testing.T) {
 	prev := transientRetry
 	transientRetry = &models.RetryPolicy{
 		IsTransient: IsTransient,
-		Backoff:     time.Millisecond,
-		Cooldown:    -1, // each test gets a clean slate
-		Log:         func(format string, args ...any) { logf(format, args...) },
+		// Taken from the production policy rather than restated, so
+		// the #1247 tests prove what GenerateContent is wired with.
+		IsTransientAfterSuccess: prev.IsTransientAfterSuccess,
+		Backoff:                 time.Millisecond,
+		Cooldown:                -1, // each test gets a clean slate
+		Log:                     func(format string, args ...any) { logf(format, args...) },
 	}
 	t.Cleanup(func() { transientRetry = prev })
 }
 
 func drainLLM(t *testing.T, l adkmodel.LLM) (texts []string, errs []error) {
 	t.Helper()
+	return drainLLMCtx(context.Background(), l)
+}
+
+func drainLLMCtx(ctx context.Context, l adkmodel.LLM) (texts []string, errs []error) {
 	req := &adkmodel.LLMRequest{
 		Contents: []*genai.Content{{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hi"}}}},
 		Config:   &genai.GenerateContentConfig{},
 	}
-	for resp, err := range l.GenerateContent(context.Background(), req, false) {
+	for resp, err := range l.GenerateContent(ctx, req, false) {
 		if err != nil {
 			errs = append(errs, err)
 			continue

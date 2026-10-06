@@ -449,13 +449,16 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	// silent-STOP shape, cache eviction is a TTL server-state issue.
 	//
 	// A fifth wrapper sits outside all of them: transientRetry, which
-	// retries once on 429 / 503 (#935). Outermost because a transient
+	// retries once on 429 / 503 (#935), and on a bare 400 once the
+	// session has been served (#1247). Outermost because a transient
 	// rejection can come from any layer below, and this way there is
 	// one place that handles it rather than three. The nesting means a
-	// pathological turn can reach four requests — two transient
-	// attempts × two empty-response attempts — which is bounded, has
+	// pathological turn can reach five requests — two transient
+	// attempts × two empty-response attempts, plus one uncached re-send
+	// the first time the cache reference is rejected (the restored
+	// request carries no reference after that) — which is bounded, has
 	// never been observed, and is further capped by the policy's
-	// process-wide cooldown.
+	// process-wide budget.
 	return transientRetry.Wrap(ctx, func() iter.Seq2[*adkmodel.LLMResponse, error] {
 		return retryOnceOnEmpty(func() iter.Seq2[*adkmodel.LLMResponse, error] {
 			return wrapEmptyTailDetection(
@@ -480,6 +483,9 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 // A var so tests can substitute a policy with a short backoff.
 var transientRetry = &models.RetryPolicy{
 	IsTransient: IsTransient,
+	// The bare 400 is judged only for a session that has already been
+	// served (#1247); see IsBareInvalidArgument.
+	IsTransientAfterSuccess: IsBareInvalidArgument,
 	// Indirect through logf rather than taking its value, so a test
 	// that swaps logf still sees these lines.
 	Log: func(format string, args ...any) { logf(format, args...) },

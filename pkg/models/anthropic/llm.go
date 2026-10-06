@@ -82,6 +82,14 @@ func (l *llm) Name() string { return l.modelID }
 // the SDK default is ever overridden with option.WithMaxRetries(0),
 // revisit — that is the condition under which this comment stops being
 // true.
+//
+// The same holds for #1247's retry of a bare 400 after a served call.
+// The PriorSuccess record the agent puts on ctx is read by nothing in
+// this adapter, and that is the intended answer, not an oversight: an
+// Anthropic 400 is an invalid_request_error whose message names what
+// was invalid, no generic transient 400 has been observed from it, and
+// a predicate written without a sample would be a guess.
+// TestGenerateContent_Bare400AfterSuccessIsNotRetried pins it.
 func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		// One llm serves both the agentic loop and the one-shot side

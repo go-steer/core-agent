@@ -224,6 +224,16 @@ type RetryPolicy struct {
 	// rejection worth one retry. Nil disables retrying entirely.
 	IsTransient func(error) bool
 
+	// IsTransientAfterSuccess reports whether err is a rejection that
+	// is ambiguous on its own and is worth one retry only after the
+	// calling session has already been served (#1247). It is consulted
+	// only for a call whose context carries a marked PriorSuccess and
+	// is not a side call; anywhere else the error is judged by
+	// IsTransient alone, which is today's behaviour. A retry it licenses
+	// spends the same budget, logs the same lines and surfaces the same
+	// way as any other. Nil disables it.
+	IsTransientAfterSuccess func(error) bool
+
 	// Backoff is how long to wait before the retry. Zero means
 	// DefaultRetryBackoff.
 	Backoff time.Duration
@@ -262,6 +272,7 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 		return fn()
 	}
 	const maxAttempts = 2
+	isTransient := p.transientFor(ctx)
 	pfx := sideCallPrefix(ctx)
 	logf := func(format string, args ...any) { p.logf(pfx+format, args...) }
 
@@ -316,7 +327,7 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 					}
 					continue
 				}
-				if err != nil && p.IsTransient(err) {
+				if err != nil && isTransient(err) {
 					// Hold it. Whether this is retried or surfaced is
 					// decided once the iteration has ended, because a
 					// stream that goes on to produce content has
@@ -416,6 +427,23 @@ func (p *RetryPolicy) Wrap(ctx context.Context, fn func() iter.Seq2[*adkmodel.LL
 			}
 			return
 		}
+	}
+}
+
+// transientFor returns the predicate Wrap judges this call's errors by:
+// IsTransient, widened by IsTransientAfterSuccess when the call's
+// session has already been served (#1247). The record is read when an
+// error arrives rather than when Wrap is called, so the answer is the
+// session's state at the moment of the rejection.
+func (p *RetryPolicy) transientFor(ctx context.Context) func(error) bool {
+	if p.IsTransientAfterSuccess == nil {
+		return p.IsTransient
+	}
+	return func(err error) bool {
+		if p.IsTransient(err) {
+			return true
+		}
+		return priorCallSucceeded(ctx) && p.IsTransientAfterSuccess(err)
 	}
 }
 

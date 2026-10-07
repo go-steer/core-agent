@@ -1,0 +1,19 @@
+{
+ "number": 7,
+ "state": "open",
+ "merged_at": null,
+ "draft": false,
+ "title": "fix(agent): fall back to mechanical compaction on an empty summary",
+ "user": {
+  "login": "core-agent-selfdev-writer[bot]"
+ },
+ "head": {
+  "ref": "agent/issue-1",
+  "sha": "{TIP}"
+ },
+ "base": {
+  "ref": "main",
+  "sha": "{BASE}"
+ },
+ "body": "Fixes #1\n\nUpstream issue: https://github.com/go-steer/core-agent/issues/1234\n\nSession: `01a11766-4f76-7286-bda1-b312d42683c6` on the soak daemon. Branch `agent/issue-1` was committed by that session and pushed by the soak dispatcher, from mastersingh24/core-agent-selfdev base `{BASE}`.\n\n## Plan\n\n1. Fall back to mechanical compaction on an empty summary.\n"
+}

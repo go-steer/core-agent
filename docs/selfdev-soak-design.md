@@ -155,6 +155,10 @@ No inbound webhook, so no ingress. The App's private key is a Secret mounted onl
 
 The first seeded issue is #1234's recovery half, kept unfixed upstream for this, because it has a cheap oracle.
 
+The checked-in grader is `dev/uat/selfdev-soak/grade_a7.py`, and its README section lists the inputs it needs. Two points from building it:
+- The daemon prints no permission-mode boot line, so posture reads the mode from the session's `GET …/perms`.
+- The oracle and the grader describe the answer key, so the mirror's `main` must not contain them when A7 runs (decision 20). The grader voids the oracle row if it finds them.
+
 ## Exit criteria (#1213)
 
 - At least 2 weeks of the soak running, with the approver rows reviewed weekly.

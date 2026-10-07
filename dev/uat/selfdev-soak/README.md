@@ -14,7 +14,9 @@ which deploys that image as a daemon and a dispatcher on GKE.
 | `dispatcher/` | The minimal dispatcher ([design](../../../docs/selfdev-soak-dispatcher-design.md)). |
 | `deploy/` | The kustomize rig for namespace `core-agent-selfdev`, rendered with `deploy/render.sh`. See [Deploying the A7 rig](#deploying-the-a7-rig). |
 | `seed.sh` | Creates seed issues in the mirror from the private seed list. See [Seeding](#seeding). |
-| `grade_a7.*` | The A7 grader, built separately. |
+| `grade_a7.py` | The grader for v3.0 box A7, run over one run's artifacts. See [Grading A7](#grading-a7). |
+| `oracle/` | A7's task oracle for seed 0. The grader runs it; nothing else compiles it. |
+| `grade_a7_selftest.py`, `testdata/a7/` | The grader's self-test and fixtures. `verify-gke-drill` runs them. |
 | `*_test.go` | Checks that the files above still follow the rules on this page. They run in `test-unit`. |
 
 ## Why it is separate from the release image
@@ -596,9 +598,11 @@ never retries (decision 17). To run again, delete the Job, remove
 `soak:stopped` from the issue as the maintainer, delete any leftover
 `agent/issue-N` branch, and apply the Job again.
 
-**8. Grade.** Run the A7 grader, `dev/uat/selfdev-soak/grade_a7.*` (built
-separately), against the run, then merge the PR yourself if it passes
-(decision 10: a person merges A7's PR).
+**8. Grade.** Capture the grader's inputs before anything restarts the
+daemon, because the session's approval log is held in memory. Then run
+`dev/uat/selfdev-soak/grade_a7.py` ([Grading A7](#grading-a7)), and merge
+the PR yourself if it passes (decision 10: a person merges A7's PR).
+`--commit-email` is `SOAK_COMMIT_EMAIL` from `inputs.env`.
 
 **Stopping.** Label any open mirror issue `soak:pause` to hold the
 dispatcher before its next claim or push. `kubectl -n core-agent-selfdev
@@ -639,3 +643,114 @@ dev/uat/selfdev-soak/seed.sh --only M1,M2          # or --all
   graded is refused; reword it in the list.
 - A seed whose title already exists in the mirror, or was filed earlier in
   the same run, is skipped, so a re-run doesn't duplicate issues.
+## Grading A7
+
+v3.0 box A7, "Develops itself", closes on the first issue whose PR opens
+with green CI and no human between the task and the PR (#1042; the
+design's "A7 grading" table). `grade_a7.py` grades one run. It prints a
+table of PASS, FAIL or VOID per assertion and the overall verdict. It
+exits 0 only on PASS, 1 on FAIL, 3 on VOID and 2 on an input error. The
+module docstring names the source line each check reads.
+
+```bash
+dev/uat/selfdev-soak/grade_a7.py \
+    --log daemon.log --replay replay-<sid>.sse \
+    --perms perms.json --perms-baseline perms-fresh.json \
+    --eventlog-db sessions.db --session <sid> \
+    --repo mastersingh24/core-agent-selfdev --pr <N> \
+    --writer <writer App login> --commit-email <soak commit email> \
+    --checkout <clone of the mirror> --base <sha> --tip <sha>
+```
+
+| Flag | What it is | How to capture it |
+|---|---|---|
+| `--log` | The daemon's log from its start | `kubectl logs --timestamps` on the daemon pod. After a restart, put the `--previous` log first. The boot lines are printed once, at start. The timestamps place each line inside or outside the run. |
+| `--replay` | The session's events | `GET /sessions/<app>/<sid>/events?since=0`. The stream tails, so stop it with a `--max-time` long enough to read everything; the grader fails a replay that lacks any of the DB's rows. `dev/uat/gke-drill/replay_sessions.sh` writes the same file. |
+| `--perms` | The session's mode, allow and deny lists, and approval log | `GET /sessions/<app>/<sid>/perms`, before the daemon restarts and within the session idle timeout. The approval log is held in memory, and an evicted session comes back with an empty one. |
+| `--perms-baseline` | The same for a fresh session on the same daemon | `POST /sessions` as any identity, then `GET` its `/perms`. `POST /perms/allow` and `/perms/deny` write no row, so a pattern the run's session has and a fresh one lacks is the only trace they leave. |
+| `--eventlog-db` | The session database | `kubectl cp` of `/var/lib/core-agent/sessions.db` and its `-wal` file. The grader reads a private copy. |
+| `--session` | The session ID | The PR body's `Session:` line, or the dispatcher's `opened PR` log line. |
+| `--repo`, `--pr` | The mirror and the PR number | |
+| `--writer` | The writer App's login | The PR's author, as GitHub shows it (`<app>[bot]`). |
+| `--commit-email` | The soak's commit identity (decision 16) | The daemon's `GIT_AUTHOR_EMAIL`. |
+| `--checkout` | A clone of the mirror that holds both commits | `git fetch origin pull/<N>/head` brings the tip. |
+| `--base`, `--tip` | The session's base commit and the PR head, as full SHAs | The PR body's `base` and the PR's head. The grader checks both against the PR. |
+
+It also needs `gh`, logged in with read access to the mirror (it only
+issues GETs), and a Go toolchain with module access for the oracle.
+
+What each row reads:
+
+- **run identity:** the PR's author, branch, head and body; the commits
+  in base..tip, which must all carry the soak's identity; and the replay
+  against the eventlog DB, which must hold the same events. This row
+  checks that the other rows are about one run, made by the rig.
+- **posture:** the boot lines `watchdog: enforce mode` and
+  `cost ceiling: per-turn=$X per-session=$Y`, on every boot. The daemon
+  prints no permission-mode line, so the mode comes from the perms
+  capture, and the replay must hold no `attach/perm-mode` row.
+- **no human:** the daemon logs nothing when a client attaches, answers a
+  prompt or resets a guardrail. So the row reads what those leave behind:
+  - the caller and `proxy_by` stamped on every eventlog row, which names
+    every client because the daemon must run per-caller auth
+    (`multi-session auth: bearer_table, ...` on every boot);
+  - approval rows with no `approver_model`;
+  - `denied by user` tool errors;
+  - escalations with no expired prompt for the same call;
+  - allow or deny patterns a fresh session lacks;
+  - `attach/guardrail-reset` rows;
+  - the session's owner.
+
+  The approval log is held in memory. A restart or a session resume
+  during the run makes the row VOID, and so does a perms capture that
+  holds fewer approver allows than the eventlog, which means it was read
+  after a restart. Capture `--perms` before anything restarts the daemon.
+- **ended by work:** the PR is open, and the session ended on a finished
+  answer. A halt, a per-turn trip, a refusal storm, an unrecovered turn
+  error, an interrupt or a trip the log alone recorded fails it. The
+  dispatcher interrupts a session at its timeout, so an interrupt also
+  covers the wallclock. A compaction, or tool calls after a checkpoint,
+  makes the run VOID (decision 19).
+- **degraded visibly:** `a2_count.py`, recorded but not gating.
+- **task oracle:** `oracle/seed0_1234_recovery_test.go` runs in an export
+  of each commit. It must fail at the base for its own reason and pass at
+  the tip.
+- **CI:** the run of `.github/workflows/ci.yml` on the PR head, matched by
+  path, never by check name (#1271). It must have run once, on its first
+  attempt, and succeeded. No other workflow's run on the head may have
+  failed. The writer App must have triggered every run, and the PR may
+  not change `.github/`, `dev/ci/` or `dev/tools/`.
+
+Limits:
+
+- Some acts leave no trace on any surface, so the grader can't see them:
+  a client that only reads, such as a TUI watching the session; and
+  `POST /pause`, `/reload`, `/pricing/set` and `agents/<name>/stop`.
+- The grader reads one session. A subagent's own approvals are out of its
+  reach.
+- The mirror's own required workflows must be able to pass on an agent PR.
+  core-agent's `review-gate.yml` fails a Go-touching PR whose body has no
+  "Adversarial review" section unless its author is exempt. If the mirror
+  runs it, list the writer App there, or A7 can't PASS.
+- `review-gate.yml` and `agent-attribution.yml` also run on `edited`. A
+  person editing the PR body triggers a run as that person, and the CI row
+  fails, by design: that edit is a person between the task and the PR.
+- kubelet rotates container logs. On a long run `kubectl logs` can lose
+  the boot lines and the `session created` line, and the grader then
+  fails the run. Archive the log from the pod's start.
+
+### The answer key stays out of the worker's tree
+
+The oracle is the answer key for seed 0, and this grader describes it. A
+worker that can read either can grade-shop (decision 20). The mirror's
+`main` must not contain `dev/uat/selfdev-soak/oracle/` or `grade_a7.py`
+when A7 runs. Sync it from an upstream commit that predates them, or
+delete them from the mirror. The grader enforces this: if either path,
+or the oracle's sentinel string, appears at the base or the tip, the
+task oracle row is VOID.
+
+The oracle carries the `a7oracle` build tag, so `go test ./...` never runs
+it. It fails on `main` by design until #1234's recovery half is fixed.
+`oracle_test.go` vets it in place in `test-unit`, so a rename in
+`pkg/agent`'s exported API shows up there and not as a build failure at
+grading time.

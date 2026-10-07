@@ -132,7 +132,7 @@ func TestInvocationCensus(t *testing.T) {
 		"dev/smoke/04-background-spawn.sh":          1,
 		"dev/smoke/05-headless-gate.sh":             1,
 		"dev/smoke/07-mcp-google-oauth.sh":          1,
-		"dev/smoke/09-multi-session-bearer.sh":      2,
+		"dev/smoke/09-multi-session-bearer.sh":      4, // daemon + loose-mode boot + 2 exempt `auth hash-token`
 		"dev/smoke/09-vertex-anthropic-toolloop.sh": 2,
 		"dev/smoke/10-multi-session-resume.sh":      1,
 		"dev/uat/attach/run.sh":                     4, // 2 dispatched + attach + ls

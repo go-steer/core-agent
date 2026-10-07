@@ -11,6 +11,9 @@ and then drives it over HTTP as two identities.
 
 - `compose.BuildMultiSessionAuthn` — a `users.json` bearer table
   (mode `0600` required) becomes the per-request `auth.Authenticator`.
+  Its rows store `token_sha256` (`auth.HashToken`), never the token
+  itself, so reading the table yields nothing that authenticates
+  ([#1213](https://github.com/go-steer/core-agent/issues/1213)).
 - `permissions.New` + `gate.SetGrantStore(&permissions.ConfigGrantStore{...})`
   — an ask-mode check prompts, a scripted prompter answers
   **allow always**, and the grant persists into

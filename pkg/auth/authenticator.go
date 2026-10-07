@@ -15,6 +15,7 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
 	"strings"
@@ -84,9 +85,9 @@ func (a AnonymousAuth) Authenticate(_ *http.Request) (Caller, error) {
 // table loaded from users.json. Returns the matched Caller, or
 // ErrUnauthenticated when no token is presented or the token is unknown.
 //
-// Token comparison is constant-time (subtle.ConstantTimeCompare) to
-// avoid leaking match prefixes through response timing. The table is
-// indexed by token for O(1) lookup; identities are not exposed by the
+// Comparison is of SHA-256 digests, constant-time
+// (subtle.ConstantTimeCompare) to avoid leaking match prefixes through
+// response timing; see Authenticate. Identities are not exposed by the
 // lookup path.
 //
 // Accepted headers, in order:
@@ -98,10 +99,24 @@ func (a AnonymousAuth) Authenticate(_ *http.Request) (Caller, error) {
 // Proxy semantics: a Caller resolved here is permitted to assert other
 // identities via X-Asserted-Caller only if it appears in the
 // ProxyIdentities allowlist. See CanProxyAs.
+//
+// The authenticator holds digests, never tokens (#1213). Every row —
+// a token_sha256 row, or a legacy plaintext row hashed here at
+// construction — is reduced to the SHA-256 of its token, and a request
+// is matched by hashing the presented token and comparing digests. One
+// comparison path serves both row shapes, so a plaintext row can't
+// authenticate anything its hashed form wouldn't.
 type BearerTokenAuth struct {
-	tokens          map[string]Caller // token → Caller
-	identityToToken map[string]string // identity → token (for asserted-caller validation)
-	proxyAllowed    map[string]struct{}
+	rows       []bearerRow       // every usable row, in table order
+	byIdentity map[string]Caller // identity → Caller (for asserted-caller validation)
+	// proxyAllowed is the operator's X-Asserted-Caller allowlist.
+	proxyAllowed map[string]struct{}
+}
+
+// bearerRow is one credential the authenticator accepts.
+type bearerRow struct {
+	digest [sha256.Size]byte
+	caller Caller
 }
 
 // NewBearerTokenAuth builds an authenticator from a parsed user table
@@ -109,18 +124,23 @@ type BearerTokenAuth struct {
 // listed identities as Admin Callers; proxyIdentities marks them as
 // permitted to use X-Asserted-Caller.
 //
-// Empty tokens in the users slice are skipped — a misconfigured row
-// shouldn't authenticate every credential-less request. Duplicate
-// tokens are last-write-wins; the loader should reject duplicates
+// Rows without an identity, or without exactly one usable credential
+// (a plaintext token, or a well-formed token_sha256), are skipped — a
+// misconfigured row shouldn't authenticate every credential-less
+// request. Duplicates are last-write-wins; the loader rejects them
 // upstream but the authenticator is defensive.
 func NewBearerTokenAuth(users []User, adminIdentities, proxyIdentities []string) *BearerTokenAuth {
 	adminSet := stringSet(adminIdentities)
 	proxySet := stringSet(proxyIdentities)
 
-	tokens := make(map[string]Caller, len(users))
-	identityToToken := make(map[string]string, len(users))
+	rows := make([]bearerRow, 0, len(users))
+	byIdentity := make(map[string]Caller, len(users))
 	for _, u := range users {
-		if u.Token == "" || u.Identity == "" {
+		if u.Identity == "" {
+			continue
+		}
+		sum, ok := u.digest()
+		if !ok {
 			continue
 		}
 		c := Caller{
@@ -130,34 +150,46 @@ func NewBearerTokenAuth(users []User, adminIdentities, proxyIdentities []string)
 		if _, ok := adminSet[u.Identity]; ok {
 			c.Admin = true
 		}
-		tokens[u.Token] = c
-		identityToToken[u.Identity] = u.Token
+		rows = append(rows, bearerRow{digest: sum, caller: c})
+		byIdentity[u.Identity] = c
 	}
 	return &BearerTokenAuth{
-		tokens:          tokens,
-		identityToToken: identityToToken,
-		proxyAllowed:    proxySet,
+		rows:         rows,
+		byIdentity:   byIdentity,
+		proxyAllowed: proxySet,
 	}
 }
 
 // Authenticate resolves the request's bearer token against the table.
 // Returns ErrUnauthenticated when no token is presented or the token
 // is not in the table.
+//
+// The presented token is hashed and its digest compared against every
+// row with subtle.ConstantTimeCompare, with no early exit: the time
+// taken depends on the table size, which the operator controls and is
+// not secret, and not on which row matched or how much of a digest
+// agreed.
 func (b *BearerTokenAuth) Authenticate(r *http.Request) (Caller, error) {
 	token := extractToken(r)
 	if token == "" {
 		return Caller{}, ErrUnauthenticated
 	}
-	for known, c := range b.tokens {
-		// Constant-time compare per token; the loop itself is not
-		// constant-time across table sizes, but the only signal it
-		// leaks is "how many tokens does the daemon have configured,"
-		// which is not sensitive (and operators control directly).
-		if subtle.ConstantTimeCompare([]byte(token), []byte(known)) == 1 {
-			return c, nil
+	presented := sha256.Sum256([]byte(token))
+	var (
+		matched Caller
+		found   int
+	)
+	for i := range b.rows {
+		hit := subtle.ConstantTimeCompare(presented[:], b.rows[i].digest[:])
+		if hit == 1 {
+			matched = b.rows[i].caller
 		}
+		found |= hit
 	}
-	return Caller{}, ErrUnauthenticated
+	if found != 1 {
+		return Caller{}, ErrUnauthenticated
+	}
+	return matched, nil
 }
 
 // CanProxyAs reports whether c is on the operator-configured proxy
@@ -175,7 +207,7 @@ func (b *BearerTokenAuth) CanProxyAs(c Caller) bool {
 // table. Used by the proxy path: a bot can only assert identities the
 // operator has provisioned (see ErrAssertedCallerUnknown).
 func (b *BearerTokenAuth) HasIdentity(identity string) bool {
-	_, ok := b.identityToToken[identity]
+	_, ok := b.byIdentity[identity]
 	return ok
 }
 
@@ -184,11 +216,7 @@ func (b *BearerTokenAuth) HasIdentity(identity string) bool {
 // by the proxy path to materialize the asserted Caller (preserving
 // Labels and Admin flag from the user table entry).
 func (b *BearerTokenAuth) LookupIdentity(identity string) (Caller, bool) {
-	token, ok := b.identityToToken[identity]
-	if !ok {
-		return Caller{}, false
-	}
-	c, ok := b.tokens[token]
+	c, ok := b.byIdentity[identity]
 	return c, ok
 }
 

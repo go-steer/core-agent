@@ -57,12 +57,33 @@ The static user table is the v2.4-shipped Authenticator. OIDC / JWT / mTLS / K8s
 {
   "version": 1,
   "users": [
-    { "identity": "alice@example.com", "token": "tok_alice_...", "labels": { "team": "platform" } },
-    { "identity": "bob@example.com",   "token": "tok_bob_...",   "labels": { "team": "infra" } },
-    { "identity": "sa:cron-runner",    "token": "tok_cron_...",  "labels": { "kind": "service" } }
+    { "identity": "alice@example.com", "token_sha256": "9f86d081884c7d65...", "labels": { "team": "platform" } },
+    { "identity": "bob@example.com",   "token_sha256": "60303ae22b998861...", "labels": { "team": "infra" } },
+    { "identity": "sa:cron-runner",    "token_sha256": "fd61a03af4f77d87...", "labels": { "kind": "service" } }
   ]
 }
 ```
+
+Each row stores `token_sha256`, the hex SHA-256 of the bearer token its holder presents. The table never holds the token itself, so reading it yields nothing a request can authenticate with ([#1213](https://github.com/go-steer/core-agent/issues/1213)). The daemon hashes each presented token and compares digests in constant time. Produce a row's value with `core-agent auth hash-token`, which reads the token from stdin and never from the command line, where it would land in shell history and the process list:
+
+```bash
+printf '%s' "$ALICE_TOKEN" | core-agent auth hash-token
+# 64 hex characters: paste into alice's "token_sha256"
+```
+
+On a terminal, `core-agent auth hash-token` prompts without echoing. It refuses input with whitespace in it (two lines, padding), because that digest would match nothing a client sends.
+
+The digest hides only a token too random to guess: anyone holding it can hash candidate tokens and compare. Mint tokens with `openssl rand -hex 32` (256 bits), and `hash-token` warns about anything shorter than 32 characters. That's also why it's a plain SHA-256 rather than bcrypt or argon2: those slow down guessing a human's password, which a random token doesn't need, and they'd add their cost to every authenticated request.
+
+**Plaintext rows still load.** A row may carry the older `"token": "<plaintext>"` instead. It authenticates exactly as before, but startup warns, naming every identity still stored that way (never the token):
+
+```
+core-agent: warning: users file /etc/core-agent/users.json stores a plaintext bearer token for: bob@example.com. Anyone who can read the file, including the agent's bash when it runs as this daemon's user, can authenticate with what it finds there. Replace each "token" with "token_sha256": printf '%s' "$TOKEN" | core-agent auth hash-token (#1213)
+```
+
+The startup summary counts them too (`multi-session auth: bearer_table, 3 users (1 with a plaintext token), ...`). Migrating a row doesn't change its token: hash the token the holder already has, and replace the field. A row sets exactly one of `token` and `token_sha256`. Two rows with the same token are rejected whichever field each uses, because the loader compares digests. Load errors never quote either value.
+
+Daemons from before this change reject a `token_sha256` row as an unknown field. Hash the table only once every daemon that reads it has been upgraded.
 
 **File-mode requirement:** mode `0600` or stricter (`0400`), or `0640`/`0440` when the owning group is one the daemon process belongs to. Any other-bit, and group **write** or **execute** in every case, is rejected. Failing this is a startup error, not a warning — bearer tokens deserve the same posture as a private SSH key.
 
@@ -74,17 +95,23 @@ gid 2000, which this process (gid 65532) is not a member of; use 0600, or set th
 Kubernetes fsGroup to a group the container runs as
 ```
 
-Generate tokens with whatever your secret manager uses; the loader has no opinion. A simple bootstrap:
+Generate tokens with whatever your secret manager uses; the loader has no opinion as long as the table gets the digest. A simple bootstrap, which hands each token to its holder and keeps only the digest:
 
 ```bash
 for who in alice bob ops sa-cron; do
-  echo "$who: $(openssl rand -hex 32)"
+  tok=$(openssl rand -hex 32)
+  echo "$who token (give to $who): $tok"
+  echo "$who token_sha256 (put in users.json): $(printf '%s' "$tok" | core-agent auth hash-token)"
 done
 ```
 
+`dev/tools/gen-users-json` in the repository writes a whole hashed table the same way.
+
 ### Keeping the table away from the agent
 
-File modes keep `users.json` from *other* users. They don't keep it from the agent, which runs as the daemon's user. Any token in the table answers permission prompts, so an agent that reads it can approve its own calls, and one that writes it can add its own token for the next boot ([#1201](https://github.com/go-steer/core-agent/issues/1201)). What core-agent does about it:
+File modes keep `users.json` from *other* users. They don't keep it from the agent, which runs as the daemon's user. Any plaintext token in the table answers permission prompts and can inject work under its holder's identity, so an agent that reads a plaintext table can approve its own calls, and one that writes the table can add its own row for the next boot ([#1201](https://github.com/go-steer/core-agent/issues/1201)).
+
+**Hashing closes the read route completely.** When every row stores `token_sha256`, the agent can read the whole table and learn nothing it can authenticate with ([#1213](https://github.com/go-steer/core-agent/issues/1213)). It needs no extra privilege in the pod or on the host. It does nothing about *writing* the table. Mount it read-only (a Kubernetes Secret volume already is), or make it unwritable by the daemon's user. The measures below still apply, and are what protect a table that still has plaintext rows:
 
 - **Agent file tools are refused on the table**, in every permission mode including yolo, and nobody can approve it. That covers `read_file`, `write_file`, `edit_file`, `delete_file`, `grep`, `glob`, `read_many_files`, `json_query`, `view_file_outline`, `list_dir` and `stat`. It holds for any path that is the table *now*: a symlink, a hard link, or the new file after a Kubernetes Secret update. Directory walks skip it. The table is protected whenever `table_file` is set, even with `multi_session.enabled` off.
 - **Instruction files can't include it.** An `@include` of the table, or an `AGENTS.d/` entry that links to it, fails the load and names the file. Without this, an agent with nothing but `write_file` could edit `AGENTS.md` and get every token in the next session's prompt.
@@ -96,7 +123,7 @@ File modes keep `users.json` from *other* users. They don't keep it from the age
   core-agent: warning: credential file /etc/core-agent/users.json is readable by the user this daemon runs as, and so by the agent's bash, ...
   ```
 
-Only the operating system can close the `bash` route. On a multi-session daemon, either disable the shell (`"tools": {"disable": ["bash"]}`), or arrange that the daemon's user can't read the file once the daemon has loaded it. Either way, mount the table outside the project tree, where directory listings won't show it to the model.
+For a table with plaintext rows, only hashing them or the operating system can close the `bash` route. On a multi-session daemon, hash every row, or disable the shell (`"tools": {"disable": ["bash"]}`), or arrange that the daemon's user can't read the file once the daemon has loaded it. The readable-table warning above doesn't look at whether the rows are hashed, so a fully hashed table still triggers it. In every case, mount the table outside the project tree, where directory listings won't show it to the model.
 
 Don't run the daemon as root with `CAP_SYS_PTRACE` either. Every process the agent starts would inherit it and could read the table straight out of the daemon's memory. Startup warns about this too.
 

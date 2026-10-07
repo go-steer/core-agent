@@ -1,0 +1,272 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+// Git, split across two repositories on purpose.
+//
+// The per-issue working copy lives on the workspace volume, where the
+// agent's bash can write anything — including that copy's .git/config
+// and hooks. Any git command the dispatcher ran in it afterwards would
+// execute whatever the agent planted there (a hook, a core.fsmonitor
+// command, a filter driver) in the dispatcher's pod, next to the App key
+// and with the push token in reach.
+//
+// So the dispatcher keeps its own bare repository on a volume the agent
+// cannot see (the private repo). Credentials only ever touch that one:
+// it fetches the mirror's main there, the working copy is cloned FROM it
+// (shallow, decision 20), and afterwards the agent's branch is fetched
+// BACK into it, verified there, and pushed from there by SHA. The only
+// git that runs inside the agent-writable copy after the agent has had it
+// is the upload-pack serving that one fetch.
+//
+// Every invocation also pins the config an attacker would reach for:
+// hooks off, fsmonitor off, the ext:: transport off, and the inherited
+// credential helpers cleared.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
+
+// identity is the soak's commit identity (decision 16).
+type identity struct {
+	Name  string
+	Email string
+}
+
+func (id identity) String() string { return id.Name + " <" + id.Email + ">" }
+
+type gitOps struct {
+	bin          string // git binary
+	remote       string // the mirror's clone URL; never carries a credential
+	base         string // the mirror branch work starts from ("main")
+	privateDir   string // the dispatcher-only bare repo
+	worktreesDir string // parent of the per-issue working copies
+	id           identity
+}
+
+// hardening is prepended to every git invocation. `credential.helper=`
+// (empty) resets the helper list, so a helper configured anywhere else —
+// including in a repo's own config — is never consulted.
+var hardening = []string{
+	"-c", "core.hooksPath=/dev/null",
+	"-c", "core.fsmonitor=false",
+	"-c", "protocol.ext.allow=never",
+	"-c", "credential.helper=",
+}
+
+// run executes git in dir (or with no -C when dir is ""), with extra -c
+// args (credentials) placed after the hardening so they win.
+func (g *gitOps) run(ctx context.Context, dir string, extra []string, args ...string) (string, error) {
+	argv := append([]string{}, hardening...)
+	argv = append(argv, extra...)
+	if dir != "" {
+		argv = append(argv, "-C", dir)
+	}
+	argv = append(argv, args...)
+	cmd := exec.CommandContext(ctx, g.bin, argv...) // #nosec G204 G702 -- fixed binary; args are built here, never from issue text.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// credentialArgs returns the -c args that make git authenticate to an
+// https remote with token, plus a cleanup that deletes the credential.
+//
+// The token goes into a 0600 file in a fresh 0700 directory under the
+// dispatcher's own TMPDIR and reaches git through the stock `store`
+// helper — never through argv (visible in ps) or the environment
+// (visible in /proc/<pid>/environ and inherited by every child). The
+// returned args name only the file. A non-https remote (a local path in
+// tests) needs no credential and gets none.
+func credentialArgs(remote, token string) ([]string, func(), error) {
+	noop := func() {}
+	u, err := url.Parse(remote)
+	if err != nil || u.Scheme != "https" {
+		return nil, noop, nil // not an https remote (a local path in tests): nothing to authenticate.
+	}
+	if token == "" {
+		return nil, noop, errors.New("no token for an https remote")
+	}
+	dir, err := os.MkdirTemp("", "soak-dispatcher-cred-")
+	if err != nil {
+		return nil, noop, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	path := filepath.Join(dir, "credentials")
+	// git runs a helper string containing spaces through the shell, so
+	// the path is held to characters that need no quoting.
+	if !safePathRe.MatchString(path) {
+		cleanup()
+		return nil, noop, fmt.Errorf("temp dir %q has characters git's helper string would need quoted; set TMPDIR to a plain path", dir)
+	}
+	line := (&url.URL{Scheme: "https", User: url.UserPassword("x-access-token", token), Host: u.Host}).String() + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		cleanup()
+		return nil, noop, err
+	}
+	return []string{"-c", "credential.helper=store --file=" + path}, cleanup, nil
+}
+
+var safePathRe = regexp.MustCompile(`^[A-Za-z0-9/._-]+$`)
+
+// ensurePrivate creates the private bare repo on first use.
+func (g *gitOps) ensurePrivate(ctx context.Context) error {
+	if _, err := os.Stat(filepath.Join(g.privateDir, "HEAD")); err == nil { // #nosec G703 -- operator-configured path.
+		return nil
+	}
+	if err := os.MkdirAll(g.privateDir, 0o700); err != nil { // #nosec G703 -- operator-configured path.
+		return err
+	}
+	_, err := g.run(ctx, "", nil, "init", "--bare", "--quiet", g.privateDir)
+	return err
+}
+
+// fetchBase fetches the tip of the mirror's base branch into the private
+// repo, depth 1, and returns its SHA.
+func (g *gitOps) fetchBase(ctx context.Context, token string) (string, error) {
+	if err := g.ensurePrivate(ctx); err != nil {
+		return "", err
+	}
+	cred, cleanup, err := credentialArgs(g.remote, token)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	ref := "refs/heads/" + g.base
+	if _, err := g.run(ctx, g.privateDir, cred, "fetch", "--quiet", "--no-tags", "--depth=1", g.remote, "+"+ref+":"+ref); err != nil {
+		return "", err
+	}
+	return g.run(ctx, g.privateDir, nil, "rev-parse", "--verify", ref+"^{commit}")
+}
+
+func (g *gitOps) cloneDir(number int) string {
+	return filepath.Join(g.worktreesDir, fmt.Sprintf("issue-%d", number))
+}
+
+// prepareClone makes the issue's working copy: a depth-1 clone of the
+// base tip from the private repo, with no remote left behind, the issue
+// branch checked out, and the soak identity configured locally.
+//
+// Depth 1 is decision 20: nothing that was ever in the mirror's history
+// (the seed list with its expected outcomes) exists in the copy.
+func (g *gitOps) prepareClone(ctx context.Context, number int) (string, error) {
+	dir := g.cloneDir(number)
+	if err := os.RemoveAll(dir); err != nil { // #nosec G703 -- under the operator's --worktrees-dir; number is an int.
+		return "", fmt.Errorf("clear stale working copy: %w", err)
+	}
+	if err := os.MkdirAll(g.worktreesDir, 0o750); err != nil { // #nosec G703 -- operator-configured path.
+		return "", err
+	}
+	src := (&url.URL{Scheme: "file", Path: g.privateDir}).String()
+	if _, err := g.run(ctx, "", nil, "clone", "--quiet", "--depth=1", "--no-tags", "--single-branch", "--branch", g.base, src, dir); err != nil {
+		return "", err
+	}
+	steps := [][]string{
+		{"remote", "remove", "origin"},
+		{"checkout", "--quiet", "-b", branchFor(number)},
+		{"config", "user.name", g.id.Name},
+		{"config", "user.email", g.id.Email},
+	}
+	for _, s := range steps {
+		if _, err := g.run(ctx, dir, nil, s...); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+// commit is one commit on the agent's branch, as identity checks see it.
+type commit struct {
+	SHA            string
+	AuthorName     string
+	AuthorEmail    string
+	CommitterName  string
+	CommitterEmail string
+	Message        string
+}
+
+// collect fetches the issue branch out of the working copy into the
+// private repo and returns its tip and the commits past base. The fetch
+// is the one git process that touches the agent-writable copy after the
+// agent had it; safe.directory is scoped to that copy because the daemon
+// and dispatcher may run as different users.
+func (g *gitOps) collect(ctx context.Context, number int, dir, base string) (string, []commit, error) {
+	branch := branchFor(number)
+	local := fmt.Sprintf("refs/soak/issue-%d", number)
+	src := (&url.URL{Scheme: "file", Path: dir}).String()
+	safe := []string{"-c", "safe.directory=" + dir}
+	if _, err := g.run(ctx, g.privateDir, safe, "fetch", "--quiet", "--no-tags", src, "+refs/heads/"+branch+":"+local); err != nil {
+		return "", nil, fmt.Errorf("read %s from the working copy: %w", branch, err)
+	}
+	tip, err := g.run(ctx, g.privateDir, nil, "rev-parse", "--verify", local+"^{commit}")
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := g.run(ctx, g.privateDir, nil, "merge-base", "--is-ancestor", base, tip); err != nil {
+		return "", nil, fmt.Errorf("%s does not descend from the base %s", branch, base)
+	}
+	out, err := g.run(ctx, g.privateDir, nil, "log", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e", base+".."+tip)
+	if err != nil {
+		return "", nil, err
+	}
+	return tip, parseLog(out), nil
+}
+
+func parseLog(out string) []commit {
+	var cs []commit
+	for _, rec := range strings.Split(out, "\x1e") {
+		rec = strings.TrimLeft(rec, "\n")
+		if strings.TrimSpace(rec) == "" {
+			continue
+		}
+		f := strings.SplitN(rec, "\x1f", 6)
+		if len(f) < 6 {
+			continue
+		}
+		cs = append(cs, commit{SHA: f[0], AuthorName: f[1], AuthorEmail: f[2], CommitterName: f[3], CommitterEmail: f[4], Message: f[5]})
+	}
+	return cs
+}
+
+// push publishes tip — the exact SHA that was verified, not the branch
+// name, so a commit the agent adds after verification is never pushed —
+// as the issue branch on the mirror. Not forced: a branch left from an
+// earlier attempt is a reason to stop, not to overwrite.
+func (g *gitOps) push(ctx context.Context, number int, tip, token string) error {
+	cred, cleanup, err := credentialArgs(g.remote, token)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	_, err = g.run(ctx, g.privateDir, cred, "push", "--quiet", "--no-verify", g.remote, tip+":refs/heads/"+branchFor(number))
+	return err
+}
+
+// removeClone deletes the issue's working copy. No git involved: the
+// copy is agent-writable, so nothing in it is executed to remove it.
+func (g *gitOps) removeClone(number int) error {
+	return os.RemoveAll(g.cloneDir(number)) // #nosec G703 -- under the operator's --worktrees-dir; number is an int.
+}

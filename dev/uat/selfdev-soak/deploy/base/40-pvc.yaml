@@ -1,0 +1,79 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Persistent volumes. All ReadWriteOnce: the cluster's default storage
+# class is a zonal persistent disk. The workspace is mounted by both
+# the daemon and the dispatcher (the dispatcher writes each issue's
+# working copy there and the agent edits it), which ReadWriteOnce allows
+# for pods on the same node; the dispatcher's pod spec requires that
+# node with a podAffinity on the daemon.
+#
+# The eventlog: sessions, gate and approver rows, guardrail trips. It
+# is the soak's evidence, so it is never an emptyDir.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: core-agent-selfdev-eventlog
+  namespace: core-agent-selfdev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# The workspace: per-issue working copies (/workspace/issues) and the
+# plans directory the daemon writes and the dispatcher reads
+# (/workspace/.soak/plans).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: core-agent-selfdev-workspace
+  namespace: core-agent-selfdev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+# The Go module and build cache, and GOPATH for `go install`ed dev
+# tools, so `go test` and the presubmits stay warm across issues and
+# restarts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: core-agent-selfdev-gocache
+  namespace: core-agent-selfdev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 30Gi
+---
+# The dispatcher's state file. Mounted by the dispatcher's pod ONLY: it
+# records the active issue and the open PRs, and must survive a restart
+# (dispatcher design, "Deployment requirements").
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: selfdev-soak-dispatcher-state
+  namespace: core-agent-selfdev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

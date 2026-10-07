@@ -1,0 +1,124 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The self-development soak's minimal rig for A7 (#1213, phase 2 of
+# docs/selfdev-soak-design.md): namespace core-agent-selfdev, the
+# core-agent daemon, the dispatcher (polling form, at zero replicas),
+# their volumes, and the network policy between them. The A7 run itself,
+# the dispatcher's --once Job, is ../a7-job, rendered and applied as its
+# own step so that re-applying this base never starts a run.
+# dev/uat/selfdev-soak/README.md is the runbook.
+#
+# Render it with ../render.sh, never with `kubectl apply -k` on this
+# directory. Two files this kustomization reads are deliberately not in
+# the tree:
+#
+#   inputs.env        the operator's values (../inputs.env.example lists
+#                     them), kept outside the repo
+#   config.soak.json  dev/uat/selfdev-soak/config.soak.json, which
+#                     config_test.go guards
+#
+# render.sh copies the tree to a temporary directory, adds both, renders,
+# and refuses output that still carries a placeholder or names an image
+# by anything other than a digest. Applying this directory directly
+# fails closed: kustomize cannot find either file.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Everything lives in one namespace. The transformer forces it on every
+# object, so an object that forgot metadata.namespace cannot land in
+# `default` beside unrelated workloads.
+transformers:
+  - namespace-transformer.yaml
+
+resources:
+  - 00-namespace.yaml
+  - 10-serviceaccount-daemon.yaml
+  - 11-serviceaccount-dispatcher.yaml
+  - 20-networkpolicy-default-deny.yaml
+  - 21-networkpolicy-daemon.yaml
+  - 22-networkpolicy-dispatcher.yaml
+  - 23-networkpolicy-https.yaml
+  - 40-pvc.yaml
+  - 50-deployment-daemon.yaml
+  - 51-deployment-dispatcher.yaml
+  - 60-service.yaml
+  # Secrets are created by the operator (README.md, "Secrets"). None is
+  # generated here, and no secret value is ever committed.
+
+configMapGenerator:
+  # The operator's values. A real ConfigMap, not local-config: the pods
+  # read the Vertex project, the App ID and the commit identity from it
+  # (configMapKeyRef, so a missing key stops the container), and the
+  # replacements below copy the image and the Slack channel out of it.
+  #
+  # No hash suffix, so the A7 Job (../a7-job, rendered separately) can
+  # name it, and an inputs change doesn't make the Job's immutable pod
+  # template differ. The cost: a changed SOAK_VERTEX_PROJECT reaches the
+  # daemon only on its next restart (`kubectl rollout restart`). The
+  # image and the Slack channel roll it by themselves.
+  - name: selfdev-soak-inputs
+    envs:
+      - inputs.env
+    options:
+      disableNameSuffixHash: true
+  # The soak config overlay, mounted at /etc/core-agent-soak/config.json
+  # (the image's entrypoint passes -c with that path). The hash suffix
+  # stays on, so a config change rolls the daemon.
+  - name: core-agent-selfdev-config
+    files:
+      - config.json=config.soak.json
+
+replacements:
+  # The soak image, by digest, into every container that runs it. A
+  # missing SOAK_IMAGE fails the render; a placeholder one is refused by
+  # render.sh and, applied anyway, is not a valid image reference, so
+  # the kubelet never starts the pod (InvalidImageName).
+  - source:
+      kind: ConfigMap
+      name: selfdev-soak-inputs
+      fieldPath: data.SOAK_IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: core-agent-selfdev
+        fieldPaths:
+          - spec.template.spec.initContainers.[name=plans-dir].image
+          - spec.template.spec.containers.[name=core-agent].image
+      - select:
+          kind: Deployment
+          name: selfdev-soak-dispatcher
+        fieldPaths:
+          - spec.template.spec.containers.[name=dispatcher].image
+  # The soak Slack channel, into the switchboard target's `conversation`
+  # inside config.json. A replacement cannot address a field inside a
+  # JSON string, so this splits the file on `"` and replaces one
+  # segment: index 103 is the segment holding config.soak.json's
+  # placeholder. Editing config.soak.json above that line moves the
+  # index; render_test.go fails then and prints the new one. A missing
+  # SOAK_SLACK_CHANNEL fails the render, and the shipped placeholder
+  # contains spaces, which config validation refuses at daemon startup.
+  - source:
+      kind: ConfigMap
+      name: selfdev-soak-inputs
+      fieldPath: data.SOAK_SLACK_CHANNEL
+    targets:
+      - select:
+          kind: ConfigMap
+          name: core-agent-selfdev-config
+        fieldPaths:
+          - data.[config.json]
+        options:
+          delimiter: '"'
+          index: 103

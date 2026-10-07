@@ -1,0 +1,63 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The dispatcher's in-cluster paths: no ingress at all (it runs no
+# server and takes no webhook), and egress to DNS and the daemon's
+# attach port. HTTPS to GitHub is in 23-networkpolicy-https.yaml (or,
+# with fqdn-egress/, an FQDNNetworkPolicy naming the hosts). It gets no
+# metadata-server path: it holds no Google Cloud role.
+#
+# The daemon rule selects the daemon's pods on the container port, not
+# the Service: a NetworkPolicy sees traffic after the Service's address
+# has been translated to the pod's.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: selfdev-soak-dispatcher
+  namespace: core-agent-selfdev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: core-agent-selfdev
+      app.kubernetes.io/component: dispatcher
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    # DNS, port 53 only (see 21-networkpolicy-daemon.yaml). The metadata
+    # server appears here for Cloud DNS, never on its token port.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - ipBlock:
+            cidr: 169.254.20.10/32
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: core-agent-selfdev
+              app.kubernetes.io/component: daemon
+      ports:
+        - protocol: TCP
+          port: 7777

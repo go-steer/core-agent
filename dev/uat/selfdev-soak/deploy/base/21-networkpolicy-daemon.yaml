@@ -1,0 +1,101 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The daemon's in-cluster paths.
+#
+# Ingress: only the dispatcher's pods, only the attach port. No Service
+# of type LoadBalancer exists, and no ingress object. The maintainer
+# reaches the daemon (to answer an escalation with core-agent-tui) over
+# `kubectl port-forward`, which the API server tunnels through the
+# kubelet rather than the pod network.
+#
+# Egress: DNS and the GKE metadata server, which serves the Workload
+# Identity token Vertex needs. HTTPS to Vertex and the Go module proxy
+# is in 23-networkpolicy-https.yaml (or, with fqdn-egress/, an
+# FQDNNetworkPolicy naming the hosts).
+#
+# switchboard: when P4's switchboard runs in this cluster, add an egress
+# rule for its Service's pods here, e.g.
+#
+#   - to:
+#       - namespaceSelector:
+#           matchLabels:
+#             kubernetes.io/metadata.name: switchboard
+#         podSelector:
+#           matchLabels:
+#             app.kubernetes.io/name: switchboard
+#     ports:
+#       - protocol: TCP
+#         port: 8080
+#
+# Until then SOAK_SWITCHBOARD_URL points nowhere reachable, and an
+# approval notification fails (logged by the daemon); the maintainer
+# watches through core-agent-tui instead (design, P4).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: core-agent-selfdev-daemon
+  namespace: core-agent-selfdev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: core-agent-selfdev
+      app.kubernetes.io/component: daemon
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: core-agent-selfdev
+              app.kubernetes.io/component: dispatcher
+      ports:
+        - protocol: TCP
+          port: 7777
+  egress:
+    # DNS, port 53 only: kube-dns, NodeLocal DNSCache where the cluster
+    # runs it, and the metadata server, which answers DNS on clusters
+    # that use Cloud DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - ipBlock:
+            cidr: 169.254.20.10/32
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The GKE metadata server: 169.254.169.252:988 on standard GKE,
+    # 169.254.169.254:80 on GKE Dataplane V2. Workload Identity tokens
+    # come from here, and only the daemon needs them.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.252/32
+      ports:
+        - protocol: TCP
+          port: 988
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80

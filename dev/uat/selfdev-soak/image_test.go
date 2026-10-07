@@ -379,3 +379,32 @@ func TestDockerfileEntrypointPinsConfig(t *testing.T) {
 	}
 	t.Error("no ENTRYPOINT")
 }
+
+// TestDockerfileShipsDispatcherAndRecipe: one image digest pins the
+// daemon, the dispatcher and the recipe (decision 11), so the deploy/
+// manifests can name the same image for both pods. The paths here are
+// the ones those manifests use.
+func TestDockerfileShipsDispatcherAndRecipe(t *testing.T) {
+	ins := parseDockerfile(t)
+	if !hasRun(ins, `go build -trimpath -ldflags "-s -w" -o /out/selfdev-soak-dispatcher ./dev/uat/selfdev-soak/dispatcher`) {
+		t.Error("the builder no longer builds the dispatcher from the pinned checkout")
+	}
+	if !hasRun(ins, "cp -R AGENTS.md .agents /out/recipe/") || !hasRun(ins, "mkdir -p /out/recipe/.agents/plans") {
+		t.Error("the builder no longer stages the pinned recipe with an empty plans mount point")
+	}
+	st := stages(ins)
+	want := map[string]bool{
+		"--from=builder /out/selfdev-soak-dispatcher /usr/local/bin/selfdev-soak-dispatcher": false,
+		"--from=builder /out/recipe /usr/local/share/core-agent-soak/recipe":                 false,
+	}
+	for _, in := range st[len(st)-1] {
+		if _, ok := want[in.args]; ok && in.op == "COPY" {
+			want[in.args] = true
+		}
+	}
+	for args, found := range want {
+		if !found {
+			t.Errorf("the runtime stage lacks COPY %s", args)
+		}
+	}
+}

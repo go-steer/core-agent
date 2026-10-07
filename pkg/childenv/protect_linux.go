@@ -26,7 +26,8 @@ import "golang.org/x/sys/unix"
 // without CAP_SYS_PTRACE — which is every process the bash tool starts
 // unless the daemon itself runs as root with full capabilities, in
 // which case its children typically inherit CAP_SYS_PTRACE and this
-// protects nothing. Children are unaffected: the flag is reset to
+// protects nothing (PtraceWarning is the startup check for that, #1201).
+// Children are unaffected: the flag is reset to
 // dumpable on execve, so nothing the agent runs is restricted by it.
 //
 // The costs, which is why cmd/core-agent calls it only when a withheld

@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
@@ -128,6 +129,11 @@ type Gate struct {
 	mode   Mode
 	policy *Policy
 	scope  *PathScope
+
+	// creds is the daemon's credential files, which no agent tool may
+	// read or write in any mode (#1201). Shared by reference with every
+	// derived gate; see credfiles.go.
+	creds *credentialFiles
 
 	// sessionPolicy holds the allow / deny patterns added at runtime
 	// to this session alone (/allow, /deny, POST /perms/allow|deny),
@@ -446,6 +452,7 @@ func New(opts Options) *Gate {
 		mode:                 opts.Mode,
 		policy:               opts.Policy,
 		scope:                opts.Scope,
+		creds:                &credentialFiles{},
 		prompter:             opts.Prompter,
 		grants:               opts.GrantStore,
 		sessionAllow:         make(map[string]struct{}),
@@ -541,7 +548,7 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	if err != nil {
 		return nil, err
 	}
-	return New(Options{
+	g := New(Options{
 		Mode:             mode,
 		Policy:           policy,
 		Scope:            scope,
@@ -554,7 +561,16 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		RequirePlanArtifact: cfg.Permissions.PlanGateArmed(),
 		BashSearchGate:      cfg.Safety.BashSearchGate,
 		ApprovalTimeout:     approvalTimeout,
-	}), nil
+	})
+	// Derived from config here, not wired by the host, so every gate a
+	// config builds protects the files that config makes the daemon
+	// read a credential from — no wiring site can forget it (#1201).
+	// The process-wide copy is for the instruction loader, which takes
+	// no gate: a library host that builds its gate here gets the
+	// @include refusal too. Add-only and idempotent.
+	g.ProtectCredentialFiles(cfg.CredentialFiles()...)
+	childenv.WithholdFiles(cfg.CredentialFiles()...)
+	return g, nil
 }
 
 // autoEligibleFromConfig builds the approver's eligible list from
@@ -676,11 +692,14 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 	mode := template.mode
 	template.mu.Unlock()
 	return &Gate{
-		sessionID:           sessionID,
-		mode:                mode,
-		policy:              template.policy,
-		sessionPolicy:       &Policy{},
-		scope:               template.scope,
+		sessionID:     sessionID,
+		mode:          mode,
+		policy:        template.policy,
+		sessionPolicy: &Policy{},
+		scope:         template.scope,
+		// Shared, not copied: a session whose gate dropped this could
+		// read the bearer table that authenticates every caller.
+		creds:               template.creds,
 		prompter:            prompter,
 		grants:              template.grants,
 		sessionAllow:        make(map[string]struct{}),
@@ -1084,6 +1103,9 @@ func (g *Gate) CheckBash(ctx context.Context, command string) error {
 func (g *Gate) checkBash(ctx context.Context, command string, args lazyArgs) error {
 	g = g.resolveSessionGate(ctx)
 	command = strings.TrimSpace(command)
+	if err := g.credentialBashDenial(command); err != nil {
+		return err
+	}
 	if denied, reason := IsBashDenied(command); denied {
 		return fmt.Errorf("bash refused: %s", reason)
 	}
@@ -1223,6 +1245,9 @@ func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
 	// let the tool read arbitrary out-of-scope files. In-scope reads
 	// already pass without a prompt; out-of-scope reads still escalate
 	// via promptForPath even when the tool is trusted for the session.
+	if err := g.credentialFileDenial(toolName, path); err != nil {
+		return err
+	}
 	access, err := g.scope.AccessFor(path)
 	if err != nil {
 		return err
@@ -1244,7 +1269,13 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 
 func (g *Gate) checkFileWrite(ctx context.Context, toolName, path string, args lazyArgs) error {
 	g = g.resolveSessionGate(ctx)
-	// Control-plane classification runs FIRST and on the symlink-
+	// A credential file is refused before anything else, the
+	// control-plane tier included: that tier can still be approved, and
+	// a model that could write the bearer table could add its own token.
+	if err := g.credentialFileDenial(toolName, path); err != nil {
+		return err
+	}
+	// Control-plane classification runs next, on the symlink-
 	// resolved path, before any mode/session/allowlist short-circuit,
 	// so a write (or a symlink laundering one) to .agents/config.json
 	// or .agents/mcp.json cannot be auto-approved by yolo, acceptEdits,

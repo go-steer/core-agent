@@ -82,6 +82,24 @@ for who in alice bob ops sa-cron; do
 done
 ```
 
+### Keeping the table away from the agent
+
+File modes keep `users.json` from *other* users. They don't keep it from the agent, which runs as the daemon's user. Any token in the table answers permission prompts, so an agent that reads it can approve its own calls, and one that writes it can add its own token for the next boot ([#1201](https://github.com/go-steer/core-agent/issues/1201)). What core-agent does about it:
+
+- **Agent file tools are refused on the table**, in every permission mode including yolo, and nobody can approve it. That covers `read_file`, `write_file`, `edit_file`, `delete_file`, `grep`, `glob`, `read_many_files`, `json_query`, `view_file_outline`, `list_dir` and `stat`. It holds for any path that is the table *now*: a symlink, a hard link, or the new file after a Kubernetes Secret update. Directory walks skip it. The table is protected whenever `table_file` is set, even with `multi_session.enabled` off.
+- **Instruction files can't include it.** An `@include` of the table, or an `AGENTS.d/` entry that links to it, fails the load and names the file. Without this, an agent with nothing but `write_file` could edit `AGENTS.md` and get every token in the next session's prompt.
+- **A `bash` command that names the table directly is refused too.** That means its absolute path, its resolved path, or its path relative to the working directory. This is a seatbelt, not a boundary: `cd` plus a bare name, a glob or a variable still reach it. The gate sees a command string, not the files the shell opens. Hook commands go through the same check, so a hook that names the table is refused as well.
+- **The daemon is made non-dumpable** whenever `table_file` is set, because the table stays in its memory. Same mechanism as for [withheld env credentials](/concepts/env-manifest/#those-variables-are-the-daemons-not-the-agents).
+- **Startup warns** when the daemon's user can read the table and either `bash` is registered or the table sits inside the agent's path scope:
+
+  ```
+  core-agent: warning: credential file /etc/core-agent/users.json is readable by the user this daemon runs as, and so by the agent's bash, ...
+  ```
+
+Only the operating system can close the `bash` route. On a multi-session daemon, either disable the shell (`"tools": {"disable": ["bash"]}`), or arrange that the daemon's user can't read the file once the daemon has loaded it. Either way, mount the table outside the project tree, where directory listings won't show it to the model.
+
+Don't run the daemon as root with `CAP_SYS_PTRACE` either. Every process the agent starts would inherit it and could read the table straight out of the daemon's memory. Startup warns about this too.
+
 ---
 
 ## Authorization model

@@ -57,6 +57,7 @@ The rig's T0–T2 runs were attended runs on the maintainer's workstation, under
 20. **The answer key never reaches the worker.** A seed's expected class and its file:line evidence would let the agent grade-shop: an escalate or stop seed could be "solved" by reading what a correct agent is supposed to do. So:
     - the seed list lives outside the repo, and was removed from `docs/` before any seeding;
     - the dispatcher's worktree is a **shallow** clone of the mirror's `main`, so the file's earlier presence in history isn't fetched;
+    - the worktree gets release tag *names* (`vX.Y.Z`), which the presubmit sweep needs, but only for tags whose commits are ancestors of the worktree's base. A later tag could point at the fix. Each name points at a placeholder, never at the release's commit, tree or message: those are older repository text and could carry the seed list (dispatcher design, decision 24);
     - the worker has no GitHub credential and no `gh` (P3, decision 7), so it can't read the `soak:expect-<class>` labels;
     - the dispatcher injects only the issue's title, body, number and upstream link.
 

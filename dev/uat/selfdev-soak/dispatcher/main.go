@@ -59,6 +59,7 @@ type config struct {
 	Upstream       string
 	APIURL         string
 	GitRemote      string
+	TagsRemote     string
 	BaseBranch     string
 	Poll           time.Duration
 	MaxOpenPRs     int
@@ -91,6 +92,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	fs.StringVar(&c.Upstream, "upstream-repo", "go-steer/core-agent", "the repository every issue must link (decision 12)")
 	fs.StringVar(&c.APIURL, "api-url", "https://api.github.com", "GitHub REST API root")
 	fs.StringVar(&c.GitRemote, "git-remote", "", "the mirror's clone URL (default https://github.com/<repo>.git)")
+	fs.StringVar(&c.TagsRemote, "tags-remote", "", "where release tags come from, fetched without a credential (default https://github.com/<upstream-repo>.git); only those that are ancestors of each base reach the working copy")
 	fs.StringVar(&c.BaseBranch, "base-branch", "main", "the mirror branch work starts from and PRs target")
 	fs.DurationVar(&c.Poll, "poll", 2*time.Minute, "poll interval")
 	fs.IntVar(&c.MaxOpenPRs, "max-open-prs", 3, "take a new issue only while fewer agent PRs than this are open")
@@ -122,6 +124,9 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	c.Owner, c.Repo = owner, name
 	if c.GitRemote == "" {
 		c.GitRemote = "https://github.com/" + repo + ".git"
+	}
+	if c.TagsRemote == "" {
+		c.TagsRemote = "https://github.com/" + c.Upstream + ".git"
 	}
 	return c, c.validate()
 }
@@ -169,7 +174,7 @@ func newDispatcher(c config, attachToken string, tokens tokenSource, log *slog.L
 			settle: c.Settle, startTimeout: c.StartTimeout, reconnect: 5 * time.Second,
 		},
 		git: &gitOps{
-			bin: "git", remote: c.GitRemote, base: c.BaseBranch,
+			bin: "git", remote: c.GitRemote, tagsRemote: c.TagsRemote, base: c.BaseBranch,
 			privateDir: c.PrivateRepo, worktreesDir: c.WorktreesDir, id: c.Identity, inspect: inspectCopy,
 		},
 		log:     log,

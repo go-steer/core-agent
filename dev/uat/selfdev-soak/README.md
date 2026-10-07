@@ -228,10 +228,17 @@ capability dropped (checked with `docker run --read-only --cap-drop ALL`).
 
 The per-issue copies need the upstream release tags.
 `verify-version-fallback`, part of the presubmit sweep the recipe runs,
-fails with "no release tags found" in a clone that has none. That gives the
-agent a red check it can do nothing about. Either the mirror carries
-upstream's tags, or the dispatcher fetches them into the copy. Today's
-dispatcher does neither.
+fails with "no release tags found" in a clone that has none. That would
+give the agent a red check it can do nothing about. So the dispatcher gives
+each copy the *names* of the release tags that are ancestors of its base.
+It fetches them from upstream with no credential (`--tags-remote`, which
+defaults to `https://github.com/go-steer/core-agent.git`, so the
+dispatcher's egress must reach github.com). Each name points at a
+placeholder note, never at the release's commit, tree or message, so no
+older state of the repository crosses (dispatcher design, decision 24).
+A copy that no release tag reaches is refused, which stops the issue with
+a reason. The image's ref must include this behaviour (upstream #1278 or
+later). An older dispatcher leaves the copies without tags.
 
 The attach listener's auth is the overlay's `attach.multi_session` block:
 the hashed bearer table (#1269), anonymous access off. There is no
@@ -483,8 +490,10 @@ Name the soak's commit identity in the mirror's attribution allowlist
 (decision 16), never upstream's.
 
 **1. Build and push the image, and record its digest.** The ref is an
-upstream release tag or a full SHA on upstream `main`, at or after
-`61f00731` (the dispatcher):
+upstream release tag or a full SHA on upstream `main` that includes
+the dispatcher's release-tag copying (#1278). An older ref (from
+`61f00731`, the dispatcher) builds, but its copies carry no tags and
+`verify-version-fallback` fails in them:
 
 ```bash
 dev/uat/selfdev-soak/build-image.sh --ref <tag or SHA> --platform linux/amd64 \

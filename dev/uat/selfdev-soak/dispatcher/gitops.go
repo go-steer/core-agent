@@ -59,6 +59,7 @@ func (id identity) String() string { return id.Name + " <" + id.Email + ">" }
 type gitOps struct {
 	bin          string // git binary
 	remote       string // the mirror's clone URL; never carries a credential
+	tagsRemote   string // where release tags are fetched from, with no credential
 	base         string // the mirror branch work starts from ("main")
 	privateDir   string // the dispatcher-only bare repo
 	worktreesDir string // parent of the per-issue working copies
@@ -188,8 +189,15 @@ func (g *gitOps) ensurePrivate(ctx context.Context) error {
 	return err
 }
 
-// fetchBase fetches the tip of the mirror's base branch into the private
-// repo, depth 1, and returns its SHA.
+// fetchBase fetches the mirror's base branch into the private repo and
+// returns its tip's SHA. It also fetches the release tags from
+// tagsRemote, with no credential.
+//
+// The private repo holds the base's full history, so that
+// copyReleaseTags can ask which release tags are ancestors of the base.
+// That history never reaches a working copy (each copy is depth 1;
+// decision 20): the private repo is the dispatcher's alone. A private
+// repo made by an earlier, depth-1 dispatcher is unshallowed once.
 func (g *gitOps) fetchBase(ctx context.Context, token string) (string, error) {
 	if err := g.ensurePrivate(ctx); err != nil {
 		return "", err
@@ -200,10 +208,110 @@ func (g *gitOps) fetchBase(ctx context.Context, token string) (string, error) {
 	}
 	defer cleanup()
 	ref := "refs/heads/" + g.base
-	if _, err := g.run(ctx, g.privateDir, cred, "fetch", "--quiet", "--no-tags", "--depth=1", g.remote, "+"+ref+":"+ref); err != nil {
+	args := []string{"fetch", "--quiet", "--no-tags"}
+	if _, err := os.Stat(filepath.Join(g.privateDir, "shallow")); err == nil { // #nosec G703 -- operator-configured path.
+		args = append(args, "--unshallow")
+	}
+	if _, err := g.run(ctx, g.privateDir, cred, append(args, g.remote, "+"+ref+":"+ref)...); err != nil {
 		return "", err
 	}
+	// Release tags only, by name; a tag the remote moves is refetched.
+	// They land OUTSIDE refs/tags: a clone from this repo sends the
+	// annotated tag object of every refs/tags/* entry that points at a
+	// commit it sends (include-tag, even with --no-tags), which would put
+	// a tag message on the base into the copy.
+	// No credential: the default is the public upstream repository.
+	if _, err := g.run(ctx, g.privateDir, nil, "fetch", "--quiet", "--no-tags", g.tagsRemote, "+refs/tags/v*:"+upstreamTags+"v*"); err != nil {
+		return "", fmt.Errorf("fetch release tags: %w", err)
+	}
 	return g.run(ctx, g.privateDir, nil, "rev-parse", "--verify", ref+"^{commit}")
+}
+
+// releaseTagRe is a release tag name: vX.Y.Z, no pre-release suffix.
+// verify-version-fallback reads only these.
+var releaseTagRe = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// upstreamTags is where the private repo keeps the fetched tags.
+const upstreamTags = "refs/upstream-tags/"
+
+// releaseTags lists the release tags in the private repo whose commits
+// are ancestors of base (`--merged`), as the refs/tags/ names the copy
+// should carry. Only names cross into a copy.
+func (g *gitOps) releaseTags(ctx context.Context, base string) ([]string, error) {
+	out, err := g.run(ctx, g.privateDir, nil, "for-each-ref", "--merged="+base, "--format=%(refname)", upstreamTags)
+	if err != nil {
+		return nil, err
+	}
+	var refs []string
+	for _, ref := range strings.Fields(out) {
+		if name := strings.TrimPrefix(ref, upstreamTags); releaseTagRe.MatchString(name) {
+			refs = append(refs, "refs/tags/"+name)
+		}
+	}
+	return refs, nil
+}
+
+// tagPlaceholder is the one object every copied release tag names. It
+// carries no history: its text says what it is, so `git show vX.Y.Z` in
+// the copy explains itself instead of failing.
+const tagPlaceholder = `This working copy carries release tag NAMES only.
+
+The self-development soak's dispatcher gives each per-issue copy the
+release tags (vX.Y.Z) whose commits are ancestors of the copy's base, so
+that tooling which lists tags (verify-version-fallback) works. Each tag
+points at this note, not at its release commit: the copy is a depth-1
+clone, and no older commit, tree or message is brought into it.
+`
+
+// The note deliberately names no place where history can be read: the
+// public upstream's history once held the seed list (decision 20).
+
+// copyReleaseTags gives the fresh working copy at dir the names of the
+// release tags that are ancestors of base, so the presubmit sweep's
+// verify-version-fallback finds the latest release instead of failing
+// on a check the agent can do nothing about. That check runs
+// `git tag --list 'v*.*.*'` and reads nothing but the names: no
+// `git describe`, no reachability.
+//
+// Decision 20 bounds what may cross, and this keeps it to names:
+//   - only tags `--merged` into base, evaluated in the private repo. A
+//     tag on a commit after base could point at, or name the version
+//     of, the very fix the issue asks for;
+//   - no historical object. Each tag ref points at one placeholder blob
+//     written in the copy. A release's commit message, tree or tag
+//     message is older repository text, and could carry answer-key text
+//     (a commit message about the seed list, a tree that still held it).
+//
+// The copy gains no remote, no history and no shallow root, so the copy
+// checks are unchanged. A tag that points at a blob is ignored by
+// `git describe` and by Go's VCS stamping, and `git log --all`, `git gc`
+// and `git fsck` stay clean. It runs before the agent has the copy.
+func (g *gitOps) copyReleaseTags(ctx context.Context, dir, base string) error {
+	refs, err := g.releaseTags(ctx, base)
+	if err != nil {
+		return err
+	}
+	// None at all means the tags remote shares no history with the
+	// mirror (a re-imported or squash-synced mirror, or the wrong
+	// --tags-remote). Say so now, rather than hand the agent a red
+	// presubmit it can do nothing about.
+	if len(refs) == 0 {
+		return fmt.Errorf("no release tag from %s is an ancestor of %.12s; check --tags-remote and that the mirror's main carries upstream's history", g.tagsRemote, base)
+	}
+	w := exec.CommandContext(ctx, g.bin, append(append([]string{}, hardening...), "-C", dir, "hash-object", "-w", "--stdin")...) // #nosec G204 G702 -- fixed binary and args.
+	w.Env = gitEnv()
+	w.Stdin = strings.NewReader(tagPlaceholder)
+	out, err := w.Output()
+	if err != nil {
+		return fmt.Errorf("write the tag placeholder: %w", err)
+	}
+	blob := strings.TrimSpace(string(out))
+	for _, ref := range refs {
+		if _, err := g.run(ctx, dir, nil, "update-ref", ref, blob, ""); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (g *gitOps) cloneDir(number int) string {
@@ -238,6 +346,13 @@ func (g *gitOps) prepareClone(ctx context.Context, number int) (string, error) {
 		if _, err := g.run(ctx, dir, nil, s...); err != nil {
 			return "", err
 		}
+	}
+	base, err := g.run(ctx, dir, nil, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return "", err
+	}
+	if err := g.copyReleaseTags(ctx, dir, base); err != nil {
+		return "", fmt.Errorf("release tags: %w", err)
 	}
 	return dir, nil
 }

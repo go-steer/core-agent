@@ -533,7 +533,10 @@ func newMirror(t *testing.T) string {
 	writeFile(t, filepath.Join(seed, "README.md"), "mirror\n")
 	gitT(t, seed, "add", "README.md")
 	gitT(t, seed, "commit", "--quiet", "-m", "drop the seed list")
-	gitT(t, seed, "push", "--quiet", bare, "main")
+	// A release tag in the history, as upstream's mirror carries: the
+	// dispatcher refuses a copy that no release tag reaches (decision 24).
+	gitT(t, seed, "tag", "v0.1.0", "HEAD~1")
+	gitT(t, seed, "push", "--quiet", bare, "main", "--tags")
 	return bare
 }
 
@@ -588,6 +591,7 @@ func newRig(t *testing.T, agent agentFunc) *rig {
 		StartTimeout: 3 * time.Second, AppID: testAppID, Once: true,
 	}
 	cfg.GitRemote = newMirror(t)
+	cfg.TagsRemote = cfg.GitRemote
 	r := &rig{gh: gh, mirror: cfg.GitRemote, cfg: cfg}
 	daemon, dSrv := newFakeDaemon(t, "attach-secret", func() string { return filepath.Join(cfg.WorktreesDir, "issue-1") }, agent)
 	r.daemon = daemon

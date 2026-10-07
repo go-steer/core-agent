@@ -333,7 +333,8 @@ func TestParseFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Owner != "mastersingh24" || c.Repo != "core-agent-selfdev" || c.Maintainer != "mastersingh24" ||
-		c.Poll != 2*time.Minute || c.MaxOpenPRs != 3 || c.GitRemote != "https://github.com/mastersingh24/core-agent-selfdev.git" {
+		c.Poll != 2*time.Minute || c.MaxOpenPRs != 3 || c.GitRemote != "https://github.com/mastersingh24/core-agent-selfdev.git" ||
+		c.TagsRemote != "https://github.com/go-steer/core-agent.git" {
 		t.Errorf("defaults: %+v", c)
 	}
 	var stderr bytes.Buffer

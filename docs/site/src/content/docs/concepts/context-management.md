@@ -47,9 +47,9 @@ A single 0.85 threshold worked for frontier-tier models (Opus, Pro) but fired fa
 
 | Tier | Default trigger | Examples |
 |---|---|---|
-| `frontier` | `0.85` (unchanged) | `claude-opus-4-*`, `gemini-3.x-pro`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash` |
-| `mid` | `0.65` | `claude-sonnet-4-*`, `gemini-3.5-flash`, `gemini-2.5-pro` |
-| `small` | `0.35` | `claude-haiku-4-*`, `gemini-3.5-flash-lite`, `gemini-3.1-flash`, `gemini-2.5-flash` |
+| `frontier` | `0.85` (unchanged) | `claude-opus-5-*`, `claude-opus-4-*`, `gemini-3.x-pro`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash` |
+| `mid` | `0.65` | `claude-sonnet-5-*`, `claude-sonnet-4-*`, `gemini-3.5-flash`, `gemini-2.5-pro` |
+| `small` | `0.35` | `claude-haiku-5-*`, `claude-haiku-4-*`, `gemini-3.5-flash-lite`, `gemini-3.1-flash`, `gemini-2.5-flash` |
 
 Tier classification is by substring match against the model ID — see `pkg/modeltier`. These are what you get when you haven't said: setting the single `compaction.threshold` (or `--compaction-threshold`, or a task class's threshold) replaces them for **every** tier, and only your own `threshold_by_tier` entries outrank it for their tier. Precedence: your `threshold_by_tier` entry → your `threshold` → the tier default above → `0.85`. (Before [#1226](https://github.com/go-steer/core-agent/issues/1226) the single threshold ranked *below* the tier defaults, so it governed only unclassified models — none of the supported ones — and a lowered threshold silently did nothing.)
 
@@ -133,9 +133,9 @@ Five classes ship today:
 
 | Class | Default model tier | Compaction threshold | Ask mode | Tools | Plan-first | When to use |
 |---|---|---|---|---|---|---|
-| `debug` | frontier (e.g. `claude-opus-5`, `gemini-3.7-flash`) | `0.65` | `auto` | built-ins − `bash` | on | Bug hunts, root-cause investigations, multi-file traces |
+| `debug` | frontier (e.g. `claude-opus-5-5`, `gemini-3.7-flash`) | `0.65` | `auto` | built-ins − `bash` | on | Bug hunts, root-cause investigations, multi-file traces |
 | `implement` | frontier | `0.70` | `auto` | built-ins | off | Feature work, multi-file refactors |
-| `chat` | mid (e.g. `claude-sonnet-5`, `gemini-3.5-flash`) | `0.85` | `auto` | built-ins | off | Q&A, pairing, lightweight design discussion |
+| `chat` | mid (e.g. `claude-sonnet-5-5`, `gemini-3.5-flash`) | `0.85` | `auto` | built-ins | off | Q&A, pairing, lightweight design discussion |
 | `research` | mid | `0.65` | `allow` | built-ins − `bash` | on | Read-heavy codebase exploration; `allow` keeps the ask-mode noise out of the way |
 | `review` | frontier | `0.75` | `auto` | built-ins − `bash` | on | PR / diff review |
 
@@ -143,9 +143,9 @@ Resolution per-provider:
 
 | Tier | Gemini / Vertex | Anthropic |
 |---|---|---|
-| frontier | `gemini-3.7-flash` | `claude-opus-5` |
-| mid | `gemini-3.5-flash` | `claude-sonnet-5` |
-| small | `gemini-3.5-flash-lite` | `claude-haiku-4-5` |
+| frontier | `gemini-3.7-flash` | `claude-opus-5-5` |
+| mid | `gemini-3.5-flash` | `claude-sonnet-5-5` |
+| small | `gemini-3.5-flash-lite` | `claude-haiku-5-5` |
 
 Explicit per-knob flags always win over the class defaults:
 

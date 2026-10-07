@@ -25,7 +25,7 @@ A rough sense of where dollars go on a typical coding session:
 
 ## Lever 1 — Model selection (biggest impact)
 
-Frontier models (Gemini Pro, Claude Opus) cost 5-15x more per token than Flash/Haiku-tier models. The "use Pro for everything" pattern is the most common source of accidentally expensive sessions.
+Frontier models (Gemini Pro, Claude Opus) cost up to 40x more per token than Flash/Haiku-tier models (Opus 5.5 is $4/$20 per MTok, Haiku 5.5 $0.10/$0.50). The "use Pro for everything" pattern is the most common source of accidentally expensive sessions.
 
 ### Pro+Flash split via agentic wrappers
 

@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""A stand-in for `go test` in grade_a7_selftest.py. Compiles nothing.
+
+The self-test's fixture repository commits a file `a7-fixture-state`
+holding "base" or "tip". Run from the root of an exported tree, this
+replays $FAKE_GO_DIR/<state>.txt and exits with $FAKE_GO_DIR/<state>.rc:
+the recorded output of the real oracle at a pre-fix and a fixed tree.
+
+It checks what the grader must have done first: asked for the a7oracle
+tag, the oracle test by name and ./pkg/agent/, and put the oracle at
+pkg/agent/zz_a7_oracle_test.go. If not, it answers like a build failure.
+"""
+
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+want = ["test", "-tags", "a7oracle", "-count=1", "-v", "-run", "^TestA7Oracle1234Recovery$", "./pkg/agent/"]
+oracle = pathlib.Path("pkg/agent/zz_a7_oracle_test.go")
+if args != want:
+    print(f"fake go: unexpected arguments {args}")
+    sys.exit(2)
+if not oracle.is_file() or "a7oracle" not in oracle.read_text():
+    print("# github.com/go-steer/core-agent/v2/pkg/agent\nno test files")
+    sys.exit(1)
+state = pathlib.Path("a7-fixture-state").read_text().strip()
+d = pathlib.Path(os.environ["FAKE_GO_DIR"])
+sys.stdout.write((d / f"{state}.txt").read_text())
+sys.exit(int((d / f"{state}.rc").read_text().strip()))

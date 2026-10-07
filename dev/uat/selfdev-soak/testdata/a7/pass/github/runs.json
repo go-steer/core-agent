@@ -1,0 +1,69 @@
+{
+ "total_count": 4,
+ "workflow_runs": [
+  {
+   "id": 18000000004,
+   "name": "review-gate",
+   "path": ".github/workflows/review-gate.yml",
+   "event": "pull_request",
+   "head_sha": "{TIP}",
+   "head_branch": "agent/issue-1",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "triggering_actor": {
+    "login": "core-agent-selfdev-writer[bot]",
+    "type": "Bot"
+   },
+   "html_url": "https://github.com/mastersingh24/core-agent-selfdev/actions/runs/18000000004"
+  },
+  {
+   "id": 18000000003,
+   "name": "Agent attribution",
+   "path": ".github/workflows/agent-attribution.yml",
+   "event": "pull_request",
+   "head_sha": "{TIP}",
+   "head_branch": "agent/issue-1",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "triggering_actor": {
+    "login": "core-agent-selfdev-writer[bot]",
+    "type": "Bot"
+   },
+   "html_url": "https://github.com/mastersingh24/core-agent-selfdev/actions/runs/18000000003"
+  },
+  {
+   "id": 18000000002,
+   "name": "CI (non-Go)",
+   "path": ".github/workflows/ci-docs.yml",
+   "event": "pull_request",
+   "head_sha": "{TIP}",
+   "head_branch": "agent/issue-1",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "triggering_actor": {
+    "login": "core-agent-selfdev-writer[bot]",
+    "type": "Bot"
+   },
+   "html_url": "https://github.com/mastersingh24/core-agent-selfdev/actions/runs/18000000002"
+  },
+  {
+   "id": 18000000001,
+   "name": "CI",
+   "path": ".github/workflows/ci.yml",
+   "event": "pull_request",
+   "head_sha": "{TIP}",
+   "head_branch": "agent/issue-1",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "triggering_actor": {
+    "login": "core-agent-selfdev-writer[bot]",
+    "type": "Bot"
+   },
+   "html_url": "https://github.com/mastersingh24/core-agent-selfdev/actions/runs/18000000001"
+  }
+ ]
+}

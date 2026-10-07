@@ -1,0 +1,56 @@
+{
+ "session_id": "01a11766-4f76-7286-bda1-b312d42683c6",
+ "app_name": "core-agent",
+ "user_id": "sa:selfdev-dispatcher",
+ "rows": [
+  {
+   "seq": 1,
+   "author": "user",
+   "event_id": "a3bcd8e8-d00a-4e6f-a84c-b0eea72357e2",
+   "timestamp": "2026-10-07T17:25:43.461592Z",
+   "metadata": "{\"caller\": \"sa:selfdev-dispatcher\"}"
+  },
+  {
+   "seq": 3,
+   "author": "core_agent",
+   "event_id": "fixture-0003",
+   "timestamp": "2026-10-07T17:26:01.204118Z",
+   "metadata": "{\"caller\": \"sa:selfdev-dispatcher\"}"
+  },
+  {
+   "seq": 4,
+   "author": "core_agent",
+   "event_id": "fixture-0004",
+   "timestamp": "2026-10-07T17:26:01.388502Z",
+   "metadata": "{\"caller\": \"sa:selfdev-dispatcher\"}"
+  },
+  {
+   "seq": 6,
+   "author": "core_agent",
+   "event_id": "fixture-0006",
+   "timestamp": "2026-10-07T17:31:01.902771Z",
+   "metadata": "{\"caller\": \"sa:selfdev-dispatcher\"}"
+  },
+  {
+   "seq": 5,
+   "author": "gate/approver",
+   "event_id": "fixture-0005",
+   "timestamp": "2026-10-07T17:31:02.113000Z",
+   "metadata": ""
+  },
+  {
+   "seq": 7,
+   "author": "core_agent",
+   "event_id": "fixture-0007",
+   "timestamp": "2026-10-07T17:31:40.551920Z",
+   "metadata": "{\"caller\": \"sa:selfdev-dispatcher\"}"
+  },
+  {
+   "seq": 8,
+   "author": "core_agent",
+   "event_id": "fixture-0008",
+   "timestamp": "2026-10-07T17:33:12.004417Z",
+   "metadata": "{\"caller\": \"sa:selfdev-dispatcher\"}"
+  }
+ ]
+}

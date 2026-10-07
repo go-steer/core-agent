@@ -1,0 +1,19 @@
+=== RUN   TestA7Oracle1234Recovery
+=== RUN   TestA7Oracle1234Recovery/empty_stop_twice_writes_mechanical_boundary
+2026/10/07 18:43:48 agent: [session default] Compact: model returned no summary text (finish_reason=STOP) — retrying once
+2026/10/07 18:43:48 agent: [session default] auto-compaction failed (consecutive failures=1, backing off 2 turns): agent: Compact: model returned no summary text (finish_reason=STOP) after 2 attempts
+2026/10/07 18:43:48 agent: [session default] Compact: model returned no summary text (finish_reason=STOP) — retrying once
+2026/10/07 18:43:48 agent: [session default] auto-compaction failed (consecutive failures=2, backing off 4 turns): agent: Compact: model returned no summary text (finish_reason=STOP) after 2 attempts
+2026/10/07 18:43:48 agent: [session default] summarizer unavailable (agent: Compact: model returned no summary text (finish_reason=STOP) after 2 attempts) — context was bounded by mechanical truncation instead, writing a 789-character literal record in place of a handover summary. Detail has been lost.
+    zz_a7_oracle_test.go:280: summarizer calls by turn: [2 2 5 5] (first compaction attempted in turn 2)
+    zz_a7_oracle_test.go:282: A7 ORACLE UNFIXED: the mechanical fallback came only after 2 failed compactions (summarizer calls by turn: [2 2 5 5]); an empty summary is deterministic and must fall back after the first
+=== RUN   TestA7Oracle1234Recovery/rate_limit_writes_no_boundary
+2026/10/07 18:43:48 agent: [session default] auto-compaction failed (consecutive failures=1, backing off 2 turns): agent: Compact: generate: Error 429, Status: RESOURCE_EXHAUSTED, Message: Resource exhausted. Please try again later.
+2026/10/07 18:43:48 agent: [session default] auto-compaction failed (consecutive failures=2, backing off 4 turns): agent: Compact: generate: Error 429, Status: RESOURCE_EXHAUSTED, Message: Resource exhausted. Please try again later.
+2026/10/07 18:43:48 agent: [session default] summarizer unavailable (agent: Compact: generate: Error 429, Status: RESOURCE_EXHAUSTED, Message: Resource exhausted. Please try again later.) — context was bounded by mechanical truncation instead, writing a 789-character literal record in place of a handover summary. Detail has been lost.
+--- FAIL: TestA7Oracle1234Recovery (0.00s)
+    --- FAIL: TestA7Oracle1234Recovery/empty_stop_twice_writes_mechanical_boundary (0.00s)
+    --- PASS: TestA7Oracle1234Recovery/rate_limit_writes_no_boundary (0.00s)
+FAIL
+FAIL	github.com/go-steer/core-agent/v2/pkg/agent	0.014s
+FAIL

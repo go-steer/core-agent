@@ -89,7 +89,7 @@ func (g *gitOps) run(ctx context.Context, dir string, extra []string, args ...st
 	}
 	argv = append(argv, args...)
 	cmd := exec.CommandContext(ctx, g.bin, argv...) // #nosec G204 G702 -- fixed binary; args are built here, never from issue text.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
@@ -112,7 +112,7 @@ func (g *gitOps) runQuiet(ctx context.Context, dir string, extra []string, args 
 	}
 	argv = append(argv, args...)
 	cmd := exec.CommandContext(ctx, g.bin, argv...) // #nosec G204 G702 -- fixed binary; args are built here, never from issue text.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = gitEnv()
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
@@ -122,6 +122,18 @@ func (g *gitOps) runQuiet(ctx context.Context, dir string, extra []string, args 
 		return fmt.Errorf("git %s did not run", args[0])
 	}
 	return nil
+}
+
+// gitEnv is the environment of every git the dispatcher runs.
+//
+// GIT_NO_LAZY_FETCH=1: a copy configured as a partial clone would make
+// upload-pack, serving the fetch-back, lazily fetch a missing object from
+// the copy's promisor remote — running whatever `remote.*.uploadpack`
+// the agent wrote there, in the dispatcher's pod. Git sets this itself in
+// upload-pack from 2.45.1 (and the 2.39.4 backport); the soak image's
+// Debian git is 2.39.x, so it is set here rather than assumed.
+func gitEnv() []string {
+	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_NO_LAZY_FETCH=1")
 }
 
 // credentialArgs returns the -c args that make git authenticate to an

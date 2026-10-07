@@ -80,20 +80,53 @@ func inspectCopy(dir, base string) error {
 			return fmt.Errorf(".git/%s exists; a fresh clone has none and committing never makes one", rel)
 		}
 	}
-	if err := checkConfig(filepath.Join(gitDir, "config")); err != nil {
+	if err := checkConfig(filepath.Join(gitDir, "config"), false); err != nil {
+		return err
+	}
+	if err := checkConfig(filepath.Join(gitDir, "config.worktree"), true); err != nil {
 		return err
 	}
 	return checkShallow(filepath.Join(gitDir, "shallow"), base)
 }
 
-func checkConfig(path string) error {
-	raw, err := readBounded(path, maxConfigBytes)
-	if err != nil {
-		return errors.New(".git/config could not be read")
+// forbiddenInConfig are config fragments a fresh clone never has, matched
+// case-insensitively on the config with all whitespace removed (so
+// `[ Include ]` or `partialClone = x` can't dodge the match). Matching
+// text rather than parsing errs towards refusing: a value that merely
+// mentions one of these words refuses the copy too, which only costs a
+// stop.
+//
+//   - "[include": include / includeIf pull in a file outside the copy.
+//   - "partialclone", "promisor": a partial clone lazily fetches missing
+//     objects from its promisor remote, running that remote's
+//     `uploadpack` command (GIT_NO_LAZY_FETCH in gitEnv is the other
+//     half of this).
+//   - "uploadpack", "receivepack": per-remote commands git would run.
+//   - "worktreeconfig": makes git read config.worktree as well; that file
+//     is also checked, but nothing the agent does needs it.
+var forbiddenInConfig = []string{"[include", "partialclone", "promisor", "uploadpack", "receivepack", "worktreeconfig"}
+
+// checkConfig applies forbiddenInConfig to a config file. The whole file
+// is read: a config larger than maxConfigBytes is refused rather than
+// checked in part, since an include after the bound would otherwise pass.
+// A missing file is fine only when allowMissing.
+func checkConfig(path string, allowMissing bool) error {
+	name := ".git/" + filepath.Base(path)
+	raw, err := readBounded(path, maxConfigBytes+1)
+	if allowMissing && errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	lower := strings.ToLower(raw)
-	if strings.Contains(lower, "[include") {
-		return errors.New(".git/config has an include section")
+	if err != nil {
+		return fmt.Errorf("%s could not be read", name)
+	}
+	if len(raw) > maxConfigBytes {
+		return fmt.Errorf("%s is larger than %d bytes", name, maxConfigBytes)
+	}
+	flat := strings.ToLower(strings.Join(strings.Fields(raw), ""))
+	for _, f := range forbiddenInConfig {
+		if strings.Contains(flat, f) {
+			return fmt.Errorf("%s sets %q, which a fresh clone never has", name, strings.TrimPrefix(f, "["))
+		}
 	}
 	return nil
 }

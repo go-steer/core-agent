@@ -175,6 +175,26 @@ func TestInspectCopyRules(t *testing.T) {
 			_ = os.Symlink("/etc/hostname", filepath.Join(g, "shallow"))
 		},
 		".git is a gitfile": nil,
+		// Third round (re-review of 7113c094).
+		"include after 64 KiB of padding": func(t *testing.T, g string) {
+			pad := strings.Repeat("# padding padding padding padding padding padding padding padding\n", 1100)
+			writeFile(t, filepath.Join(g, "config"), "[core]\n"+pad+"[include]\n\tpath = /x\n")
+		},
+		"spaced include header": func(t *testing.T, g string) {
+			appendFile(t, filepath.Join(g, "config"), "[ Include ]\n\tpath = /x\n")
+		},
+		"partial clone": func(t *testing.T, g string) {
+			appendFile(t, filepath.Join(g, "config"), "[extensions]\n\tpartialClone = evil\n[remote \"evil\"]\n\turl = /x\n\tpromisor = true\n")
+		},
+		"remote uploadpack": func(t *testing.T, g string) {
+			appendFile(t, filepath.Join(g, "config"), "[remote \"x\"]\n\tuploadpack = touch /tmp/pwned\n")
+		},
+		"worktreeConfig extension": func(t *testing.T, g string) {
+			appendFile(t, filepath.Join(g, "config"), "[extensions]\n\tworktreeConfig = true\n")
+		},
+		"config.worktree include": func(t *testing.T, g string) {
+			writeFile(t, filepath.Join(g, "config.worktree"), "[include]\n\tpath = /x\n")
+		},
 	}
 	for name, plant := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -457,5 +477,77 @@ func TestPublishRefusesCommitText(t *testing.T) {
 				t.Fatalf("outcome %+v err %v", out, err)
 			}
 		})
+	}
+}
+
+func appendFile(t *testing.T, path, text string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Third round, item 1: every git the dispatcher runs carries
+// GIT_NO_LAZY_FETCH=1, so a partial-clone copy can't make upload-pack run
+// the agent's promisor `uploadpack` command — whatever the installed git
+// defaults to. A stand-in git binary records the environment it got.
+func TestEveryGitRunsWithLazyFetchOff(t *testing.T) {
+	dir := t.TempDir()
+	envOut := filepath.Join(dir, "env")
+	fake := filepath.Join(dir, "git")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nenv >> '"+envOut+"'\n"), 0o700); err != nil { // #nosec G306 -- an executable test stub.
+		t.Fatal(err)
+	}
+	g := &gitOps{bin: fake}
+	if err := g.runQuiet(context.Background(), "", nil, "fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.run(context.Background(), "", nil, "rev-parse"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(envOut)
+	if n := strings.Count(string(raw), "GIT_NO_LAZY_FETCH=1\n"); n != 2 {
+		t.Fatalf("GIT_NO_LAZY_FETCH=1 in %d of 2 git environments", n)
+	}
+}
+
+// Third round, item 1, end to end: a copy turned into a partial clone
+// whose promisor remote's uploadpack would create a sentinel, with an
+// object missing so the fetch-back needs it. The sentinel must never
+// appear. With the copy check off this exercises GIT_NO_LAZY_FETCH alone.
+// Passes before and after on a git that already defaults to no lazy
+// fetch in upload-pack (2.45.1+, or the 2.39.4 backport), by design: it
+// pins the behaviour for the older git the soak image may carry.
+func TestPartialCloneCopyNeverRunsPromisorCommand(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "pwned")
+	for _, checkOn := range []bool{false, true} {
+		agent := func(t *testing.T, dir string) []sseFrame {
+			commitAs()(t, dir)
+			blob := gitT(t, dir, "rev-parse", "HEAD:fix.go")
+			if err := os.Remove(filepath.Join(dir, ".git/objects", blob[:2], blob[2:])); err != nil {
+				t.Error(err)
+			}
+			appendFile(t, filepath.Join(dir, ".git/config"), "[extensions]\n\tpartialClone = evil\n"+
+				"[remote \"evil\"]\n\turl = file:///nonexistent\n\tpromisor = true\n"+
+				"\tuploadpack = sh -c 'touch "+sentinel+"; exec git-upload-pack \"$@\"' upload\n")
+			return []sseFrame{turnComplete()}
+		}
+		r := newRig(t, agent)
+		if !checkOn {
+			r.d.git.inspect = func(string, string) error { return nil }
+		}
+		r.gh.seedIssue(1)
+		out, err := runOnce(t, r)
+		if err != nil || !out.Stopped {
+			t.Fatalf("check=%v: outcome %+v err %v; want a stop", checkOn, out, err)
+		}
+		if _, err := os.Stat(sentinel); err == nil {
+			t.Fatalf("check=%v: the copy's promisor uploadpack ran in the dispatcher", checkOn)
+		}
 	}
 }

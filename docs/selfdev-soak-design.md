@@ -49,6 +49,11 @@ The rig's T0–T2 runs were attended runs on the maintainer's workstation, under
 12. **Every issue carries its upstream link.** Mirror issue numbers don't match upstream's, so a seed's body names its upstream issue URL. The recipe cites upstream issues in CHANGELOG bullets and commit bodies, so a cherry-pick upstream carries the right links. `Fixes #N` in the PR refers to the mirror issue.
 13. **A mirror merge is not upstream-ready.** Cherry-picking a mirror PR upstream goes through upstream's own gate: presubmits, adversarial review, a CHANGELOG bullet with the upstream link, and a person's merge.
 14. **The worker is Claude Sonnet 5, under a $50 daily cap.** The committed recipe's Opus 5 cost about $41 for one T1 bug fix. Sonnet 5 suits the seed sizes, and an issue that fails on it can be re-run on Opus by hand. One call can overshoot a per-turn cap (#1235), so the per-day cap is what bounds the bill. The per-turn cap is $10 and the per-session cap $25.
+15. **P1 is a standing-task flag on inject.** A `task_from` caller marks an inject as the session's standing task; it survives compaction, checkpoints and restarts until the session ends or the same caller replaces it. A new endpoint and "persist every task for every session" were rejected: the flag is the narrowest change, and keeping the task stays a deliberate act by a trusted caller. It still gets its own design doc before code (decided 2026-10-07).
+16. **Commits carry a dedicated, human-looking identity, named in the attribution allowlist.** Not the maintainer's own name and email: the soak's commits must stay distinguishable from the maintainer's, in the mirror and in any cherry-pick upstream. The DCO sign-off uses the same identity (decided 2026-10-07).
+17. **A person retries a `soak:stopped` issue in v1.** The dispatcher never reopens or retries one by itself; an automatic retry would hide the stop that the soak is measuring (decided 2026-10-07).
+18. **The reviewer runs on a different provider from the worker: Gemini 3.7 Flash.** The worker is Claude Sonnet 5 and the approver Claude Haiku 4.5, so a Claude reviewer would share the worker's blind spots exactly where the review gate matters (decided 2026-10-07).
+19. **A7 runs before the soak, on a narrower prerequisite set.** A7 is one small issue that is unlikely to reach a history boundary, so it needs P2, P3 and a minimal dispatcher, not P1. The 2-week soak needs P1. If A7's session does compact, the run is void, not failed, and waits for P1 (decided 2026-10-07).
 
 ## The auto recipe
 
@@ -83,10 +88,11 @@ The committed self-recipe (`/.agents/config.json`, `mode: ask`, `plan_mode: requ
 
 Each of these blocks the soak or makes its result meaningless. Each becomes its own issue and PR, and lands before the rig starts.
 
-- **P1. The task must survive a history boundary.** Today every compaction, checkpoint and restart drops the approver's task, and after that every call escalates (auto-mode design, decision 6). A long issue will compact, and the soak would turn into a paging storm. The proposed fix is a **standing task** delivered by a `task_from` caller: a flag on the inject that marks it as the session's goal, kept across boundaries until the session ends or the same caller replaces it. It's the inject-shaped equivalent of `autonomous.WithOperatorGoal`, which no CLI path reaches. This needs its own design call, so it's listed here, not decided.
-- **P2. The agent must not be able to forge its own task.** The daemon's `users.json` bearer table is plaintext (#1201 item 4) and mounted in the pod whose `bash` the agent drives. The agent could read the dispatcher's token and inject a "task" of its own as `sa:selfdev-dispatcher`, which `task_from` would trust. Two fixes, and the soak needs at least one:
-  - hashed bearer tokens in the table (#1201 item 4);
-  - running the agent's tools as a different user from the daemon, which #1201 names as the only complete answer.
+- **P1. The task must survive a history boundary.** Today every compaction, checkpoint and restart drops the approver's task, and after that every call escalates (auto-mode design, decision 6). A long issue will compact, and the soak would turn into a paging storm. The proposed fix is a **standing task** delivered by a `task_from` caller: a flag on the inject that marks it as the session's goal, kept across boundaries until the session ends or the same caller replaces it. It's the inject-shaped equivalent of `autonomous.WithOperatorGoal`, which no CLI path reaches. Its shape is settled (decision 15); its design doc comes before code. Needed for the soak, not for A7 (decision 19).
+- **P2. The agent must not be able to forge its own task.** The daemon's `users.json` bearer table is plaintext and mounted in the pod whose `bash` the agent drives. The agent could read the dispatcher's token and inject a "task" of its own as `sa:selfdev-dispatcher`, which `task_from` would trust.
+  - **Already landed (#1267):** the table is refused to every agent file tool in every mode and to `@include`, and a `bash` command naming it is refused. The `bash` check is a seatbelt, not a boundary: other spellings still reach a readable file.
+  - **The fix this soak takes: hashed bearer tokens.** The table stores only a hash of each token; the plaintext lives only with its holder (the dispatcher's token in the dispatcher's pod). An agent that reads the whole table learns nothing it can authenticate with, which closes this route completely and needs no extra privilege in the pod.
+  - **Hardening, not a prerequisite:** running the agent's tools as a different user from the daemon (#1201's broader answer) protects every credential file, not just this one, but needs `CAP_SETUID` or a tool sidecar. Deferred to v2 unless the soak finds a route hashing doesn't close.
 - **P3. An image that can do the work.** The release image is distroless (no shell, git, go or gh). The soak needs an image with git, the pinned Go toolchain, and core-agent built from the pinned upstream release or SHA (decision 11). `gh` isn't needed, because the dispatcher opens the PRs. It's a soak-only Dockerfile under `dev/uat/selfdev-soak/`; the release image is untouched.
 - **P4. switchboard for escalations, on Slack.** Slack takes its button clicks over Socket Mode, an outbound WebSocket, so the namespace needs no ingress. Google Chat buttons need a public HTTPS endpoint, which switchboard's README calls a public attack surface. Slack also already confirms a broad answer before applying it (go-steer/switchboard#92 is Chat-only). The gaps are in switchboard's platform-independent approval code:
   - [switchboard#115](https://github.com/go-steer/switchboard/issues/115): render `approver_model` and `approver_reason` (protocol 1.18.0);
@@ -150,8 +156,10 @@ The first seeded issue is #1234's recovery half, kept unfixed upstream for this,
 
 ## Phases
 
-1. **Prerequisites P1–P3:** core-agent issues and PRs. P4 v1 is switchboard deployment only.
-2. **The rig:**
+1. **A7's prerequisites, P2 and P3:** core-agent issues and PRs (decision 19).
+2. **The rig, minimal for A7:** the soak image, the namespace overlay, the dispatcher's steps 0–3 and 7, and the writer App. Then **A7:** seed #1234's recovery half alone, run it, and grade it. A person merges A7's PR (decision 10).
+3. **The soak's prerequisites:** P1 (design doc, then code), and P4 v1 (switchboard deployment only).
+4. **The rest of the rig:**
    - the soak Dockerfile, pinned to an upstream build;
    - the kustomize overlay for namespace `core-agent-selfdev`: a Workload Identity service account with Vertex user only; PVCs for the eventlog, workspace and Go cache; a NetworkPolicy allowing egress only to Vertex, GitHub and switchboard;
    - the dispatcher, with the loops above;
@@ -159,16 +167,12 @@ The first seeded issue is #1234's recovery half, kept unfixed upstream for this,
    - the seed script, the harvest with its re-judge, the weekly report, and the GCS archive bucket.
 
    The mirror stays secret-free: its PR workflows run code from the agent's branches.
-3. **A7:** seed #1234's recovery half alone, run it, and grade it.
-4. **The soak:** seed the approved list, run for 2 weeks or more, harvest weekly.
-5. **v2, on evidence:** answering from the Slack thread (P4's switchboard issues), parallel issues, self-selection.
+5. **The soak:** seed the approved list, run for 2 weeks or more, harvest weekly.
+6. **v2, on evidence:** answering from the Slack thread (P4's switchboard issues), parallel issues, self-selection.
 
 ## Open questions
 
-1. **P1's shape:** a standing-task flag on inject, a new endpoint, or persisting the task through compaction for every session.
-2. **The commit identity:** the maintainer's own name and email, as at T0–T2, or a dedicated human-looking identity the attribution allowlist names.
-3. **Whether the dispatcher reopens or retries a `soak:stopped` issue,** or a person always does.
-4. **The reviewer's model:** Sonnet 5 like the worker, or a different provider so the two don't share blind spots.
+None. The four open in the first draft were decided on 2026-10-07: P1's shape (decision 15), the commit identity (16), retrying a stopped issue (17) and the reviewer's model (18). The seed list stays a candidate list until the maintainer strikes or approves its lines.
 
 ## Out of scope
 

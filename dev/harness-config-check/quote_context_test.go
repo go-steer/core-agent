@@ -15,9 +15,111 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// #1241 independent review. The bash oracle compares invocation COUNTS;
+// this one compares the PIN. Each script runs with the binary replaced by
+// a stub that prints one argument per line, and the scanner's Pinned
+// must equal "bash passed `-c` followed by a .json path as two separate
+// arguments". A pin credited where bash passed no -c is the silent
+// direction: the gate then never asks for the pin that is missing.
+//
+// Every script has exactly one invocation, so the row compares one
+// verdict, and each row is checked for really having run.
+func TestPinCreditAgreesWithBash(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash not available: %v", err)
+	}
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "core-agent")
+	if err := os.WriteFile(stub, []byte("#!/usr/bin/env bash\necho PIN_ORACLE_RAN\nprintf 'ARG<%s>\\n' \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ name, script string }{
+		// Decoded `$'…'` puts real backslashes and quotes into the command
+		// string; a quote scan that ignores the backslash pairs them wrong.
+		{"escaped quotes from hex escapes", `bash -c $'"$CORE_AGENT" -p "a \x5c\x22 -c /x.json \x5c\x22 b"'`},
+		{"hex quote, escaped apostrophe, hex backslash", `bash -c $'"$CORE_AGENT" -p \x22\'"\x5c -c /x.json #'`},
+		{"escaped apostrophe around a hex quote", `bash -c $'"$CORE_AGENT" -p \'\x22\'\\ -c /x.json'`},
+		// The same flaw without ANSI-C: an escaped `"` inside a double-
+		// quoted argument of a single-quoted command string.
+		{"escaped double quote in a quoted argument", `bash -c '"$CORE_AGENT" -p "say \" -c /x.json \" ok"'`},
+		{"escaped backslash before a closing quote", `bash -c '"$CORE_AGENT" -p "a\\" -c /x.json'`},
+		// A double-quoted command string is unescaped once before bash -c
+		// sees it: `\"` there IS a quote by the time the command runs.
+		{"escaped quotes in a dispatched double-quoted string", `cmd="'${BIN}' -p \"explain -c /x.json\""` + "\n" + `bash -c "$cmd"`},
+		// An unquoted heredoc body and a backtick substitution lose one
+		// level of `\\`, `\$` and "\`" before bash parses them, so a raw
+		// `\\\"` is `\\"` to bash: an escaped backslash, then a quote that
+		// opens. Read raw, the -c inside that quote was credited.
+		{"escaped backslash and quote in an unquoted heredoc body", "bash <<EOF\n\"\\$CORE_AGENT\" -p \\\\\\\" -c /x.json \"\nEOF"},
+		{"escaped backslash and apostrophe in an unquoted heredoc body", "bash <<EOF\n\"\\$CORE_AGENT\" -p \\\\\\' -c /x.json '\nEOF"},
+		{"escaped backslash and quote in backticks", "x=`\"$CORE_AGENT\" -p \\\\\\\" -c /x.json \"`; echo \"$x\""},
+		// …and a quoted delimiter takes the body literally: `\\\"` is an
+		// escaped backslash and an escaped quote, and the pin is real.
+		{"escaped backslash and quote in a quoted heredoc body", "bash <<'EOF'\n\"$CORE_AGENT\" -p \\\\\\\" -c /x.json\nEOF"},
+		// Inside single quotes a backslash is literal: 'a\' closes there.
+		{"backslash before a closing single quote", `cmd="\"${BIN}\" -p 'a\\' -c /x.json"` + "\n" + `bash -c "$cmd"`},
+		// A `$(…)` inside double quotes is a fresh context; its `\"` is
+		// an escaped quote of the substitution, not one to unescape.
+		{"escaped quotes in a substitution in double quotes", `x="$("$CORE_AGENT" -p "a \" -c /x.json \" b")"; echo "$x"`},
+		{"real pin in a dispatched double-quoted string", `cmd="\"${BIN}\" -c /x.json -p \"hi there\""` + "\n" + `bash -c "$cmd"`},
+		{"real pin after a hex-quoted prompt", `bash -c $'"$CORE_AGENT" -p \x22it\x27s\x22 -c /x.json'`},
+		{"real pin in a single-quoted command string", `bash -c '"$CORE_AGENT" -p "a \" b" -c /x.json'`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			invs := Scan("t.sh", tc.script)
+			if len(invs) != 1 {
+				t.Fatalf("scanner found %d invocation(s), want 1: %+v", len(invs), invs)
+			}
+			cmd := exec.Command(bash, "-c", tc.script)
+			cmd.Env = append(os.Environ(), "CORE_AGENT="+stub, "BIN="+stub)
+			cmd.Dir = dir
+			out, _ := cmd.CombinedOutput()
+			if !strings.Contains(string(out), "PIN_ORACLE_RAN") {
+				t.Fatalf("the stub never ran, so the row tests nothing:\n%s", out)
+			}
+			args := strings.Split(strings.TrimSpace(string(out)), "\n")
+			bashPinned := false
+			for i := 0; i+1 < len(args); i++ {
+				if args[i] == "ARG<-c>" && strings.HasSuffix(args[i+1], ".json>") {
+					bashPinned = true
+				}
+			}
+			if invs[0].Pinned != bashPinned {
+				t.Errorf("scanner Pinned=%v, bash pinned=%v (args %s)\nbash saw:\n%s", invs[0].Pinned, bashPinned, invs[0].Args, out)
+			}
+		})
+	}
+}
+
+// decodeANSIC is checked byte for byte against bash's own `$'…'`.
+func TestDecodeANSICMatchesBash(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash not available: %v", err)
+	}
+	for _, s := range []string{
+		`a\nb`, `\t\v\f\r\a\b\e\E`, `\\\'\"\?`, `\q`, `\x41\x4`, `\xZ`,
+		`\012`, `\11x`, `\1012`, `\777`, `\u000a`, `\u41`, `\U0000000a`, `\U41`,
+		`\cJ`, `\cj`, `\c?`, `\c\\x`, // not `\c@` or `\0`: bash ends the string at a NUL; see decodeANSIC
+	} {
+		out, err := exec.Command(bash, "-c", "printf '%s' $'"+s+"'").Output()
+		if err != nil {
+			t.Fatalf("%q: %v", s, err)
+		}
+		if got := decodeANSIC(s); got != string(out) {
+			t.Errorf("decodeANSIC(%q) = %q, bash gives %q", s, got, out)
+		}
+	}
+}
 
 // #1241. A heredoc delimiter is compared after bash's quote removal, and
 // a delimiter computed wrongly never matches: the body then swallows the
@@ -41,6 +143,8 @@ func TestHeredocDelimiterMatchesBash(t *testing.T) {
 		{`<<$'E\'F'`, "E'F"},
 		{`<<$'E\\F'`, `E\F`},
 		{`<<$'E\x41F'`, "EAF"},
+		{`<<$'E\117F'`, "EOF"},
+		{`<<$'E\u004fF'`, "EOF"},
 		{`<<$"EOF"`, "EOF"},
 		{"<<-$'EOF'", "EOF"},
 		// `$$` is a name, not a quote opener: the `'` after it is an

@@ -14,7 +14,10 @@
 
 package main
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // tok is one shell token. sep marks a command separator (newline, ;, &,
 // |, &&, ||, a subshell paren): the token after one of those stands in
@@ -41,6 +44,17 @@ type tok struct {
 type pending struct {
 	delim string
 	strip bool // <<- form: leading tabs allowed before the terminator
+	// quoted: any part of the delimiter word was quoted, so the body is
+	// taken literally; otherwise bash expands it and drops one level of
+	// backslashes first (see unescapeBody).
+	quoted bool
+}
+
+// newPending builds the pending heredoc for an operator word that
+// heredocDelim accepted.
+func newPending(word, delim string, strip bool) pending {
+	op := word[strings.Index(word, "<<")+2:]
+	return pending{delim: delim, strip: strip, quoted: strings.ContainsAny(op, `"'\`)}
 }
 
 // span is a stretch of a script that the shell may later execute even
@@ -79,6 +93,9 @@ func lexShell(src string, startLine int) (toks []tok, heredocs []span) {
 			i++
 			for _, p := range pend {
 				body, consumed, lines := readHeredoc(src[i:], p.delim, p.strip)
+				if !p.quoted {
+					body = unescapeBody(body)
+				}
 				heredocs = append(heredocs, span{text: body, line: line})
 				i += consumed
 				line += lines
@@ -108,8 +125,10 @@ func lexShell(src string, startLine int) (toks []tok, heredocs []span) {
 			// A herestring (<<<) is not a heredoc. Check the longer
 			// operator first or the scan lands on the second '<' and
 			// consumes the rest of the file as a heredoc body.
-			if d, strip, ok := heredocDelim(heredocOperatorWord(t.text)); ok {
-				pend = append(pend, pending{delim: d, strip: strip})
+			if w := heredocOperatorWord(t.text); w != "" {
+				if d, strip, ok := heredocDelim(w); ok {
+					pend = append(pend, newPending(w, d, strip))
+				}
 			}
 			toks = append(toks, t)
 		}
@@ -153,7 +172,7 @@ func lexWord(src string, i, line int) (tok, int, int) {
 			var hd []pending
 			j, line, hd = skipDoubleQuoted(src, j, line)
 			t.pend = append(t.pend, hd...)
-			t.spans = append(t.spans, span{text: src[i+1 : min(j, n)], line: l})
+			t.spans = append(t.spans, span{text: unescapeDQ(src[i+1 : min(j, n)]), line: l})
 			i = min(j+1, n)
 		case '$':
 			switch {
@@ -193,7 +212,7 @@ func lexWord(src string, i, line int) (tok, int, int) {
 				}
 				j++
 			}
-			t.spans = append(t.spans, span{text: src[i+1 : min(j, n)], line: l})
+			t.spans = append(t.spans, span{text: unescapeBackticks(src[i+1 : min(j, n)]), line: l})
 			i = min(j+1, n)
 		default:
 			i++
@@ -308,6 +327,58 @@ func skipDoubleQuoted(src string, j, line int) (int, int, []pending) {
 	return j, line, left
 }
 
+// unescapeDQ removes one level of double-quote escaping from the
+// interior of a "…" string: `\"`, `\\`, `\$` and "\`", the only bytes a
+// backslash escapes there. What remains is the text a later
+// `bash -c "$cmd"` receives. quoteMask treats a backslash as an escape,
+// so the raw interior of `cmd="'$B' -p \"explain -c x.json\""` would hide
+// the quotes around the prompt and credit its -c as a pin (#1241).
+//
+// A `$(…)` inside the string is copied as written: it opens a fresh
+// quoting context, and its backslashes are its own. A backslash-newline
+// is left for lexPlain to join, so line numbers do not move.
+func unescapeDQ(s string) string { return unescapeOnce(s, "$`\"\\", true) }
+
+// unescapeBody does the same for a heredoc body whose delimiter is
+// unquoted, where bash removes a backslash only before `\`, `$` and "`"
+// (a `"` there is ordinary text, so `\"` keeps its backslash).
+func unescapeBody(s string) string { return unescapeOnce(s, "$`\\", true) }
+
+// unescapeBackticks does it for a `…` substitution, whose text loses the
+// same three backslashes before it is parsed — there is no fresh context
+// at a `$(` inside it, since the whole text is unescaped first.
+//
+// Without these two, quoteMask's backslash handling read a raw `\\\"` as
+// an escaped backslash and an escaped quote, while bash, a level later,
+// sees `\\"` and a quote that opens: a -c inside the argument was
+// credited as a pin (#1241).
+func unescapeBackticks(s string) string { return unescapeOnce(s, "$`\\", false) }
+
+// unescapeOnce drops the backslash before each byte in escapable, copying
+// a `$( … )` verbatim when keepSubst is set.
+func unescapeOnce(s, escapable string, keepSubst bool) string {
+	var b strings.Builder
+	n := len(s)
+	for i := 0; i < n; i++ {
+		switch {
+		case s[i] == '\\' && i+1 < n && strings.IndexByte(escapable, s[i+1]) >= 0:
+			i++
+			b.WriteByte(s[i])
+		case s[i] == '$' && i+1 < n && s[i+1] == '$':
+			b.WriteString("$$")
+			i++
+		case keepSubst && s[i] == '$' && i+1 < n && s[i+1] == '(':
+			j, _, _ := skipSubstitution(s, i+2, 0)
+			e := min(j+1, n)
+			b.WriteString(s[i:e])
+			i = e - 1
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
 // skipANSIC scans from just inside `$'` to the `'` that closes it,
 // returning that index (or len(src)) and the updated line.
 //
@@ -411,7 +482,7 @@ func skipSubstitution(src string, j, line int) (int, int, []pending) {
 				k++
 			}
 			if d, strip, ok := heredocDelim(src[j:k]); ok {
-				pend = append(pend, pending{delim: d, strip: strip})
+				pend = append(pend, newPending(src[j:k], d, strip))
 			}
 			j = k
 			continue
@@ -475,10 +546,12 @@ func heredocDelim(word string) (delim string, strip bool, ok bool) {
 // `$EOF` — a delimiter no line matches, so the heredoc swallowed the rest
 // of the file and the invocations after it were lexed as heredoc text.
 //
-// ANSI-C escapes are decoded only where bash maps them to one byte by
-// letter, or by \xHH; any other (\u, \c, octal) is kept verbatim. Such a
-// delimiter never matches, the body runs to the end of the file, and
-// that body is still scanned (see Scan).
+// Getting this wrong is NOT safe. A delimiter that never matches runs
+// the body to the end of the file, and a body is lexed by lexPlain,
+// which does not recurse into quoted spans: a later
+// `bash -c '"$BIN" -p hi'` is then missed outright, the fatal direction.
+// So every escape bash defines for `$'…'` is decoded (see decodeANSIC);
+// an escape it does not define stays verbatim in bash too.
 func unquoteDelim(w string) string {
 	var b strings.Builder
 	n := len(w)
@@ -520,56 +593,117 @@ func unquoteDelim(w string) string {
 	return b.String()
 }
 
-// decodeANSIC decodes the escapes of a `$'…'` interior that unquoteDelim
-// handles; see there for the ones it leaves alone.
+// decodeANSIC decodes a `$'…'` interior the way bash does: the letter
+// escapes, \nnn (one to three octal digits), \xHH (one or two hex
+// digits), \uHHHH and \UHHHHHHHH (one to four / eight hex digits, as
+// UTF-8), and \cX (control-X, with `\c\\` reading one escaped
+// backslash). An escape bash does not define stays as written, in bash
+// and here. Each of these is a way to spell a newline, a quote or a
+// separator, so leaving one raw hid `bash -c $'cd /tmp\012"$BIN" -p hi'`
+// from the scan.
+//
+// The one place this differs from bash: a decoded NUL ends the string in
+// bash, and here it does not. That can only make the scanner see more
+// than bash ran, which is the loud direction.
 func decodeANSIC(s string) string {
 	var b strings.Builder
-	n := len(s)
-	for i := 0; i < n; i++ {
-		if s[i] != '\\' || i+1 >= n {
+	for i := 0; i < len(s); {
+		if s[i] != '\\' || i+1 >= len(s) {
 			b.WriteByte(s[i])
-			continue
-		}
-		if r, ok := ansiCSimple[s[i+1]]; ok {
-			b.WriteByte(r)
 			i++
 			continue
 		}
-		if s[i+1] == 'x' {
-			v, m := 0, 0
-			for m < 2 && i+2+m < n && isHex(s[i+2+m]) {
-				v = v*16 + hexVal(s[i+2+m])
-				m++
-			}
-			if m > 0 {
-				b.WriteByte(byte(v))
-				i += 1 + m
-				continue
-			}
+		out, used := decodeANSICEscape(s[i+1:])
+		if used == 0 {
+			b.WriteByte('\\')
+			i++
+			continue
 		}
-		b.WriteByte(s[i])
+		b.WriteString(out)
+		i += 1 + used
 	}
 	return b.String()
+}
+
+// decodeANSICEscape decodes the escape whose text (after the backslash)
+// starts e, returning its value and how many bytes of e it used; 0 means
+// bash does not define it and the backslash is literal.
+func decodeANSICEscape(e string) (string, int) {
+	if r, ok := ansiCSimple[e[0]]; ok {
+		return string([]byte{r}), 1
+	}
+	switch c := e[0]; {
+	case c >= '0' && c <= '7':
+		v, m := digits(e, 0, 3, 8)
+		return string([]byte{lowByte(v)}), m
+	case c == 'x' || c == 'u' || c == 'U':
+		limit := map[byte]int{'x': 2, 'u': 4, 'U': 8}[c]
+		v, m := digits(e, 1, limit, 16)
+		if m == 0 {
+			return "", 0
+		}
+		if c == 'x' {
+			return string([]byte{lowByte(v)}), 1 + m
+		}
+		if v < 0 || v > utf8.MaxRune {
+			v = utf8.RuneError
+		}
+		return string(rune(v)), 1 + m
+	case c == 'c' && len(e) > 1:
+		x, used := e[1], 2
+		if x == '\\' && len(e) > 2 && e[2] == '\\' {
+			used = 3
+		}
+		if x == '?' {
+			return "\x7f", used
+		}
+		if x >= 'a' && x <= 'z' {
+			x -= 'a' - 'A'
+		}
+		return string([]byte{x & 0x1f}), used
+	}
+	return "", 0
+}
+
+// lowByte is the byte bash keeps of an escape's value: \777 is 0xff.
+func lowByte(v int) byte {
+	v &= 0xff
+	if v < 0 || v > 0xff {
+		return 0
+	}
+	return byte(v)
+}
+
+// digits reads up to limit digits of the given base from e[from:],
+// returning the value and how many it read.
+func digits(e string, from, limit, base int) (v, m int) {
+	for m < limit && from+m < len(e) {
+		d := digitVal(e[from+m])
+		if d < 0 || d >= base {
+			break
+		}
+		v = v*base + d
+		m++
+	}
+	return v, m
+}
+
+func digitVal(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10
+	}
+	return -1
 }
 
 // ansiCSimple maps the letter after a backslash in `$'…'` to its byte.
 var ansiCSimple = map[byte]byte{
 	'a': '\a', 'b': '\b', 'e': 0x1b, 'E': 0x1b, 'f': '\f', 'n': '\n',
 	'r': '\r', 't': '\t', 'v': '\v', '\\': '\\', '\'': '\'', '"': '"', '?': '?',
-}
-
-func isHex(c byte) bool {
-	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
-}
-
-func hexVal(c byte) int {
-	switch {
-	case c >= 'a':
-		return int(c-'a') + 10
-	case c >= 'A':
-		return int(c-'A') + 10
-	}
-	return int(c - '0')
 }
 
 // readHeredoc returns the body up to the terminator line, how many
@@ -654,7 +788,11 @@ func lexPlain(s string, startLine int) []tok {
 			for j < n && strings.IndexByte(sepRunes, s[j]) < 0 {
 				j++
 			}
-			out = append(out, tok{text: s[i:j], line: line, quoted: quotedAt[i]})
+			// A word right after an escaped blank is glued to the word
+			// before it (`"'"\ -c` is one argument), so it is as much
+			// inside an argument as a quoted one.
+			glued := i > 0 && quotedAt[i-1] && (s[i-1] == ' ' || s[i-1] == '\t')
+			out = append(out, tok{text: s[i:j], line: line, quoted: quotedAt[i] || glued})
 			i = j
 		}
 	}
@@ -666,12 +804,24 @@ func lexPlain(s string, startLine int) []tok {
 // is literal and vice versa — and it is best-effort by design: an
 // unclosed quote simply marks everything after it. See lexPlain for why
 // that direction is the safe one for the only question it answers.
+//
+// Outside single quotes a backslash escapes the next byte, so `\"` and
+// `\'` open and close nothing (#1241). Ignoring that paired the quotes of
+// `-p "say \" -c x.json \" ok"` wrong and credited the -c inside the
+// argument as a pin — a silent credit, not the loud kind. Text that is
+// itself the interior of a double-quoted string must be unescaped one
+// level before it gets here (see lexWord), or a `\"` that IS a quote by
+// the time the command runs would be skipped.
 func quoteMask(s string) []bool {
 	mask := make([]bool, len(s))
 	var q byte // 0, '\'' or '"'
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
+		case c == '\\' && q != '\'' && i+1 < len(s):
+			// The escaped byte is quoted, by the backslash.
+			mask[i], mask[i+1] = q != 0, true
+			i++
 		case q == 0 && (c == '\'' || c == '"'):
 			q = c
 			mask[i] = true

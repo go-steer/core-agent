@@ -111,6 +111,16 @@ var oracleCases = []oracleCase{
 	{name: "bash -c with an ANSI-C string", script: `bash -c $'"$CORE_AGENT" -p \'hi there\''`},
 	// …and bash -c receives it decoded: the `\n` separates two commands.
 	{name: "bash -c with an ANSI-C newline before the call", script: `bash -c $'cd /tmp\n"$CORE_AGENT" -p hi'`},
+	// Every other way `$'…'` can spell a separator: octal, \u, \U, \c.
+	{name: "bash -c with an octal newline", script: `bash -c $'cd /tmp\012"$CORE_AGENT" -c /x.json -p hi'`},
+	{name: "bash -c with a \\u newline", script: `bash -c $'cd /tmp\u000a"$CORE_AGENT" -c /x.json -p hi'`},
+	{name: "bash -c with a \\U newline", script: `bash -c $'cd /tmp\U0000000a"$CORE_AGENT" -c /x.json -p hi'`},
+	{name: "bash -c with a control-J newline", script: `bash -c $'cd /tmp\cJ"$CORE_AGENT" -c /x.json -p hi'`},
+	{name: "bash -c with an octal tab", script: `bash -c $'"$CORE_AGENT"\011-c /x.json -p hi'`},
+	// A heredoc delimiter that never matched swallowed the rest of the
+	// file into a body, and a body is not recursed into: the quoted
+	// command string after it was lost.
+	{name: "octal-escaped heredoc delimiter before a bash -c", script: "cat <<$'E\\117F' >/dev/null\nit's\nEOF\nbash -c '\"$CORE_AGENT\" -p hi'"},
 	{name: "timeout wrapper", script: `timeout 5 "${CORE_AGENT}" -p hi`},
 	{name: "timeout with flags", script: `timeout --signal=INT 5s "${CORE_AGENT}" -p hi`},
 	// A wrapper argument that is a variable, not a literal. isDuration
@@ -298,11 +308,11 @@ func TestPositiveCasesActuallyExecute(t *testing.T) {
 			executed++
 		}
 	}
-	// 43 positives (ten added for #1209: substitution-in-quotes, comment and heredoc shapes;
-	// thirteen for #1241: ANSI-C strings, `$$`, `"$'"` and ANSI-C heredoc delimiters)
+	// 49 positives (ten added for #1209: substitution-in-quotes, comment and heredoc shapes;
+	// nineteen for #1241: ANSI-C strings, `$$`, `"$'"` and ANSI-C heredoc delimiters)
 	// plus the divergent third-level case, which executes under bash and
 	// is exactly why it is divergent.
-	if want := 44; executed != want {
+	if want := 50; executed != want {
 		t.Errorf("%d oracle cases reached the stub, want %d — a case stopped executing and is now agreeing with the scanner for the wrong reason", executed, want)
 	}
 }

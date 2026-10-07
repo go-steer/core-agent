@@ -15,12 +15,14 @@
 package selfdevsoak
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -42,26 +44,102 @@ var soakOverrides = map[string]string{
 	"agent.max_session_cost_usd": "decision 14: the per-session cap is $25",
 }
 
-// loadLikeDashC mirrors cmd/core-agent's loadConfig for -c: defaults,
-// then the file, then Validate.
-func loadLikeDashC(t *testing.T, path string) *config.Config {
+// conversationPlaceholder is what config.soak.json ships in the
+// switchboard target's conversation. It contains spaces on purpose:
+// Validate rejects whitespace in a conversation key, so a deployment that
+// forgets to substitute the soak channel's ID fails at startup instead of
+// booting and notifying a conversation that does not exist.
+const conversationPlaceholder = "REPLACE WITH THE SOAK SLACK CHANNEL ID"
+
+// readSoakConfig returns the shipped overlay's bytes.
+func readSoakConfig(t *testing.T) []byte {
 	t.Helper()
-	body, err := os.ReadFile(path) //nolint:gosec // a fixed path in this tree
+	body, err := os.ReadFile(soakConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return body
+}
+
+// loadLikeDashC mirrors cmd/core-agent's loadConfig for -c: defaults,
+// then the file, then Validate.
+func loadLikeDashC(body []byte) (*config.Config, error) {
 	cfg := config.DefaultConfig()
 	if err := json.Unmarshal(body, cfg); err != nil {
-		t.Fatalf("parse %s: %v", path, err)
+		return nil, err
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("%s does not validate: %v", path, err)
+	return cfg, cfg.Validate()
+}
+
+// deployed is the overlay as a deployment would mount it: the
+// placeholder substituted with a real-looking channel ID.
+func deployed(t *testing.T) *config.Config {
+	t.Helper()
+	body := bytes.ReplaceAll(readSoakConfig(t), []byte(conversationPlaceholder), []byte("C0123"))
+	cfg, err := loadLikeDashC(body)
+	if err != nil {
+		t.Fatalf("%s, with the placeholder substituted, does not validate: %v", soakConfigPath, err)
 	}
 	return cfg
 }
 
+// TestSoakConfigPlaceholderFailsClosed: the shipped file carries the
+// placeholder exactly once, in the switchboard target, and refuses to
+// load until it is replaced.
+func TestSoakConfigPlaceholderFailsClosed(t *testing.T) {
+	body := readSoakConfig(t)
+	if n := bytes.Count(body, []byte(conversationPlaceholder)); n != 1 {
+		t.Fatalf("%s carries the conversation placeholder %d times, want exactly once", soakConfigPath, n)
+	}
+	var raw struct {
+		Alerts config.AlertsConfig `json:"alerts"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Alerts.Targets) != 1 || raw.Alerts.Targets[0].Conversation != conversationPlaceholder {
+		t.Errorf("alerts.targets = %+v, want one target whose conversation is exactly %q", raw.Alerts.Targets, conversationPlaceholder)
+	}
+	if _, err := loadLikeDashC(body); err == nil || !strings.Contains(err.Error(), "conversation") {
+		t.Errorf("the shipped overlay loaded with the placeholder in place (err=%v); an un-substituted deployment must fail at startup", err)
+	}
+}
+
 func TestSoakConfigValidates(t *testing.T) {
-	cfg := loadLikeDashC(t, soakConfigPath)
+	cfg := deployed(t)
+	checkWorker(t, cfg)
+	checkApprovalChannel(t, cfg)
+	checkApprover(t, cfg)
+	checkCaps(t, cfg)
+}
+
+// checkWorker pins decision 14's worker, reached through Vertex.
+func checkWorker(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	if cfg.Model.Provider != "anthropic-vertex" || cfg.Model.Name != "claude-sonnet-5" {
+		t.Errorf("model = %s/%s, want anthropic-vertex/claude-sonnet-5 (decision 14, over Workload Identity)", cfg.Model.Provider, cfg.Model.Name)
+	}
+	if cfg.Safety.Watchdog != "enforce" {
+		t.Errorf("safety.watchdog = %q, want enforce", cfg.Safety.Watchdog)
+	}
+}
+
+// checkApprovalChannel pins the escalation path from The auto recipe.
+func checkApprovalChannel(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	p := cfg.Permissions
+	got := [3]string{p.ApprovalTimeout, p.ApprovalNotify, p.ApprovalNotifyAfter}
+	if want := [3]string{"30m", "maintainer-chat", "5m"}; got != want {
+		t.Errorf("approval_timeout/approval_notify/approval_notify_after = %v, want %v", got, want)
+	}
+	if !slices.Contains(cfg.Tools.Disable, "alert") {
+		t.Error("tools.disable lacks alert: the approval_notify target would also arm a model-facing alert tool")
+	}
+}
+
+// checkApprover pins the approver and exactly what it may decide.
+func checkApprover(t *testing.T, cfg *config.Config) {
+	t.Helper()
 	p := cfg.Permissions
 	if p.Mode != "auto" {
 		t.Errorf("permissions.mode = %q, want auto", p.Mode)
@@ -78,23 +156,30 @@ func TestSoakConfigValidates(t *testing.T) {
 	if !reflect.DeepEqual(p.Auto.EligibleBundles, []string{"coding"}) {
 		t.Errorf("eligible_bundles = %v, want [coding]; the agent never pushes (decision 7), so no github preset", p.Auto.EligibleBundles)
 	}
+	// Exact, not a superset check: a widened pattern ("bash:*") hands the
+	// approver calls the design never made eligible.
+	if want := []string{"bash:dev/ci/presubmits/*", "bash:dev/tools/*"}; !reflect.DeepEqual(p.Auto.Eligible, want) {
+		t.Errorf("eligible = %v, want exactly %v (The auto recipe)", p.Auto.Eligible, want)
+	}
 	// Validate does not resolve bundle names; startup does, through this.
 	if _, err := permissions.ResolveAutoEligible(p.Auto.Eligible, p.Auto.EligibleBundles); err != nil {
 		t.Errorf("auto eligibility does not resolve: %v", err)
 	}
-	if cfg.Safety.Watchdog != "enforce" {
-		t.Errorf("safety.watchdog = %q, want enforce", cfg.Safety.Watchdog)
-	}
-	if !slices.Contains(cfg.Tools.Disable, "alert") {
-		t.Error("tools.disable lacks alert: the approval_notify target would also arm a model-facing alert tool")
-	}
+}
+
+// checkCaps pins decision 14's per-turn and per-session ceilings.
+func checkCaps(t *testing.T, cfg *config.Config) {
+	t.Helper()
 	for name, got := range map[string]*float64{
 		"max_turn_cost_usd":    cfg.Agent.MaxTurnCostUSD,
 		"max_session_cost_usd": cfg.Agent.MaxSessionCostUSD,
 	} {
 		want := map[string]float64{"max_turn_cost_usd": 10, "max_session_cost_usd": 25}[name]
-		if got == nil || *got != want {
-			t.Errorf("agent.%s = %v, want %v (decision 14)", name, got, want)
+		switch {
+		case got == nil:
+			t.Errorf("agent.%s is unset, want %v (decision 14)", name, want)
+		case *got != want:
+			t.Errorf("agent.%s = %v, want %v (decision 14)", name, *got, want)
 		}
 	}
 }

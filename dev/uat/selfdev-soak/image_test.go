@@ -309,6 +309,65 @@ func TestDockerfileTrustsSharedWorkspace(t *testing.T) {
 	}
 }
 
+// TestDockerfileStripsSetuid: nothing in the image may raise the agent's
+// privileges, even in a pod that forgets allowPrivilegeEscalation: false.
+func TestDockerfileStripsSetuid(t *testing.T) {
+	st := stages(parseDockerfile(t))
+	if !hasRun(st[len(st)-1], `find / -xdev -perm /6000 -type f -exec chmod u-s,g-s {} +`) {
+		t.Error("the runtime stage no longer strips setuid/setgid bits")
+	}
+}
+
+// TestDockerfileRecordsResolvedCommit: the image is labelled with the
+// commit it was built from, and the builder refuses a checkout that is
+// not that commit (a tag is not immutable upstream).
+func TestDockerfileRecordsResolvedCommit(t *testing.T) {
+	ins := parseDockerfile(t)
+	for _, in := range ins {
+		if in.op == "ARG" && strings.Contains(in.args, "CORE_AGENT_COMMIT=") {
+			t.Errorf("CORE_AGENT_COMMIT has a default (ARG %s)", in.args)
+		}
+	}
+	if !hasRun(ins, `if [[ "${head}" != "${CORE_AGENT_COMMIT:-}" ]]; then`) {
+		t.Error("the builder no longer checks its checkout against CORE_AGENT_COMMIT")
+	}
+	st := stages(ins)
+	labelled := false
+	for _, in := range st[len(st)-1] {
+		if in.op == "LABEL" && strings.Contains(in.args, `org.opencontainers.image.revision="${CORE_AGENT_COMMIT}"`) {
+			labelled = true
+		}
+	}
+	if !labelled {
+		t.Error("the runtime stage has no org.opencontainers.image.revision label carrying CORE_AGENT_COMMIT")
+	}
+}
+
+// TestDockerfileWritablePathDirIsLast: /cache/go/path/bin is a writable
+// PVC directory that outlives each issue's session. Anywhere but last on
+// PATH, a binary dropped there shadows git or go for every later issue.
+func TestDockerfileWritablePathDirIsLast(t *testing.T) {
+	pathRe := regexp.MustCompile(`(?:^|\s)PATH=(\S+)`)
+	found := false
+	for _, in := range parseDockerfile(t) {
+		if in.op != "ENV" {
+			continue
+		}
+		for _, m := range pathRe.FindAllStringSubmatch(in.args, -1) {
+			found = true
+			dirs := strings.Split(m[1], ":")
+			for i, d := range dirs {
+				if strings.HasPrefix(d, "/cache/") && i != len(dirs)-1 {
+					t.Errorf("PATH=%s puts the writable %s before system directories", m[1], d)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("no ENV sets PATH")
+	}
+}
+
 func TestDockerfileEntrypointPinsConfig(t *testing.T) {
 	for _, in := range parseDockerfile(t) {
 		if in.op == "ENTRYPOINT" {

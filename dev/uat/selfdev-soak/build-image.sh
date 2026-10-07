@@ -96,6 +96,26 @@ fi
 
 command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
 
+# Resolve the ref to a commit now, and hand it to the build: it becomes
+# the image's org.opencontainers.image.revision label, and the
+# Dockerfile refuses to build if its checkout is a different commit.
+# go-steer/core-agent has no tag protection, so a tag is a name, not a
+# proof; the commit is what gets recorded. An annotated tag lists its
+# peeled commit as <tag>^{}, which wins over the tag object's own id.
+UPSTREAM="https://github.com/go-steer/core-agent.git"
+if [[ "${REF}" =~ ^[0-9a-f]{40}$ ]]; then
+  COMMIT="${REF}"
+else
+  command -v git >/dev/null 2>&1 || die "git is not on PATH (needed to resolve ${REF})"
+  LS="$(git ls-remote "${UPSTREAM}" "refs/tags/${REF}" "refs/tags/${REF}^{}")" \
+    || die "git ls-remote ${UPSTREAM} failed"
+  COMMIT="$(awk -v peeled="refs/tags/${REF}^{}" '$2 == peeled {print $1}' <<<"${LS}")"
+  if [[ -z "${COMMIT}" ]]; then
+    COMMIT="$(awk -v tag="refs/tags/${REF}" '$2 == tag {print $1}' <<<"${LS}")"
+  fi
+  [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]] || die "tag ${REF} does not exist on ${UPSTREAM}"
+fi
+
 if [[ -z "${TAG}" ]]; then
   TAG="${IMAGE_NAME}:${REF}"
 fi
@@ -104,13 +124,13 @@ CONTEXT="$(mktemp -d)"
 # shellcheck disable=SC2064  # expand now, not at trap time
 trap "rm -rf '${CONTEXT}'" EXIT
 
-BUILD_ARGS=(build --file "${DOCKERFILE}" --build-arg "CORE_AGENT_REF=${REF}" --tag "${TAG}")
+BUILD_ARGS=(build --file "${DOCKERFILE}" --build-arg "CORE_AGENT_REF=${REF}" --build-arg "CORE_AGENT_COMMIT=${COMMIT}" --tag "${TAG}")
 if [[ -n "${PLATFORM}" ]]; then
   BUILD_ARGS+=(--platform "${PLATFORM}")
 fi
 BUILD_ARGS+=("${CONTEXT}")
 
-echo "build-image.sh: building ${TAG} from go-steer/core-agent@${REF}"
+echo "build-image.sh: building ${TAG} from go-steer/core-agent@${REF} (commit ${COMMIT})"
 docker "${BUILD_ARGS[@]}"
 # The binary reports the ref it was built from. Skipped for a foreign
 # --platform, which this host may not be able to execute.
@@ -125,6 +145,6 @@ if [[ ${PUSH} -eq 1 ]]; then
   docker push "${REMOTE}"
   # The :<ref> tag is mutable (a rebuild overwrites it), so deploy by the
   # digest the registry just recorded.
-  echo "build-image.sh: pushed; deploy by digest:"
+  echo "build-image.sh: pushed. Deploy by digest, and record it with commit ${COMMIT}:"
   docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${REMOTE}"
 fi

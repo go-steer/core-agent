@@ -33,13 +33,36 @@ if [[ "$1" == build ]]; then
 fi
 `
 
+// stubGit answers `git ls-remote <url> refs/tags/T refs/tags/T^{}` the way
+// GitHub does: an annotated tag lists the tag object and its peeled
+// commit, a lightweight tag only the commit, a missing tag nothing.
+// Anything else it is asked fails, so the script cannot reach the
+// network through it.
+var stubGit = `#!/usr/bin/env bash
+[[ "$1" == ls-remote ]] || exit 99
+tag="${3#refs/tags/}"
+case "${tag}" in
+  v0.0.0-missing) ;;
+  v9.9.9-light) printf '%s\trefs/tags/%s\n' "` + lightCommit + `" "${tag}" ;;
+  *) printf '%s\trefs/tags/%s\n%s\trefs/tags/%s^{}\n' "` + tagObject + `" "${tag}" "` + peeledCommit + `" "${tag}" ;;
+esac
+`
+
+var (
+	tagObject    = strings.Repeat("1", 40)
+	peeledCommit = strings.Repeat("2", 40)
+	lightCommit  = strings.Repeat("3", 40)
+)
+
 // runBuildImage executes build-image.sh with the stub docker and
 // returns its exit code, combined output, and the stub's log.
 func runBuildImage(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(stubDocker), 0o755); err != nil { //nolint:gosec // an executable test stub
-		t.Fatal(err)
+	for name, body := range map[string]string{"docker": stubDocker, "git": stubGit} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil { //nolint:gosec // an executable test stub
+			t.Fatal(err)
+		}
 	}
 	logPath := filepath.Join(t.TempDir(), "docker.log")
 	cmd := exec.Command("bash", append([]string{"build-image.sh"}, args...)...)
@@ -77,6 +100,7 @@ func TestBuildImageRefusals(t *testing.T) {
 		{"push without registry", []string{"--ref", "v2.10.0", "--push"}, "--push needs --registry"},
 		{"push with empty registry", []string{"--ref", sha, "--push", "--registry="}, "--push needs --registry"},
 		{"unknown flag", []string{"--ref", "v2.10.0", "--yes"}, "unknown argument"},
+		{"tag not upstream", []string{"--ref", "v0.0.0-missing"}, "does not exist on"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, out, log := runBuildImage(t, tc.args...)
@@ -100,6 +124,12 @@ func TestBuildImageBuildsWithoutPushing(t *testing.T) {
 	}
 	if !strings.Contains(log, "--build-arg CORE_AGENT_REF=v2.10.0-dev.1") {
 		t.Errorf("build did not pass the ref as CORE_AGENT_REF:\n%s", log)
+	}
+	if !strings.Contains(log, "--build-arg CORE_AGENT_COMMIT="+peeledCommit) {
+		t.Errorf("build did not pass the annotated tag's peeled commit as CORE_AGENT_COMMIT:\n%s", log)
+	}
+	if !strings.Contains(out, "(commit "+peeledCommit+")") {
+		t.Errorf("the script did not print the resolved commit:\n%s", out)
 	}
 	if !strings.Contains(log, "--tag core-agent-selfdev-soak:v2.10.0-dev.1") {
 		t.Errorf("build did not tag core-agent-selfdev-soak:<ref>:\n%s", log)
@@ -128,5 +158,21 @@ func TestBuildImagePushesOnlyWhenAsked(t *testing.T) {
 		t.Errorf("stub log has no push of %s:\n%s", remote, log)
 	case tagAt < 0 || tagAt > pushAt:
 		t.Errorf("the built image was not tagged as %s before the push:\n%s", remote, log)
+	}
+}
+
+func TestBuildImageResolvesCommit(t *testing.T) {
+	sha := strings.Repeat("ab", 20)
+	for _, tc := range []struct{ ref, want string }{
+		{"v9.9.9-light", lightCommit}, // lightweight tag: no peeled line
+		{sha, sha},                    // a SHA is its own commit; no lookup
+	} {
+		code, out, log := runBuildImage(t, "--ref", tc.ref)
+		if code != 0 {
+			t.Fatalf("--ref %s: exit %d:\n%s", tc.ref, code, out)
+		}
+		if !strings.Contains(log, "--build-arg CORE_AGENT_COMMIT="+tc.want+" ") {
+			t.Errorf("--ref %s: CORE_AGENT_COMMIT is not %s:\n%s", tc.ref, tc.want, log)
+		}
 	}
 }

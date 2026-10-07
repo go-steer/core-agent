@@ -56,6 +56,13 @@ FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930
 ARG GO_VERSION
 # No default, on purpose: see the header. The RUN below is the guard.
 ARG CORE_AGENT_REF
+# The commit CORE_AGENT_REF resolved to when build-image.sh looked it up
+# (git ls-remote). Also required: it becomes the image's
+# org.opencontainers.image.revision label, and the build fails if the
+# checkout is not that commit. go-steer/core-agent has no tag
+# protection, so a tag that moved between lookup and build is caught
+# here instead of producing an image whose label names another commit.
+ARG CORE_AGENT_COMMIT
 
 # The base image sets GOTOOLCHAIN=local, so the go command never
 # downloads a different toolchain; a ref whose go.mod needs a newer Go
@@ -99,7 +106,12 @@ RUN if [[ -z "${CORE_AGENT_REF:-}" ]]; then \
       exit 1; \
     fi; \
     mkdir -p /out; \
-    git -C /src rev-parse HEAD > /out/core-agent.commit; \
+    head="$(git -C /src rev-parse HEAD)"; \
+    if [[ "${head}" != "${CORE_AGENT_COMMIT:-}" ]]; then \
+      echo "selfdev-soak: ${CORE_AGENT_REF} is ${head}, but CORE_AGENT_COMMIT=${CORE_AGENT_COMMIT:-<unset>}; build with build-image.sh, which resolves it (and a moved tag is caught here)" >&2; \
+      exit 1; \
+    fi; \
+    printf '%s\n' "${head}" > /out/core-agent.commit; \
     printf '%s\n' "${CORE_AGENT_REF}" > /out/core-agent.ref
 
 # The module path changes with a major version (/v2, /v3, ...), and an
@@ -129,7 +141,10 @@ RUN cd /src; \
 # two FROM lines are identical.
 FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36
 
+# The builder stage has already proved this is the commit it built.
+ARG CORE_AGENT_COMMIT
 LABEL org.opencontainers.image.source="https://github.com/go-steer/core-agent" \
+      org.opencontainers.image.revision="${CORE_AGENT_COMMIT}" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.title="core-agent-selfdev-soak" \
       org.opencontainers.image.description="Soak-only image for the core-agent self-development soak (#1213); not a release artifact."
@@ -142,6 +157,10 @@ LABEL org.opencontainers.image.source="https://github.com/go-steer/core-agent" \
 # archive at build time, so it is the one package this file does not
 # pin by digest; nothing the agent is measured on depends on its patch
 # level.
+#
+# The find at the end strips every setuid/setgid bit (su, passwd,
+# mount, ...), so nothing in the image can raise the agent's privileges
+# even where a pod forgets allowPrivilegeEscalation: false.
 #
 # safe.directory '*': git refuses a repository another uid owns, and so
 # does `go build`'s VCS stamping. The workspace PVC is shared with the
@@ -159,7 +178,8 @@ RUN set -eu; \
     groupadd --gid "${SOAK_UID}" soak; \
     useradd --uid "${SOAK_UID}" --gid "${SOAK_UID}" --create-home --home-dir /home/soak --shell /bin/bash soak; \
     mkdir -p /workspace /cache/go/mod /cache/go/build /cache/go/path/bin /var/lib/core-agent /etc/core-agent-soak /usr/local/share/core-agent-soak; \
-    chown -R "${SOAK_UID}:${SOAK_UID}" /workspace /cache /var/lib/core-agent /home/soak
+    chown -R "${SOAK_UID}:${SOAK_UID}" /workspace /cache /var/lib/core-agent /home/soak; \
+    find / -xdev -perm /6000 -type f -exec chmod u-s,g-s {} +
 
 COPY --from=builder /out/core-agent /usr/local/bin/core-agent
 COPY --from=builder /out/core-agent.ref /out/core-agent.commit /usr/local/share/core-agent-soak/
@@ -169,12 +189,16 @@ COPY --from=builder /out/core-agent.ref /out/core-agent.commit /usr/local/share/
 #   /cache/go                           Go module + build cache PVC, and
 #                                       GOPATH, so `go install`ed dev tools
 #                                       (golangci-lint, govulncheck) survive
-#                                       a pod restart and are on PATH
+#                                       a pod restart. Its bin is LAST on
+#                                       PATH: it is writable and persists
+#                                       across issues, so first on PATH it
+#                                       would let one issue's session shadow
+#                                       git or go for every later one.
 #   /var/lib/core-agent                 eventlog PVC (--session-db-path)
 #   /etc/core-agent-soak/config.json    the soak config overlay (read-only)
 ENV HOME=/home/soak \
     GOPATH=/cache/go/path \
-    PATH=/cache/go/path/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/cache/go/path/bin \
     GOMODCACHE=/cache/go/mod \
     GOCACHE=/cache/go/build \
     GOTOOLCHAIN=local

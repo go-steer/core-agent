@@ -37,13 +37,18 @@ The image contains:
   bookworm's archive. jq is the one package not pinned by digest.
   `verify-gke-drill` needs both jq and python3, and the presubmit sweep runs
   it.
-- **`GOPATH` on the Go cache volume** (`/cache/go/path`), with its `bin` on
-  `PATH`. Dev tools that the presubmits `go install` (golangci-lint,
-  govulncheck) then survive a pod restart.
+- **`GOPATH` on the Go cache volume** (`/cache/go/path`), with its `bin`
+  **last** on `PATH`. Dev tools that the presubmits `go install`
+  (golangci-lint, govulncheck) then survive a pod restart. The directory is
+  writable and outlives each issue's session. If it came first on `PATH`,
+  one session could shadow `git` or `go` for every later issue.
+- **No setuid or setgid binaries.** The runtime stage strips every such bit
+  (`su`, `passwd`, `mount`, ...).
 - **A core-agent binary built from a pinned upstream ref** (next section).
   A tag build reports the tag from `--version`. A SHA build reports the
   tree's own version string and the SHA as its commit, because attach peers
-  read the version as a semver. The ref and the resolved commit are also
+  read the version as a semver. The resolved commit is the image's
+  `org.opencontainers.image.revision` label. The ref and the commit are also
   written to `/usr/local/share/core-agent-soak/`.
 - **No `gh`, and no GitHub credential.** The agent stops at local commits.
   The dispatcher, in its own pod, pushes and opens the PR with the writer
@@ -79,6 +84,13 @@ measured.
   inside the build. The build context is an empty directory, and the
   Dockerfile copies nothing from it, so neither the mirror nor a local
   checkout can get into the image.
+- **A tag isn't proof of a commit.** `go-steer/core-agent` has no tag
+  protection, so a tag can be moved. `build-image.sh` resolves the ref to a
+  commit with `git ls-remote` and passes it as `CORE_AGENT_COMMIT`, which
+  also has no default. The build fails if its checkout is a different
+  commit, which catches a tag that moved between the lookup and the build.
+  That commit becomes the revision label. Deploy by image digest, and
+  record the commit beside it.
 - Upgrading the ref is a deliberate soak event. Rebuild with the new ref,
   roll the daemon, and log the change on #1213 with both refs.
 
@@ -98,8 +110,12 @@ The local tag is `core-agent-selfdev-soak:<ref>`, and a push goes to
 `<registry>/core-agent-selfdev-soak:<ref>`. `--push` without `--registry` is
 refused, and so is `--registry` without `--push`. `--platform linux/amd64`
 builds for GKE nodes from another architecture. The `:<ref>` tag is mutable,
-because a rebuild overwrites it. After a push the script prints the
-registry digest. Deploy by that digest, and record it with the ref.
+because a rebuild overwrites it. The script prints the resolved commit when
+it builds. After a push it prints the registry digest. Deploy by that
+digest, and record it with the commit.
+
+A direct `docker build` needs both `--build-arg CORE_AGENT_REF=...` and
+`--build-arg CORE_AGENT_COMMIT=<the commit it resolves to>`.
 
 When `go.mod`'s toolchain moves, `verify-go-toolchain` and this directory's
 test both fail until the Dockerfile catches up. Update `ARG GO_VERSION` and
@@ -131,8 +147,28 @@ the arguments after them are ignored. To use them inside the pod, run
 | `/var/lib/core-agent` | PVC, read-write | The eventlog. Pass `--session-db-path=/var/lib/core-agent/sessions.db`. |
 | `/etc/core-agent-soak/config.json` | ConfigMap, read-only | The config overlay, `config.soak.json`. |
 
-Give the pod `runAsUser: 10001`, `runAsGroup: 10001`, `fsGroup: 10001` and
-`runAsNonRoot: true`, so the PVCs are writable. **Run the dispatcher as
+Give the pod this security context:
+
+```yaml
+securityContext:            # pod
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  runAsNonRoot: true
+containers:
+  - securityContext:        # container
+      allowPrivilegeEscalation: false
+      capabilities: { drop: [ALL] }
+      readOnlyRootFilesystem: true
+```
+
+`fsGroup` makes the PVCs writable. `readOnlyRootFilesystem: true` also
+needs `emptyDir` volumes at `/tmp` and `/home/soak`, because `go build`
+creates its work directory under `/tmp` and git and the Go tools write
+under HOME. With those two mounts, a commit, `go build` and `go vet`
+all worked in a local run with a read-only root and all capabilities
+dropped (`docker run --read-only --cap-drop ALL`).
+**Run the dispatcher as
 uid 10001 too.** It creates the worktrees on the shared PVC. Files it
 creates under another uid get group 10001 through fsGroup, but with the
 default umask they aren't group-writable. The agent would then fail on
@@ -196,13 +232,17 @@ design calls for:
   presubmit and tool scripts, and `task_from` is `sa:selfdev-dispatcher`.
 - `agent.max_session_cost_usd: 25` (decision 14). The per-turn cap is $10,
   as in the committed recipe. core-agent has no per-day cap setting, so the
-  $50 daily cap is enforced outside this file.
+  $50 daily cap is enforced outside this file
+  ([#1275](https://github.com/go-steer/core-agent/issues/1275)).
 - `alerts.targets`: `maintainer-chat`, a `switchboard` target.
-  **`conversation` is a placeholder (`SOAK-SLACK-CHANNEL-ID`), and it
-  validates.** A deployment that doesn't replace it boots normally and
-  posts every notification to a conversation that doesn't exist. The
-  namespace overlay that generates the ConfigMap must substitute the soak
-  channel's Slack ID, and fail if the placeholder is still there. `tools.disable: ["alert"]` keeps that target from also giving
+  **`conversation` is a placeholder that fails closed:**
+  `REPLACE WITH THE SOAK SLACK CHANNEL ID`. `Validate` rejects whitespace in
+  a conversation key, so a deployment that doesn't substitute the soak
+  channel's Slack ID fails at startup. Without this, it would boot and send
+  every notification to a conversation that doesn't exist.
+  `config_test.go` asserts that the shipped file carries exactly this token
+  and is refused. It then substitutes a fake ID (`C0123`) before checking
+  everything else. `tools.disable: ["alert"]` keeps that target from also giving
   the model an `alert` tool. `approval_notify` sends through the alert
   sender directly, so notifications still go out. `dev/uat/self-dev/run.sh`
   does the same thing for T2.

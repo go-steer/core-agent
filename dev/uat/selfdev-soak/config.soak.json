@@ -36,7 +36,7 @@
         "template": "switchboard",
         "url_env": "SOAK_SWITCHBOARD_URL",
         "auth": { "bearer_env": "SOAK_SWITCHBOARD_TOKEN" },
-        "conversation": "SOAK-SLACK-CHANNEL-ID",
+        "conversation": "REPLACE WITH THE SOAK SLACK CHANNEL ID",
         "description": "The soak maintainer's Slack channel, through switchboard."
       }
     ]

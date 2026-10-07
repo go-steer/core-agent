@@ -26,7 +26,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -421,7 +420,7 @@ func TestRunWithAnAttachTokenFileTheAgentsBashFindsNoToken(t *testing.T) {
 	}
 	t.Parallel()
 	fifo := filepath.Join(t.TempDir(), "attach-token")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	if err := mkfifo(fifo, 0o600); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
 	// The writer blocks until the daemon opens the FIFO, writes once and
@@ -459,6 +458,9 @@ func TestRunWithAnAttachTokenFileTheAgentsBashFindsNoToken(t *testing.T) {
 	}
 	if !strings.Contains(res.probe, "HTTP=HTTP/1.1 401") && !strings.Contains(res.probe, "HTTP=HTTP/1.0 401") {
 		t.Errorf("the listener did not demand the token from the file:\n%s\n--- daemon ---\n%s", res.probe, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "reading the attach token from "+fifo) {
+		t.Errorf("startup did not say it was waiting on the FIFO, so a missing writer would hang it silently:\n%s", res.stderr)
 	}
 	if strings.Contains(res.stderr, authE2ESecret) {
 		t.Errorf("the daemon printed the token:\n%s", res.stderr)

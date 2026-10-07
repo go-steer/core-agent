@@ -69,7 +69,8 @@ type Options struct {
 	//
 	// Non-loopback addresses (including ":7777", "0.0.0.0:7777",
 	// "[::]:7777") require an authentication gate — Auth.BearerToken,
-	// mTLS via Auth.ClientCAFile, or MultiSessionEnabled with
+	// mTLS (Auth.ClientCAFile together with TLSCertFile/TLSKeyFile),
+	// or MultiSessionEnabled with
 	// AllowAnonymous=false — otherwise NewServer refuses to
 	// construct the server (#376).
 	Addr string
@@ -246,10 +247,7 @@ func listenerAuthenticated(opts Options) bool {
 	if opts.Auth.BearerToken != "" {
 		return true
 	}
-	// A client CA is a gate only when TLS is on: LoadTLSConfig never
-	// reads ClientCAFile without a server cert, and Serve then speaks
-	// plain HTTP, so a CA alone authenticates nobody (#1201 review).
-	if opts.Auth.ClientCAFile != "" && opts.Auth.TLSCertFile != "" && opts.Auth.TLSKeyFile != "" {
+	if opts.Auth.mtlsEnforced() {
 		return true
 	}
 	return opts.MultiSessionEnabled && !opts.AllowAnonymous

@@ -126,3 +126,14 @@ func parseSecret(path, raw string) (string, error) {
 	}
 	return tok, nil
 }
+
+// MayBlock reports whether reading path can wait indefinitely: anything
+// that is not a regular file — a FIFO with no writer, or a writer that
+// never closes, blocks the open or the read. Callers print a line first,
+// so a startup that is waiting on its token says so instead of hanging
+// silently. A path that cannot be stat'ed reports false; the read that
+// follows produces the error.
+func MayBlock(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.Mode().IsRegular() && !st.IsDir()
+}

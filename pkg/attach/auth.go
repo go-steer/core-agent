@@ -54,6 +54,15 @@ type AuthConfig struct {
 	ReadOnly bool
 }
 
+// mtlsEnforced reports whether client certificates are actually
+// required. A client CA is a gate only when TLS is on: LoadTLSConfig
+// never reads ClientCAFile without a server cert and key, and Serve then
+// speaks plain HTTP, so a CA alone authenticates nobody (#1201). The
+// listener policy and the agent card's advertised schemes both use this.
+func (a AuthConfig) mtlsEnforced() bool {
+	return a.ClientCAFile != "" && a.TLSCertFile != "" && a.TLSKeyFile != ""
+}
+
 // LoadTLSConfig builds a *tls.Config from the AuthConfig's TLS
 // material. Returns nil (no TLS) when neither TLSCertFile nor
 // TLSKeyFile is set. Returns an error if exactly one is set, or if

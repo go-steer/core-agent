@@ -52,6 +52,9 @@ func resolveAttachToken(o attachOpts, stderr io.Writer) (string, error) {
 	case o.TokenFile != "" && o.TokenEnv != "":
 		return "", errors.New("--attach-token and --attach-token-file (attach.token_env and attach.token_file) are mutually exclusive; give one source for the attach token")
 	case o.TokenFile != "":
+		if childenv.MayBlock(o.TokenFile) {
+			fmt.Fprintf(stderr, "core-agent: reading the attach token from %s, a pipe or device: startup waits until a writer has written it and closed\n", o.TokenFile)
+		}
 		tok, protectErr, err := childenv.TakeFile(o.TokenFile)
 		if err != nil {
 			return "", fmt.Errorf("--attach-token-file: %w", err)

@@ -57,8 +57,8 @@ type AttachOptions struct {
 	// AllowUnauthenticatedLocal accepts a loopback or Unix-socket
 	// listener with no authentication even though the agent has a
 	// shell (#1201). CLI-only, deliberately: it is a per-invocation
-	// operator decision, and a config field is a file the agent itself
-	// might edit.
+	// operator decision that should be visible on the command line that
+	// started the daemon (see docs/local-listener-auth-design.md).
 	AllowUnauthenticatedLocal bool
 }
 

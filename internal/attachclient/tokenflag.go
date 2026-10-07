@@ -160,6 +160,9 @@ func ResolveToken(cmd, tokenFile, tokenEnv, legacy string, warn io.Writer) (stri
 	if strings.TrimSpace(tokenEnv) != "" || strings.TrimSpace(legacy) != "" {
 		return "", errors.New("--token-file and --token-env (or --token) are mutually exclusive; give one source for the token")
 	}
+	if childenv.MayBlock(path) {
+		fmt.Fprintf(warn, "%s: reading the token from %s, a pipe or device: waiting until a writer has written it and closed\n", cmd, path)
+	}
 	tok, protectErr, err := childenv.TakeFile(path)
 	if err != nil {
 		return "", fmt.Errorf("--token-file: %w", err)

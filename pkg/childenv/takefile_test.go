@@ -20,7 +20,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -106,6 +105,9 @@ func TestReadSecretFileModeRules(t *testing.T) {
 
 func TestReadSecretFileRefusesNonTokens(t *testing.T) {
 	t.Parallel()
+	if MayBlock(secretFile(t, "tok\n", 0o600)) || MayBlock(t.TempDir()) || MayBlock(filepath.Join(t.TempDir(), "missing")) {
+		t.Error("MayBlock is true for a regular file, a directory or a missing path")
+	}
 	if _, err := ReadSecretFile(""); err == nil {
 		t.Error("an empty path read without error")
 	}
@@ -131,7 +133,7 @@ func TestReadSecretFileReadsAFIFOWithoutAModeCheck(t *testing.T) {
 		t.Skip("no FIFOs")
 	}
 	p := filepath.Join(t.TempDir(), "fifo")
-	if err := syscall.Mkfifo(p, 0o644); err != nil {
+	if err := mkfifo(p, 0o644); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
 	go func() {
@@ -142,6 +144,9 @@ func TestReadSecretFileReadsAFIFOWithoutAModeCheck(t *testing.T) {
 		_, _ = f.WriteString("fifo-token\n")
 		_ = f.Close()
 	}()
+	if !MayBlock(p) {
+		t.Error("MayBlock(FIFO) = false; a startup waiting on it would hang silently")
+	}
 	got, err := ReadSecretFile(p)
 	if err != nil || got != "fifo-token" {
 		t.Fatalf("got %q, %v; want fifo-token", got, err)

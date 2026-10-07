@@ -1,0 +1,48 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The rig with host-named egress: the parent directory, with its two
+# "HTTPS to any public address" policies replaced by GKE
+# FQDNNetworkPolicies that name the hosts each pod may reach. This is
+# the variant that matches the design ("egress only to Vertex" for the
+# daemon, "only GitHub" for the dispatcher).
+#
+# It needs GKE Dataplane V2 with FQDN network policy enabled
+# (`gcloud container clusters update CLUSTER --enable-fqdn-network-policy`).
+# On a cluster without it, `kubectl apply` refuses the FQDNNetworkPolicy
+# kind, so this variant fails closed rather than deploying unfenced.
+#
+# Render with `render.sh --fqdn-egress`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+  - fqdn-networkpolicy.yaml
+
+patches:
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: core-agent-selfdev-daemon-https
+        namespace: core-agent-selfdev
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: selfdev-soak-dispatcher-https
+        namespace: core-agent-selfdev

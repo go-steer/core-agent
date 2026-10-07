@@ -1,0 +1,186 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The A7 run: the dispatcher with --once (design, phase 2). It waits for
+# the first claimable soak:queue issue, takes it end to end to a PR or a
+# stop, and exits: 0 for a PR, 1 for a stop, or for a signal that ended
+# it first. backoffLimit 0 and restartPolicy Never keep that exit status
+# the Job's verdict: a retry would hide the stop A7 is graded on
+# (decision 17), so the Job runs once and fails rather than retrying.
+#
+# Applying it starts the run, so apply it last: after ../base is up and
+# A7 is seeded. Check that no OTHER soak:queue issue is open first, or
+# --once takes the oldest one instead of A7 (README.md, runbook). Never
+# run it while the polling Deployment in ../base is scaled up: both
+# mount the one state file.
+#
+# A Job's pod template is immutable. To re-run A7 or roll a new image,
+# delete the Job first (kubectl -n core-agent-selfdev delete job
+# selfdev-soak-dispatcher-a7) and re-apply.
+#
+# The pod spec is ../base/51-deployment-dispatcher.yaml's, plus --once
+# and restartPolicy: Never; render_test.go fails when the two drift.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: selfdev-soak-dispatcher-a7
+  namespace: core-agent-selfdev
+  labels:
+    app.kubernetes.io/name: core-agent-selfdev
+    app.kubernetes.io/component: dispatcher
+spec:
+  backoffLimit: 0
+  # The dispatcher's own --session-timeout (4h) stops a session that
+  # runs too long; this is the backstop if the dispatcher itself hangs.
+  activeDeadlineSeconds: 21600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: core-agent-selfdev
+        app.kubernetes.io/component: dispatcher
+        app.kubernetes.io/instance: a7-once
+    spec:
+      restartPolicy: Never
+      serviceAccountName: selfdev-soak-dispatcher
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # The workspace volume is ReadWriteOnce and the daemon mounts it,
+      # so this pod has to land on the daemon's node.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: core-agent-selfdev
+                  app.kubernetes.io/component: daemon
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: dispatcher
+          image: REPLACED-BY-KUSTOMIZE-FROM-SOAK_IMAGE
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/selfdev-soak-dispatcher"]
+          # Flags per `selfdev-soak-dispatcher --help`. Every secret is a
+          # file: the attach token (read with TakeFile, the #1266
+          # convention) and the App key (mode-checked). $(VAR) is
+          # expanded by the kubelet from env below; an unset one stays
+          # literal and fails flag validation, so the pod stops.
+          args:
+            - "--repo=mastersingh24/core-agent-selfdev"
+            - "--maintainer=mastersingh24"
+            - "--upstream-repo=go-steer/core-agent"
+            - "--attach-url=http://core-agent-selfdev:7777"
+            - "--token-file=/var/run/selfdev-soak/attach/token"
+            - "--app-id=$(SOAK_APP_ID)"
+            - "--app-key-file=/var/run/selfdev-soak/app/private-key.pem"
+            - "--worktrees-dir=/workspace/issues"
+            # The plans directory the daemon writes (its recipe's
+            # .agents/plans is this directory, mounted by subPath).
+            - "--agents-dir=/workspace/.soak"
+            - "--state-file=/var/lib/selfdev-soak-dispatcher/state.json"
+            - "--private-repo=/var/lib/selfdev-soak-dispatcher-repo/mirror.git"
+            - "--commit-name=$(SOAK_COMMIT_NAME)"
+            - "--commit-email=$(SOAK_COMMIT_EMAIL)"
+            - "--once"
+          env:
+            - name: SOAK_APP_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: selfdev-soak-inputs
+                  key: SOAK_APP_ID
+            - name: SOAK_COMMIT_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: selfdev-soak-inputs
+                  key: SOAK_COMMIT_NAME
+            - name: SOAK_COMMIT_EMAIL
+              valueFrom:
+                configMapKeyRef:
+                  name: selfdev-soak-inputs
+                  key: SOAK_COMMIT_EMAIL
+            # The per-push token files go here (dispatcher decision 6),
+            # on this pod's own emptyDir.
+            - name: TMPDIR
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            # The writer App's private key. Mounted in THIS pod only;
+            # the daemon's pod never sees it (decision 7).
+            - name: writer-app
+              mountPath: /var/run/selfdev-soak/app
+              readOnly: true
+            # The dispatcher's own attach token: the plaintext whose
+            # SHA-256 is the sa:selfdev-dispatcher row of users.json.
+            - name: attach-token
+              mountPath: /var/run/selfdev-soak/attach
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/selfdev-soak-dispatcher
+            - name: private-repo
+              mountPath: /var/lib/selfdev-soak-dispatcher-repo
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/soak
+      volumes:
+        - name: writer-app
+          secret:
+            secretName: selfdev-soak-writer-app
+            defaultMode: 0400
+            items:
+              - key: private-key.pem
+                path: private-key.pem
+        - name: attach-token
+          secret:
+            secretName: selfdev-soak-dispatcher-attach
+            defaultMode: 0400
+            items:
+              - key: token
+                path: token
+        - name: state
+          persistentVolumeClaim:
+            claimName: selfdev-soak-dispatcher-state
+        # The dispatcher-only bare repository the App token touches
+        # (dispatcher decision 5). It can be rebuilt from scratch, so an
+        # emptyDir; no other pod can mount it.
+        - name: private-repo
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: core-agent-selfdev-workspace
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 100Mi

@@ -1,0 +1,64 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Host-named HTTPS egress (GKE FQDNNetworkPolicy). Each pod also keeps
+# the parent's DNS, metadata-server (daemon) and attach-port
+# (dispatcher) rules; DNS is what lets FQDN enforcement learn the
+# addresses behind these names.
+#
+# The daemon: Vertex AI (the global endpoint Claude 5 is served from,
+# and regional ones), plus the Go module proxy, checksum database and
+# vulnerability database that `go test` and the presubmit sweep fetch
+# from. A host missing here shows up as a dial timeout in the agent's
+# tool output; add it here, not to a wider rule.
+apiVersion: networking.gke.io/v1alpha1
+kind: FQDNNetworkPolicy
+metadata:
+  name: core-agent-selfdev-daemon-fqdn
+  namespace: core-agent-selfdev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: core-agent-selfdev
+      app.kubernetes.io/component: daemon
+  egress:
+    - matches:
+        - name: aiplatform.googleapis.com
+        - pattern: "*-aiplatform.googleapis.com"
+        - name: proxy.golang.org
+        - name: sum.golang.org
+        - name: vuln.go.dev
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# The dispatcher: the GitHub REST/GraphQL API and git over HTTPS. The
+# daemon gets neither.
+apiVersion: networking.gke.io/v1alpha1
+kind: FQDNNetworkPolicy
+metadata:
+  name: selfdev-soak-dispatcher-fqdn
+  namespace: core-agent-selfdev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: core-agent-selfdev
+      app.kubernetes.io/component: dispatcher
+  egress:
+    - matches:
+        - name: api.github.com
+        - name: github.com
+      ports:
+        - protocol: TCP
+          port: 443

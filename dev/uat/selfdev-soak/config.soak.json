@@ -53,5 +53,15 @@
         "max_wallclock_seconds": 1800
       }
     }
-  ]
+  ],
+  "attach": {
+    "multi_session": {
+      "enabled": true,
+      "auth": {
+        "kind": "bearer_table",
+        "table_file": "/etc/core-agent-users/users.json"
+      },
+      "admin_identities": ["mastersingh24"]
+    }
+  }
 }

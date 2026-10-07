@@ -184,6 +184,24 @@ func checkCaps(t *testing.T, cfg *config.Config) {
 	}
 }
 
+// TestSoakConfigMultiSession: the attach listener authenticates every
+// caller against the hashed users.json table that deploy/ mounts
+// read-only, with no anonymous fallback. The dispatcher creates sessions
+// as sa:selfdev-dispatcher; the maintainer is the one admin, so they can
+// attach to a dispatcher-owned session to answer an escalation.
+func TestSoakConfigMultiSession(t *testing.T) {
+	ms := deployed(t).Attach.MultiSession
+	if !ms.Enabled || ms.AllowAnonymous {
+		t.Fatalf("attach.multi_session enabled=%v allow_anonymous=%v, want an enforced table", ms.Enabled, ms.AllowAnonymous)
+	}
+	if ms.Auth.Kind != "bearer_table" || ms.Auth.TableFile != "/etc/core-agent-users/users.json" {
+		t.Errorf("attach.multi_session.auth = %+v, want bearer_table at /etc/core-agent-users/users.json (deploy/base/50-deployment-daemon.yaml mounts it there)", ms.Auth)
+	}
+	if !slices.Equal(ms.AdminIdentities, []string{"mastersingh24"}) || len(ms.ProxyIdentities) != 0 {
+		t.Errorf("admin=%v proxy=%v, want the maintainer as the only admin and no proxy identity", ms.AdminIdentities, ms.ProxyIdentities)
+	}
+}
+
 // TestSoakConfigRestatesCommittedRecipe fails when /.agents/config.json
 // changes and the overlay was not brought along, or when the overlay
 // changes a committed value nobody listed in soakOverrides.

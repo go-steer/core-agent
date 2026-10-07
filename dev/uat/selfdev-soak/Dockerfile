@@ -134,6 +134,33 @@ RUN cd /src; \
     go build -trimpath -ldflags "${ldflags}" -o /out/core-agent ./cmd/core-agent; \
     /out/core-agent --version
 
+# The dispatcher (dev/uat/selfdev-soak/dispatcher) and the recipe come
+# from the SAME pinned checkout, so one image digest pins the agent, the
+# process that hands it work, and the instructions it runs under. The
+# dispatcher pod runs this image with its command overridden
+# (deploy/base/51-deployment-dispatcher.yaml); it needs git, which this
+# image already has, and the same uid as the daemon (README.md).
+#
+# The recipe is the ref's repo-root AGENTS.md plus its .agents/ tree,
+# copied to /out/recipe and mounted nowhere: the daemon's --agents-dir
+# points into it, read-only, so an upgrade of the recipe is the same
+# deliberate, logged event as an upgrade of the binary (decision 11),
+# and no clone of the mirror (whose history once held the seed list,
+# decision 20) has to exist for the daemon to boot. The empty plans
+# directory is the mount point the deployment covers with a writable
+# volume. A ref older than the dispatcher is refused here, not at
+# deploy time.
+RUN cd /src; \
+    if [[ ! -d dev/uat/selfdev-soak/dispatcher || ! -f .agents/config.json || ! -f AGENTS.md ]]; then \
+      echo "selfdev-soak: ${CORE_AGENT_REF} predates the soak dispatcher or the self-recipe; build a newer ref" >&2; \
+      exit 1; \
+    fi; \
+    go build -trimpath -ldflags "-s -w" -o /out/selfdev-soak-dispatcher ./dev/uat/selfdev-soak/dispatcher; \
+    mkdir -p /out/recipe; \
+    cp -R AGENTS.md .agents /out/recipe/; \
+    rm -rf /out/recipe/.agents/plans; \
+    mkdir -p /out/recipe/.agents/plans
+
 # ---- Runtime stage ----
 # The same pinned image: it already carries git, a shell, coreutils,
 # ca-certificates, python3, gcc (for -race) and the Go toolchain, so one
@@ -183,6 +210,8 @@ RUN set -eu; \
 
 COPY --from=builder /out/core-agent /usr/local/bin/core-agent
 COPY --from=builder /out/core-agent.ref /out/core-agent.commit /usr/local/share/core-agent-soak/
+COPY --from=builder /out/selfdev-soak-dispatcher /usr/local/bin/selfdev-soak-dispatcher
+COPY --from=builder /out/recipe /usr/local/share/core-agent-soak/recipe
 
 # Mount points, documented in README.md:
 #   /workspace                          workspace PVC (the mirror's clone + worktrees)
@@ -196,6 +225,10 @@ COPY --from=builder /out/core-agent.ref /out/core-agent.commit /usr/local/share/
 #                                       git or go for every later one.
 #   /var/lib/core-agent                 eventlog PVC (--session-db-path)
 #   /etc/core-agent-soak/config.json    the soak config overlay (read-only)
+#   /usr/local/share/core-agent-soak/recipe/.agents/plans
+#                                       writable plans directory, shared
+#                                       with the dispatcher's pod; the rest
+#                                       of the recipe stays read-only
 ENV HOME=/home/soak \
     GOPATH=/cache/go/path \
     PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/cache/go/path/bin \

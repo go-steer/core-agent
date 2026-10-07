@@ -54,6 +54,7 @@ URL forms (same grammar as `core-agent attach`):
 
 | Flag | Purpose |
 |---|---|
+| `--token-file=<path>` | Read the bearer token from this file (or a pipe: `<(pass show attach | head -n1)`), once. The token never enters the client's environment, the counterpart of `--attach-token-file` on the listener side ([#1201](https://github.com/go-steer/core-agent/issues/1201)). Mutually exclusive with `--token-env`. |
 | `--token-env=<ENVVAR>` | Name of the env var holding the bearer token (same indirection as `--attach-token` on the listener side). The secret never appears on the command line. |
 | `--auth=<strategy>` | Auth strategy for outbound attach requests. `bearer` (default) sends the attach token in `Authorization: Bearer` — the direct-attach path. `google-id-token` (recommended for Cloud Run IAM / IAP) mints a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamps both `Authorization: Bearer <ID-token>` + `X-Attach-Token`. `google-oauth` is an alternative that uses OAuth access tokens via `google.FindDefaultCredentials` (matches MCP's pattern for Google APIs) — Cloud Run IAM rejects this in many deployments, prefer `google-id-token` unless you specifically need OAuth scope behavior. See "Behind an identity gateway" below. |
 | `--theme=auto\|dark\|light` | Force a glamour theme for markdown rendering. Empty = auto (terminal background detection via OSC 11). |

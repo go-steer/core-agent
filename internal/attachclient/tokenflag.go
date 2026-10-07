@@ -40,6 +40,7 @@
 package attachclient
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -128,4 +129,43 @@ func ResolveTokenEnv(cmd, tokenEnv, legacy string, warn io.Writer) string {
 			"no token will be sent and an authenticated daemon will answer 401\n", cmd, name)
 	}
 	return tok
+}
+
+// ResolveToken is the attach clients' one token resolver: --token-file
+// when given, otherwise ResolveTokenEnv over --token-env / --token.
+//
+// --token-file exists because ResolveTokenEnv can only shorten the time a
+// token sits in a client's environment, never remove it: between exec and
+// the read, /proc/<pid>/environ is readable by any same-user process,
+// including an agent with a shell that is already running when the
+// operator starts the TUI (#1201). A token read from a file never enters
+// any process's environment, and a bash process substitution
+// (`--token-file <(pass show attach | head -n1)`) leaves nothing on disk either.
+//
+// Naming both a file and an env var is an error rather than a precedence
+// rule: two sources for one secret is a misconfiguration, and picking one
+// silently is how an operator ends up authenticating with the stale token
+// they meant to replace. A file that cannot be read or fails validation
+// is an error too — unlike an empty --token-env, which stays a supported
+// "no token" posture, a named file that yields nothing is never what the
+// operator meant.
+func ResolveToken(cmd, tokenFile, tokenEnv, legacy string, warn io.Writer) (string, error) {
+	if warn == nil {
+		warn = io.Discard
+	}
+	path := strings.TrimSpace(tokenFile)
+	if path == "" {
+		return ResolveTokenEnv(cmd, tokenEnv, legacy, warn), nil
+	}
+	if strings.TrimSpace(tokenEnv) != "" || strings.TrimSpace(legacy) != "" {
+		return "", errors.New("--token-file and --token-env (or --token) are mutually exclusive; give one source for the token")
+	}
+	tok, protectErr, err := childenv.TakeFile(path)
+	if err != nil {
+		return "", fmt.Errorf("--token-file: %w", err)
+	}
+	if protectErr != nil {
+		fmt.Fprintf(warn, "%s: could not make this process non-dumpable (%v); a same-user process can still read the token from /proc\n", cmd, protectErr)
+	}
+	return tok, nil
 }

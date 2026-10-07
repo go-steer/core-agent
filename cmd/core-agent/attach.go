@@ -50,6 +50,7 @@ import (
 // --attach-token. mTLS is not yet wired in the client (TODO follow-on).
 func runAttachSubcommand(args []string) int {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
+	tokenFile := fs.String("token-file", "", "read the bearer token from this file (or a pipe, e.g. <(pass show attach | head -n1)) once; it never enters any process environment. Mutually exclusive with --token-env.")
 	tokenEnv := fs.String("token-env", "", "NAME of an env var holding the bearer token (e.g. --token-env=CORE_AGENT_ATTACH_TOKEN). Not the token itself (#947).")
 	legacyToken := fs.String("token", "", "deprecated alias for --token-env; same meaning (the NAME of an env var), warns on use")
 	wakeFlag := fs.Bool("wake", false, "send POST /wake instead of streaming (one-shot)")
@@ -59,11 +60,15 @@ func runAttachSubcommand(args []string) int {
 	}
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "core-agent attach: URL is required")
-		fmt.Fprintln(os.Stderr, "usage: core-agent attach <url> [--token-env=ENVVAR] [--wake] [--no-stdin]")
+		fmt.Fprintln(os.Stderr, "usage: core-agent attach <url> [--token-file=PATH | --token-env=ENVVAR] [--wake] [--no-stdin]")
 		return runner.ExitConfigError
 	}
 	rawURL := fs.Arg(0)
-	token := attachclient.ResolveTokenEnv("core-agent attach", *tokenEnv, *legacyToken, os.Stderr)
+	token, err := attachclient.ResolveToken("core-agent attach", *tokenFile, *tokenEnv, *legacyToken, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent attach: %v\n", err)
+		return runner.ExitConfigError
+	}
 
 	parsed, err := parseAttachURL(rawURL)
 	if err != nil {
@@ -91,6 +96,7 @@ func runAttachSubcommand(args []string) int {
 // /sessions; prints the registered sessions in a stable order.
 func runLsSubcommand(args []string) int {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
+	tokenFile := fs.String("token-file", "", "read the bearer token from this file (or a pipe, e.g. <(pass show attach | head -n1)) once; it never enters any process environment. Mutually exclusive with --token-env.")
 	tokenEnv := fs.String("token-env", "", "NAME of an env var holding the bearer token. Not the token itself (#947).")
 	legacyToken := fs.String("token", "", "deprecated alias for --token-env; same meaning (the NAME of an env var), warns on use")
 	if err := fs.Parse(args); err != nil {
@@ -98,11 +104,15 @@ func runLsSubcommand(args []string) int {
 	}
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "core-agent ls: URL is required")
-		fmt.Fprintln(os.Stderr, "usage: core-agent ls <url> [--token-env=ENVVAR]")
+		fmt.Fprintln(os.Stderr, "usage: core-agent ls <url> [--token-file=PATH | --token-env=ENVVAR]")
 		return runner.ExitConfigError
 	}
 	rawURL := fs.Arg(0)
-	token := attachclient.ResolveTokenEnv("core-agent ls", *tokenEnv, *legacyToken, os.Stderr)
+	token, err := attachclient.ResolveToken("core-agent ls", *tokenFile, *tokenEnv, *legacyToken, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent ls: %v\n", err)
+		return runner.ExitConfigError
+	}
 	parsed, err := parseAttachURL(rawURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent ls: %v\n", err)

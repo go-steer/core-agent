@@ -32,6 +32,7 @@ func registerAttachFlags(fs *flag.FlagSet) *attachOpts {
 	fs.StringVar(&o.TLSKey, "attach-tls-key", "", "")
 	fs.StringVar(&o.ClientCA, "attach-client-ca", "", "")
 	fs.StringVar(&o.TokenEnv, "attach-token", "", "")
+	fs.StringVar(&o.TokenFile, "attach-token-file", "", "")
 	fs.BoolVar(&o.ReadOnly, "attach-readonly", false, "")
 	fs.BoolVar(&o.PeerHub, "attach-peer-hub", false, "")
 	fs.StringVar(&o.RegisterTo, "attach-register-to", "", "")

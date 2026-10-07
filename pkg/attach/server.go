@@ -227,6 +227,16 @@ type Options struct {
 	HealthLog io.Writer
 }
 
+// Authenticated reports whether these Options put any credential gate
+// in front of the listener — the same predicate NewServer's #376
+// non-loopback policy uses. Exported so a host that knows more than this
+// package does can apply a stricter policy with the same definition of
+// "authenticated": cmd/core-agent refuses a token-less local listener
+// when the agent has a shell running as the listener's own user (#1201),
+// because loopback and socket-file permissions stop other users, not
+// that one.
+func (o Options) Authenticated() bool { return listenerAuthenticated(o) }
+
 // listenerAuthenticated reports whether the configured Options put
 // any credential gate in front of the TCP listener: a bearer token,
 // mTLS client-cert verification, or multi-session auth with anonymous
@@ -236,7 +246,10 @@ func listenerAuthenticated(opts Options) bool {
 	if opts.Auth.BearerToken != "" {
 		return true
 	}
-	if opts.Auth.ClientCAFile != "" {
+	// A client CA is a gate only when TLS is on: LoadTLSConfig never
+	// reads ClientCAFile without a server cert, and Serve then speaks
+	// plain HTTP, so a CA alone authenticates nobody (#1201 review).
+	if opts.Auth.ClientCAFile != "" && opts.Auth.TLSCertFile != "" && opts.Auth.TLSKeyFile != "" {
 		return true
 	}
 	return opts.MultiSessionEnabled && !opts.AllowAnonymous

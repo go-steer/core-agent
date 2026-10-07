@@ -563,7 +563,7 @@ func TestFormatStartupSummary(t *testing.T) {
 		"mcp: 2 server(s) loaded — broken(failed), gke(ok) [1 failed — see 'core-agent: mcp:' error lines above]",
 		"skills: 1 loaded — k8s-triage",
 		"subagents: 1 configured — cluster (root=../cluster)",
-		"multi-session auth: disabled (single-user mode; use --attach-token for bearer auth)",
+		"multi-session auth: disabled (single-user mode; use --attach-token-file or --attach-token for bearer auth)",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d lines, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))

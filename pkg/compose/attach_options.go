@@ -25,18 +25,21 @@ import (
 
 // AttachOptions is the resolved attach-listener configuration a host
 // feeds into its attach.Options / registration wiring. One value
-// bundles what the bundled CLI exposes as eleven `--attach-*` flags
+// bundles what the bundled CLI exposes as its `--attach-*` flags
 // plus the config file's `attach` block; library consumers usually
 // fill it straight from BuildAttachOptions and overlay their own
 // flag/env precedence on top (the bundled CLI keeps its CLI-beats-
 // config overlay in package main, where flag.Visit lives).
 type AttachOptions struct {
-	Listen           string
-	UnixSocket       string
-	TLSCert          string
-	TLSKey           string
-	ClientCA         string
-	TokenEnv         string
+	Listen     string
+	UnixSocket string
+	TLSCert    string
+	TLSKey     string
+	ClientCA   string
+	TokenEnv   string
+	// TokenFile is the path the bearer token is read from, once, at
+	// startup. Mutually exclusive with TokenEnv (#1201).
+	TokenFile        string
 	ReadOnly         bool
 	PeerHub          bool
 	PeerStateFile    string
@@ -51,6 +54,12 @@ type AttachOptions struct {
 	// counterpart, so BuildAttachOptions leaves both zero.
 	UI    bool
 	UIDir string
+	// AllowUnauthenticatedLocal accepts a loopback or Unix-socket
+	// listener with no authentication even though the agent has a
+	// shell (#1201). CLI-only, deliberately: it is a per-invocation
+	// operator decision, and a config field is a file the agent itself
+	// might edit.
+	AllowUnauthenticatedLocal bool
 }
 
 // BuildAttachOptions translates the config file's `attach` block into
@@ -67,6 +76,7 @@ func BuildAttachOptions(cfg config.AttachConfig) AttachOptions {
 		TLSKey:           expandEnvOrKeep(cfg.TLSKey),
 		ClientCA:         expandEnvOrKeep(cfg.ClientCA),
 		TokenEnv:         expandEnvOrKeep(cfg.TokenEnv),
+		TokenFile:        expandEnvOrKeep(cfg.TokenFile),
 		ReadOnly:         cfg.ReadOnly,
 		PeerHub:          cfg.PeerHub,
 		PeerStateFile:    expandEnvOrKeep(cfg.PeerStateFile),

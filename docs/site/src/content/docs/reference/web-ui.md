@@ -9,14 +9,19 @@ This is one of four ways to deploy mast-web. The others (hosted SPA, container i
 ## Quickstart
 
 ```bash
-# Operator workstation or container
-core-agent --attach-listen 127.0.0.1:7777 --session-db --ui
+# Operator workstation or container. With the bash tool registered (the
+# default) a token-less local listener is refused (#1201), so give it one.
+# A plain shell variable is in no process environment, and the process
+# substitution hands it over through a pipe, so nothing is left on disk
+# for the agent's bash to read.
+tok=$(openssl rand -hex 32); echo "attach token: $tok"
+core-agent --attach-listen 127.0.0.1:7777 --attach-token-file <(printf '%s\n' "$tok") --session-db --ui
 
 # Browser
 open http://localhost:7777/ui/
 ```
 
-Connect the SPA's first-run modal to `http://localhost:7777` with whatever bearer token the operator set via `--attach-token` (leave blank for an unauthenticated dev backend). Because the SPA loads same-origin against the attach listener, it can also use a relative path: `/attach` as the backend endpoint works.
+Connect the SPA's first-run modal to `http://localhost:7777` with the bearer token the daemon was given (`--attach-token-file` or `--attach-token`). Leave it blank only for a backend started without `bash`, or with `--attach-allow-unauthenticated-local`. Because the SPA loads same-origin against the attach listener, it can also use a relative path: `/attach` as the backend endpoint works.
 
 ## Where the assets come from
 
@@ -40,7 +45,7 @@ When iterating on mast-web against a live agent, point `--ui-dir` at your checko
 cd ~/projects/mast-web && make build   # populates dist/
 
 # In another, run the agent serving from that dist/
-core-agent --attach-listen 127.0.0.1:7777 --session-db --ui-dir ~/projects/mast-web/dist
+core-agent --attach-listen 127.0.0.1:7777 --attach-token-file <(printf '%s\n' "$tok") --session-db --ui-dir ~/projects/mast-web/dist
 ```
 
 The agent serves whatever's in the directory at request time — no rebuild needed when you tweak `web/app.js`. `--ui-dir` implies `--ui`.

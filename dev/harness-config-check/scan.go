@@ -236,10 +236,11 @@ func classify(file string, toks []tok, i int) Invocation {
 	for j := i + 1; j < len(toks) && !toks[j].sep; j++ {
 		a := unquote(toks[j].text)
 		args = append(args, toks[j].text)
-		// `attach` and `ls` are peeled off in main() before flag.Parse
-		// and never read a config; they reject -c outright. --version
-		// short-circuits for the same reason. See cmd/core-agent/main.go.
-		if j == i+1 && (a == "attach" || a == "ls") {
+		// `attach`, `ls` and `auth` are peeled off in main() before
+		// flag.Parse and never read a config; they reject -c outright.
+		// --version short-circuits for the same reason. See
+		// cmd/core-agent/main.go.
+		if j == i+1 && (a == "attach" || a == "ls" || a == "auth") {
 			inv.Exempt = a + " subcommand: dispatched before flag.Parse, reads no config"
 			break
 		}

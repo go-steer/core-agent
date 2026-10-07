@@ -188,6 +188,8 @@ func TestSubcommandExemptions(t *testing.T) {
 		//   flag provided but not defined: -c
 		{"attach", `"${BIN}" attach --token-env=ATTACH_TOKEN "${url}"`, true},
 		{"ls", `"${BIN}" ls --token-env=ATTACH_TOKEN "${url}"`, true},
+		// auth hash-token (#1213) reads a token on stdin and no config.
+		{"auth", `printf '%s' "${tok}" | "${BIN}" auth hash-token`, true},
 		{"version", `"${BIN}" --version`, true},
 
 		// Only as the FIRST argument — `-p "attach the volume"` is not a

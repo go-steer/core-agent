@@ -29,6 +29,28 @@ install -m 0600 -o "$USER" users.json /tmp/multi-session-bearer/users.json
 $EDITOR /tmp/multi-session-bearer/users.json
 ```
 
+## Store digests, not tokens
+
+Every row above stores a plaintext `token`. It still loads, and the
+daemon warns at startup naming each such identity. A row can store
+`token_sha256` instead, the hex SHA-256 of the token, so that reading
+the file yields nothing a request can authenticate with
+([#1213](https://github.com/go-steer/core-agent/issues/1213)):
+
+```json
+{ "identity": "alice@example.com", "token_sha256": "<64 hex characters>" }
+```
+
+Produce the value without putting the token on a command line:
+
+```bash
+printf '%s' "$ALICE_TOKEN" | core-agent auth hash-token
+```
+
+A row sets exactly one of `token` and `token_sha256`. The digest only
+hides a token that is too random to guess, so mint tokens with
+`openssl rand -hex 32`.
+
 ## File-mode requirement
 
 `auth.LoadUsersFile` **rejects** group- or world-readable tables at

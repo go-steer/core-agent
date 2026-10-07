@@ -14,10 +14,12 @@
 # limitations under the License.
 
 # gen-users-json — generate a fresh users.json for the multi-session
-# bearer-table Authenticator (see docs/site/content/docs/reference/
+# bearer-table Authenticator (see docs/site/src/content/docs/concepts/
 # multi-session.md). Writes the file at mode 0600 (which the loader
-# requires) and prints the resolved tokens to stderr so the operator
-# can copy them into shell env vars for testing.
+# requires), storing only each token's SHA-256 in "token_sha256"
+# (#1213), and prints the plaintext tokens to stderr so the operator
+# can copy them into shell env vars for testing. The plaintext exists
+# nowhere else: lose the stderr and you regenerate.
 #
 # Default output: /tmp/multi-session-bearer/users.json (matches the
 # UAT-files-in-/tmp convention; never lands under $HOME).
@@ -51,8 +53,9 @@ Options:
   --force          Overwrite an existing file at OUTPUT
   -h, --help       Show this help
 
-The file is written at mode 0600. Tokens are 32-byte hex strings
-(256 bits of entropy). The identities + tokens are printed to stderr
+The file is written at mode 0600 and holds only each token's SHA-256
+("token_sha256"). Tokens are 32-byte hex strings (256 bits of
+entropy). The identities + plaintext tokens are printed to stderr
 as 'export NAME_TOKEN=...' lines so you can copy them into shell env
 vars for testing.
 EOF
@@ -95,9 +98,13 @@ IFS=',' read -ra IDENTITIES <<<"${USERS}"
     for i in "${!IDENTITIES[@]}"; do
         id="$(echo "${IDENTITIES[i]}" | tr -d '[:space:]')"
         token="$(openssl rand -hex 32)"
+        # The file stores only the token's SHA-256 (#1213): reading it
+        # yields nothing that authenticates. Same value as
+        # `core-agent auth hash-token`.
+        digest="$(printf '%s' "${token}" | openssl dgst -sha256 -r | cut -d' ' -f1)"
         sep=","
         if (( i == last )); then sep=""; fi
-        printf '    {"identity": "%s", "token": "%s"}%s\n' "${id}" "${token}" "${sep}"
+        printf '    {"identity": "%s", "token_sha256": "%s"}%s\n' "${id}" "${digest}" "${sep}"
         # ALICE_TOKEN-style env name uses the identity's local part
         # (before @ or :), uppercased, with dashes and dots replaced
         # by underscores so the result is a valid shell identifier.

@@ -48,13 +48,18 @@ trap cleanup EXIT
 log_step "stage smoke directory + users.json (mode 0600)"
 rm -rf "${SMOKE_DIR}"
 mkdir -p "${SMOKE_DIR}" "${WORK_DIR}/.agents"
+# A mixed table (#1213): alice and ops store only a digest, bob and the
+# bot keep the legacy plaintext "token". Both shapes must authenticate,
+# and startup must warn about exactly the plaintext rows.
+ALICE_SHA256=$(printf '%s' "${ALICE_TOKEN}" | "${CORE_AGENT}" auth hash-token)
+OPS_SHA256=$(printf '%s' "${OPS_TOKEN}" | "${CORE_AGENT}" auth hash-token)
 cat > "${USERS_FILE}" <<EOF
 {
   "version": 1,
   "users": [
-    { "identity": "alice@example.com", "token": "${ALICE_TOKEN}" },
+    { "identity": "alice@example.com", "token_sha256": "${ALICE_SHA256}" },
     { "identity": "bob@example.com",   "token": "${BOB_TOKEN}"   },
-    { "identity": "ops@example.com",   "token": "${OPS_TOKEN}"   },
+    { "identity": "ops@example.com",   "token_sha256": "${OPS_SHA256}" },
     { "identity": "sa:slack-bot",      "token": "${BOT_TOKEN}"   }
   ]
 }
@@ -133,6 +138,34 @@ if [[ "${code}" != "200" ]]; then
     fail "expected 200 with valid alice token, got ${code}"
 fi
 pass "valid token accepted (200)"
+
+log_step "hashed row: the stored digest is not a credential → 401"
+code=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${ALICE_SHA256}" "${BASE}/sessions")
+if [[ "${code}" != "401" ]]; then
+    fail "expected 401 presenting alice's token_sha256 as a token, got ${code}"
+fi
+pass "digest from users.json rejected (401)"
+
+log_step "plaintext row (legacy) still authenticates → 200"
+code=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${BOB_TOKEN}" "${BASE}/sessions")
+if [[ "${code}" != "200" ]]; then
+    fail "expected 200 with bob's plaintext-row token, got ${code}"
+fi
+pass "plaintext row accepted (200)"
+
+log_step "startup warns about the plaintext rows, by identity, never by token"
+if ! grep -q 'stores a plaintext bearer token for: bob@example.com, sa:slack-bot\.' "${LOG_FILE}"; then
+    cat "${LOG_FILE}" >&2
+    fail "missing the plaintext-token warning naming bob and the bot"
+fi
+for tok in "${ALICE_TOKEN}" "${BOB_TOKEN}" "${OPS_TOKEN}" "${BOT_TOKEN}"; do
+    if grep -qF -- "${tok}" "${LOG_FILE}"; then
+        fail "daemon log contains a bearer token"
+    fi
+done
+pass "plaintext rows warned by identity; no token in the log"
 
 # -----------------------------------------------------------------
 # Session list filtering (the hidden-existence invariant)
@@ -278,6 +311,7 @@ pass "non-proxy caller asserting → 401 (security trail recorded)"
 log_step "alice creates her own session via POST /sessions"
 alice_create=$(curl -s -X POST \
     -H "Authorization: Bearer ${ALICE_TOKEN}" \
+    -H "Content-Type: application/json" \
     "${BASE}/sessions")
 ALICE_SID=$(printf '%s' "${alice_create}" | grep -o '"sessionID":"[^"]*"' | head -1 | cut -d'"' -f4)
 if [[ -z "${ALICE_SID}" ]]; then
@@ -288,6 +322,7 @@ pass "alice owns session ${ALICE_SID}"
 log_step "bob creates his own session via POST /sessions"
 bob_create=$(curl -s -X POST \
     -H "Authorization: Bearer ${BOB_TOKEN}" \
+    -H "Content-Type: application/json" \
     "${BASE}/sessions")
 BOB_SID=$(printf '%s' "${bob_create}" | grep -o '"sessionID":"[^"]*"' | head -1 | cut -d'"' -f4)
 if [[ -z "${BOB_SID}" ]]; then
@@ -376,7 +411,8 @@ done
 pass "ops (admin) sees all three sessions via bypass"
 
 log_step "POST /sessions without auth → 401"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/sessions")
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Content-Type: application/json" "${BASE}/sessions")
 if [[ "${code}" != "401" ]]; then
     fail "expected 401 on unauthenticated POST /sessions; got ${code}"
 fi
@@ -386,10 +422,10 @@ log_step "loader rejects world-readable users.json at startup"
 chmod 0644 "${USERS_FILE}"
 loose_log="${SMOKE_DIR}/loose-mode-startup.log"
 if (cd "${WORK_DIR}" && "${CORE_AGENT}" -c "${WORK_DIR}/.agents/config.json" --provider=echo \
-        --session-db "${SMOKE_DIR}/loose.db" > "${loose_log}" 2>&1) ; then
+        --session-db --session-db-path="${SMOKE_DIR}/loose.db" > "${loose_log}" 2>&1) ; then
     fail "daemon should have refused to start with mode 0644 users.json"
 fi
-if ! grep -q "must be 0600 or stricter" "${loose_log}"; then
+if ! grep -q "world-accessible bits must be unset" "${loose_log}"; then
     fail "expected file-mode error message; got:\n$(cat "${loose_log}")"
 fi
 pass "world-readable users.json rejected at startup (file-mode invariant)"

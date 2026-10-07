@@ -372,12 +372,18 @@ func formatAuthLine(cfg *config.Config) string {
 	// operator sees it, but we don't panic on missing file (the
 	// attach branch will do the load-and-validate later; this is
 	// belt-and-suspenders visibility).
-	userCount := "?"
+	userCount := "? users"
 	if ms.Auth.TableFile != "" {
 		if uf, err := auth.LoadUsersFile(ms.Auth.TableFile); err != nil {
-			userCount = fmt.Sprintf("? (load error: %v)", err)
+			userCount = fmt.Sprintf("? (load error: %v) users", err)
 		} else {
-			userCount = fmt.Sprintf("%d", len(uf.Users))
+			userCount = fmt.Sprintf("%d users", len(uf.Users))
+			// #1213: a legacy plaintext row is the one thing in the
+			// table a reader can authenticate with; count them here
+			// beside the per-identity warning the auth build prints.
+			if n := len(uf.PlaintextIdentities()); n > 0 {
+				userCount += fmt.Sprintf(" (%d with a plaintext token)", n)
+			}
 		}
 	}
 
@@ -390,5 +396,5 @@ func formatAuthLine(cfg *config.Config) string {
 		proxies = "[" + strings.Join(ms.ProxyIdentities, ",") + "]"
 	}
 
-	return fmt.Sprintf("multi-session auth: %s, %s users, admin=%s proxy=%s", kind, userCount, admins, proxies)
+	return fmt.Sprintf("multi-session auth: %s, %s, admin=%s proxy=%s", kind, userCount, admins, proxies)
 }

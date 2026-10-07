@@ -31,7 +31,7 @@ Frontier models (Gemini Pro, Claude Opus) cost 5-15x more per token than Flash/H
 
 The intended cost model for tool-heavy work: **parent on Pro/Opus for reasoning, subtasks on Flash/Haiku for content digestion.**
 
-This now activates by default. `--agentic-tools` is on by default (since v2.1) and `--agentic-small-model` auto-defaults to the provider's cheap-tier model (`gemini-3.5-flash-lite` on Gemini/Vertex, `claude-haiku-4-5` on Anthropic) since v2.5. So with `--model claude-opus-5` (or any Pro/Opus parent), the split is in effect with no extra flags:
+This now activates by default. `--agentic-tools` is on by default (since v2.1) and `--agentic-small-model` auto-defaults to the provider's cheap-tier model (`gemini-3.5-flash-lite` on Gemini/Vertex, `claude-haiku-5-5` on Anthropic) since v2.5. So with `--model claude-opus-5` (or any Pro/Opus parent), the split is in effect with no extra flags:
 
 ```bash
 # v2.5+: default behavior — Pro/Opus parent, Flash/Haiku subtasks
@@ -289,7 +289,7 @@ Context-management activity:
 **"I'm starting a new project and want to minimize cost from day 1."**
 
 1. Pin a model in `config.json` — don't rely on auto-detection
-2. Default to `Pro+Flash split`: `--agentic-tools --agentic-small-model gemini-3.5-flash-lite` (or `claude-haiku-4-5` on Anthropic)
+2. Default to `Pro+Flash split`: `--agentic-tools --agentic-small-model gemini-3.5-flash-lite` (or `claude-haiku-5-5` on Anthropic)
 3. Write a concise `AGENTS.md` with an output-style section ("default to concise")
 4. Leave compaction + checkpoints on (default-on)
 5. Disable tools the agent doesn't need with `tools.disable`

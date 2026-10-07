@@ -292,15 +292,19 @@ func ModelForTier(provider, tier string) string {
 			// which sits above Opus at 2x the rate — "frontier" is the
 			// top of the general-purpose line, not the most expensive
 			// model on offer.
-			return "claude-opus-5"
+			return "claude-opus-5-5"
 		case TierMid:
-			return "claude-sonnet-5"
+			return "claude-sonnet-5-5"
 		case TierSmall:
-			// claude-haiku-4-5 is still the latest Haiku — no
-			// 5-generation Haiku has shipped. Moves in lockstep with
+			// claude-haiku-5-5: the first 5-generation Haiku, with a
+			// 1M window where 4.5 had 200K. Its list price steps with
+			// prompt length ($0.10/$0.50 per MTok up to 100K prompt
+			// tokens, $0.50/$2.50 above) and pricing.Rates is flat,
+			// so the catalog's base rate under-reports a call past
+			// 100K by up to 5x. Moves in lockstep with
 			// pkg/models/anthropic's DefaultSmallModelID; pinned by
 			// TestModelForTier_ConsistentWithSmallModelDefaulters.
-			return "claude-haiku-4-5"
+			return "claude-haiku-5-5"
 		}
 	}
 	return ""

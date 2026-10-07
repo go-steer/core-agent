@@ -552,7 +552,7 @@ On by default since v2.1. Pass `--agentic-tools=false` to register only the bare
 
 ```bash
 # Default — wrappers register; subtasks auto-route to the provider's
-# cheap-tier model (gemini-3.5-flash-lite on Gemini/Vertex, claude-haiku-4-5
+# cheap-tier model (gemini-3.5-flash-lite on Gemini/Vertex, claude-haiku-5-5
 # on Anthropic). The cost-efficiency win activates without extra config.
 core-agent
 

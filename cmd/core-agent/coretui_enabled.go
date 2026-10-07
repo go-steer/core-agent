@@ -111,8 +111,9 @@ var pickerMinMajor = map[string]int{
 //   - Date-pinned aliases (claude-opus-4-7-20260416) — same model as
 //     the bare id, twice the picker rows.
 //   - The Mythos-class tier's duplicate ids (claude-mythos-5,
-//     claude-mythos-preview): LiteLLM publishes that tier three times
-//     at identical rates. claude-fable-5 is the one we surface.
+//     claude-mythos-5-1): LiteLLM publishes that tier under both a
+//     fable and a mythos id at identical rates. The fable ids are the
+//     ones we surface.
 //
 // Note this drops the "-1m" long-context variants the old list carried:
 // Opus 4.6+ and Sonnet 4.6+ ship a 1M window with no suffix (see

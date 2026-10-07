@@ -55,7 +55,7 @@ independently from built-in wraps:
    wrappers today. Falls back to this when the MCP-specific field
    is empty.
 3. **Provider cheap-tier default**: `gemini-3.5-flash-lite` for
-   Gemini/Vertex, `claude-haiku-4-5` for Anthropic. Falls back to
+   Gemini/Vertex, `claude-haiku-5-5` for Anthropic. Falls back to
    this when neither operator override is set.
 4. **Parent inherit**: providers without a cheap tier (echo,
    scripted) inherit the parent's model — no cost benefit but no

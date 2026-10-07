@@ -108,9 +108,10 @@ func TestAvailableModelIDs_Narrowing(t *testing.T) {
 
 		switch {
 		case strings.Contains(id, "claude-mythos"):
-			// LiteLLM publishes the Mythos-class tier three times at
-			// identical rates; claude-fable-5 is the id we surface.
-			t.Errorf("%q is a duplicate id for the Mythos tier — only claude-fable-5 belongs in the picker", id)
+			// LiteLLM publishes the Mythos-class tier under both a
+			// fable and a mythos id at identical rates; the fable ids
+			// are the ones we surface.
+			t.Errorf("%q is a duplicate id for the Mythos tier — only the claude-fable-5 ids belong in the picker", id)
 		case strings.HasPrefix(id, "gemini-2."), strings.HasPrefix(id, "gemini-1."):
 			// Gemini < 3 cannot mix server-side built-ins with function
 			// declarations, so --task=research cannot search on it.

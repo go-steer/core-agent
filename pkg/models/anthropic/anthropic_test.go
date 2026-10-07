@@ -36,7 +36,7 @@ func TestDefaultSmallModel(t *testing.T) {
 	if got, want := p.DefaultSmallModel(), DefaultSmallModelID; got != want {
 		t.Errorf("DefaultSmallModel() = %q, want %q", got, want)
 	}
-	if DefaultSmallModelID != "claude-haiku-4-5" {
-		t.Errorf("DefaultSmallModelID = %q; expected the haiku-4-5 alias used elsewhere in the codebase", DefaultSmallModelID)
+	if DefaultSmallModelID != "claude-haiku-5-5" {
+		t.Errorf("DefaultSmallModelID = %q; expected the haiku-5-5 alias used elsewhere in the codebase", DefaultSmallModelID)
 	}
 }

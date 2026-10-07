@@ -30,6 +30,9 @@ import (
 type state struct {
 	Active  *activeIssue `json:"active,omitempty"`
 	OpenPRs []openPR     `json:"open_prs,omitempty"`
+	// PendingComments are stop comments not yet posted. The stop itself
+	// (labels, cleanup) is already done; only the explanation is owed.
+	PendingComments []pendingComment `json:"pending_comments,omitempty"`
 }
 
 // activeIssue is the claimed issue. SessionPath is empty between the
@@ -94,8 +97,34 @@ func saveState(path string, st *state) error {
 		_ = tmp.Close()
 		return err
 	}
+	// fsync the file before the rename and the directory after it: a
+	// node crash must leave either the old state or the new one, never an
+	// empty file or a rename that did not reach the disk.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path) // #nosec G703 -- the operator's --state-file.
+	if err := os.Rename(tmp.Name(), path); err != nil { // #nosec G703 -- the operator's --state-file.
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+func syncDir(dir string) error {
+	f, err := os.Open(dir) // #nosec G304 G703 -- the --state-file's directory.
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return f.Sync()
+}
+
+// pendingComment is a stop comment still owed to an issue.
+type pendingComment struct {
+	Issue    int    `json:"issue"`
+	Body     string `json:"body"`
+	Attempts int    `json:"attempts,omitempty"`
 }

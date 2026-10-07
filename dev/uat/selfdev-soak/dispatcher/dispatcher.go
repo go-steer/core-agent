@@ -76,6 +76,7 @@ func (d *dispatcher) loop(ctx context.Context) (outcome, error) {
 // (a PR or a stop) during it.
 func (d *dispatcher) tick(ctx context.Context) (out outcome, did bool, err error) {
 	d.reap(ctx)
+	d.flushComments(ctx)
 	if paused, err := d.paused(ctx); err != nil || paused {
 		if paused {
 			d.log.Info("paused: an open issue carries " + labelPause)
@@ -166,7 +167,15 @@ func (d *dispatcher) next(ctx context.Context) (*ghIssue, error) {
 		if err != nil {
 			return nil, fmt.Errorf("issue #%d events: %w", is.Number, err)
 		}
-		if err := checkProvenance(is, events, d.cfg.Maintainer); err != nil {
+		err = checkProvenance(is, events, d.cfg.Maintainer)
+		if err == nil {
+			editors, total, gerr := d.gh.contentEditors(ctx, is.Number)
+			if gerr != nil {
+				return nil, fmt.Errorf("issue #%d body edits: %w", is.Number, gerr)
+			}
+			err = checkEditors(editors, total, d.cfg.Maintainer)
+		}
+		if err != nil {
 			if d.skipped[is.Number] != err.Error() {
 				d.skipped[is.Number] = err.Error()
 				d.log.Warn("not forwarding issue (decision 6)", "issue", is.Number, "why", err.Error())
@@ -279,9 +288,6 @@ func (d *dispatcher) finish(ctx context.Context, a *activeIssue, end sessionEnd,
 		}
 		return d.stop(ctx, a, "the dispatcher lost the session: "+err.Error())
 	}
-	if end.TimedOut {
-		d.daemon.interrupt(ctx, a.SessionPath)
-	}
 	if reason := end.stopReason(); reason != "" {
 		return d.stop(ctx, a, reason)
 	}
@@ -298,7 +304,11 @@ func (d *dispatcher) publish(ctx context.Context, a *activeIssue) (outcome, erro
 	if err != nil {
 		return d.stop(ctx, a, "could not read the agent's branch: "+err.Error())
 	}
-	if err := verifyCommits(commits, d.cfg.Identity); err != nil {
+	err = verifyCommits(commits, d.cfg.Identity)
+	if err == nil {
+		err = verifyCommitTexts(commits, a.Number, d.cfg.Owner+"/"+d.cfg.Repo)
+	}
+	if err != nil {
 		return d.stop(ctx, a, "refusing to push "+branchFor(a.Number)+": "+err.Error())
 	}
 	tok, err := d.tokens.Token(ctx)
@@ -334,21 +344,39 @@ func (d *dispatcher) openOrAdoptPR(ctx context.Context, a *activeIssue, commits 
 		d.log.Info("adopting the PR already open on the branch", "issue", a.Number, "pr", existing.Number)
 		return *existing, nil
 	}
-	body := prBody(a, d.cfg.Owner+"/"+d.cfg.Repo, planFor(d.cfg.AgentsDir, a.SessionID))
+	plan := neutralizeClosers(planFor(d.cfg.AgentsDir, a.SessionID))
+	if line := attributionLine(plan); line != "" {
+		d.log.Warn("withholding the plan from the PR body: it carries agent attribution", "issue", a.Number)
+		plan = "(The session's plan artifact was withheld: it carries text the attribution check fails.)"
+	}
+	body := prBody(a, d.cfg.Owner+"/"+d.cfg.Repo, plan)
+	if line := attributionLine(body); line != "" {
+		return ghPull{}, fmt.Errorf("the PR body fails the attribution check (%q)", truncate(line, 120))
+	}
 	return d.gh.createPull(ctx, prTitle(a, commits), branchFor(a.Number), d.cfg.BaseBranch, body)
 }
 
 // stop is step 7: say why on the issue, label it soak:stopped, drop the
 // claim and the working copy, and move on. The reason is persisted first
 // so a GitHub failure here is retried on the next poll, never lost.
+//
+// The reason is capped: part of it can be agent-controlled (a turn
+// error's message, a commit header), and a comment over GitHub's size
+// limit is refused, which used to wedge the queue on a stop that could
+// never complete. The comment is also posted last and retried on its
+// own (flushComments), so a comment failure never holds the labels, the
+// cleanup, or the next issue.
 func (d *dispatcher) stop(ctx context.Context, a *activeIssue, reason string) (outcome, error) {
+	reason = truncate(reason, maxReasonBytes)
 	a.StopReason = reason
 	if err := d.save(); err != nil {
 		return outcome{}, err
 	}
 	d.log.Warn("stopping issue", "issue", a.Number, "session", a.SessionID, "reason", reason)
-	if err := d.gh.comment(ctx, a.Number, stopComment(a, reason)); err != nil {
-		return outcome{}, fmt.Errorf("comment the stop on #%d: %w", a.Number, err)
+	if a.SessionPath != "" {
+		// Before the copy goes: a session still working would otherwise
+		// keep editing a directory that no longer exists.
+		d.daemon.interrupt(ctx, a.SessionPath)
 	}
 	if err := d.gh.addLabels(ctx, a.Number, labelStopped); err != nil {
 		return outcome{}, fmt.Errorf("label #%d %s: %w", a.Number, labelStopped, err)
@@ -359,11 +387,48 @@ func (d *dispatcher) stop(ctx context.Context, a *activeIssue, reason string) (o
 	if err := d.git.removeClone(a.Number); err != nil {
 		d.log.Warn("could not remove the working copy", "issue", a.Number, "err", err)
 	}
+	d.st.PendingComments = append(d.st.PendingComments, pendingComment{Issue: a.Number, Body: stopComment(a, reason)})
 	d.st.Active = nil
 	if err := d.save(); err != nil {
 		return outcome{}, err
 	}
+	d.flushComments(ctx)
 	return outcome{Issue: a.Number, Stopped: true, Reason: reason}, nil
+}
+
+// maxReasonBytes caps a stop reason. The comment around it stays far
+// below GitHub's 65536-character body limit.
+const maxReasonBytes = 2000
+
+// maxCommentAttempts bounds the retries of one stop comment. The issue is
+// already labeled soak:stopped, so a comment that can never post is
+// logged and dropped rather than retried forever.
+const maxCommentAttempts = 10
+
+// flushComments posts the queued stop comments, keeping the ones that
+// fail for the next poll.
+func (d *dispatcher) flushComments(ctx context.Context) {
+	if len(d.st.PendingComments) == 0 {
+		return
+	}
+	var kept []pendingComment
+	for _, p := range d.st.PendingComments {
+		err := d.gh.comment(ctx, p.Issue, p.Body)
+		if err == nil {
+			continue
+		}
+		p.Attempts++
+		if p.Attempts >= maxCommentAttempts {
+			d.log.Error("giving up on a stop comment; the issue is labeled soak:stopped", "issue", p.Issue, "err", err)
+			continue
+		}
+		d.log.Warn("stop comment failed; will retry", "issue", p.Issue, "attempt", p.Attempts, "err", err)
+		kept = append(kept, p)
+	}
+	d.st.PendingComments = kept
+	if err := d.save(); err != nil {
+		d.log.Error("save state", "err", err)
+	}
 }
 
 // reap removes the working copy of every PR that has merged or closed.

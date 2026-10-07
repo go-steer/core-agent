@@ -170,7 +170,7 @@ func newDispatcher(c config, attachToken string, tokens tokenSource, log *slog.L
 		},
 		git: &gitOps{
 			bin: "git", remote: c.GitRemote, base: c.BaseBranch,
-			privateDir: c.PrivateRepo, worktreesDir: c.WorktreesDir, id: c.Identity,
+			privateDir: c.PrivateRepo, worktreesDir: c.WorktreesDir, id: c.Identity, inspect: inspectCopy,
 		},
 		log:     log,
 		st:      st,

@@ -37,6 +37,11 @@ var botEmailRe = regexp.MustCompile(`(?i)\[bot\]@|no-?reply`)
 // set verify-no-agent-attribution scans.
 var creditKeyRe = regexp.MustCompile(`(?i)^\s*(co-authored-by|co-developed-by|assisted-by|generated-by|authored-by|helped-by|suggested-by|reviewed-by|reported-by|tested-by|acked-by|signed-off-by)\s*:\s*(.*)$`)
 
+// agentNameRe is verify-no-agent-attribution's AGENT_NAME_RE: an author
+// name that is exactly an agent's (including "core-agent") fails that
+// check, so it can't be the soak identity.
+var agentNameRe = regexp.MustCompile(`(?i)^(claude( (code|opus|sonnet|haiku|[0-9.]+))*|(github )?copilot( (agent|swe agent))?|chatgpt|(openai )?codex|gemini( (code assist|cli))?|cursor( ?agent)?|devin(-ai| ai)[a-z-]*|aider|windsurf|codeium|amazon[ -]?q( developer)?|kiro( agent)?|openhands( agent)?|cline|tabnine|coderabbit( ?ai)?|qodo|antigravity|core-agent)$`)
+
 // lineSplitRe splits a message on any line ending, so a trailer after a
 // bare carriage return is still seen as its own line.
 var lineSplitRe = regexp.MustCompile(`\r\n|\r|\n`)
@@ -51,7 +56,7 @@ func validateIdentity(id identity) error {
 	if !strings.Contains(id.Email, "@") {
 		return fmt.Errorf("--commit-email %q is not an email address", id.Email)
 	}
-	if botEmailRe.MatchString(id.Email) || strings.HasSuffix(strings.TrimSpace(id.Name), "[bot]") {
+	if botEmailRe.MatchString(id.Email) || strings.HasSuffix(strings.TrimSpace(id.Name), "[bot]") || agentNameRe.MatchString(strings.TrimSpace(id.Name)) {
 		return fmt.Errorf("commit identity %s is a bot or noreply identity; decision 8 needs a human-looking identity", id)
 	}
 	return nil

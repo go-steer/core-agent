@@ -115,7 +115,16 @@ type watcher struct {
 	// watch resumed after a dispatcher restart). The live-only
 	// turn-complete may have been missed in the gap, so from then on
 	// evidence of activity plus a settled idle status is enough.
-	reconnected  bool
+	reconnected bool
+	// agentsBusy is set while any background subagent of the session is
+	// running or deferred. /status reports idle whenever the PARENT has
+	// no turn in flight, so an async subagent (the self-recipe's reviewer
+	// runs up to 30 minutes) is invisible there; when it finishes, it
+	// wakes the parent for another turn that may commit more.
+	agentsBusy bool
+	// agentsSig fingerprints the subagent list; a change (one finishing)
+	// counts as activity, so the parent turn it triggers is waited for.
+	agentsSig    string
 	lastActivity time.Time
 	lastSeq      int64
 	end          sessionEnd
@@ -203,8 +212,24 @@ func (w *watcher) trip(gt attach.GuardrailTrip) {
 
 // done reports whether the session is finished, given its current
 // status, at time now. started is when the task was injected.
+// noteAgents records the session's background subagents at time now.
+func (w *watcher) noteAgents(agents []attach.AgentInfo, now time.Time) {
+	busy := false
+	var sig strings.Builder
+	for _, a := range agents {
+		if a.Status == attach.AgentStatusRunning || a.Status == attach.AgentStatusDeferred {
+			busy = true
+		}
+		sig.WriteString(a.ID + "=" + a.Status + ";")
+	}
+	if busy || sig.String() != w.agentsSig {
+		w.lastActivity = now
+	}
+	w.agentsBusy, w.agentsSig = busy, sig.String()
+}
+
 func (w *watcher) done(st attach.StatusInfo, now, started time.Time, settle, startTimeout time.Duration) bool {
-	idle := st.State == attach.AgentStateIdle && !st.TurnInFlight
+	idle := st.State == attach.AgentStateIdle && !st.TurnInFlight && !w.agentsBusy
 	if !idle {
 		return false
 	}
@@ -273,6 +298,12 @@ func (d *daemonClient) watch(ctx context.Context, sessionPath string, frames <-c
 				d.log.Warn("session status poll failed", "session", sessionPath, "err", err)
 				continue
 			}
+			agents, err := d.c.Agents(ctx, sessionPath)
+			if err != nil {
+				d.log.Warn("session agents poll failed", "session", sessionPath, "err", err)
+				continue // unknown counts as busy: never publish on a guess
+			}
+			w.noteAgents(agents, time.Now())
 			if w.done(st, time.Now(), started, d.settle, d.startTimeout) {
 				return w.end, nil
 			}

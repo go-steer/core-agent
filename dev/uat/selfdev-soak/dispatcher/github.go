@@ -62,6 +62,11 @@ type ghIssue struct {
 	Assignees   []ghUser  `json:"assignees"`
 	CreatedAt   time.Time `json:"created_at"`
 	PullRequest *struct{} `json:"pull_request,omitempty"`
+	ViaApp      *ghApp    `json:"performed_via_github_app,omitempty"`
+}
+
+type ghApp struct {
+	Slug string `json:"slug"`
 }
 
 func (i ghIssue) hasLabel(name string) bool {
@@ -82,6 +87,9 @@ type ghEvent struct {
 	Label    *ghLabel `json:"label,omitempty"`
 	Assignee *ghUser  `json:"assignee,omitempty"`
 	Assigner *ghUser  `json:"assigner,omitempty"`
+	// ViaApp is set when a GitHub App performed the event on a person's
+	// behalf. Such an event is not words the maintainer wrote (decision 6).
+	ViaApp *ghApp `json:"performed_via_github_app,omitempty"`
 }
 
 func (e ghEvent) actor() string {
@@ -222,6 +230,55 @@ func (c *ghClient) issueEvents(ctx context.Context, number int) ([]ghEvent, erro
 
 func (c *ghClient) openPulls(ctx context.Context) ([]ghPull, error) {
 	return paginate[ghPull](ctx, c, c.repoPath("/pulls?state=open"))
+}
+
+// maxContentEdits is how many body edits one GraphQL page returns. An
+// issue with more is refused rather than paged: no seed is edited that
+// often, and a partial list is not an answer.
+const maxContentEdits = 100
+
+// contentEditors returns who edited the issue's body, from GraphQL's
+// userContentEdits — the REST events API has no record of body edits.
+// An edit whose editor GitHub can't name (a deleted account) is "". total
+// is GitHub's count, which may exceed len(editors).
+func (c *ghClient) contentEditors(ctx context.Context, number int) (editors []string, total int, err error) {
+	const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(first:100){totalCount nodes{editor{login}}}}}}`
+	var out struct {
+		Data struct {
+			Repository *struct {
+				Issue *struct {
+					UserContentEdits struct {
+						TotalCount int `json:"totalCount"`
+						Nodes      []struct {
+							Editor *ghUser `json:"editor"`
+						} `json:"nodes"`
+					} `json:"userContentEdits"`
+				} `json:"issue"`
+			} `json:"repository"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	body := map[string]any{"query": query, "variables": map[string]any{"owner": c.owner, "name": c.repo, "number": number}}
+	if err := c.do(ctx, http.MethodPost, "/graphql", body, &out); err != nil {
+		return nil, 0, err
+	}
+	if len(out.Errors) > 0 {
+		return nil, 0, fmt.Errorf("graphql: %s", out.Errors[0].Message)
+	}
+	if out.Data.Repository == nil || out.Data.Repository.Issue == nil {
+		return nil, 0, fmt.Errorf("graphql: issue #%d not found", number)
+	}
+	edits := out.Data.Repository.Issue.UserContentEdits
+	for _, n := range edits.Nodes {
+		login := ""
+		if n.Editor != nil {
+			login = n.Editor.Login
+		}
+		editors = append(editors, login)
+	}
+	return editors, edits.TotalCount, nil
 }
 
 // openPullForHead returns the open PR from the mirror's own branch, or

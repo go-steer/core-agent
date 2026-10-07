@@ -39,6 +39,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -62,6 +63,10 @@ type gitOps struct {
 	privateDir   string // the dispatcher-only bare repo
 	worktreesDir string // parent of the per-issue working copies
 	id           identity
+	// inspect vets the agent-writable copy before the fetch-back;
+	// inspectCopy in production. A field so a test can prove the next
+	// layer (runQuiet) holds on its own.
+	inspect func(dir, base string) error
 }
 
 // hardening is prepended to every git invocation. `credential.helper=`
@@ -90,6 +95,33 @@ func (g *gitOps) run(ctx context.Context, dir string, extra []string, args ...st
 		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// runQuiet is run for a command whose output must never be shown: every
+// git process that reads the agent-writable copy, and every command over
+// what it fetched. Git echoes the content of files it fails to parse —
+// objects/info/alternates, packed-refs, info/grafts, an included config —
+// and the agent can point any of those at a file in the dispatcher's pod,
+// the App key included. The error carries the exit status and nothing
+// else.
+func (g *gitOps) runQuiet(ctx context.Context, dir string, extra []string, args ...string) error {
+	argv := append([]string{}, hardening...)
+	argv = append(argv, extra...)
+	if dir != "" {
+		argv = append(argv, "-C", dir)
+	}
+	argv = append(argv, args...)
+	cmd := exec.CommandContext(ctx, g.bin, argv...) // #nosec G204 G702 -- fixed binary; args are built here, never from issue text.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return fmt.Errorf("git %s exited with status %d", args[0], ee.ExitCode())
+		}
+		return fmt.Errorf("git %s did not run", args[0])
+	}
+	return nil
 }
 
 // credentialArgs returns the -c args that make git authenticate to an
@@ -213,30 +245,42 @@ type commit struct {
 // is the one git process that touches the agent-writable copy after the
 // agent had it; safe.directory is scoped to that copy because the daemon
 // and dispatcher may run as different users.
+//
+// Every git error on this path is reported by exit status only, never with
+// git's output: see runQuiet.
 func (g *gitOps) collect(ctx context.Context, number int, dir, base string) (string, []commit, error) {
+	if err := g.inspect(dir, base); err != nil {
+		return "", nil, fmt.Errorf("refusing to read the working copy: %w", err)
+	}
 	branch := branchFor(number)
 	local := fmt.Sprintf("refs/soak/issue-%d", number)
+	// A ref left by an earlier attempt must not survive a fetch that
+	// quietly declined to update it (a shallow-root rejection warns and
+	// exits 0), or the stale ref would be verified and pushed.
+	if err := g.runQuiet(ctx, g.privateDir, nil, "update-ref", "-d", local); err != nil {
+		return "", nil, fmt.Errorf("clear %s: %w", local, err)
+	}
 	src := (&url.URL{Scheme: "file", Path: dir}).String()
-	safe := []string{"-c", "safe.directory=" + dir}
-	if _, err := g.run(ctx, g.privateDir, safe, "fetch", "--quiet", "--no-tags", src, "+refs/heads/"+branch+":"+local); err != nil {
-		return "", nil, fmt.Errorf("read %s from the working copy: %w", branch, err)
+	safe := []string{"-c", "safe.directory=" + dir, "-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false"}
+	if err := g.runQuiet(ctx, g.privateDir, safe, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", src, "+refs/heads/"+branch+":"+local); err != nil {
+		return "", nil, fmt.Errorf("could not fetch %s from the working copy (%w; git's output is withheld because the copy is agent-controlled)", branch, err)
 	}
-	tip, err := g.run(ctx, g.privateDir, nil, "rev-parse", "--verify", local+"^{commit}")
+	tip, err := g.run(ctx, g.privateDir, nil, "rev-parse", "--verify", "--quiet", local+"^{commit}")
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("the fetch did not produce %s (git's output is withheld)", branch)
 	}
-	if _, err := g.run(ctx, g.privateDir, nil, "merge-base", "--is-ancestor", base, tip); err != nil {
+	if err := g.runQuiet(ctx, g.privateDir, nil, "merge-base", "--is-ancestor", base, tip); err != nil {
 		return "", nil, fmt.Errorf("%s does not descend from the base %s", branch, base)
 	}
 	list, err := g.run(ctx, g.privateDir, nil, "rev-list", base+".."+tip)
 	if err != nil {
-		return "", nil, err
+		return "", nil, errors.New("could not list the branch's commits (git's output is withheld)")
 	}
 	var commits []commit
 	for _, sha := range strings.Fields(list) {
 		raw, err := g.run(ctx, g.privateDir, nil, "cat-file", "commit", sha)
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("could not read commit %.12s (git's output is withheld)", sha)
 		}
 		c, err := parseCommitObject(sha, raw)
 		if err != nil {

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -22,7 +23,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -58,23 +58,27 @@ type fakeGitHub struct {
 	t   *testing.T
 	pub *rsa.PublicKey
 
-	mu        sync.Mutex
-	issues    map[int]*ghIssue
-	events    map[int][]ghEvent
-	pulls     map[int]*ghPull
-	comments  map[int][]string
-	created   []map[string]any
-	nextPR    int
-	minted    []string
-	discovers int
-	expiresIn time.Duration
-	failRepo  bool // answer every repo call 500
+	mu          sync.Mutex
+	issues      map[int]*ghIssue
+	events      map[int][]ghEvent
+	pulls       map[int]*ghPull
+	comments    map[int][]string
+	created     []map[string]any
+	nextPR      int
+	minted      []string
+	discovers   int
+	expiresIn   time.Duration
+	failRepo    bool                   // answer every repo call 500
+	editors     map[int][]string       // body editors GraphQL reports; nil entry = "" (unattributable)
+	editTotal   map[int]int            // totalCount override; default len(editors)
+	commentFail func(body string) bool // make a comment POST fail
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey) (*fakeGitHub, *httptest.Server) {
 	f := &fakeGitHub{
 		t: t, pub: pub, issues: map[int]*ghIssue{}, events: map[int][]ghEvent{},
 		pulls: map[int]*ghPull{}, comments: map[int][]string{}, nextPR: 100, expiresIn: time.Hour,
+		editors: map[int][]string{}, editTotal: map[int]int{},
 	}
 	mux := http.NewServeMux()
 	repo := "/repos/" + testOwner + "/" + testRepo
@@ -87,6 +91,7 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey) (*fakeGitHub, *httptest.Ser
 		f.minted = append(f.minted, tok)
 		writeJSONT(w, map[string]any{"token": tok, "expires_at": time.Now().Add(f.expiresIn).UTC().Format(time.RFC3339)})
 	}))
+	mux.HandleFunc("POST /graphql", f.repoAuth(f.graphql))
 	mux.HandleFunc("GET "+repo+"/issues", f.repoAuth(f.listIssues))
 	mux.HandleFunc("GET "+repo+"/issues/{n}/events", f.repoAuth(f.listEvents))
 	mux.HandleFunc("GET "+repo+"/pulls", f.repoAuth(f.listPulls))
@@ -278,9 +283,47 @@ func (f *fakeGitHub) removeLabel(w http.ResponseWriter, r *http.Request) {
 func (f *fakeGitHub) addComment(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Body string }
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	if len(req.Body) > 65536 {
+		http.Error(w, `{"message":"Validation Failed","errors":[{"field":"body","code":"custom","message":"body is too long (maximum is 65536 characters)"}]}`, http.StatusUnprocessableEntity)
+		return
+	}
+	if f.commentFail != nil && f.commentFail(req.Body) {
+		http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+		return
+	}
 	n := f.num(r)
 	f.comments[n] = append(f.comments[n], req.Body)
 	writeJSONT(w, map[string]any{"id": 1})
+}
+
+// graphql answers the one query the dispatcher sends: an issue's
+// userContentEdits.
+func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query     string
+		Variables struct{ Number int }
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !strings.Contains(req.Query, "userContentEdits") {
+		http.Error(w, `{"message":"unexpected query"}`, http.StatusBadRequest)
+		return
+	}
+	n := req.Variables.Number
+	nodes := []map[string]any{}
+	for _, e := range f.editors[n] {
+		var editor any
+		if e != "" {
+			editor = map[string]string{"login": e}
+		}
+		nodes = append(nodes, map[string]any{"editor": editor})
+	}
+	total, ok := f.editTotal[n]
+	if !ok {
+		total = len(nodes)
+	}
+	writeJSONT(w, map[string]any{"data": map[string]any{"repository": map[string]any{"issue": map[string]any{
+		"userContentEdits": map[string]any{"totalCount": total, "nodes": nodes},
+	}}}})
 }
 
 // seedIssue adds an issue the maintainer authored, queued and assigned,
@@ -354,6 +397,7 @@ type fakeDaemon struct {
 	interrupted int
 	state       string
 	frames      chan sseFrame
+	agents      []attach.AgentInfo // what GET .../agents reports
 }
 
 func newFakeDaemon(t *testing.T, token string, dir func() string, agent agentFunc) (*fakeDaemon, *httptest.Server) {
@@ -373,6 +417,11 @@ func newFakeDaemon(t *testing.T, token string, dir func() string, agent agentFun
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		writeJSONT(w, attach.StatusInfo{State: d.state, TurnInFlight: d.state == attach.AgentStateRunning})
+	}))
+	mux.HandleFunc("GET "+base+"/agents", d.auth(func(w http.ResponseWriter, _ *http.Request) {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		writeJSONT(w, map[string]any{"agents": d.agents})
 	}))
 	mux.HandleFunc("POST "+base+"/interrupt", d.auth(func(w http.ResponseWriter, _ *http.Request) {
 		d.mu.Lock()
@@ -515,6 +564,7 @@ type rig struct {
 	daemon *fakeDaemon
 	mirror string
 	cfg    config
+	logs   *syncBuffer // everything the dispatcher logged
 }
 
 func newRig(t *testing.T, agent agentFunc) *rig {
@@ -543,7 +593,8 @@ func newRig(t *testing.T, agent agentFunc) *rig {
 	r.daemon = daemon
 	cfg.AttachURL = dSrv.URL
 	tokens := &appTokenSource{api: ghSrv.URL, appID: testAppID, key: key, owner: testOwner, repo: testRepo, http: ghSrv.Client(), now: time.Now}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	r.logs = &syncBuffer{}
+	log := slog.New(slog.NewTextHandler(r.logs, nil))
 	d, err := newDispatcher(cfg, "attach-secret", tokens, log)
 	if err != nil {
 		t.Fatal(err)
@@ -552,3 +603,22 @@ func newRig(t *testing.T, agent agentFunc) *rig {
 	r.d, r.cfg = d, cfg
 	return r
 }
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+const keyLine = "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun"

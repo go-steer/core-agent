@@ -48,41 +48,90 @@ func claimable(is ghIssue) bool {
 // good, and re-applying it does not launder that. Same for assignment.
 //
 // Title changes ("renamed") are checked too, because the title is part
-// of the injected task. Body edits are not visible in the REST events
-// API at all; see the design note's "Out of scope".
+// of the injected task; body edits are not in the REST events API, so
+// checkEditors reads them from GraphQL. Reopening the issue, and removing
+// soak:stopped (decision 17: only a person retries a stopped issue), must
+// be the maintainer's as well. Neither the issue nor any of those events
+// may have been performed through a GitHub App.
 func checkProvenance(is ghIssue, events []ghEvent, maintainer string) error {
 	if !sameLogin(is.User.Login, maintainer) {
 		return fmt.Errorf("authored by %q, not %q", is.User.Login, maintainer)
 	}
+	if is.ViaApp != nil {
+		return fmt.Errorf("created through the GitHub App %q", is.ViaApp.Slug)
+	}
 	if len(is.Assignees) == 0 {
 		return fmt.Errorf("not assigned")
 	}
-	var labeled, assigned int
+	seen := map[string]int{}
 	for _, ev := range events {
-		switch {
-		case ev.Event == "labeled" && ev.Label != nil && strings.EqualFold(ev.Label.Name, labelQueue):
-			labeled++
-			if !sameLogin(ev.actor(), maintainer) {
-				return fmt.Errorf("%s was applied by %q, not %q", labelQueue, ev.actor(), maintainer)
-			}
-		case ev.Event == "assigned":
+		rule := eventRule(ev)
+		if rule == "" {
+			continue
+		}
+		seen[rule]++
+		if ev.ViaApp != nil {
+			return fmt.Errorf("%s was performed through the GitHub App %q", rule, ev.ViaApp.Slug)
+		}
+		who := ev.actor()
+		if rule == "assigned" {
 			// Both fields must be the maintainer: see ghEvent.assigner for
 			// why either one alone could name the assignee instead.
-			assigned++
-			if !sameLogin(ev.assigner(), maintainer) || !sameLogin(ev.actor(), maintainer) {
-				return fmt.Errorf("assigned by %q (actor %q), not %q", ev.assigner(), ev.actor(), maintainer)
-			}
-		case ev.Event == "renamed":
-			if !sameLogin(ev.actor(), maintainer) {
-				return fmt.Errorf("title changed by %q, not %q", ev.actor(), maintainer)
+			if !sameLogin(ev.assigner(), maintainer) {
+				who = ev.assigner()
 			}
 		}
+		if !sameLogin(who, maintainer) {
+			return fmt.Errorf("%s by %q, not %q", rule, who, maintainer)
+		}
 	}
-	if labeled == 0 {
+	if seen[ruleQueued] == 0 {
 		return fmt.Errorf("no %s labeled event in the issue's history", labelQueue)
 	}
-	if assigned == 0 {
+	if seen["assigned"] == 0 {
 		return fmt.Errorf("no assigned event in the issue's history")
+	}
+	return nil
+}
+
+const ruleQueued = labelQueue + " applied"
+
+// eventRule names the decision-6 rule an event falls under, or "" for an
+// event that carries no authority (a mention, the dispatcher's own
+// soak:active label, a comment).
+func eventRule(ev ghEvent) string {
+	label := ""
+	if ev.Label != nil {
+		label = ev.Label.Name
+	}
+	switch {
+	case ev.Event == "labeled" && strings.EqualFold(label, labelQueue):
+		return ruleQueued
+	case ev.Event == "unlabeled" && strings.EqualFold(label, labelQueue):
+		return labelQueue + " removed"
+	case ev.Event == "unlabeled" && strings.EqualFold(label, labelStopped):
+		return labelStopped + " removed (a retry)"
+	case ev.Event == "assigned":
+		return "assigned"
+	case ev.Event == "renamed":
+		return "title changed"
+	case ev.Event == "reopened":
+		return "reopened"
+	}
+	return ""
+}
+
+// checkEditors refuses an issue whose body anyone but the maintainer
+// edited. An edit GitHub can't attribute, or more edits than one page
+// shows, is refused too: an unread edit is not a checked one.
+func checkEditors(editors []string, total int, maintainer string) error {
+	if total > len(editors) || total > maxContentEdits {
+		return fmt.Errorf("body edited %d times; more than the %d the check reads", total, len(editors))
+	}
+	for _, e := range editors {
+		if !sameLogin(e, maintainer) {
+			return fmt.Errorf("body edited by %q, not %q", e, maintainer)
+		}
 	}
 	return nil
 }

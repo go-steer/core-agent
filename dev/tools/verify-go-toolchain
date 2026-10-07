@@ -38,7 +38,10 @@ cd "$(repo_root)"
 # default only applies to a local `docker build` with no --build-arg —
 # the release workflow passes the version explicitly — but a stale
 # default silently hands a contributor a months-old compiler.
-DOCKERFILES=(Dockerfile extras/scion/Dockerfile)
+# The self-development soak's image pins its base by digest as well;
+# dev/uat/selfdev-soak's Go test checks the FROM tags against this
+# script's --print, and its builder checks the digest's Go at build time.
+DOCKERFILES=(Dockerfile extras/scion/Dockerfile dev/uat/selfdev-soak/Dockerfile)
 
 # Every workflow gets its Go through this composite action, which
 # resolves the version through THIS script and then verifies what it

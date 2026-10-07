@@ -15,6 +15,8 @@
 package childenv
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,7 +75,7 @@ func (s *FileSet) Add(paths ...string) {
 			continue
 		}
 		h := heldFile{abs: abs, resolved: abs}
-		if r, err := filepath.EvalSymlinks(abs); err == nil {
+		if r, err := resolveLenient(abs); err == nil {
 			h.resolved = r
 		}
 		s.files = append(s.files, h)
@@ -151,6 +153,22 @@ func (s *FileSet) Match(path string) (string, bool) {
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
+		// The path names nothing yet — a write that would create the
+		// file. No inode to compare, so compare where it WOULD land:
+		// both sides resolved through their deepest existing ancestor,
+		// the way permissions.ResolvePath hands paths to the gate. A
+		// table that is absent at boot under a symlinked parent (macOS
+		// /tmp, a symlinked $PWD) would otherwise let write_file create
+		// it, yolo or not.
+		want, rerr := resolveLenient(abs)
+		if rerr != nil {
+			return "", false
+		}
+		for _, f := range files {
+			if now, err := resolveLenient(f.abs); err == nil && now == want {
+				return f.abs, true
+			}
+		}
 		return "", false
 	}
 	for _, f := range files {
@@ -160,6 +178,43 @@ func (s *FileSet) Match(path string) (string, bool) {
 	}
 	return "", false
 }
+
+// resolveLenient resolves symlinks in abs through its deepest existing
+// ancestor, re-appending the non-existent tail. It is the algorithm of
+// permissions.ResolvePath, which calls it: the gate and this matcher
+// must agree on where a not-yet-existing path lands, so there is one
+// copy, here, because pkg/permissions imports this package.
+//
+// Not handled: a case-insensitive filesystem for a file that does not
+// exist yet. An existing file is matched by inode whatever its case; an
+// absent one is compared as a string, so "USERS.json" in the same
+// directory is not refused on macOS until the table exists.
+func resolveLenient(abs string) (string, error) {
+	abs = filepath.Clean(abs)
+	remainder := ""
+	cur := abs
+	for {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			if remainder == "" {
+				return resolved, nil
+			}
+			return filepath.Join(resolved, remainder), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", err
+		}
+		remainder = filepath.Join(filepath.Base(cur), remainder)
+		cur = parent
+	}
+}
+
+// ResolveLenient is resolveLenient for pkg/permissions' ResolvePath.
+func ResolveLenient(abs string) (string, error) { return resolveLenient(abs) }
 
 // daemonFiles is this process's credential files, for readers that hold
 // no permission gate — the instruction loader's @include, which would

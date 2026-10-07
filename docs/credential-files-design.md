@@ -70,7 +70,19 @@ filesystem server and a skill script run through `bash`.
    (every Secret update) the kernel reuses the number, and the first
    draft refused an unrelated `AGENTS.md` in this package's own test
    run. The cost is one extra `stat` per credential file per checked
-   path, which a `grep` walk pays per file.
+   path, which a `grep` walk pays per file. A path that does not exist
+   yet, such as a write that would create the table, has no inode to
+   compare. For that case both sides are resolved through their deepest
+   existing ancestor and compared as strings. This is the same algorithm
+   `permissions.ResolvePath` uses to hand the path to the gate, so it
+   lives in one place (`childenv.ResolveLenient`, which `ResolvePath`
+   calls). Not handled: a case-insensitive filesystem for an *absent*
+   table. Once the table exists, the inode match is case-blind.
+1b. **Hosts that build their own gate.** A host that builds its gate
+   with `permissions.New` must call `ProtectCredentialFiles` itself, as
+   `examples/compose-multi-session` now does. `compose.BuildMultiSessionAuthn`
+   registers the table with the loader's process-wide set, since every
+   bearer-table host passes through it.
 2. **The table is protected whenever it is configured, not only when
    multi-session is enabled.** A table that is switched off still holds
    live tokens. The boot that turns multi-session on should not be the
@@ -131,9 +143,17 @@ filesystem server and a skill script run through `bash`.
    parent's real *or* effective uid is 0 at `execve`, the new program is
    treated as having every file capability, so the child's permitted
    set is the parent's inheritable set, OR its bounding set, OR its
-   ambient set. For any other parent, only the ambient set passes
-   through. A non-root daemon's own effective set never reaches its
-   child, so it is not read. The bounding set comes from
+   ambient set. For a non-root parent, the ambient set is the only
+   thing that carries the capability through an ordinary `execve`. A
+   non-root daemon's own effective set never reaches its child, so it
+   is not read. This covers what the daemon passes on, not everything
+   its child can obtain. A non-root child can still execute a setuid-root
+   binary (passwordless `sudo`, for instance) or a binary with file
+   capabilities, and gain `CAP_SYS_PTRACE` that way, whatever the
+   daemon holds. No check of the daemon's own sets can see that. The
+   warning reports what the daemon passes on; an image that ships such
+   binaries needs `no_new_privs` (Kubernetes
+   `allowPrivilegeEscalation: false`) or no such binaries. The bounding set comes from
    `prctl(PR_CAPBSET_READ)`, the inheritable set from `capget(2)`, and
    the ambient set from `PR_CAP_AMBIENT_IS_SET`; an error from the last
    means a kernel older than 4.3, with no ambient set.

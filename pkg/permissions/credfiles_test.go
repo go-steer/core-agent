@@ -183,3 +183,37 @@ func TestProtectCredentialFilesIgnoresEmptyAndDuplicates(t *testing.T) {
 		t.Errorf("a gate with no credential files refused a read: %v", err)
 	}
 }
+
+// An absent table under a symlinked parent (macOS /tmp, a relative
+// table_file under a symlinked $PWD). The file tools hand the gate
+// ResolvePath(path), which resolves through the deepest existing
+// ancestor. A matcher whose EvalSymlinks failed on the missing file and
+// fell back to the lexical path matched neither string and had no inode
+// to compare, so write_file could create the table, yolo or not.
+func TestAbsentCredentialFileUnderASymlinkedParentIsRefused(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	table := filepath.Join(link, "users.json") // absent
+	g := New(Options{Mode: ModeYolo})
+	g.ProtectCredentialFiles(table)
+	resolved, err := ResolvePath(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved == table {
+		t.Fatalf("control: ResolvePath did not resolve the symlinked parent (%s), so this proves nothing", resolved)
+	}
+	for _, p := range []string{table, resolved} {
+		if err := g.CheckFileWrite(context.Background(), "write_file", p); !errors.Is(err, ErrCredentialFile) {
+			t.Errorf("CheckFileWrite(%s) on an absent table: want ErrCredentialFile, got %v", p, err)
+		}
+	}
+}

@@ -42,3 +42,21 @@ func TestCredentialFiles(t *testing.T) {
 		t.Errorf("enabling multi-session changed the set: %v", got)
 	}
 }
+
+// The attach token file is a caller credential too, and token_file is
+// ${VAR}-expanded when the attach options are built, so both spellings
+// are protected. Not parallel: t.Setenv.
+func TestCredentialFilesIncludeTheAttachTokenFile(t *testing.T) {
+	t.Setenv("CORE_AGENT_1201_SECRETS_DIR", "/run/secrets")
+	c := DefaultConfig()
+	c.Attach.TokenFile = "${CORE_AGENT_1201_SECRETS_DIR}/attach"
+	got := c.CredentialFiles()
+	want := []string{"${CORE_AGENT_1201_SECRETS_DIR}/attach", "/run/secrets/attach"}
+	if !slices.Equal(got, want) {
+		t.Errorf("CredentialFiles() = %v, want %v", got, want)
+	}
+	c.Attach.TokenFile = "/run/secrets/plain"
+	if got := c.CredentialFiles(); !slices.Equal(got, []string{"/run/secrets/plain"}) {
+		t.Errorf("CredentialFiles() = %v", got)
+	}
+}

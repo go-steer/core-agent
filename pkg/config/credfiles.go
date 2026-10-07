@@ -14,15 +14,24 @@
 
 package config
 
+import "os"
+
 // CredentialFiles returns every file this config makes the daemon read
 // a caller credential from — a credential that authenticates someone to
 // the daemon and so can answer the agent's permission prompts (#1201).
 // The permission gate refuses every agent tool call that names one.
 //
-// Today that is the multi-session bearer table. It is returned whenever
-// it is set, enabled or not: a table the operator left configured but
-// switched off still holds live tokens, and the first boot that turns
-// multi-session on must not be the first boot that protects it.
+// Today that is the multi-session bearer table and the attach token file
+// (attach.token_file). Each is returned whenever it is set, in use or
+// not: a table the operator left configured but switched off still
+// holds live tokens, and the first boot that turns multi-session on must
+// not be the first boot that protects it.
+//
+// token_file passes through ${VAR} expansion when the attach options are
+// built (compose.BuildAttachOptions), so both the literal and the
+// expanded path are returned; an unset variable is kept literal there
+// and here. A path given only by the --attach-token-file flag never
+// reaches Config — cmd/core-agent registers that one itself.
 //
 // Unlike EnvRefs this is a hand-written list, because "is a file path"
 // is not a property a field's name carries (system_prompt_file,
@@ -45,5 +54,23 @@ func (c *Config) CredentialFiles() []string {
 	if p := c.Attach.MultiSession.Auth.TableFile; p != "" {
 		out = append(out, p)
 	}
+	if p := c.Attach.TokenFile; p != "" {
+		out = append(out, p)
+		if x := expandKeepUnset(p); x != p {
+			out = append(out, x)
+		}
+	}
 	return out
+}
+
+// expandKeepUnset expands $VAR / ${VAR} from the environment, keeping a
+// reference to an unset variable literal — the rule
+// compose.BuildAttachOptions applies to attach paths.
+func expandKeepUnset(s string) string {
+	return os.Expand(s, func(name string) string {
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		return "${" + name + "}"
+	})
 }

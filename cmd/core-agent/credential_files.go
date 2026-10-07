@@ -38,6 +38,13 @@ type credentialProbes struct {
 
 var hostCredentialProbes = credentialProbes{
 	readable: func(path string) bool {
+		// Only a regular file can be read again. A FIFO or process
+		// substitution (an --attach-token-file <(...)) was drained at
+		// startup and has nothing left; opening one here would block
+		// startup until some writer appeared.
+		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+			return false
+		}
 		f, err := os.Open(path) //nolint:gosec // operator-configured credential path, opened only to probe readability
 		if err != nil {
 			return false
@@ -60,8 +67,13 @@ var hostCredentialProbes = credentialProbes{
 // between. permissions.FromConfig also registers the same paths (for
 // library hosts), and today it runs ahead of that load too; this call
 // makes run() not depend on that ordering. Both are add-only.
-func withholdCredentialFiles(cfg *config.Config) {
+//
+// tokenFile is attachCfg.TokenFile: the attach token file after
+// --attach-token-file and ${VAR} expansion, which cfg alone does not
+// carry when it came from the flag.
+func withholdCredentialFiles(cfg *config.Config, tokenFile string) {
 	childenv.WithholdFiles(cfg.CredentialFiles()...)
+	childenv.WithholdFiles(tokenFile)
 }
 
 // guardCredentialFiles reports and hardens what #1201 items 4 and 5
@@ -89,11 +101,17 @@ func withholdCredentialFiles(cfg *config.Config) {
 // same answer the skill loader gets. Must run after both exist and
 // before any session's first tool call, which is every point between
 // the tool toggles and runner.Run.
-func guardCredentialFiles(gate *permissions.Gate, bashRegistered bool, stderr io.Writer) {
-	guardCredentialFilesWith(gate, bashRegistered, stderr, hostCredentialProbes)
+//
+// tokenFile is attachCfg.TokenFile, registered on the gate here because
+// a flag-only path never reaches the config FromConfig read. The set is
+// shared by reference, so the sessions derived before this call are
+// covered too, and no tool has run yet.
+func guardCredentialFiles(gate *permissions.Gate, tokenFile string, bashRegistered bool, stderr io.Writer) {
+	guardCredentialFilesWith(gate, tokenFile, bashRegistered, stderr, hostCredentialProbes)
 }
 
-func guardCredentialFilesWith(gate *permissions.Gate, bashRegistered bool, stderr io.Writer, p credentialProbes) {
+func guardCredentialFilesWith(gate *permissions.Gate, tokenFile string, bashRegistered bool, stderr io.Writer, p credentialProbes) {
+	gate.ProtectCredentialFiles(tokenFile)
 	files := gate.CredentialFiles()
 	if len(files) > 0 {
 		fmt.Fprintf(stderr, "core-agent: agent tools may not read or write %s (credential files)\n", strings.Join(files, ", "))

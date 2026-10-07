@@ -94,8 +94,10 @@ filesystem server and a skill script run through `bash`.
    is excluded: it authenticates the daemon to its clients, not a caller
    to the daemon, so it answers no prompt. Provider and cloud
    credential files are excluded for the same reason #1157 excluded
-   their env vars. Item 3's daemon-side `--attach-token-file` belongs in
-   this set when it lands.
+   their env vars. Item 3's daemon-side token file is in the set: `attach.token_file`
+   (literal and `${VAR}`-expanded) through `config.CredentialFiles()`, and a
+   flag-only `--attach-token-file` registered by `run()` on the template gate
+   and the process-wide set, ahead of the boot instruction load.
 4. **The refusal cannot be approved.** An out-of-scope read escalates to
    an operator. This one does not, because approving it would mean
    answering a prompt with the credential that answers prompts. In

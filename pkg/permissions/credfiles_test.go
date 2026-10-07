@@ -164,6 +164,8 @@ func TestCredentialBashCheckIsASeatbeltNotABoundary(t *testing.T) {
 		"cd " + dir + " && cat users.json",
 		"cat " + dir + "/users.*",
 		"f=" + dir + "/users; cat ${f}.json",
+		"cat " + dir + "/./users.json", // cmd/core-agent's attach e2e relies on this one
+
 	} {
 		if err := g.CheckBash(context.Background(), cmd); err != nil {
 			t.Errorf("%q is now refused (%v) — good, but update docs/credential-files-design.md's table", cmd, err)

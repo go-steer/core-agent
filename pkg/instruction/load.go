@@ -45,6 +45,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 )
 
 // maxFileBytes caps how much of any single memory file is loaded.
@@ -516,6 +518,14 @@ func loadFile(path, scope, scopeRoot string, depth int, visited map[string]bool,
 		// only after validateIncludePath confirmed shape, so a stat
 		// failure here is genuinely missing-on-disk.
 		return "", fmt.Errorf("instruction: resolve %s: %w", path, err)
+	}
+	// A daemon credential file is never spliced into a prompt (#1201).
+	// Without this an agent holding only write_file could add
+	// `@include users.json` to AGENTS.md and receive every bearer token
+	// in the next session's system prompt. Fatal like any other bad
+	// include: a silently dropped line would hide who wrote it.
+	if childenv.WithheldFile(canonPath) {
+		return "", fmt.Errorf("instruction: %s is one of the daemon's credential files and is never loaded into a prompt", path)
 	}
 	if visited[canonPath] {
 		return "", nil // first-encounter-wins; subsequent silently skipped

@@ -56,6 +56,8 @@ COPY core-agent /usr/local/bin/core-agent
 
 Or build `core-agent` from source inside the image if you prefer.
 
+`extras/scion/Dockerfile` deliberately ends as `root`, so that Scion's runtime can choose the container user with `docker run --user`. That's safe under Docker's default capability set, which drops `CAP_SYS_PTRACE`. A privileged container, or one run with `--cap-add SYS_PTRACE`, is different. If that container also runs as root, every process the agent starts can read the daemon's memory and `/proc` entries, credentials included. core-agent prints a startup warning when that happens and the daemon holds a credential ([#1201](https://github.com/go-steer/core-agent/issues/1201)). Run the harness with `--user scion`, or keep the default capabilities.
+
 ---
 
 ## Staging into a Scion checkout

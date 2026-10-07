@@ -127,6 +127,10 @@ func run() error {
 		Prompter: allowAlwaysPrompter{},
 	})
 	gate.SetGrantStore(&permissions.ConfigGrantStore{AgentsDir: agentsDir})
+	// A gate built with permissions.New (not FromConfig) knows nothing
+	// about the bearer table. Register it, or the agent's file tools can
+	// read the tokens that answer its own prompts (#1201).
+	gate.ProtectCredentialFiles(usersPath)
 
 	// Demonstrate the persistence contract: an ask-mode check prompts,
 	// the scripted prompter answers "allow always", and the gate

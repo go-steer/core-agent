@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
@@ -271,5 +272,22 @@ func TestNewSessionID(t *testing.T) {
 	}
 	if v := ids[0][14]; v != '7' {
 		t.Errorf("UUID version nibble = %q, want '7' (v7 is what makes ids sortable)", v)
+	}
+}
+
+// A host that builds its gate with permissions.New never runs
+// FromConfig, so the instruction loader would not know the table. The
+// authn builder is the one place every bearer-table host passes
+// through, so it registers the table with the loader's process-wide
+// set (#1201).
+func TestBuildMultiSessionAuthn_WithholdsTheTableFromInstructionLoads(t *testing.T) {
+	t.Parallel()
+	cfg := config.MultiSessionConfig{Enabled: true}
+	cfg.Auth.TableFile = writeUsersFile(t)
+	if _, _, err := BuildMultiSessionAuthn(cfg); err != nil {
+		t.Fatalf("BuildMultiSessionAuthn: %v", err)
+	}
+	if !childenv.WithheldFile(cfg.Auth.TableFile) {
+		t.Error("the bearer table is not withheld from instruction loads after BuildMultiSessionAuthn")
 	}
 }

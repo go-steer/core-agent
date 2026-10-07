@@ -309,7 +309,17 @@ func authE2EChild() {
 	mode := os.Getenv(authE2EMode)
 	port := os.Getenv(authE2EPort)
 	tokenFile := os.Getenv(authE2ETokenFile)
-	command := strings.Join([]string{"bash", os.Getenv(authE2EProbe), strconv.Itoa(os.Getpid()), port, os.Getenv(authE2EOut), tokenFile}, " ")
+	// The probe reads the token file itself, to show a drained FIFO holds
+	// nothing. Since #1201 item 4 the gate refuses a bash command that
+	// names a credential file directly, so the path is spelled with a
+	// "/./" the seatbelt does not match. That is a known gap, pinned in
+	// pkg/permissions' TestCredentialBashCheckIsASeatbeltNotABoundary.
+	// This test is about what the read finds, not about the seatbelt.
+	probeTokenPath := tokenFile
+	if tokenFile != "" {
+		probeTokenPath = filepath.Dir(tokenFile) + "/./" + filepath.Base(tokenFile)
+	}
+	command := strings.Join([]string{"bash", os.Getenv(authE2EProbe), strconv.Itoa(os.Getpid()), port, os.Getenv(authE2EOut), probeTokenPath}, " ")
 	lines := []map[string]any{
 		{"responses": []any{map[string]any{
 			"Content":      map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": map[string]any{"name": "bash", "args": map[string]any{"command": command}}}}},

@@ -30,6 +30,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
@@ -71,6 +72,11 @@ func BuildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 
 	switch cfg.Auth.Kind {
 	case "", config.MultiSessionAuthKindBearerTable:
+		// The instruction loader refuses withheld files; registering here
+		// covers a host that never calls permissions.FromConfig (#1201).
+		// The gate half needs the host's gate: FromConfig does it, and a
+		// host using permissions.New must call ProtectCredentialFiles.
+		childenv.WithholdFiles(cfg.Auth.TableFile)
 		users, err := auth.LoadUsersFile(cfg.Auth.TableFile)
 		if err != nil {
 			return nil, defaultCaller, fmt.Errorf("load users file: %w", err)

@@ -15,9 +15,9 @@
 package permissions
 
 import (
-	"errors"
-	"io/fs"
 	"path/filepath"
+
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 )
 
 // ResolvePath returns the absolute, cleaned, symlink-resolved form of
@@ -47,27 +47,9 @@ func ResolvePath(path string) (string, error) {
 // components so a not-yet-created tail doesn't defeat resolution of
 // the (existing, possibly symlinked) ancestor chain.
 func resolveSymlinks(abs string) (string, error) {
-	remainder := ""
-	cur := abs
-	for {
-		resolved, err := filepath.EvalSymlinks(cur)
-		if err == nil {
-			if remainder == "" {
-				return resolved, nil
-			}
-			return filepath.Join(resolved, remainder), nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return "", err
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			// Walked to the filesystem root without finding an
-			// existing ancestor. Shouldn't happen ("/" exists), but
-			// fail closed rather than guess.
-			return "", err
-		}
-		remainder = filepath.Join(filepath.Base(cur), remainder)
-		cur = parent
-	}
+	// One algorithm for the gate and for childenv.FileSet, which matches
+	// a not-yet-existing credential file the way this resolves the path
+	// a write_file hands the gate (#1201). childenv cannot import this
+	// package, so the body lives there.
+	return childenv.ResolveLenient(abs)
 }

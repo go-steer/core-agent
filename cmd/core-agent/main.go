@@ -562,6 +562,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 
 	attachCfg = mergeAttachOpts(attachCfg, cfg.Attach, flag.CommandLine)
 	withholdDaemonCredentials(cfg, attachCfg.TokenEnv, os.Stderr)
+	withholdCredentialFiles(cfg, attachCfg.TokenFile) // #1201: before the first instruction load below
 	attachToken, err := attachTokenIfUsed(attachCfg, os.Stderr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
@@ -1176,6 +1177,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			}
 		}
 	}
+	// #1201 items 4+5: the first point where the gate's credential-file
+	// set and the bash toggle both exist; ahead of any tool call.
+	guardCredentialFiles(template, attachCfg.TokenFile, tools.BashRegistered(b), os.Stderr)
 
 	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
 		skills.WithHomeAgentsSkillsDir(homeAgentsDir),

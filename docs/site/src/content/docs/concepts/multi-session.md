@@ -57,9 +57,9 @@ The static user table is the v2.4-shipped Authenticator. OIDC / JWT / mTLS / K8s
 {
   "version": 1,
   "users": [
-    { "identity": "alice@example.com", "token_sha256": "9f86d081884c7d65...", "labels": { "team": "platform" } },
-    { "identity": "bob@example.com",   "token_sha256": "60303ae22b998861...", "labels": { "team": "infra" } },
-    { "identity": "sa:cron-runner",    "token_sha256": "fd61a03af4f77d87...", "labels": { "kind": "service" } }
+    { "identity": "alice@example.com", "token_sha256": "5912db5fe837c1e3...", "labels": { "team": "platform" } },
+    { "identity": "bob@example.com",   "token_sha256": "5ef3557e4c215bd1...", "labels": { "team": "infra" } },
+    { "identity": "sa:cron-runner",    "token_sha256": "853ffc2afc310f22...", "labels": { "kind": "service" } }
   ]
 }
 ```

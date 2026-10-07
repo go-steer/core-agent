@@ -115,7 +115,12 @@ reads the token from stdin.
     GKE recipes' `gen-tokens.sh` and the static
     `examples/multi-session-bearer/users/users.json` stay plaintext
     (decision 6). The latter's walkthrough reads tokens back out of
-    the file with `jq`, and its README now shows the hashed form.
+    the file with `jq`, and its README now shows the hashed form. The
+    plaintext snippets in the 2.9.0-pinned recipes' docs stay as they
+    are too, for the same reason: `examples/gke-troubleshoot-agent`
+    `README.md` and `DEMO.md`, and each recipe's
+    `deploy/base/20-secrets-placeholder.md`. They move when the pin
+    does.
 
 ## Out of scope
 

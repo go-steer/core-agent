@@ -75,10 +75,17 @@ func authSubcommand(args []string, stdin io.Reader, readTTY func() ([]byte, erro
 		return runner.ExitOK
 	}
 	if args[0] != "hash-token" {
-		fmt.Fprintf(stderr, "core-agent auth: unknown subcommand %q\n%s\n", args[0], authUsage)
+		// Not echoed, for the same reason as below: `core-agent auth
+		// <token>` is an easy mistake.
+		fmt.Fprintf(stderr, "core-agent auth: unknown subcommand (the only one is hash-token)\n%s\n", authUsage)
 		return runner.ExitConfigError
 	}
-	if len(args) > 1 {
+	rest := args[1:]
+	if len(rest) == 1 && (rest[0] == "-h" || rest[0] == "--help") {
+		_, _ = io.WriteString(stderr, authUsage+"\n")
+		return runner.ExitOK
+	}
+	if len(rest) > 0 {
 		// Deliberately not echoed: the extra argument may be the token.
 		fmt.Fprintf(stderr, "core-agent auth hash-token: takes no arguments; the token is read from stdin so it never appears in shell history or the process list\n%s\n", authUsage)
 		return runner.ExitConfigError

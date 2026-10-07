@@ -1359,7 +1359,7 @@ Nested under `attach`, enables the multi-tenant surface where distinct callers e
 |---|---|---|---|
 | `users_dir` | string | `""` | Directory holding per-caller overlays (`<usersDir>/<callerIdentity>/.agents/`). Empty disables the per-caller overlay path; the daemon behaves as single-user. |
 | `auth.kind` | string | `""` | Authentication scheme: `bearer_table` (default when `table_file` is set), `asserted_caller_header`, or `""` (single-user / no per-caller auth). |
-| `auth.table_file` | string | `""` | Path to the bearer-token → identity JSON table when `auth.kind == "bearer_table"`. Reloaded on file modification. Each row should store `token_sha256` (from `core-agent auth hash-token`) rather than a plaintext `token`; see [Multi-session](/concepts/multi-session/). |
+| `auth.table_file` | string | `""` | Path to the bearer-token → identity JSON table when `auth.kind == "bearer_table"`. Read once at startup; restart the daemon to pick up a change. Each row should store `token_sha256` (from `core-agent auth hash-token`) rather than a plaintext `token`; see [Multi-session](/concepts/multi-session/). |
 | `admin_identities` | string[] | `[]` | Caller identities granted the admin surface (`/sessions/*` cross-caller reads, `DELETE /sessions/{sid}` against any owner, etc.). Non-admin callers only see their own sessions. |
 | `allow_anonymous` | bool | `false` | Accept requests with no caller identity as the daemon-wide anonymous user. Off by default; useful for smoke tests. |
 | `default_identity` | string | `""` | Identity used when the caller doesn't present one AND `allow_anonymous` is off. Empty rejects the request. |

@@ -126,7 +126,16 @@ func TestAuthSubcommand_Usage(t *testing.T) {
 	if code, _, _ := runHashToken(t, []string{"--help"}, ""); code != runner.ExitOK {
 		t.Errorf("--help: code=%d, want 0", code)
 	}
-	if code, _, errOut := runHashToken(t, []string{"rotate"}, ""); code != runner.ExitConfigError || !strings.Contains(errOut, `unknown subcommand "rotate"`) {
+	if code, _, _ := runHashToken(t, []string{"hash-token", "--help"}, ""); code != runner.ExitOK {
+		t.Errorf("hash-token --help: code=%d, want 0", code)
+	}
+	// `core-agent auth <token>` is an easy slip; the refusal must not
+	// echo what it was given.
+	code, _, errOut := runHashToken(t, []string{hashCLIToken}, "")
+	if code != runner.ExitConfigError || !strings.Contains(errOut, "unknown subcommand") {
 		t.Errorf("unknown: code=%d stderr=%q", code, errOut)
+	}
+	if strings.Contains(errOut, hashCLIToken) {
+		t.Errorf("unknown-subcommand refusal echoes its argument: %q", errOut)
 	}
 }

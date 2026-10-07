@@ -37,6 +37,10 @@ var botEmailRe = regexp.MustCompile(`(?i)\[bot\]@|no-?reply`)
 // set verify-no-agent-attribution scans.
 var creditKeyRe = regexp.MustCompile(`(?i)^\s*(co-authored-by|co-developed-by|assisted-by|generated-by|authored-by|helped-by|suggested-by|reviewed-by|reported-by|tested-by|acked-by|signed-off-by)\s*:\s*(.*)$`)
 
+// lineSplitRe splits a message on any line ending, so a trailer after a
+// bare carriage return is still seen as its own line.
+var lineSplitRe = regexp.MustCompile(`\r\n|\r|\n`)
+
 // validateIdentity rejects a configured identity that could never pass
 // verifyCommits, so a misconfiguration fails at startup rather than on
 // the first issue.
@@ -81,8 +85,13 @@ func verifyCommit(c commit, id identity) error {
 			return fmt.Errorf("%s is %s <%s>, not the soak identity %s", who.role, who.name, who.email, id)
 		}
 	}
+	if i := strings.IndexFunc(c.Message, func(r rune) bool {
+		return (r < 0x20 && r != '\n' && r != '\r' && r != '\t') || r == 0x7f
+	}); i >= 0 {
+		return fmt.Errorf("message has a control byte at offset %d", i)
+	}
 	signoffs := 0
-	for _, line := range strings.Split(c.Message, "\n") {
+	for _, line := range lineSplitRe.Split(c.Message, -1) {
 		m := creditKeyRe.FindStringSubmatch(line)
 		if m == nil {
 			continue

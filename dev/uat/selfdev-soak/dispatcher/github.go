@@ -66,7 +66,7 @@ type ghIssue struct {
 
 func (i ghIssue) hasLabel(name string) bool {
 	for _, l := range i.Labels {
-		if l.Name == name {
+		if strings.EqualFold(l.Name, name) { // GitHub label names are case-insensitive
 			return true
 		}
 	}
@@ -81,6 +81,7 @@ type ghEvent struct {
 	Actor    *ghUser  `json:"actor"`
 	Label    *ghLabel `json:"label,omitempty"`
 	Assignee *ghUser  `json:"assignee,omitempty"`
+	Assigner *ghUser  `json:"assigner,omitempty"`
 }
 
 func (e ghEvent) actor() string {
@@ -88,6 +89,19 @@ func (e ghEvent) actor() string {
 		return ""
 	}
 	return e.Actor.Login
+}
+
+// assigner is who performed an assignment. GitHub's issue events carry
+// `assigner` alongside `actor`, and older payloads documented `actor` on
+// an assigned event as the assignee, not the person assigning; reading
+// `assigner` when present is right under either reading. The provenance
+// check also requires `actor` to be the maintainer, so the two can never
+// disagree in an issue's favour.
+func (e ghEvent) assigner() string {
+	if e.Assigner != nil {
+		return e.Assigner.Login
+	}
+	return e.actor()
 }
 
 type ghPull struct {
@@ -168,7 +182,7 @@ const pageSize = 100
 const maxPages = 30
 
 // paginate walks pages of path (which must already carry a query) and
-// appends each page's rows to out via add.
+// returns every row, or an error rather than a truncated list.
 func paginate[T any](ctx context.Context, c *ghClient, path string) ([]T, error) {
 	var all []T
 	for page := 1; page <= maxPages; page++ {
@@ -181,7 +195,9 @@ func paginate[T any](ctx context.Context, c *ghClient, path string) ([]T, error)
 			return all, nil
 		}
 	}
-	return all, nil
+	// Truncating would be a silent wrong answer: a provenance check that
+	// never saw page 31 could pass an issue someone else labeled there.
+	return nil, fmt.Errorf("%s: more than %d pages", strings.SplitN(path, "?", 2)[0], maxPages)
 }
 
 // openIssues lists open issues carrying label, oldest first. Pull
@@ -208,6 +224,22 @@ func (c *ghClient) openPulls(ctx context.Context) ([]ghPull, error) {
 	return paginate[ghPull](ctx, c, c.repoPath("/pulls?state=open"))
 }
 
+// openPullForHead returns the open PR from the mirror's own branch, or
+// nil. A dispatcher that crashed between opening a PR and recording it
+// finds the PR here instead of failing to create a duplicate.
+func (c *ghClient) openPullForHead(ctx context.Context, branch string) (*ghPull, error) {
+	rows, err := paginate[ghPull](ctx, c, c.repoPath("/pulls?state=open&head="+url.QueryEscape(c.owner+":"+branch)))
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		if rows[i].Head.Ref == branch {
+			return &rows[i], nil
+		}
+	}
+	return nil, nil
+}
+
 func (c *ghClient) pull(ctx context.Context, number int) (ghPull, error) {
 	var p ghPull
 	err := c.do(ctx, http.MethodGet, c.repoPath(fmt.Sprintf("/pulls/%d", number)), nil, &p)
@@ -226,10 +258,6 @@ func (c *ghClient) removeLabel(ctx context.Context, number int, label string) er
 		return nil
 	}
 	return err
-}
-
-func (c *ghClient) assign(ctx context.Context, number int, login string) error {
-	return c.do(ctx, http.MethodPost, c.repoPath(fmt.Sprintf("/issues/%d/assignees", number)), map[string][]string{"assignees": {login}}, nil)
 }
 
 func (c *ghClient) comment(ctx context.Context, number int, body string) error {

@@ -21,15 +21,16 @@
 // is docs/selfdev-soak-dispatcher-design.md.
 //
 //	dispatcher --attach-url URL --token-file F --app-id N --app-key-file F \
-//	    --worktrees-dir DIR --commit-name NAME --commit-email EMAIL [--once]
+//	    --worktrees-dir DIR --state-file F --commit-name NAME --commit-email EMAIL [--once]
 //
 // Every secret is read from a file: the attach bearer through
 // childenv.TakeFile (the --token-file convention of #1266), the App key
 // through a mode-checked PEM read. None is accepted on the command line
 // or from the environment, and none is passed to a child process.
 //
-// Exit status: 0 when the loop ends cleanly or --once opened a PR; 1 on a
-// runtime failure or when --once's issue stopped; 2 on a usage error.
+// Exit status: 0 when a polling run ends cleanly or --once opened a PR; 1
+// on a runtime failure, or when --once's issue stopped or a signal ended
+// it first; 2 on a usage error.
 package main
 
 import (
@@ -71,7 +72,6 @@ type config struct {
 	AppKeyFile     string
 	InstallationID int64
 	Identity       identity
-	Assignee       string
 	SessionTimeout time.Duration
 	Settle         time.Duration
 	StartTimeout   time.Duration
@@ -97,7 +97,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	fs.StringVar(&c.PrivateRepo, "private-repo", filepath.Join(defaultStateDir(), "mirror.git"), "the dispatcher-only bare repo; must NOT be on a volume the agent can write")
 	fs.StringVar(&c.WorktreesDir, "worktrees-dir", "", "where per-issue working copies go, on the workspace volume the daemon sees (required)")
 	fs.StringVar(&c.AgentsDir, "agents-dir", "", "the daemon's .agents directory, to read the session's plan artifact for the PR body (optional)")
-	fs.StringVar(&c.StateFile, "state-file", filepath.Join(defaultStateDir(), "state.json"), "where the dispatcher remembers its active issue across restarts")
+	fs.StringVar(&c.StateFile, "state-file", "", "where the dispatcher remembers its active issue across restarts; must survive a pod restart (required)")
 	fs.StringVar(&c.AttachURL, "attach-url", "", "the core-agent daemon's attach listener, e.g. http://core-agent:7777 (required)")
 	fs.StringVar(&c.TokenFile, "token-file", "", "file holding the dispatcher's attach bearer token (required)")
 	fs.Int64Var(&c.AppID, "app-id", 0, "the writer GitHub App's ID (required)")
@@ -105,7 +105,6 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	fs.Int64Var(&c.InstallationID, "installation-id", 0, "the App's installation ID on the mirror (default: discovered)")
 	fs.StringVar(&c.Identity.Name, "commit-name", "", "the soak's commit identity name (decision 16, required)")
 	fs.StringVar(&c.Identity.Email, "commit-email", "", "the soak's commit identity email (decision 16, required)")
-	fs.StringVar(&c.Assignee, "assign", "", "also assign a claimed issue to this login (optional; the soak:active label is the claim)")
 	fs.DurationVar(&c.SessionTimeout, "session-timeout", 4*time.Hour, "stop an issue whose session is still running after this long")
 	fs.DurationVar(&c.Settle, "settle", 30*time.Second, "how long a session must stay idle after its last turn before it counts as done")
 	fs.DurationVar(&c.StartTimeout, "start-timeout", 10*time.Minute, "stop an issue whose session never ends a turn within this long")
@@ -131,7 +130,7 @@ func (c config) validate() error {
 	missing := []string{}
 	for flagName, v := range map[string]string{
 		"--worktrees-dir": c.WorktreesDir, "--attach-url": c.AttachURL,
-		"--token-file": c.TokenFile, "--app-key-file": c.AppKeyFile,
+		"--token-file": c.TokenFile, "--app-key-file": c.AppKeyFile, "--state-file": c.StateFile,
 	} {
 		if v == "" {
 			missing = append(missing, flagName)
@@ -227,7 +226,7 @@ func run(args []string, stderr io.Writer) int {
 	defer stop()
 	log.Info("starting", "repo", c.Owner+"/"+c.Repo, "maintainer", c.Maintainer, "once", c.Once,
 		"poll", c.Poll.String(), "max_open_prs", c.MaxOpenPRs, "identity", c.Identity.String())
-	return exitCode(d.runLoop(ctx), log)
+	return exitCode(d.runLoop(ctx), c.Once, log)
 }
 
 // runLoop runs the loop and folds a --once stop into an error.
@@ -242,9 +241,12 @@ func (d *dispatcher) runLoop(ctx context.Context) error {
 	return err
 }
 
-func exitCode(err error, log *slog.Logger) int {
+// exitCode maps the loop's end to a status. A signal ends a polling
+// dispatcher cleanly (0), but ends a --once run without its PR, which a
+// harness grading A7 must not read as success (1).
+func exitCode(err error, once bool, log *slog.Logger) int {
 	switch {
-	case err == nil, errors.Is(err, context.Canceled):
+	case err == nil, errors.Is(err, context.Canceled) && !once:
 		return 0
 	default:
 		log.Error("exiting", "err", err)

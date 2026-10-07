@@ -60,15 +60,17 @@ func checkProvenance(is ghIssue, events []ghEvent, maintainer string) error {
 	var labeled, assigned int
 	for _, ev := range events {
 		switch {
-		case ev.Event == "labeled" && ev.Label != nil && ev.Label.Name == labelQueue:
+		case ev.Event == "labeled" && ev.Label != nil && strings.EqualFold(ev.Label.Name, labelQueue):
 			labeled++
 			if !sameLogin(ev.actor(), maintainer) {
 				return fmt.Errorf("%s was applied by %q, not %q", labelQueue, ev.actor(), maintainer)
 			}
 		case ev.Event == "assigned":
+			// Both fields must be the maintainer: see ghEvent.assigner for
+			// why either one alone could name the assignee instead.
 			assigned++
-			if !sameLogin(ev.actor(), maintainer) {
-				return fmt.Errorf("assigned by %q, not %q", ev.actor(), maintainer)
+			if !sameLogin(ev.assigner(), maintainer) || !sameLogin(ev.actor(), maintainer) {
+				return fmt.Errorf("assigned by %q (actor %q), not %q", ev.assigner(), ev.actor(), maintainer)
 			}
 		case ev.Event == "renamed":
 			if !sameLogin(ev.actor(), maintainer) {

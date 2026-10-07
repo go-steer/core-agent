@@ -228,27 +228,78 @@ func (g *gitOps) collect(ctx context.Context, number int, dir, base string) (str
 	if _, err := g.run(ctx, g.privateDir, nil, "merge-base", "--is-ancestor", base, tip); err != nil {
 		return "", nil, fmt.Errorf("%s does not descend from the base %s", branch, base)
 	}
-	out, err := g.run(ctx, g.privateDir, nil, "log", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e", base+".."+tip)
+	list, err := g.run(ctx, g.privateDir, nil, "rev-list", base+".."+tip)
 	if err != nil {
 		return "", nil, err
 	}
-	return tip, parseLog(out), nil
+	var commits []commit
+	for _, sha := range strings.Fields(list) {
+		raw, err := g.run(ctx, g.privateDir, nil, "cat-file", "commit", sha)
+		if err != nil {
+			return "", nil, err
+		}
+		c, err := parseCommitObject(sha, raw)
+		if err != nil {
+			return "", nil, err
+		}
+		commits = append(commits, c)
+	}
+	return tip, commits, nil
 }
 
-func parseLog(out string) []commit {
-	var cs []commit
-	for _, rec := range strings.Split(out, "\x1e") {
-		rec = strings.TrimLeft(rec, "\n")
-		if strings.TrimSpace(rec) == "" {
+// parseCommitObject reads identities and message straight out of the raw
+// commit object (`git cat-file commit`), not out of a `git log --format`
+// rendering. A format string needs separator bytes, and git accepts any
+// byte in a name or a message, so an agent could forge field boundaries:
+// a name carrying "\x1fsoak@…", or a message carrying the record
+// separator, shifted fields and hid a trailer from the check. The object
+// has one header per line, then a blank line, then the message, and no
+// header value can contain a newline. A control byte in an identity is
+// refused outright.
+func parseCommitObject(sha, raw string) (commit, error) {
+	head, msg, _ := strings.Cut(raw, "\n\n")
+	c := commit{SHA: sha, Message: msg}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(head, "\n") {
+		key, val, _ := strings.Cut(line, " ")
+		if key != "author" && key != "committer" {
 			continue
 		}
-		f := strings.SplitN(rec, "\x1f", 6)
-		if len(f) < 6 {
-			continue
+		if seen[key] {
+			return commit{}, fmt.Errorf("commit %.12s has two %s headers", sha, key)
 		}
-		cs = append(cs, commit{SHA: f[0], AuthorName: f[1], AuthorEmail: f[2], CommitterName: f[3], CommitterEmail: f[4], Message: f[5]})
+		seen[key] = true
+		name, email, err := parseIdentityHeader(val)
+		if err != nil {
+			return commit{}, fmt.Errorf("commit %.12s %s header: %w", sha, key, err)
+		}
+		if key == "author" {
+			c.AuthorName, c.AuthorEmail = name, email
+		} else {
+			c.CommitterName, c.CommitterEmail = name, email
+		}
 	}
-	return cs
+	if !seen["author"] || !seen["committer"] {
+		return commit{}, fmt.Errorf("commit %.12s lacks an author or committer header", sha)
+	}
+	return c, nil
+}
+
+// parseIdentityHeader splits "Name <email> 1700000000 +0000".
+func parseIdentityHeader(val string) (string, string, error) {
+	open, closing := strings.Index(val, "<"), strings.Index(val, ">")
+	if open < 0 || closing < open {
+		return "", "", fmt.Errorf("malformed identity %q", val)
+	}
+	name, email := strings.TrimSpace(val[:open]), val[open+1:closing]
+	if hasControl(name) || hasControl(email) || strings.ContainsAny(val[closing+1:], "<>") {
+		return "", "", fmt.Errorf("identity %q has a control byte or a stray angle bracket", val)
+	}
+	return name, email, nil
+}
+
+func hasControl(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0
 }
 
 // push publishes tip — the exact SHA that was verified, not the branch

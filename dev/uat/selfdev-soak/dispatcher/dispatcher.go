@@ -197,11 +197,6 @@ func (d *dispatcher) process(ctx context.Context, is ghIssue) (outcome, error) {
 	if err := d.gh.addLabels(ctx, is.Number, labelActive); err != nil {
 		return outcome{}, fmt.Errorf("claim issue #%d: %w", is.Number, err)
 	}
-	if d.cfg.Assignee != "" {
-		if err := d.gh.assign(ctx, is.Number, d.cfg.Assignee); err != nil {
-			log.Warn("assign failed; the soak:active label is the claim", "assignee", d.cfg.Assignee, "err", err)
-		}
-	}
 	log.Info("claimed issue", "title", is.Title)
 	if a.Upstream == "" {
 		return d.stop(ctx, a, "the issue names no "+d.cfg.Upstream+" issue link, and every soak issue must carry one (decision 12)")
@@ -314,8 +309,7 @@ func (d *dispatcher) publish(ctx context.Context, a *activeIssue) (outcome, erro
 		return d.stop(ctx, a, "push failed: "+err.Error())
 	}
 	d.log.Info("pushed", "issue", a.Number, "branch", branchFor(a.Number), "tip", tip, "commits", len(commits))
-	body := prBody(a, d.cfg.Owner+"/"+d.cfg.Repo, planFor(d.cfg.AgentsDir, a.SessionID))
-	pr, err := d.gh.createPull(ctx, prTitle(a, commits), branchFor(a.Number), d.cfg.BaseBranch, body)
+	pr, err := d.openOrAdoptPR(ctx, a, commits)
 	if err != nil {
 		return d.stop(ctx, a, "pushed "+branchFor(a.Number)+" but could not open the PR: "+err.Error())
 	}
@@ -326,6 +320,22 @@ func (d *dispatcher) publish(ctx context.Context, a *activeIssue) (outcome, erro
 	}
 	d.log.Info("opened PR", "issue", a.Number, "pr", pr.Number, "url", pr.HTMLURL, "session", a.SessionID)
 	return outcome{Issue: a.Number, PR: pr.Number, PRURL: pr.HTMLURL}, nil
+}
+
+// openOrAdoptPR opens the issue's PR, or adopts the open one already on
+// its branch: a restart after the PR was opened but before the state file
+// recorded it must not end in a duplicate-PR failure and a false stop.
+func (d *dispatcher) openOrAdoptPR(ctx context.Context, a *activeIssue, commits []commit) (ghPull, error) {
+	existing, err := d.gh.openPullForHead(ctx, branchFor(a.Number))
+	if err != nil {
+		return ghPull{}, err
+	}
+	if existing != nil {
+		d.log.Info("adopting the PR already open on the branch", "issue", a.Number, "pr", existing.Number)
+		return *existing, nil
+	}
+	body := prBody(a, d.cfg.Owner+"/"+d.cfg.Repo, planFor(d.cfg.AgentsDir, a.SessionID))
+	return d.gh.createPull(ctx, prTitle(a, commits), branchFor(a.Number), d.cfg.BaseBranch, body)
 }
 
 // stop is step 7: say why on the issue, label it soak:stopped, drop the

@@ -106,7 +106,16 @@ func (e sessionEnd) stopReason() string {
 // did a turn end, how, and did a guardrail trip. Pure, so tests drive it
 // frame by frame.
 type watcher struct {
-	sawTerminal  bool
+	sawTerminal bool
+	// sawActivity is set by evidence that a turn ran: a non-idle
+	// status-update, or a model-authored row in the eventlog. Unlike
+	// turn-complete, the rows survive a reconnect.
+	sawActivity bool
+	// reconnected is set once the stream has been re-opened (or the
+	// watch resumed after a dispatcher restart). The live-only
+	// turn-complete may have been missed in the gap, so from then on
+	// evidence of activity plus a settled idle status is enough.
+	reconnected  bool
 	lastActivity time.Time
 	lastSeq      int64
 	end          sessionEnd
@@ -134,7 +143,7 @@ func (w *watcher) observe(f attach.Frame, now time.Time) {
 		}
 	case attach.EventStatusUpdate:
 		if su, ok := f.TypedData.(*attach.StatusUpdate); ok && su.TurnState != attach.TurnStateIdle {
-			w.lastActivity = now
+			w.lastActivity, w.sawActivity = now, true
 		}
 	}
 }
@@ -164,6 +173,13 @@ func (w *watcher) observeRow(f attach.Frame, now time.Time) {
 		return
 	}
 	w.lastActivity = now
+	if f.Event.Content != nil && f.Event.Author != "user" {
+		// The model produced output after any earlier turn error, so that
+		// error was not the session's last word. Without this, replaying
+		// from seq 0 on a resume would stop an issue over a transient
+		// error two turns back that a later turn recovered from.
+		w.sawActivity, w.end.TurnError = true, nil
+	}
 }
 
 func (w *watcher) turnError(te attach.TurnError, now time.Time) {
@@ -192,13 +208,16 @@ func (w *watcher) done(st attach.StatusInfo, now, started time.Time, settle, sta
 	if !idle {
 		return false
 	}
-	if len(w.end.Trips) > 0 && now.Sub(w.lastActivity) >= settle {
-		return true
-	}
-	if w.sawTerminal {
-		return now.Sub(w.lastActivity) >= settle
-	}
-	if now.Sub(started) >= startTimeout && now.Sub(w.lastActivity) >= startTimeout {
+	quiet := now.Sub(w.lastActivity)
+	switch {
+	case len(w.end.Trips) > 0, w.sawTerminal:
+		return quiet >= settle
+	case w.sawActivity && (w.reconnected || quiet >= startTimeout):
+		// A turn ran but its turn-complete never reached us: lost in a
+		// reconnect gap, or on a stream that died without closing. The
+		// idle status, held for the settle window, decides.
+		return quiet >= settle
+	case now.Sub(started) >= startTimeout && quiet >= startTimeout:
 		w.end.NeverRan = true
 		return true
 	}
@@ -224,7 +243,7 @@ func (d *daemonClient) runTask(ctx context.Context, sessionPath, task string, ti
 			return sessionEnd{}, fmt.Errorf("inject task: %w", err)
 		}
 	} else {
-		w.sawTerminal = true // resumed: the status poll decides
+		w.reconnected = true // resumed: the replay and the status poll decide
 	}
 	return d.watch(ctx, sessionPath, frames, w, started, timeout)
 }
@@ -246,6 +265,7 @@ func (d *daemonClient) watch(ctx context.Context, sessionPath string, frames <-c
 				w.observe(f, time.Now())
 				continue
 			}
+			w.reconnected = true
 			frames = d.reopen(ctx, sessionPath, w.lastSeq)
 		case <-tick.C:
 			st, err := d.c.Status(ctx, sessionPath)

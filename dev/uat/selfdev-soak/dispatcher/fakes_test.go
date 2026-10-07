@@ -95,7 +95,6 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey) (*fakeGitHub, *httptest.Ser
 	mux.HandleFunc("POST "+repo+"/issues/{n}/labels", f.repoAuth(f.addLabels))
 	mux.HandleFunc("DELETE "+repo+"/issues/{n}/labels/{name}", f.repoAuth(f.removeLabel))
 	mux.HandleFunc("POST "+repo+"/issues/{n}/comments", f.repoAuth(f.addComment))
-	mux.HandleFunc("POST "+repo+"/issues/{n}/assignees", f.repoAuth(func(w http.ResponseWriter, _ *http.Request) { writeJSONT(w, map[string]any{}) }))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return f, srv
@@ -170,11 +169,17 @@ func (f *fakeGitHub) repoAuth(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// pageOne serves rows the way GitHub paginates them: per_page rows of
+// page N, an empty page past the end.
 func pageOne[T any](w http.ResponseWriter, r *http.Request, rows []T) {
-	if r.URL.Query().Get("page") != "1" {
-		rows = []T{}
+	per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if per <= 0 || page <= 0 {
+		http.Error(w, `{"message":"want per_page and page"}`, http.StatusBadRequest)
+		return
 	}
-	writeJSONT(w, rows)
+	lo, hi := min((page-1)*per, len(rows)), min(page*per, len(rows))
+	writeJSONT(w, append([]T{}, rows[lo:hi]...))
 }
 
 func (f *fakeGitHub) listIssues(w http.ResponseWriter, r *http.Request) {
@@ -199,8 +204,9 @@ func (f *fakeGitHub) listEvents(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeGitHub) listPulls(w http.ResponseWriter, r *http.Request) {
 	var out []ghPull
+	head := r.URL.Query().Get("head") // "owner:branch"
 	for n := 0; n <= 1000; n++ {
-		if p, ok := f.pulls[n]; ok && p.State == "open" {
+		if p, ok := f.pulls[n]; ok && p.State == "open" && (head == "" || head == testOwner+":"+p.Head.Ref) {
 			out = append(out, *p)
 		}
 	}

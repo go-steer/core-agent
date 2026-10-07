@@ -16,37 +16,118 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
-
-	"github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // maxPlanBytes keeps the PR body under GitHub's 65536-character limit
 // with room for the header.
 const maxPlanBytes = 60000
 
+// maxPlanFileBytes bounds the read of one plan artifact. Anything larger
+// is truncated for the PR body anyway.
+const maxPlanFileBytes = 256 << 10
+
+// planNameRe matches an active plan artifact (pkg/tools/record_plan.go's
+// naming); a revoked plan's "-revoked" suffix does not match.
+var planNameRe = regexp.MustCompile(`^plan-([0-9]+)\.md$`)
+
 // planFor returns the body of the newest plan artifact the session
 // recorded, frontmatter removed, or "" when there is none. agentsDir is
 // the daemon's .agents directory as the dispatcher sees it; "" disables
 // the lookup.
+//
+// The plans directory is agent-writable, and the dispatcher reads it in
+// its own pod, where a symlink resolves against the dispatcher's
+// filesystem — the App key included. So this does not use
+// tools.ActivePlans, which follows links and reads unbounded: the
+// directory must be a real directory, each file is opened without
+// following a link and must be a regular file, and it is read once,
+// bounded, with the frontmatter checked on the same bytes that are
+// published.
 func planFor(agentsDir, sessionID string) string {
 	if agentsDir == "" || sessionID == "" {
 		return ""
 	}
-	for _, p := range tools.ActivePlans(agentsDir) { // newest first
-		if p.Session != sessionID {
+	dir := filepath.Join(agentsDir, "plans")
+	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() { // #nosec G703 -- operator-configured path.
+		return ""
+	}
+	entries, err := os.ReadDir(dir) // #nosec G703 -- operator-configured path.
+	if err != nil {
+		return ""
+	}
+	type candidate struct {
+		seq  int
+		name string
+	}
+	var cands []candidate
+	for _, e := range entries {
+		if m := planNameRe.FindStringSubmatch(e.Name()); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				cands = append(cands, candidate{n, e.Name()})
+			}
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].seq > cands[j].seq })
+	for _, c := range cands {
+		raw, ok := readPlanFile(filepath.Join(dir, c.name))
+		if !ok || planSession(raw) != sessionID {
 			continue
 		}
-		raw, err := os.ReadFile(p.Path) // #nosec G304 -- a path ActivePlans listed.
-		if err != nil {
-			return ""
-		}
-		body := stripFrontmatter(string(raw))
+		body := strings.TrimSpace(stripFrontmatter(raw))
 		if len(body) > maxPlanBytes {
 			body = strings.ToValidUTF8(body[:maxPlanBytes], "") + "\n\n[plan truncated]"
 		}
-		return strings.TrimSpace(body)
+		return body
+	}
+	return ""
+}
+
+// readPlanFile reads one plan, without following a symlink, and only if
+// it is a regular file.
+func readPlanFile(path string) (string, bool) {
+	f, err := openNoFollow(path)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = f.Close() }()
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() {
+		return "", false
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxPlanFileBytes))
+	if err != nil {
+		return "", false
+	}
+	return string(raw), true
+}
+
+// planSession reads the session attribution out of a plan's frontmatter
+// (pkg/tools/record_plan.go's planFrontmatter), or "" when there is none.
+func planSession(raw string) string {
+	if !strings.HasPrefix(raw, "---\n") {
+		return ""
+	}
+	block, _, ok := strings.Cut(raw[len("---\n"):], "\n---")
+	if !ok {
+		return ""
+	}
+	for _, line := range strings.Split(block, "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(key) != "session" {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		if unq, err := strconv.Unquote(val); err == nil {
+			val = unq
+		}
+		return val
 	}
 	return ""
 }

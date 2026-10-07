@@ -55,6 +55,10 @@ func TestCheckProvenance(t *testing.T) {
 		{"labeled by someone else, then re-labeled by the maintainer", nil,
 			[]ghEvent{queued(other), {Event: "unlabeled", Actor: me(), Label: &ghLabel{Name: labelQueue}}, queued(me()), assigned(me())}, "applied by \"mallory\""},
 		{"assigned by someone else", nil, []ghEvent{queued(me()), assigned(other)}, "assigned by \"mallory\""},
+		{"assigner field names someone else", nil,
+			[]ghEvent{queued(me()), {Event: "assigned", Actor: me(), Assigner: other}}, "assigned by \"mallory\""},
+		{"label name case differs, labeled by someone else", nil,
+			[]ghEvent{{Event: "labeled", Actor: other, Label: &ghLabel{Name: "Soak:Queue"}}, queued(me()), assigned(me())}, "applied by \"mallory\""},
 		{"title changed by someone else", nil, []ghEvent{queued(me()), assigned(me()), {Event: "renamed", Actor: other}}, "title changed"},
 		{"label event from a deleted account", nil, []ghEvent{queued(nil), assigned(me())}, "applied by \"\""},
 		{"no label event at all", nil, []ghEvent{assigned(me())}, "no soak:queue labeled event"},
@@ -323,7 +327,7 @@ func TestWatcherCountsATripOnceAcrossFrameAndRow(t *testing.T) {
 
 func TestParseFlags(t *testing.T) {
 	base := []string{"--worktrees-dir", "/w", "--attach-url", "http://d:7777", "--token-file", "/t",
-		"--app-id", "1", "--app-key-file", "/k", "--commit-name", "Soak Worker", "--commit-email", "soak@example.com"}
+		"--app-id", "1", "--app-key-file", "/k", "--state-file", "/s", "--commit-name", "Soak Worker", "--commit-email", "soak@example.com"}
 	c, err := parseFlags(base, io.Discard)
 	if err != nil {
 		t.Fatal(err)

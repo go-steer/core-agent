@@ -92,6 +92,7 @@ research + friction logs, or handover notes.
 ### Attach mode, remote + TUI
 
 - [`attach-mode-design.md`](attach-mode-design.md) — HTTP/SSE + Unix socket; mTLS + bearer; `POST /inject` for live observability of headless agents
+- [`local-listener-auth-design.md`](local-listener-auth-design.md) — a token-less loopback or Unix-socket attach listener is refused when the agent has `bash` (explicit `--attach-allow-unauthenticated-local` opt-out), and `--attach-token-file` / `--token-file` read the token from a file so it never sits in a process environment ([#1201](https://github.com/go-steer/core-agent/issues/1201) items 2–3)
 - [`attach-tui-design.md`](attach-tui-design.md) — bubble-tea TUI consumer for attach-mode (`cmd/core-agent-tui/`)
 - [`core-tui-adapter-design.md`](core-tui-adapter-design.md) — adapter onto `go-steer/core-tui` for the remote TUI client
 - [`operator-input-design.md`](operator-input-design.md) — operator input during turns: queue panel, auto-continue, `/btw`, `/subagent`

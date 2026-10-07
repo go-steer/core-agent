@@ -84,10 +84,14 @@ func main() {
 	}
 	args := positionals
 
-	token := attachclient.ResolveTokenEnv("core-agent-tui", *opts.tokenEnv, *opts.legacyToken, os.Stderr)
+	token, err := attachclient.ResolveToken("core-agent-tui", *opts.tokenFile, *opts.tokenEnv, *opts.legacyToken, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent-tui: %v\n", err)
+		os.Exit(2)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err := run(ctx, args, token, *opts.authMode, *opts.theme, *opts.alias, *opts.newSession,
+	err = run(ctx, args, token, *opts.authMode, *opts.theme, *opts.alias, *opts.newSession,
 		splitCommaList(*opts.trustedPeers), mouseOptFromFlag(*opts.noMouse))
 	cancel()
 	if err != nil {
@@ -98,6 +102,7 @@ func main() {
 
 // cliFlags holds the parsed destinations for every command-line flag.
 type cliFlags struct {
+	tokenFile    *string
 	tokenEnv     *string
 	legacyToken  *string
 	authMode     *string
@@ -118,6 +123,7 @@ type cliFlags struct {
 // is covered by the arg-order tests the moment it is defined.
 func registerFlags(fs *flag.FlagSet) *cliFlags {
 	return &cliFlags{
+		tokenFile:    fs.String("token-file", "", "read the bearer token from this file (or a pipe: --token-file <(pass show attach | head -n1)), once, at startup. The token never enters any process environment, which --token-env cannot promise. A regular file must not be accessible to other users. Mutually exclusive with --token-env."),
 		tokenEnv:     fs.String("token-env", "", "NAME of an env var holding the bearer token (e.g. --token-env=ATTACH_TOKEN). Not the token itself — passing the secret on the command line is what this flag exists to avoid (#947)."),
 		legacyToken:  fs.String("token", "", "deprecated alias for --token-env; same meaning (the NAME of an env var), warns on use"),
 		authMode:     fs.String("auth", "bearer", "auth strategy for outbound attach requests. 'bearer' (default): send attach token in Authorization: Bearer — the direct-attach path. 'google-id-token' (recommended for Cloud Run IAM / IAP): mint a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamp Authorization + X-Attach-Token. End-user ADC requires service-account impersonation (gcloud auth application-default login --impersonate-service-account=...). 'google-oauth': uses OAuth access tokens via google.FindDefaultCredentials (matches MCP's pattern for Google APIs) — Cloud Run IAM rejects this in many deployments, prefer 'google-id-token' for the IAM/IAP case."),

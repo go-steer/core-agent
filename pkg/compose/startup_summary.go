@@ -358,7 +358,7 @@ func formatAuthLine(cfg *config.Config) string {
 	}
 	ms := cfg.Attach.MultiSession
 	if !ms.Enabled {
-		return "multi-session auth: disabled (single-user mode; use --attach-token for bearer auth)"
+		return "multi-session auth: disabled (single-user mode; use --attach-token-file or --attach-token for bearer auth)"
 	}
 	// Report the resolved Kind — empty string is bearer_table per
 	// MultiSessionAuthConfig contract.

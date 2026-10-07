@@ -222,8 +222,14 @@ func TestListenerAuthenticated(t *testing.T) {
 	if !listenerAuthenticated(Options{Auth: AuthConfig{BearerToken: "t"}}) {
 		t.Error("bearer token: want authenticated")
 	}
-	if !listenerAuthenticated(Options{Auth: AuthConfig{ClientCAFile: "/ca.pem"}}) {
+	if !listenerAuthenticated(Options{Auth: AuthConfig{ClientCAFile: "/ca.pem", TLSCertFile: "/tls.crt", TLSKeyFile: "/tls.key"}}) {
 		t.Error("mTLS client CA: want authenticated")
+	}
+	// Without a server cert LoadTLSConfig never reads the CA and Serve
+	// speaks plain HTTP: the CA gates nothing, so it must not satisfy
+	// the #376 non-loopback policy or the #1201 local one.
+	if listenerAuthenticated(Options{Auth: AuthConfig{ClientCAFile: "/ca.pem"}}) {
+		t.Error("client CA without TLS: want unauthenticated")
 	}
 	if !listenerAuthenticated(Options{MultiSessionEnabled: true}) {
 		t.Error("enforced multi-session: want authenticated")

@@ -219,9 +219,11 @@ func classifyTurnError(err error) TurnError {
 	//
 	// Retryable stays false: this classification does not itself drive
 	// a retry, and flipping it would make the runtime replay turns it
-	// has no evidence are replayable. Retrying such a turn once, so
-	// the runtime distinguishes the two readings instead of the
-	// operator, is #935.
+	// has no evidence are replayable. The Gemini adapter retries the
+	// bare form once itself, on a session that has already been served
+	// (#1247); one that reaches here after that retry leads with
+	// "provider retry persisted: ", and is classified exactly as if no
+	// retry had run (TestClassifyTurnError_Bare400IsClassifiedTheSameRetriedOrNot).
 	case containsAny(lower, "invalid_argument", "invalidargument") || code == "400":
 		return TurnError{
 			Kind:      TurnErrorConfig,

@@ -342,7 +342,20 @@ import "time"
 // toward the approver's task. core-agent-tui sends it so @-inlined file
 // content never does. A pre-1.18.0 daemon ignores it and counts the
 // whole message.
-const protocolVersion = "1.18.0"
+//
+// v1.19.0 (#1258): a per-turn guardrail trip and every turn error are
+// durable. Each one appends an eventlog row — `guardrail-turn-trip`
+// (Author=agent/guardrail-turn-trip) for a trip that did not halt the
+// session, the existing `guardrail-trip` row for one that did, and
+// `turn-error` (Author=agent/turn-error) for a turn error — so they
+// replay as ordinary `agent` frames from `?since=0` and reach a client
+// that attached late. The typed `guardrail-trip` and `turn-error`
+// frames gain an optional `event_id` naming that row, so a client that
+// receives both (it was attached when it happened) can count the
+// failure once. Additive and omitempty: a pre-1.19.0 daemon writes no
+// such rows and never sets the field, and the field is also absent
+// when the session has no eventlog to write to.
+const protocolVersion = "1.19.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -799,6 +812,13 @@ type TurnError struct {
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
 	Hint      string `json:"hint,omitempty"`
+
+	// EventID names the durable `turn-error` eventlog row that records
+	// this same error (v1.19.0, #1258). A client that saw this frame
+	// live will also receive the row as an `agent` frame; the shared id
+	// is how it counts the error once. Empty when nothing was persisted
+	// — no eventlog, or a classification that never reached the wire.
+	EventID string `json:"event_id,omitempty"`
 }
 
 // GuardrailTrip (v1.13.0, #891) reports that a guardrail halted the
@@ -852,6 +872,14 @@ type GuardrailTrip struct {
 	// Deliberately NOT omitempty. False is a real answer, and a client
 	// must not have to distinguish it from a field the daemon left out.
 	HaltedTurn bool `json:"halted_turn"`
+
+	// EventID names the durable eventlog row that records this trip
+	// (v1.19.0, #1258): the `guardrail-trip` halt row when the trip
+	// halted the session, the `guardrail-turn-trip` row when it did
+	// not. Same purpose as TurnError.EventID — one failure, counted
+	// once by a client that received both. Omitted when the session has
+	// no eventlog.
+	EventID string `json:"event_id,omitempty"`
 }
 
 // OperatorEventTarget is the optional capability a Registrant can

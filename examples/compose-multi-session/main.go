@@ -18,7 +18,8 @@
 // helpers:
 //
 //   - compose.BuildMultiSessionAuthn — bearer-table users.json ->
-//     per-request auth.Authenticator
+//     per-request auth.Authenticator; the rows store token_sha256
+//     (auth.HashToken), not the tokens
 //   - permissions.New + Gate.SetGrantStore(&permissions.ConfigGrantStore)
 //     — an "allow always" prompt answer persists into
 //     .agents/config.json (demonstrated with a scripted prompter)
@@ -52,6 +53,7 @@ import (
 	"github.com/glebarez/sqlite"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -99,14 +101,17 @@ func run() error {
 
 	// --- authn: bearer users table -> Authenticator -------------------
 
+	// The table stores only each token's SHA-256 (auth.HashToken, or
+	// `core-agent auth hash-token` from a shell), so reading it yields
+	// nothing that authenticates (#1213). The holders keep the tokens.
 	usersPath := filepath.Join(dir, "users.json")
 	usersJSON := fmt.Sprintf(`{
   "version": 1,
   "users": [
-    {"identity": "alice@example.com", "token": %q, "labels": {"team": "platform"}},
-    {"identity": "bob@example.com",   "token": %q, "labels": {"team": "infra"}}
+    {"identity": "alice@example.com", "token_sha256": %q, "labels": {"team": "platform"}},
+    {"identity": "bob@example.com",   "token_sha256": %q, "labels": {"team": "infra"}}
   ]
-}`, demoAliceToken, demoBobToken)
+}`, auth.HashToken(demoAliceToken), auth.HashToken(demoBobToken))
 	// 0600 is mandatory — the loader rejects laxer modes.
 	if err := os.WriteFile(usersPath, []byte(usersJSON), 0o600); err != nil {
 		return err
@@ -127,6 +132,10 @@ func run() error {
 		Prompter: allowAlwaysPrompter{},
 	})
 	gate.SetGrantStore(&permissions.ConfigGrantStore{AgentsDir: agentsDir})
+	// A gate built with permissions.New (not FromConfig) knows nothing
+	// about the bearer table. Register it, or the agent's file tools can
+	// read the tokens that answer its own prompts (#1201).
+	gate.ProtectCredentialFiles(usersPath)
 
 	// Demonstrate the persistence contract: an ask-mode check prompts,
 	// the scripted prompter answers "allow always", and the gate

@@ -129,7 +129,7 @@ func TestBuildAgentCardWireFormat(t *testing.T) {
 			},
 		},
 	}
-	auth := AuthConfig{ClientCAFile: "ca.pem", BearerToken: "abc"}
+	auth := AuthConfig{ClientCAFile: "ca.pem", TLSCertFile: "tls.crt", TLSKeyFile: "tls.key", BearerToken: "abc"}
 	card := buildAgentCard(cfg, reg, auth, "https://agent.prod.svc.cluster.local:7777")
 
 	var buf bytes.Buffer
@@ -177,9 +177,12 @@ func TestBuildAgentCard_SecuritySchemes(t *testing.T) {
 		wantReq  []string // expected keys present in security[0] (order ignored)
 	}{
 		{"no auth", AuthConfig{}, false, false, nil},
-		{"mtls only", AuthConfig{ClientCAFile: "ca.pem"}, true, false, []string{"mtls"}},
+		{"mtls only", AuthConfig{ClientCAFile: "ca.pem", TLSCertFile: "c", TLSKeyFile: "k"}, true, false, []string{"mtls"}},
+		// No server cert: the CA is never loaded and the listener is
+		// plain HTTP, so advertising mutualTLS would be a false claim.
+		{"client CA without TLS", AuthConfig{ClientCAFile: "ca.pem"}, false, false, nil},
 		{"bearer only", AuthConfig{BearerToken: "t"}, false, true, []string{"bearer"}},
-		{"both", AuthConfig{ClientCAFile: "ca.pem", BearerToken: "t"}, true, true, []string{"mtls", "bearer"}},
+		{"both", AuthConfig{ClientCAFile: "ca.pem", TLSCertFile: "c", TLSKeyFile: "k", BearerToken: "t"}, true, true, []string{"mtls", "bearer"}},
 	}
 	for _, tc := range cases {
 		tc := tc

@@ -198,6 +198,8 @@ if [[ "${LEG}" != "readonly" ]]; then
     fi
 else
     echo "→ posture: read-only (propose-only; no mutating call can reach the cluster)"
+    echo "    any gated-apply grant an earlier LEG=d1/d2 deploy left in ${TARGET_NS}"
+    echo "    is deleted after the apply, then verify-gated-apply.sh denied proves it"
 fi
 
 # ── Patch per-cluster values into the chosen overlay ─────────────────
@@ -556,6 +558,37 @@ kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" scale deploy/core-agent --re
 kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" delete pvc core-agent-session-db --ignore-not-found 2>/dev/null || true
 
 kubectl --context "${KUBE_CONTEXT}" apply -k "${APPLY_DIR}"
+
+# ── Read-only means the grant goes too (#1249) ───────────────────────
+# `kubectl apply -k` does not prune, so a read-only apply after a LEG=d1/d2
+# one leaves the gated-apply Role and RoleBinding standing in TARGET_NS:
+# a daemon whose config offers no patch tool, holding a patch grant
+# nothing in this output mentioned. Only teardown.sh used to remove it.
+#
+# THE ORDER IS: apply the read-only config, THEN revoke, BEFORE the
+# rollout waits.
+#   - After the apply, because the revoke is the call most likely to fail
+#     (TARGET_NS is a namespace this recipe does not own, so a 403 here is
+#     the expected failure). Failing after the apply leaves the daemon on
+#     the read-only config with a grant it has no tool to use, and the
+#     script stops naming it. Failing before would leave the
+#     apply-capable config in place and the read-only one never applied.
+#   - Before the rollout waits, because `rollout status` is the other
+#     likely failure (a timeout under `set -e`), and a slow rollout is no
+#     reason to leave the grant behind.
+# The d1/d2 legs never reach this: they apply the grant, through the
+# component, in the same `apply -k` as their config.
+if [[ "${LEG}" == "readonly" ]]; then
+    echo "→ read-only leg: removing any gated-apply grant left in ${TARGET_NS}"
+    revoke_gated_apply_grant || {
+        echo "✗ could not remove the gated-apply grant from ${TARGET_NS}."
+        echo "  The read-only config IS applied, but the daemon's identity may"
+        echo "  still be able to patch Deployments there. Delete it with an"
+        echo "  identity that has RBAC in ${TARGET_NS}, or run ./scripts/teardown.sh."
+        exit 1
+    }
+fi
+
 kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" rollout status deploy/core-agent --timeout=180s
 kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" rollout status deploy/lookout-watch --timeout=180s
 
@@ -680,6 +713,42 @@ if [[ "${OVERLAY}" == "example" ]]; then
     "${SCRIPT_DIR}/debug-pod.sh" check || {
         echo "✗ content-mount verification FAILED — the daemon may be up but"
         echo "  serving a broken mount. Inspect with: ./scripts/debug-pod.sh shell"
+        exit 1
+    }
+fi
+
+# A read-only deploy PROVES it is read-only, with the daemon's real token
+# rather than by inspecting what was applied: the revoke above exits 0 on
+# a name that does not exist (--ignore-not-found), and a grant applied by
+# hand under some other name is never touched by it. verify-gated-apply.sh
+# probes from a pod running as the daemon's ServiceAccount, so it measures
+# the authorization that actually exists. NOT best-effort, unlike the
+# Workload Identity check above: a read-only deploy whose daemon can patch
+# is not a deploy that succeeded.
+#
+# It can fail for reasons that are not a grant, and the message below
+# says so rather than blaming a Role for all of them. The probe needs the
+# daemon's IAM read grant (its opening GET must answer 404 — the probe's
+# own message names roles/container.viewer; grant-iam.sh binds the
+# recipe's gkeAgentClusterViewer copy of it), a pullable probe image, and
+# a pod that completes. A fresh namespace whose bindings the check above
+# reported missing fails here instead of only warning: an unproven
+# read-only claim is not one this script prints ✓ under.
+#
+# It checks TARGET_NS only. A grant left in a namespace that an EARLIER
+# run's TARGET_NS named is outside both the revoke and this probe.
+if [[ "${LEG}" == "readonly" ]]; then
+    echo "→ verifying the daemon cannot patch (verify-gated-apply.sh denied)"
+    "${SCRIPT_DIR}/verify-gated-apply.sh" denied || {
+        echo "✗ read-only boundary check FAILED — this deploy is NOT proven read-only."
+        echo "  Read the probe output above:"
+        echo "  - patch-target answered 404: the daemon can still patch Deployments in"
+        echo "    ${TARGET_NS}. Look for what grants it there:"
+        echo "      kubectl -n ${TARGET_NS} get role,rolebinding"
+        echo "  - the opening GET answered 403, or the probe pod never completed: that"
+        echo "    is IAM or the probe image (PROBE_IMAGE), not a grant. Run"
+        echo "    ./scripts/grant-iam.sh, wait a minute for IAM to propagate, then"
+        echo "    ./scripts/verify-gated-apply.sh denied"
         exit 1
     }
 fi

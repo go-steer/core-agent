@@ -53,9 +53,10 @@ func TestIsTransient(t *testing.T) {
 		{"typed 404", genai.APIError{Code: 404, Status: "NOT_FOUND"}, false},
 		{"typed 500", genai.APIError{Code: 500, Status: "INTERNAL"}, false},
 
-		// #898's empty-Details 400 is still a single occurrence across
-		// 38 archived runs and deliberately stays out. INVALID_ARGUMENT
-		// is the most overloaded answer Vertex gives.
+		// #898's empty-Details 400 stays out of THIS predicate: on its
+		// own it is indistinguishable from a malformed request. It is
+		// retried only after the session has been served, through
+		// IsBareInvalidArgument (#1247).
 		{"the #898 400", errors.New("Error 400, Message: Request contains an invalid argument., Status: INVALID_ARGUMENT, Details: []"), false},
 
 		// A status code on its own is not a discriminator. The drill

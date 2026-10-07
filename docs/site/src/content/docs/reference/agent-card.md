@@ -100,7 +100,7 @@ The card endpoint is **always unauthenticated**, even when the rest of the attac
 |---|---|---|
 | (none) | omitted | omitted |
 | `BearerToken` set | `{bearer: {type: "http", scheme: "Bearer"}}` | `[{bearer: []}]` |
-| `ClientCAFile` set | `{mtls: {type: "mutualTLS"}}` | `[{mtls: []}]` |
+| `ClientCAFile` set together with the TLS cert and key (a CA without TLS is never enforced, so it is not advertised) | `{mtls: {type: "mutualTLS"}}` | `[{mtls: []}]` |
 | both set | both schemes | `[{bearer: [], mtls: []}]` (AND — both required) |
 
 ## Registering with Google Cloud Agent Registry

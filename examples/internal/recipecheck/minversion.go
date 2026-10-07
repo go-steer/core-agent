@@ -281,6 +281,13 @@ var GatedFeatures = []GatedFeature{
 			"turned off, which at least fails in the safe direction",
 	},
 	{
+		Path: "attach.token_file",
+		Min:  "2.10.0-dev.2",
+		Why: "the file the attach bearer token is read from (#1201). An older daemon drops it and " +
+			"runs the listener with no token at all: a loopback one starts with only a log warning, " +
+			"and the agent's own bash can then answer its permission prompts over it",
+	},
+	{
 		Path: "agent.auto_continue",
 		Min:  "2.8.0",
 		Why:  "auto-continue of a restart-interrupted turn (#559); an older daemon ignores the block, including an explicit opt-out",

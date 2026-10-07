@@ -56,6 +56,21 @@ chmod 0600 /tmp/multi-session-bearer/users.json
 The loader **rejects** group- or world-readable users.json files at
 startup — `0600` (or stricter) is required.
 
+Both tables above store plaintext tokens, so the `jq` steps below can
+read them back. That's fine for local play, and the daemon warns about
+it at startup. For anything shared, store only each token's SHA-256 in
+`token_sha256`, so reading the table yields nothing that authenticates
+([#1213](https://github.com/go-steer/core-agent/issues/1213)):
+
+```bash
+ALICE_TOKEN=$(openssl rand -hex 32)   # alice keeps this; the table never sees it
+printf '{"identity": "alice@example.com", "token_sha256": "%s"}\n' \
+  "$(printf '%s' "$ALICE_TOKEN" | core-agent auth hash-token)"
+```
+
+[`dev/tools/gen-users-json`](../../dev/tools/gen-users-json) writes a
+whole hashed table and prints the tokens once.
+
 ### 2. Start the daemon
 
 ```bash
@@ -142,4 +157,5 @@ For just the bearer-table setup (no daemon spin-up), use
 [`dev/tools/gen-users-json`](../../dev/tools/gen-users-json) — it
 writes a fresh `users.json` at mode 0600 with random tokens for
 alice / bob / ops (override identities with `--users`, override path
-with `--output`).
+with `--output`). The file holds only `token_sha256` digests; the
+tokens are printed to stderr as `export NAME_TOKEN=...` lines.

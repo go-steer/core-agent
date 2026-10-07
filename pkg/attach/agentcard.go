@@ -379,7 +379,7 @@ func mergeSkills(curated, derived []AgentCardSkill) []skillWire {
 // both required, emits a single AND-combination in the security
 // array (middleware enforces both).
 func deriveSecurity(auth AuthConfig) (*securitySchemesWire, []map[string][]string) {
-	hasMTLS := auth.ClientCAFile != ""
+	hasMTLS := auth.mtlsEnforced()
 	hasBearer := auth.BearerToken != ""
 	if !hasMTLS && !hasBearer {
 		return nil, nil

@@ -1,0 +1,77 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# HTTPS out of the namespace, for each pod separately.
+#
+# The design wants the daemon to reach only Vertex and Google APIs, and
+# the dispatcher only GitHub. A standard NetworkPolicy cannot name a
+# host, and neither destination has a stable, small address range, so
+# these two policies are the closest the standard API gets: TCP 443 to
+# public addresses only. That shuts out the cluster's pods and Services,
+# the VPC, and the metadata server (which 21- opens to the daemon
+# alone), but not the rest of the internet.
+#
+# fqdn-egress/ replaces both with GKE FQDNNetworkPolicies that name the
+# hosts. Use it wherever the cluster supports it (README.md, "Egress").
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: core-agent-selfdev-daemon-https
+  namespace: core-agent-selfdev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: core-agent-selfdev
+      app.kubernetes.io/component: daemon
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: selfdev-soak-dispatcher-https
+  namespace: core-agent-selfdev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: core-agent-selfdev
+      app.kubernetes.io/component: dispatcher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

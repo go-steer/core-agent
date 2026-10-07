@@ -62,6 +62,7 @@ attach.shutdown_timeout
 attach.tls_cert
 attach.tls_key
 attach.token_env
+attach.token_file
 attach.unix_socket
 checkpoint.mode
 compaction.threshold

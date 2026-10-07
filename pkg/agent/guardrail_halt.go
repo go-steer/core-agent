@@ -74,16 +74,31 @@ import (
 // both shapes and not only the cut is deliberate — a session-scoped halt
 // at the turn boundary is equally invisible headless, and an operator
 // reading "the agent stopped taking turns" wants the same sentence.
-func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn bool) {
+//
+// The durable half is #1258, and it is here for the same reason the log
+// is: one site means a log line, a row and a frame per trip — never one
+// without the others, and never two rows for one trip. haltedSession
+// picks the row. A trip that halts the session writes the halt row
+// (#643), which is also what a restart restores. A trip that leaves the
+// session running writes a guardrail-turn-trip row, which nothing
+// restores. Before #1258 the second kind wrote nothing at all, and a
+// replay of the session showed a turn that just stopped. The typed frame
+// names the row (EventID) so a client that receives both counts one trip.
+func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn, haltedSession bool) {
 	if haltedTurn {
 		a.logGuardrailCut(guardrail, reason)
 	} else {
 		log.Printf("agent:%s %s guardrail tripped: %s", a.logSessionSuffix(), guardrail, reason)
 	}
+	row := attach.NewGuardrailTurnTripEvent(guardrail, reason, haltedTurn)
+	if haltedSession {
+		row = attach.NewGuardrailHaltEvent(guardrail, reason, haltedTurn)
+	}
 	a.emit(attach.EventGuardrailTrip, attach.GuardrailTrip{
 		Guardrail:  guardrail,
 		Reason:     reason,
 		HaltedTurn: haltedTurn,
+		EventID:    a.persistFailureRow(row),
 	})
 }
 
@@ -242,6 +257,10 @@ func (a *Agent) clearGuardrailHalt() {
 // It no longer has any say over which frame goes on the wire: since #891
 // the cut turn emits its `canceled` turn-error unconditionally, because
 // the trip that caused it is reported separately and non-terminally.
+// The same answer is recorded as `cut_by` on the turn's durable
+// turn-error row (#1258), which is the only place a reader of the
+// transcript can learn that a `canceled` turn was a guardrail's doing
+// when no guardrail-trip precedes it — the refusal-storm cut.
 func (a *Agent) consumeGuardrailHalt(turnErr error) string {
 	if a == nil {
 		return ""

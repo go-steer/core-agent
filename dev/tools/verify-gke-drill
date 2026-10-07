@@ -22,21 +22,28 @@
 #                 fake kubectl, curl and gcloud
 #   boundary_dryrun.sh
 #                 box A6's boundary.sh, driven end to end on the same fakes
+#   replay_dryrun.sh
+#                 box A2's replay_sessions.sh (#1258) on the same fakes,
+#                 graded with a2_count.py
+#   dev/uat/selfdev-soak/grade_a7_selftest.py
+#                 box A7's grader over a recorded passing run and a
+#                 doctored copy per way a run fails or is void; it
+#                 imports this drill's a2_count.py
 #
 # The drill is the instrument v2.9 is measured with, and until now
 # nothing checked it on a PR. A regression in it does not show up as a
 # red build, it shows up as a wasted cluster day — which is the scarcest
 # thing this project has.
 #
-# Needs bash, jq and python3. No credentials, no network, no cluster.
+# Needs bash, jq, python3 and git. No credentials, no network, no cluster.
 set -euo pipefail
 
 ROOT=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )/../.." &> /dev/null && pwd )
 DRILL="${ROOT}/dev/uat/gke-drill"
 
-for t in jq python3; do
+for t in jq python3 git; do
     command -v "${t}" >/dev/null 2>&1 || {
-        echo "✗ ${t} is not on PATH — verify-gke-drill needs jq and python3." >&2
+        echo "✗ ${t} is not on PATH — verify-gke-drill needs jq, python3 and git." >&2
         exit 1
     }
 done
@@ -44,3 +51,5 @@ done
 "${DRILL}/selftest.sh"
 "${DRILL}/dryrun.sh"
 "${DRILL}/boundary_dryrun.sh"
+"${DRILL}/replay_dryrun.sh"
+python3 -B "${ROOT}/dev/uat/selfdev-soak/grade_a7_selftest.py"

@@ -1,0 +1,26 @@
+2026-10-07T17:25:40.000000000Z core-agent: child processes do not inherit SOAK_SWITCHBOARD_TOKEN, SOAK_SWITCHBOARD_URL
+2026-10-07T17:25:40.001000000Z core-agent: plan mode: required (permissions.plan_mode config) — mutating tools are denied until the model calls record_plan
+2026-10-07T17:25:40.002000000Z core-agent: agent tools may not read or write /etc/core-agent-auth/users.json (credential files)
+2026-10-07T17:25:40.003000000Z core-agent: warning: credential file /etc/core-agent-auth/users.json is readable by the user this daemon runs as, and so by the agent's bash, which runs as the same user. The gate refuses bash commands that name it directly, but a shell can reach it by other names; only the operating system can keep it out of bash. Disable the bash tool on this daemon, or arrange that this user cannot read the file once the daemon has loaded it (#1201)
+2026-10-07T17:25:40.004000000Z core-agent: config: source=/etc/core-agent-soak/config.json (via -c)
+2026-10-07T17:25:40.005000000Z core-agent: agentsDir: /etc/core-agent-soak (derived from filepath.Dir(-c))
+2026-10-07T17:25:40.006000000Z core-agent: instruction: no AGENTS.md found (searched: /home/user/.core-agent/AGENTS.md, /home/user/.agents/AGENTS.md, /etc/AGENTS.md, /etc/CLAUDE.md, /etc/GEMINI.md). Model will run without user instructions.
+2026-10-07T17:25:40.007000000Z core-agent: model: echo provider=echo
+2026-10-07T17:25:40.008000000Z core-agent: mcp: 0 servers loaded
+2026-10-07T17:25:40.009000000Z core-agent: skills: 0 loaded
+2026-10-07T17:25:41.010000000Z core-agent: subagents: 0 configured
+2026-10-07T17:25:41.011000000Z core-agent: multi-session auth: bearer_table, 2 users, admin=[alice@example.com] proxy=[]
+2026-10-07T17:25:41.012000000Z core-agent: agentic subtasks: inherit parent (echo — no cheap-tier default for provider "echo")
+2026-10-07T17:25:41.013000000Z core-agent: compaction: fires at 0.85 of echo's assumed 128000-token window = 108800 tokens (no catalogued window size for this model)
+2026-10-07T17:25:41.014000000Z core-agent: cost ceiling: per-turn=$10.0000 per-session=$25.0000 [session ceiling from agent.max_session_cost_usd config] (refuses new turns when exceeded; clear with /guardrail reset, or POST /sessions/{id}/guardrails/reset — a per-session trip needs +budget)
+2026-10-07T17:25:41.015000000Z core-agent: watchdog: enforce mode [safety.watchdog config] (observes tool-call stream; logs structured alerts on runaway patterns; injects the observation into the model's next turn; halts the turn in flight and refuses new ones until cleared with /guardrail reset, or POST /sessions/{id}/guardrails/reset)
+2026-10-07T17:25:41.016000000Z core-agent: bash search gate: enforce (bash ack/ag/egrep/fd/fgrep/find/grep/rg/rgrep refused; use the native glob/grep tools. --bash-search-gate=allow to disable)
+2026-10-07T17:25:41.017000000Z core-agent: checkpoint: model [default] (mark_task_done + /done + the heuristic. --checkpoint=operator withholds the model's trigger on a long-lived service)
+2026-10-07T17:25:41.018000000Z core-agent: session db: /var/lib/core-agent/sessions.db
+2026-10-07T17:25:41.019000000Z core-agent: auto_continue on by default (multi-session/--no-repl + durable eventlog); set agent.auto_continue.enabled=false to opt out
+2026-10-07T17:25:42.020000000Z core-agent: unanswered permission prompts will be announced on alert target "maintainer-chat"
+2026-10-07T17:25:42.021000000Z core-agent: ...including prompts an attached client leaves unanswered for 5m
+2026-10-07T17:25:42.022000000Z core-agent: attach listener on 127.0.0.1:18778
+2026-10-07T17:25:42.023000000Z core-agent: mcp digest store: bound EventlogStore for session default (retrieve_raw enabled)
+2026-10-07T17:25:42.024000000Z core-agent: --no-repl: attach-only mode, session default (Ctrl-C or SIGTERM to exit)
+2026-10-07T17:25:42.025000000Z core-agent: session created (owner=sa:selfdev-dispatcher, id=01a11766-4f76-7286-bda1-b312d42683c6)

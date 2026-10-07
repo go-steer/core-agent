@@ -1585,6 +1585,15 @@ type AttachConfig struct {
 	// clients must present. The secret itself never lives in config.
 	TokenEnv string `json:"token_env,omitempty"`
 
+	// TokenFile is the path of a file holding the bearer token, read
+	// once at startup (#1201). Unlike TokenEnv the token never sits in
+	// any process environment — not the daemon's, and not the shell that
+	// launched it. Mutually exclusive with TokenEnv. A regular file must
+	// not be accessible to other users; the daemon never deletes it, so
+	// it is out of the agent's reach only if the agent cannot read the
+	// path (a FIFO or process substitution leaves nothing to read).
+	TokenFile string `json:"token_file,omitempty"`
+
 	// ReadOnly disables POST /inject and /wake; read endpoints stay open.
 	ReadOnly bool `json:"readonly,omitempty"`
 

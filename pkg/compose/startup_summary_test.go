@@ -24,6 +24,7 @@ import (
 	"google.golang.org/adk/agent"
 	adktool "google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
@@ -446,10 +447,32 @@ func TestFormatAuthLine(t *testing.T) {
 			},
 			wantSubstr: []string{
 				"multi-session auth: bearer_table",
-				"3 users",
+				"3 users (3 with a plaintext token)",
 				"admin=[sre@example.com]",
 				"proxy=[sa:bot]",
 			},
+		},
+		{
+			// #1213: a hashed table has nothing to flag.
+			name: "enabled with a hashed users file",
+			cfg: &config.Config{
+				Attach: config.AttachConfig{
+					MultiSession: config.MultiSessionConfig{Enabled: true},
+				},
+			},
+			writeUsers: func(t *testing.T, dir string) string {
+				t.Helper()
+				path := filepath.Join(dir, "users.json")
+				body := `{"version":1,"users":[
+					{"identity":"sre@example.com","token_sha256":"` + auth.HashToken("tok-sre") + `"},
+					{"identity":"sa:bot","token_sha256":"` + auth.HashToken("tok-bot") + `"}
+				]}`
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			wantSubstr: []string{"multi-session auth: bearer_table, 2 users, admin=[]"},
 		},
 		{
 			name: "enabled but no table file — user count unknown",
@@ -563,7 +586,7 @@ func TestFormatStartupSummary(t *testing.T) {
 		"mcp: 2 server(s) loaded — broken(failed), gke(ok) [1 failed — see 'core-agent: mcp:' error lines above]",
 		"skills: 1 loaded — k8s-triage",
 		"subagents: 1 configured — cluster (root=../cluster)",
-		"multi-session auth: disabled (single-user mode; use --attach-token for bearer auth)",
+		"multi-session auth: disabled (single-user mode; use --attach-token-file or --attach-token for bearer auth)",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d lines, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))

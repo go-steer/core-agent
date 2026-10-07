@@ -51,6 +51,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
@@ -283,6 +284,11 @@ type Agent struct {
 	streaming      adkagent.StreamingMode
 	appName        string
 	agentName      string
+	// priorSuccess is marked once a model call in this session has
+	// succeeded, and rides every turn's context so the provider's retry
+	// policy can see it (#1247; prior_success.go). Nil on
+	// hand-constructed Agents, which is valid and never succeeded.
+	priorSuccess *models.PriorSuccess
 	// invocationHist + toolInstrumenter are the #338 gen_ai.*
 	// instruments; both are non-nil after New (noop-backed when
 	// metrics are off; nil only on hand-constructed Agents, which
@@ -459,6 +465,13 @@ type Agent struct {
 	// See guardrail_persist.go.
 	pendingOutOfBandEvents []*session.Event
 	guardrailRestored      bool
+	// outOfBandDrainMu serializes drainOutOfBandEvents end to end, so
+	// two drains racing (an operator's reset on an HTTP goroutine and
+	// a turn's cleanup) append in queue order. #1258's rows are read
+	// back in order — a replayed trip arms core-tui's absorb of the
+	// `canceled` that follows it — so a reversed pair is a wrong
+	// rendering, not just an untidy log. Never held with a.mu.
+	outOfBandDrainMu sync.Mutex
 
 	// guardrailHaltKind names the guardrail that cut the turn now in
 	// flight (a turn-error kind; empty = none), so Run's cleanup
@@ -1161,6 +1174,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		streaming:            o.streaming,
 		appName:              o.appName,
 		agentName:            o.name,
+		priorSuccess:         models.NewPriorSuccess(),
 		description:          o.description,
 		userID:               o.userID,
 		sessionID:            o.sessionID,
@@ -1567,6 +1581,11 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	if err := a.runPreTurn(tp, preTurnSteps); err != nil {
 		return func(yield func(*session.Event, error) bool) {
 			a.recordInvocation(0, err)
+			// A refused turn is a turn error the driver logs, so it
+			// gets a transcript row too (#1258). Still no frame: the
+			// refusal never opened a turn, so there is nothing for a
+			// terminal frame to terminate.
+			a.recordTurnError(attach.ClassifyTurnError(err), "", "")
 			yield(nil, err)
 		}
 	}
@@ -1633,6 +1652,10 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// permissions.WithSessionGate(nil) is a no-op so the guard is
 	// covered by the helper.
 	runCtx = permissions.WithSessionGate(runCtx, a.gate)
+	// This session's record of a served model call (#1247), for the
+	// provider's retry policy. Always installed, even nil, so a Run
+	// nested under another agent's turn never reads that agent's.
+	runCtx = models.WithPriorSuccess(runCtx, a.priorSuccess)
 	// And the auto-mode approver's view of this turn (#1175): the
 	// operator's task, the turn's earlier calls, the bill and the
 	// audit. Only with an approver wired; without it the gate never
@@ -1694,6 +1717,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			if err != nil {
 				turnErr = err
 			}
+			// A served model call licenses the provider's retry of an
+			// ambiguous rejection later in this session (#1247).
+			markIfServed(a.priorSuccess, ev, err)
 			// The approver's record of earlier calls: a call is
 			// pending until its result arrives. Nil-safe.
 			approverTurn.observe(ev)
@@ -1804,10 +1830,21 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// The approver's verdicts (#1175 decision 10), same window and
 		// same reasoning.
 		approverTurn.drainAudits()
-		// Durable guardrail rows (#643) for anything the two hooks
-		// above just tripped. Same window and same reasoning as the
-		// interrupt audit: the stream has drained and runCtx is
-		// cancelled, so this write can't race the runner.
+		// The turn error's durable row (#1258), queued before the drain
+		// below so it lands in the log before the typed frame goes out:
+		// the terminal barrier then delivers the row to every attached
+		// client ahead of the frame that names it. The guardrail marker
+		// is consumed here, not beside the metric, because the row
+		// records which guardrail cut the turn (cut_by).
+		guardrailHalt := a.consumeGuardrailHalt(turnErr)
+		var turnError attach.TurnError
+		if turnErr != nil {
+			turnError = a.recordTurnError(attach.ClassifyTurnError(turnErr), promptID, guardrailHalt)
+		}
+		// Durable guardrail rows (#643, #1258) for anything the hooks
+		// above just tripped, and the turn-error row. Same window and
+		// same reasoning as the interrupt audit: the stream has drained
+		// and runCtx is cancelled, so this write can't race the runner.
 		a.drainOutOfBandEvents()
 		if a.onTurnEnd != nil {
 			a.onTurnEnd()
@@ -1835,7 +1872,6 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// here — exemplar linkage is lost for this instrument;
 		// acceptable, the terminal SSE event carries prompt_id for
 		// correlation.
-		guardrailHalt := a.consumeGuardrailHalt(turnErr)
 		if guardrailHalt != "" {
 			// error.type says which guardrail, not `canceled`: the
 			// cancel is how the halt was carried out, not what
@@ -1847,7 +1883,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 
 		switch {
 		case turnErr != nil:
-			a.emit(attach.EventTurnError, attach.ClassifyTurnError(turnErr))
+			a.emit(attach.EventTurnError, turnError)
 		default:
 			a.emit(attach.EventTurnComplete, attach.TurnComplete{
 				PromptID:  promptID,
@@ -1983,6 +2019,10 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		cancelGen := a.setCancelInFlight(cancel)
 		defer cancel()
 		defer a.clearCancelInFlight(cancelGen)
+		// No served call precedes this one: the session was created
+		// above. Shadow any record inherited from a caller's turn, so a
+		// bare 400 here is never retried (#1247).
+		runCtx = models.WithPriorSuccess(runCtx, nil)
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {

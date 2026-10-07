@@ -334,8 +334,20 @@ Two things it refuses rather than guesses:
 Afterwards, `git status` is dirty — the RBAC's coordinates and, on `d2`, the
 `-c` value are substituted into tracked files. Revert
 `deploy/components/gated-apply/` before committing or running `go test`. The
-RBAC lives in `TARGET_NS`, so `teardown.sh` is what removes it; deleting the
-agent's namespace does not.
+RBAC lives in `TARGET_NS`, so deleting the agent's namespace does not remove
+it, and neither does applying a read-only overlay over it (`kubectl apply`
+does not prune). Two things do: `teardown.sh`, and switching back with
+`LEG=readonly ./scripts/set-up-demo.sh`. A read-only deploy deletes the
+`Role`/`RoleBinding` once the read-only config is applied, then runs
+`./scripts/verify-gated-apply.sh denied` as one of its checks, so a daemon
+that can still patch fails the deploy instead of passing quietly. That
+probe runs a pod from `curlimages/curl` (override with `PROBE_IMAGE` on a
+cluster that cannot pull it) and needs the daemon's IAM read grant, so a
+read-only deploy into a namespace without its Workload Identity bindings
+now fails there rather than only warning: run `./scripts/grant-iam.sh`,
+wait a minute, and re-run. Both the delete and the probe address the
+current `TARGET_NS`; switch legs before you change it, or delete a grant in
+the old namespace yourself.
 
 Full reasoning, including the RBAC boundary as measured on a live cluster, is
 in [`deploy/components/gated-apply/README.md`](deploy/components/gated-apply/README.md).

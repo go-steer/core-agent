@@ -86,6 +86,8 @@ func main() {
 			os.Exit(runAttachSubcommand(os.Args[2:]))
 		case "ls":
 			os.Exit(runLsSubcommand(os.Args[2:]))
+		case "auth":
+			os.Exit(runAuthSubcommand(os.Args[2:]))
 		}
 	}
 
@@ -180,12 +182,14 @@ func main() {
 		contentDirEntries = append(contentDirEntries, s)
 		return nil
 	})
-	attachListen := flag.String("attach-listen", "", "enable attach-mode HTTP listener on this address (e.g. 127.0.0.1:7777). Requires --session-db. Non-loopback binds (:7777, 0.0.0.0:7777, ...) refuse to start without authentication — set --attach-token (or mTLS / enforced multi-session auth).")
-	attachUnixSocket := flag.String("attach-unix-socket", "", "enable attach-mode on a Unix socket at this path. Mutually exclusive with --attach-listen.")
+	attachListen := flag.String("attach-listen", "", "enable attach-mode HTTP listener on this address (e.g. 127.0.0.1:7777). Requires --session-db. Non-loopback binds (:7777, 0.0.0.0:7777, ...) refuse to start without authentication — set --attach-token-file or --attach-token (or mTLS / enforced multi-session auth). A loopback bind is refused too when the agent has the bash tool, unless --attach-allow-unauthenticated-local.")
+	attachUnixSocket := flag.String("attach-unix-socket", "", "enable attach-mode on a Unix socket at this path. Mutually exclusive with --attach-listen. Without a token (or mTLS / enforced multi-session auth) it is refused when the agent has the bash tool, unless --attach-allow-unauthenticated-local: the socket's 0600 mode does not stop the agent's own user.")
 	attachTLSCert := flag.String("attach-tls-cert", "", "TLS server certificate (PEM) for --attach-listen. Pair with --attach-tls-key.")
 	attachTLSKey := flag.String("attach-tls-key", "", "TLS server key (PEM) for --attach-listen.")
 	attachClientCA := flag.String("attach-client-ca", "", "CA PEM for client-cert verification (mTLS). When set, clients must present a cert signed by this CA.")
-	attachTokenEnv := flag.String("attach-token", "", "env var name holding the bearer token clients must present in Authorization: Bearer <token>. Empty disables bearer-token auth.")
+	attachTokenEnv := flag.String("attach-token", "", "env var name holding the bearer token clients must present in Authorization: Bearer <token>. Empty disables bearer-token auth. Mutually exclusive with --attach-token-file, which keeps the token out of every process environment.")
+	attachTokenFile := flag.String("attach-token-file", "", "read the bearer token clients must present from this file (or a pipe), once, at startup. Unlike --attach-token the token never sits in any process environment, including the shell that launched the daemon. A regular file must not be accessible to other users and is never deleted, so against the agent it is a credential only if the agent's user cannot read it; prefer a pipe, e.g. <(pass show attach | head -n1). Mutually exclusive with --attach-token.")
+	attachAllowUnauthLocal := flag.Bool("attach-allow-unauthenticated-local", false, "start a loopback or Unix-socket attach listener with no authentication even though the agent has the bash tool. Without this the daemon refuses: the agent's bash runs as this same user and could answer its own permission prompts over the listener. Prefer a token the agent cannot read, or --attach-readonly.")
 	attachReadonly := flag.Bool("attach-readonly", false, "attach-mode: disable POST /inject and /wake. Read endpoints (GET /sessions, GET /events) remain open.")
 	attachPeerHub := flag.Bool("attach-peer-hub", false, "enable peer-registration endpoints (POST/GET /peers + heartbeat) on the attach listener — this agent becomes a discovery hub for other peers.")
 	attachPeerStateFile := flag.String("attach-peer-state-file", "", "make the peer registry durable across restarts by snapshotting it to this JSONL file (requires --attach-peer-hub). Reloaded at startup, so a hub restart doesn't blank the fleet until every peer re-registers. Holds registration IDs: written 0600, put it on a volume that outlives the pod.")
@@ -284,6 +288,7 @@ func main() {
 			TLSKey:           *attachTLSKey,
 			ClientCA:         *attachClientCA,
 			TokenEnv:         *attachTokenEnv,
+			TokenFile:        *attachTokenFile,
 			ReadOnly:         *attachReadonly,
 			PeerHub:          *attachPeerHub,
 			PeerStateFile:    *attachPeerStateFile,
@@ -292,6 +297,8 @@ func main() {
 			RegisterEndpoint: *attachRegisterEndpoint,
 			UI:               *attachUI || *attachUIDir != "",
 			UIDir:            *attachUIDir,
+
+			AllowUnauthenticatedLocal: *attachAllowUnauthLocal,
 		},
 		agentCardOpts{
 			ConfigPath:       *agentCardConfigPath,
@@ -437,7 +444,16 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	overlayStr("attach-tls-cert", &opts.TLSCert, fromCfg.TLSCert)
 	overlayStr("attach-tls-key", &opts.TLSKey, fromCfg.TLSKey)
 	overlayStr("attach-client-ca", &opts.ClientCA, fromCfg.ClientCA)
+	// The token's two sources are one setting: naming either on the CLI
+	// replaces the config's choice of source, whichever field it used.
+	// Overlaying them independently would let a config token_env survive
+	// a CLI --attach-token-file and turn a deliberate override into a
+	// "mutually exclusive" startup error.
+	if setOnCLI["attach-token"] || setOnCLI["attach-token-file"] {
+		fromCfg.TokenEnv, fromCfg.TokenFile = "", ""
+	}
 	overlayStr("attach-token", &opts.TokenEnv, fromCfg.TokenEnv)
+	overlayStr("attach-token-file", &opts.TokenFile, fromCfg.TokenFile)
 	overlayBool("attach-readonly", &opts.ReadOnly, fromCfg.ReadOnly)
 	overlayBool("attach-peer-hub", &opts.PeerHub, fromCfg.PeerHub)
 	overlayStr("attach-peer-state-file", &opts.PeerStateFile, fromCfg.PeerStateFile)
@@ -548,6 +564,12 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 
 	attachCfg = mergeAttachOpts(attachCfg, cfg.Attach, flag.CommandLine)
 	withholdDaemonCredentials(cfg, attachCfg.TokenEnv, os.Stderr)
+	withholdCredentialFiles(cfg, attachCfg.TokenFile) // #1201: before the first instruction load below
+	attachToken, err := attachTokenIfUsed(attachCfg, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
 	if modelOverride != "" {
 		cfg.Model.Name = modelOverride
 	}
@@ -1157,6 +1179,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			}
 		}
 	}
+	// #1201 items 4+5: the first point where the gate's credential-file
+	// set and the bash toggle both exist; ahead of any tool call.
+	guardCredentialFiles(template, attachCfg.TokenFile, tools.BashRegistered(b), os.Stderr)
 
 	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
 		skills.WithHomeAgentsSkillsDir(homeAgentsDir),
@@ -2255,13 +2280,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			}
 		}
 
-		token := ""
-		if attachCfg.TokenEnv != "" {
-			token = os.Getenv(attachCfg.TokenEnv)
-			if token == "" {
-				fmt.Fprintf(os.Stderr, "core-agent: --attach-token=%s is empty in the environment\n", attachCfg.TokenEnv)
-				return runner.ExitConfigError
-			}
+		// Resolved once, at the top of run(), by resolveAttachToken.
+		token := attachToken
+		if attachCfg.TokenEnv != "" && token == "" {
+			fmt.Fprintf(os.Stderr, "core-agent: --attach-token=%s is empty in the environment\n", attachCfg.TokenEnv)
+			return runner.ExitConfigError
 		}
 		// A state file without a hub is a misconfiguration worth
 		// refusing rather than ignoring: the operator asked for
@@ -2484,7 +2507,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			}
 			attachShutdownTimeout = d
 		}
-		attachSrv, err := attach.NewServer(attach.Options{
+		attachOptions := attach.Options{
 			Registry:        attachReg,
 			PeerRegistry:    peerReg,
 			DaemonCtx:       ctx,
@@ -2510,9 +2533,16 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			Resumer:             sessionResumer,
 			SessionIdleTimeout:  sessionIdleTimeout,
 			HealthChecks:        daemonHealthChecks(eventlogHandle, loopHealth),
-		})
+		}
+		attachSrv, err := attach.NewServer(attachOptions)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)
+			return runner.ExitConfigError
+		}
+		// After NewServer, so a non-loopback bind is refused by its own
+		// #376 error first; before Bind, so nothing is ever served.
+		if err := checkLocalListenerAuth(attachOptions, hasToolNamed(builtinTools, "bash"), attachCfg.AllowUnauthenticatedLocal, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 			return runner.ExitConfigError
 		}
 		// Bind synchronously so port-in-use (or any other listener
@@ -2580,10 +2610,8 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			}
 		}
 		peerClientOpts := []attach.PeerClientOption{}
-		if attachCfg.TokenEnv != "" {
-			if tok := os.Getenv(attachCfg.TokenEnv); tok != "" {
-				peerClientOpts = append(peerClientOpts, attach.WithPeerBearerToken(tok))
-			}
+		if attachToken != "" {
+			peerClientOpts = append(peerClientOpts, attach.WithPeerBearerToken(attachToken))
 		}
 		peerClient := attach.NewPeerClient(attachCfg.RegisterTo, peerClientOpts...)
 		regCtx, regCancel := context.WithTimeout(ctx, 10*time.Second)

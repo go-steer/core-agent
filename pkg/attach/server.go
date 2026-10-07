@@ -69,7 +69,8 @@ type Options struct {
 	//
 	// Non-loopback addresses (including ":7777", "0.0.0.0:7777",
 	// "[::]:7777") require an authentication gate — Auth.BearerToken,
-	// mTLS via Auth.ClientCAFile, or MultiSessionEnabled with
+	// mTLS (Auth.ClientCAFile together with TLSCertFile/TLSKeyFile),
+	// or MultiSessionEnabled with
 	// AllowAnonymous=false — otherwise NewServer refuses to
 	// construct the server (#376).
 	Addr string
@@ -227,6 +228,16 @@ type Options struct {
 	HealthLog io.Writer
 }
 
+// Authenticated reports whether these Options put any credential gate
+// in front of the listener — the same predicate NewServer's #376
+// non-loopback policy uses. Exported so a host that knows more than this
+// package does can apply a stricter policy with the same definition of
+// "authenticated": cmd/core-agent refuses a token-less local listener
+// when the agent has a shell running as the listener's own user (#1201),
+// because loopback and socket-file permissions stop other users, not
+// that one.
+func (o Options) Authenticated() bool { return listenerAuthenticated(o) }
+
 // listenerAuthenticated reports whether the configured Options put
 // any credential gate in front of the TCP listener: a bearer token,
 // mTLS client-cert verification, or multi-session auth with anonymous
@@ -236,7 +247,7 @@ func listenerAuthenticated(opts Options) bool {
 	if opts.Auth.BearerToken != "" {
 		return true
 	}
-	if opts.Auth.ClientCAFile != "" {
+	if opts.Auth.mtlsEnforced() {
 		return true
 	}
 	return opts.MultiSessionEnabled && !opts.AllowAnonymous

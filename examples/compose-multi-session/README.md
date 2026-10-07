@@ -11,10 +11,21 @@ and then drives it over HTTP as two identities.
 
 - `compose.BuildMultiSessionAuthn` — a `users.json` bearer table
   (mode `0600` required) becomes the per-request `auth.Authenticator`.
+  Its rows store `token_sha256` (`auth.HashToken`), never the token
+  itself, so reading the table yields nothing that authenticates
+  ([#1213](https://github.com/go-steer/core-agent/issues/1213)).
 - `permissions.New` + `gate.SetGrantStore(&permissions.ConfigGrantStore{...})`
   — an ask-mode check prompts, a scripted prompter answers
   **allow always**, and the grant persists into
   `.agents/config.json` (`permissions.allow`), surviving restarts.
+- `gate.ProtectCredentialFiles(usersPath)`: a gate built with
+  `permissions.New` rather than `permissions.FromConfig` doesn't know
+  about the bearer table, so the example registers it. Without that
+  call, the agent's file tools could read the tokens that answer its
+  own permission prompts
+  ([#1201](https://github.com/go-steer/core-agent/issues/1201)).
+  `BuildMultiSessionAuthn` already keeps the table out of
+  `@include`.
 - `compose.SessionFactoryDeps` + `BuildSessionFactory` /
   `BuildSessionResumer` — `POST /sessions` mints a fresh agent per
   caller (own sub-gate, own tracker, own wake loop); the resumer

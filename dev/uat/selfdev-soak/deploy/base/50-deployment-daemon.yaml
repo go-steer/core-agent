@@ -1,0 +1,245 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The core-agent daemon the soak measures: `--no-repl --attach-listen`,
+# multi-session, permissions.mode auto, watchdog enforce, cost ceilings
+# (all but the listener come from the config overlay).
+#
+# One replica, Recreate: the eventlog and workspace are ReadWriteOnce,
+# and two daemons over one session database would both resume the same
+# sessions.
+#
+# The image is the soak image BY DIGEST (render.sh refuses anything
+# else); `image:` below is overwritten from inputs.env's SOAK_IMAGE.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-agent-selfdev
+  namespace: core-agent-selfdev
+  labels:
+    app.kubernetes.io/name: core-agent-selfdev
+    app.kubernetes.io/component: daemon
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: core-agent-selfdev
+      app.kubernetes.io/component: daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: core-agent-selfdev
+        app.kubernetes.io/component: daemon
+    spec:
+      serviceAccountName: core-agent-selfdev-daemon
+      automountServiceAccountToken: false
+      # Standard clusters: Workload Identity needs the GKE metadata
+      # server on the node. Uncomment if the cluster has node pools
+      # without it.
+      #
+      # nodeSelector:
+      #   iam.gke.io/gke-metadata-server-enabled: "true"
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        # The Go cache volume grows large; skip the recursive chown on
+        # every start once its root already has the right group.
+        fsGroupChangePolicy: OnRootMismatch
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      # The workspace PVC is ReadWriteOnce and the dispatcher's pod
+      # mounts it too (it requires this pod's node). When this pod is
+      # rescheduled while a dispatcher pod still runs (a config roll),
+      # prefer the dispatcher's node: elsewhere the volume cannot attach
+      # and this pod waits in ContainerCreating. Only a preference, so
+      # the daemon still schedules when no dispatcher runs. Stopping the
+      # dispatcher before rolling the daemon avoids the question.
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: core-agent-selfdev
+                    app.kubernetes.io/component: dispatcher
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        # The plans directory must exist, owned by uid 10001, before the
+        # kubelet mounts it into the recipe below as a subPath. A subPath
+        # the kubelet has to create itself is created by root and is not
+        # writable by the agent, and record_plan (plan_mode: required)
+        # would then fail every mutating call.
+        - name: plans-dir
+          image: REPLACED-BY-KUSTOMIZE-FROM-SOAK_IMAGE
+          imagePullPolicy: IfNotPresent
+          command: ["mkdir", "-p", "/workspace/.soak/plans"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      containers:
+        - name: core-agent
+          image: REPLACED-BY-KUSTOMIZE-FROM-SOAK_IMAGE
+          imagePullPolicy: IfNotPresent
+          # The entrypoint is `core-agent -c /etc/core-agent-soak/config.json`.
+          #
+          # --agents-dir is the recipe baked into the image from the same
+          # pinned ref as the binary (Dockerfile), read-only, so the
+          # agent cannot edit the instructions it runs under and no clone
+          # of the mirror has to exist for the daemon to boot. Its plans
+          # directory is the one writable spot, mounted below.
+          #
+          # No --attach-token / --attach-token-file. The listener is
+          # authenticated by multi-session auth against the HASHED
+          # users.json table (config overlay, attach.multi_session, with
+          # anonymous access off). A transport token would have to sit in
+          # this pod in plaintext, where the agent's bash runs as the same
+          # uid, and the dispatcher sends a single Authorization header,
+          # which cannot carry both credentials.
+          #
+          # --no-pricing-refresh: the cost ceilings price calls from the
+          # catalog built into the pinned binary. A refresh fetches from
+          # GitHub before the listener starts; fqdn-egress/ blocks that
+          # host, and every restart would stall on its 30s timeout.
+          args:
+            - "--agents-dir=/usr/local/share/core-agent-soak/recipe/.agents"
+            - "--no-repl"
+            - "--attach-listen=:7777"
+            - "--session-db-path=/var/lib/core-agent/sessions.db"
+            - "--no-pricing-refresh"
+          env:
+            - name: ANTHROPIC_VERTEX_PROJECT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: selfdev-soak-inputs
+                  key: SOAK_VERTEX_PROJECT
+            # Claude 5 is served only from the global Vertex endpoint.
+            - name: CLOUD_ML_REGION
+              value: global
+            # The maintainer-chat alert target. The daemon refuses to boot
+            # without both, because approval_notify names that target, and
+            # keeps both out of the agent's child processes.
+            - name: SOAK_SWITCHBOARD_URL
+              valueFrom:
+                secretKeyRef:
+                  name: core-agent-selfdev-switchboard
+                  key: url
+            - name: SOAK_SWITCHBOARD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: core-agent-selfdev-switchboard
+                  key: token
+          ports:
+            - name: attach
+              containerPort: 7777
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              memory: 8Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/core-agent-soak
+              readOnly: true
+            # The hashed bearer table, straight off its Secret, read-only
+            # (hashed-bearer-tokens design: the write route is closed by
+            # the mount, the read route by the hashing). A directory
+            # mount, not subPath, so a rotated Secret reaches the path on
+            # the next restart.
+            - name: users
+              mountPath: /etc/core-agent-users
+              readOnly: true
+            - name: eventlog
+              mountPath: /var/lib/core-agent
+            - name: workspace
+              mountPath: /workspace
+            - name: workspace
+              mountPath: /usr/local/share/core-agent-soak/recipe/.agents/plans
+              subPath: .soak/plans
+            - name: gocache
+              mountPath: /cache/go
+            # readOnlyRootFilesystem needs these two: go build works
+            # under /tmp, and git and the Go tools write under HOME.
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/soak
+          readinessProbe:
+            # /healthz is served ahead of auth.
+            httpGet:
+              path: /healthz
+              port: attach
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            # TCP, not /healthz: a degraded subsystem is a reason to stop
+            # routing, not to restart and drop the running session.
+            tcpSocket:
+              port: attach
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: config
+          configMap:
+            name: core-agent-selfdev-config
+            items:
+              - key: config.json
+                path: config.json
+        # fsGroup turns defaultMode 0400 into 0440 owned by gid 10001,
+        # which the bearer-table loader accepts (#944).
+        - name: users
+          secret:
+            secretName: core-agent-selfdev-users
+            defaultMode: 0400
+            items:
+              - key: users.json
+                path: users.json
+        - name: eventlog
+          persistentVolumeClaim:
+            claimName: core-agent-selfdev-eventlog
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: core-agent-selfdev-workspace
+        - name: gocache
+          persistentVolumeClaim:
+            claimName: core-agent-selfdev-gocache
+        - name: tmp
+          emptyDir:
+            sizeLimit: 10Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi

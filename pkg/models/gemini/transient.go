@@ -39,12 +39,14 @@ import (
 //
 // # What is deliberately excluded
 //
-// The empty-Details 400 INVALID_ARGUMENT from #898 is NOT here. It is
-// still a single observed occurrence across 38 archived runs, its cause
-// is unknown, and INVALID_ARGUMENT is the most overloaded answer Vertex
-// gives — vertexcache.IsCacheGone already has to carve one meaning out
-// of it and warns about exactly this. Retrying an unexplained 400 would
-// re-send a request the server has already said it cannot parse.
+// The empty-Details 400 INVALID_ARGUMENT from #898 is NOT here. On its
+// own it is indistinguishable from a request that is malformed, and
+// INVALID_ARGUMENT is the most overloaded answer Vertex gives —
+// vertexcache.IsCacheGone already has to carve one meaning out of it
+// and warns about exactly this. It is retried only once the session has
+// already been served, which this predicate cannot see; that is
+// IsBareInvalidArgument's job, wired as the policy's
+// IsTransientAfterSuccess (#1247).
 //
 // 500 INTERNAL is also excluded. It is retryable in principle, but it
 // has not appeared in the archive, and #935 asked for a conservative
@@ -100,4 +102,55 @@ func IsTransient(err error) bool {
 	s := err.Error()
 	return (strings.Contains(s, "429") && strings.Contains(s, "RESOURCE_EXHAUSTED")) ||
 		(strings.Contains(s, "503") && strings.Contains(s, "UNAVAILABLE"))
+}
+
+// bareInvalidArgumentMessage is the whole message of the 400 that #898
+// and #1247 recorded. Vertex sends it when it names nothing it could
+// not parse.
+const bareInvalidArgumentMessage = "Request contains an invalid argument."
+
+// bareInvalidArgumentText is how genai.APIError renders that 400 with
+// no details, for an error that reaches us without its type.
+const bareInvalidArgumentText = "Error 400, Message: " + bareInvalidArgumentMessage + ", Status: INVALID_ARGUMENT, Details: []"
+
+// IsBareInvalidArgument reports whether err is a Vertex 400
+// INVALID_ARGUMENT that names nothing: the generic message and no
+// details. Twice now — #898 on 2.9.0-dev.4 and #1247 on 2026-10-06 —
+// it arrived on a session whose previous call, under the same config
+// and model, had succeeded, and the session went on working afterwards.
+//
+// It is NOT a transient predicate on its own and must not be used as
+// IsTransient: a request that is malformed from its first call gets the
+// same answer. The policy consults it only as IsTransientAfterSuccess,
+// for a call whose session has already been served
+// (models.PriorSuccess), which is what rules out the request that was
+// malformed from the start. A history made malformed since that success
+// can still produce it, and then costs one retry before it surfaces.
+//
+// Three things must all hold, and each is a narrowing on purpose:
+//
+//   - code 400 with status INVALID_ARGUMENT, not just the code: a
+//     plain-text 400 carries the HTTP status line ("400 Bad Request");
+//   - no details: a 400 with field violations has said what is wrong;
+//   - the generic message, exactly: a 400 whose message names a
+//     parameter ("an empty text parameter", a function declaration's
+//     name) is saying what is wrong too, and an expired cache ("Cache
+//     content <id> is expired.") is vertexcache.IsCacheGone's.
+//
+// The typed check is tried first, and a typed error that fails it is a
+// definite no, as in IsTransient. The string fallback requires the
+// whole rendered error, "Details: []" included, so a 400 that carries
+// details cannot match it.
+func IsBareInvalidArgument(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr genai.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == 400 &&
+			apiErr.Status == "INVALID_ARGUMENT" &&
+			len(apiErr.Details) == 0 &&
+			strings.TrimSpace(apiErr.Message) == bareInvalidArgumentMessage
+	}
+	return strings.Contains(err.Error(), bareInvalidArgumentText)
 }

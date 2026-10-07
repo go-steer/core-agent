@@ -17,8 +17,10 @@ package compose
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +32,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
@@ -71,11 +74,10 @@ func BuildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 
 	switch cfg.Auth.Kind {
 	case "", config.MultiSessionAuthKindBearerTable:
-		users, err := auth.LoadUsersFile(cfg.Auth.TableFile)
+		authn, err := buildBearerTableAuthn(cfg, os.Stderr)
 		if err != nil {
-			return nil, defaultCaller, fmt.Errorf("load users file: %w", err)
+			return nil, defaultCaller, err
 		}
-		authn := auth.NewBearerTokenAuth(users.Users, cfg.AdminIdentities, cfg.ProxyIdentities)
 		return authn, defaultCaller, nil
 	default:
 		// Validation in config.Validate() should catch this earlier;
@@ -83,6 +85,39 @@ func BuildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 		// instead of a silent fallback.
 		return nil, defaultCaller, fmt.Errorf("unsupported auth.kind %q (only %q is shipped in this version)", cfg.Auth.Kind, config.MultiSessionAuthKindBearerTable)
 	}
+}
+
+// buildBearerTableAuthn loads the bearer table and builds its
+// Authenticator, writing the plaintext-token warning to warn when any
+// row still stores its token in the clear (#1213).
+func buildBearerTableAuthn(cfg config.MultiSessionConfig, warn io.Writer) (auth.Authenticator, error) {
+	// The instruction loader refuses withheld files; registering here
+	// covers a host that never calls permissions.FromConfig (#1201).
+	// The gate half needs the host's gate: FromConfig does it, and a
+	// host using permissions.New must call ProtectCredentialFiles.
+	childenv.WithholdFiles(cfg.Auth.TableFile)
+	users, err := auth.LoadUsersFile(cfg.Auth.TableFile)
+	if err != nil {
+		return nil, fmt.Errorf("load users file: %w", err)
+	}
+	if w := PlaintextTokenWarning(cfg.Auth.TableFile, users.PlaintextIdentities()); w != "" {
+		fmt.Fprintln(warn, w)
+	}
+	return auth.NewBearerTokenAuth(users.Users, cfg.AdminIdentities, cfg.ProxyIdentities), nil
+}
+
+// PlaintextTokenWarning returns the startup warning for a bearer table
+// whose rows for identities still store a plaintext "token", or "" when
+// there are none. It names identities, never a token: the warning goes
+// to the daemon log, which is the last place a credential belongs.
+func PlaintextTokenWarning(path string, identities []string) string {
+	if len(identities) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`core-agent: warning: users file %s stores a plaintext bearer token for: %s. `+
+		`Anyone who can read the file, including the agent's bash when it runs as this daemon's user, can authenticate with what it finds there. `+
+		`Replace each "token" with "token_sha256": printf '%%s' "$TOKEN" | core-agent auth hash-token (#1213)`,
+		path, strings.Join(identities, ", "))
 }
 
 // SessionFactoryDeps bundles the daemon-wide configuration the

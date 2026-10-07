@@ -26,6 +26,8 @@ follow their own convention — see "REST response fixtures" below.
 | `status-update-with-capabilities-v1.4.0.json` | `status-update` merge frame carrying an embedded `capabilities` hot-update | 1.4.0 |
 | `wake-v1.7.0.json` | `wake` — the agent's wake signal fired (`POST /wake`, or a host calling `Agent.RequestWake` on e.g. a background alert) | 1.7.0 |
 | `guardrail-trip-boundary-v1.13.0.json` | `guardrail-trip` — a guardrail halted the session; the boundary variant, which pins `halted_turn: false` | 1.13.0 |
+| `guardrail-trip-cut-v1.19.0.json` | `guardrail-trip` — a per-turn cut, with the `event_id` naming its durable `guardrail-turn-trip` row (#1258) | 1.19.0 |
+| `turn-error-v1.19.0.json` | `turn-error` — with the `event_id` naming its durable `turn-error` row (#1258) | 1.19.0 |
 
 `wake` is an *edge*, not a state: there is no matching "unwake" and
 nothing to reconcile on reconnect. The payload is only `at` because no
@@ -48,6 +50,15 @@ or nothing does when no turn was running. A consumer MUST NOT go on
 inferring the trip from the turn-error: since 1.13.0 the
 `cost_ceiling` and `watchdog` kinds appear only on a turn *refused* by
 an already-tripped guardrail, never on the turn that tripped it.
+
+Since 1.19.0 (#1258) both `guardrail-trip` and `turn-error` carry an
+optional `event_id`: the id of the eventlog row that records the same
+failure (`guardrail-trip` / `guardrail-turn-trip` / `turn-error`
+authored by `agent/…`). The row replays from `?since=0` as an `agent`
+frame; the typed frame does not. A client that was attached receives
+both and MUST count them as one failure; a client that attached later
+receives only the row. The field is absent when the session has no
+eventlog.
 
 ## REST response fixtures
 

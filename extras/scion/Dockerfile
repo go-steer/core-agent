@@ -113,6 +113,13 @@ COPY --from=builder /out/core-agent /usr/local/bin/core-agent
 # via `docker run --user`. Setting USER scion here would fight that
 # and force the harness to override.
 #
+# Root is safe here only because Docker's default capability set drops
+# CAP_SYS_PTRACE (from the bounding set too). In a privileged container
+# or with --cap-add SYS_PTRACE, a root daemon's children inherit it and
+# can read the daemon's memory and /proc entries despite its
+# non-dumpable flag; core-agent warns at startup when it holds a
+# credential in that posture (#1201). Prefer `--user scion`.
+#
 # Scion's harness ignores CMD anyway (it substitutes the whole
 # invocation from `command.base` in config.yaml) — CMD is a sensible
 # default for `docker run` outside Scion, drops into core-agent's

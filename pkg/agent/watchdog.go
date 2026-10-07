@@ -696,7 +696,8 @@ func (a *Agent) prependWatchdogFeedback(prompt string) string {
 // halts the session: sets watchdogTripped + watchdogReason, writes a
 // durable row, and every later turn is refused at preflight until an
 // operator resets. A ScopeTurn Critical ends its turn and nothing more
-// — no flag, no durable row — because the loop it names is inside the
+// — no flag, no halt row (a guardrail-turn-trip row records it, #1258,
+// and nothing restores that) — because the loop it names is inside the
 // turn and does not survive it, and because taking an unattended daemon
 // off the air for the rest of the night is a bigger consequence than
 // the behavior warrants.
@@ -785,13 +786,16 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert, haltedTurn bool) bool
 		// Durable halt (#643). This is the trip that most needs to survive
 		// a restart: a runaway loop that ends in an OOM kill is exactly the
 		// shape that would otherwise resume looping in the next pod. Only a
-		// halt is written; a turn-scoped cut has nothing to restore, and
-		// re-arming it in the next process would mean one cut turn refusing
-		// a session it never refused.
-		a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, reason))
+		// halt writes the halt row; a turn-scoped cut has nothing to
+		// restore, and re-arming it in the next process would mean one cut
+		// turn refusing a session it never refused, so its row (#1258) is a
+		// different kind the fold ignores.
 	}
 
-	a.emitGuardrailTrip(attach.GuardrailWatchdog, reason, haltedTurn)
+	// The durable row — the halt row when halt, a per-turn trip row
+	// otherwise (#1258) — is written by emitGuardrailTrip, so the log
+	// line, the row and the frame come from one site.
+	a.emitGuardrailTrip(attach.GuardrailWatchdog, reason, haltedTurn, halt)
 	return true
 }
 

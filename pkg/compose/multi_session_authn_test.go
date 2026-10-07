@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/childenv"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
@@ -271,5 +272,77 @@ func TestNewSessionID(t *testing.T) {
 	}
 	if v := ids[0][14]; v != '7' {
 		t.Errorf("UUID version nibble = %q, want '7' (v7 is what makes ids sortable)", v)
+	}
+}
+
+// A host that builds its gate with permissions.New never runs
+// FromConfig, so the instruction loader would not know the table. The
+// authn builder is the one place every bearer-table host passes
+// through, so it registers the table with the loader's process-wide
+// set (#1201).
+func TestBuildMultiSessionAuthn_WithholdsTheTableFromInstructionLoads(t *testing.T) {
+	t.Parallel()
+	cfg := config.MultiSessionConfig{Enabled: true}
+	cfg.Auth.TableFile = writeUsersFile(t)
+	if _, _, err := BuildMultiSessionAuthn(cfg); err != nil {
+		t.Fatalf("BuildMultiSessionAuthn: %v", err)
+	}
+	if !childenv.WithheldFile(cfg.Auth.TableFile) {
+		t.Error("the bearer table is not withheld from instruction loads after BuildMultiSessionAuthn")
+	}
+}
+
+// TestBuildBearerTableAuthn_WarnsOnPlaintextRows pins the #1213
+// compatibility decision: a legacy plaintext row still authenticates,
+// and startup warns naming its identity — and never its token.
+func TestBuildBearerTableAuthn_WarnsOnPlaintextRows(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "users.json")
+	body := `{"version":1,"users":[
+		{"identity":"sre@example.com","token_sha256":"` + auth.HashToken(sreToken) + `"},
+		{"identity":"sa:bot","token":"` + botToken + `"}
+	]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.MultiSessionConfig{Enabled: true}
+	cfg.Auth.TableFile = path
+
+	var warn strings.Builder
+	a, err := buildBearerTableAuthn(cfg, &warn)
+	if err != nil {
+		t.Fatalf("buildBearerTableAuthn: %v", err)
+	}
+	got := warn.String()
+	for _, want := range []string{"core-agent: warning: users file " + path, "plaintext bearer token for: sa:bot.", "token_sha256", "core-agent auth hash-token"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, botToken) || strings.Contains(got, "sre@example.com") {
+		t.Errorf("warning quotes a token or names a hashed row:\n%s", got)
+	}
+	for tok, want := range map[string]string{sreToken: "sre@example.com", botToken: "sa:bot"} {
+		if c, err := authenticate(t, a, tok); err != nil || c.Identity != want {
+			t.Errorf("token for %s = (%+v, %v)", want, c, err)
+		}
+	}
+}
+
+func TestBuildBearerTableAuthn_HashedTableIsQuiet(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "users.json")
+	body := `{"version":1,"users":[{"identity":"sre@example.com","token_sha256":"` + auth.HashToken(sreToken) + `"}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.MultiSessionConfig{Enabled: true}
+	cfg.Auth.TableFile = path
+	var warn strings.Builder
+	if _, err := buildBearerTableAuthn(cfg, &warn); err != nil {
+		t.Fatalf("buildBearerTableAuthn: %v", err)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("an all-hashed table warned:\n%s", warn.String())
 	}
 }

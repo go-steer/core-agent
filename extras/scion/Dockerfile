@@ -46,7 +46,7 @@ ARG BASE_IMAGE=scion-base:latest
 # Tracks the Go version go.mod pins us to (resolve_toolchain: the
 # `toolchain` directive when present, else the `go` directive); kept in
 # sync by dev/ci/presubmits/verify-go-toolchain.
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.26.9
 ARG BUILDPLATFORM=linux/amd64
 
 # ---- Builder stage ----

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -378,7 +379,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		all := make([]tool.Tool, 0, len(baseTools)+len(extraTools)+1)
 		all = append(all, baseTools...)
 		all = append(all, extraTools...)
-		all = append(all, newReportAlertTool(m, name))
+		all = append(all, newReportAlertTool(m, name, handle.noteAlert))
 		opts := make([]agent.Option, 0, len(instrOpts)+9)
 		opts = append(opts,
 			agent.WithAppName(parent.AppName()),
@@ -471,8 +472,14 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 			opts = append(opts, autonomous.WithPermissionsGate(m.gate))
 		}
 		if sched != nil {
-			opts = append(opts, autonomous.WithScheduler(sched))
+			opts = append(opts, autonomous.WithScheduler(sched), autonomous.WithScheduleHook(handle.setWake))
 		}
+		// Feeds Handle.LastReport while the run is live, so the roster
+		// row an operator sees has progress text before the subagent
+		// finishes (#1283).
+		opts = append(opts, autonomous.WithProgress(func(_ int, ev *session.Event) {
+			handle.noteModelEvent(ev)
+		}))
 		// Roll background subagent turns into the parent agent's usage
 		// tracker so /usage + /stats reflect the actual session cost,
 		// not just the parent conversation. Pricing is looked up per

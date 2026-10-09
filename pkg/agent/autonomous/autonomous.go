@@ -351,12 +351,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 			// crash mid-defer can resume to the right wake-time.
 			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev, haveSubstantive))
 
-			// Plumb the agent's wake channel through to the scheduler
-			// so SleepScheduler interrupts its sleep on an external
-			// wake (alert arrival, operator Inject, future attach-
-			// mode /wake).
-			schedCtx := coretools.ContextWithWake(ctx, a.WakeRequested())
-			serr := cfg.scheduler.BeforeNextTurn(schedCtx, ev)
+			serr := awaitScheduledWake(ctx, a, &cfg, ev)
 			switch {
 			case serr == nil:
 				// Scheduler honored the wait (or no wait was needed).
@@ -403,6 +398,27 @@ deferredExit:
 	result.Duration = time.Since(startedAt)
 	emitFinalCheckpoint(result.Reason)
 	return result, nil
+}
+
+// awaitScheduledWake hands a schedule intent to the scheduler, telling
+// the schedule hook (if any) that the wake is pending for exactly as
+// long as the scheduler holds the loop. Run and Resume both go through
+// here so the two loops cannot disagree about when a wake is pending.
+//
+// The clear is deferred, so it fires however the wait ends: the wake
+// arrived and the next turn is about to start, the scheduler deferred
+// and the run is exiting, or the context was cancelled. Each of those
+// means no wake is pending any more.
+func awaitScheduledWake(ctx context.Context, a *agent.Agent, cfg *autoConfig, ev coretools.ScheduleEvent) error {
+	if cfg.scheduleHook != nil {
+		cfg.scheduleHook(ev)
+		defer cfg.scheduleHook(coretools.ScheduleEvent{})
+	}
+	// Plumb the agent's wake channel through to the scheduler so
+	// SleepScheduler interrupts its sleep on an external wake (alert
+	// arrival, operator Inject, future attach-mode /wake).
+	schedCtx := coretools.ContextWithWake(ctx, a.WakeRequested())
+	return cfg.scheduler.BeforeNextTurn(schedCtx, ev)
 }
 
 // perTurnCheckpoint builds the payload for the checkpoint emitted
@@ -946,6 +962,7 @@ type autoConfig struct {
 	permissionsGate         *permissions.Gate
 	beforeTurn              func(ctx context.Context, turnNo int) error
 	scheduler               coretools.Scheduler
+	scheduleHook            func(coretools.ScheduleEvent)
 	maxDefer                time.Duration
 	scheduleToolName        string
 	scheduleToolDescription string
@@ -1176,6 +1193,22 @@ func WithPermissionsGate(g *permissions.Gate) Option {
 // picks up at the wake-time). See docs/scheduled-monitoring-design.md.
 func WithScheduler(s coretools.Scheduler) Option {
 	return func(c *autoConfig) { c.scheduler = s }
+}
+
+// WithScheduleHook installs cb to observe the loop's pending wake
+// without implementing a Scheduler. cb receives the schedule event
+// (WakeAt already clamped by WithMaxDefer) just before the scheduler
+// is consulted, and the zero ScheduleEvent once the scheduler returns,
+// however it returns. A zero WakeAt therefore means "no wake pending".
+//
+// cb runs on the loop's goroutine and must not block. It is only ever
+// called when WithScheduler is also set, and covers only waits a
+// schedule_next_turn call asked for: Resume's startup wait on a
+// checkpoint's next_wake_at does not go through the scheduler and is
+// not reported. Background subagents use it
+// to report a sleeping subagent's next wake on the roster (#1283).
+func WithScheduleHook(cb func(coretools.ScheduleEvent)) Option {
+	return func(c *autoConfig) { c.scheduleHook = cb }
 }
 
 // WithMaxDefer is a driver-level ceiling on how far in the future the

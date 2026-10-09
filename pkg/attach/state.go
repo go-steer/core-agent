@@ -93,13 +93,27 @@ const (
 // AgentInfo is one background subagent the parent agent knows about,
 // surfaced via GET /sessions/.../agents. Populated from the
 // BackgroundAgentManager when one is wired; empty list otherwise.
+//
+// LastReport is the returned result, else the final text, once the
+// subagent has finished; while it runs, its latest report_alert text,
+// or failing that its latest model message, cut to 1 KiB (protocol
+// 1.20.0, #1283).
+//
+// NextWakeAt and WakeDetail (protocol 1.20.0, #1283) are set only while
+// the subagent is sleeping between turns on a schedule_next_turn wake:
+// the time it will wake, and the one-line reason it gave. Status stays
+// "running" while it sleeps, because a new status word would read as
+// finished to clients that predate it. Both are absent otherwise, and
+// always absent from a pre-1.20.0 daemon.
 type AgentInfo struct {
 	ID              string    `json:"id"`
 	Name            string    `json:"name"`
 	Status          string    `json:"status"` // AgentStatus*: running | completed | failed | stopped | deferred
 	StartedAt       time.Time `json:"started_at"`
 	ParentSessionID string    `json:"parent_session_id,omitempty"`
-	LastReport      string    `json:"last_report,omitempty"` // most recent report body, truncated
+	LastReport      string    `json:"last_report,omitempty"` // see the type comment
+	NextWakeAt      time.Time `json:"next_wake_at,omitzero"`
+	WakeDetail      string    `json:"wake_detail,omitempty"`
 }
 
 // SubagentCatalogInfo is one CONFIGURED subagent in the roster surfaced

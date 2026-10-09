@@ -53,7 +53,7 @@ func TestSpawnTool_NameAndDescription(t *testing.T) {
 func TestReportTool_ConstructorsReturnNonNil(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
-	if newReportAlertTool(mgr, "x").Name() != "report_alert" {
+	if newReportAlertTool(mgr, "x", nil).Name() != "report_alert" {
 		t.Errorf("report_alert name mismatch")
 	}
 	// report_completed is no longer built here — it's an alias of the

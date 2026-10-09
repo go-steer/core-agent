@@ -1262,18 +1262,27 @@ func (a *coreAgentAdapter) Tools() []coretui.ToolInfo {
 // BackgroundHandle.Status — the manager keeps terminal handles in
 // the list until reaped, so the /subagents display reflects
 // post-completion state instead of always reading "running."
+//
+// LastReport is the handle's live report (#1283) — latest alert or
+// model message while running, the returned result once done — so the
+// running-tasks bar has progress text. A run error still wins: it is
+// the one thing an operator must see about a failed subagent.
 func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 	mgr := background.ManagerOf(a.inner)
 	if mgr == nil {
 		return nil
 	}
-	handles := mgr.List()
+	return subagentInfos(mgr.List())
+}
+
+func subagentInfos(handles []*background.Handle) []coretui.SubagentInfo {
 	out := make([]coretui.SubagentInfo, 0, len(handles))
 	for _, h := range handles {
 		entry := coretui.SubagentInfo{
-			Name:      h.Name,
-			Status:    h.Status().String(),
-			StartedAt: h.StartedAt,
+			Name:       h.Name,
+			Status:     h.Status().String(),
+			StartedAt:  h.StartedAt,
+			LastReport: h.LastReport(),
 		}
 		if errVal := h.Err(); errVal != nil {
 			entry.LastReport = errVal.Error()

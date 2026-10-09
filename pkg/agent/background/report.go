@@ -36,17 +36,22 @@ type reportResult struct {
 // newReportAlertTool builds a per-subagent report_alert tool. The
 // from argument is baked in so the manager's Alert.From identifies
 // which subagent reported, without the subagent's model having to
-// remember to include its own name in every call.
+// remember to include its own name in every call. onReport, when
+// non-nil, also receives each alert's text; spawn passes the handle's
+// recorder so the roster can show the latest one (#1283).
 //
 // Each report_alert call pushes an Alert onto the manager's channel
 // (drop-oldest backpressure if full). The parent's run loop drains
 // the channel before its next turn and prepends formatted alert
 // lines to the prompt the model sees.
-func newReportAlertTool(mgr *Manager, from string) tool.Tool {
+func newReportAlertTool(mgr *Manager, from string, onReport func(text string)) tool.Tool {
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "report_alert",
 		Description: "Send an alert back to the parent agent. The text is delivered to the parent agent before its next turn. Use for noteworthy findings or things the parent should react to.",
 	}, func(_ adkagent.ToolContext, args reportArgs) (reportResult, error) {
+		if onReport != nil {
+			onReport(args.Text)
+		}
 		mgr.pushAlert(Alert{
 			From:      from,
 			Text:      args.Text,

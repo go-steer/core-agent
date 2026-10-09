@@ -23,8 +23,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
@@ -178,6 +181,16 @@ type Handle struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	sync   syncClaim
+
+	// wake is the schedule event the subagent is sleeping on, zero when
+	// no wake is pending. Fed by the autonomous driver's schedule hook,
+	// which clears it as soon as the scheduler returns (#1283).
+	wake coretools.ScheduleEvent
+	// lastAlert and lastText back LastReport while the subagent runs:
+	// the text of its latest report_alert, and of its latest
+	// consolidated model message (#1283).
+	lastAlert string
+	lastText  string
 }
 
 // syncClaim tracks whether a spawn_agent {wait: true} caller is going
@@ -316,6 +329,101 @@ func (h *Handle) Result() *autonomous.RunResult {
 	}
 	r := *h.result
 	return &r
+}
+
+// PendingWake returns the wake the subagent is sleeping on, and false
+// when none is pending. Only a subagent spawned with a scheduler that
+// waits in-process (scheduler "sleep") ever has one; its Status stays
+// "running" while it sleeps (#1283).
+func (h *Handle) PendingWake() (coretools.ScheduleEvent, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.wake, !h.wake.WakeAt.IsZero()
+}
+
+func (h *Handle) setWake(ev coretools.ScheduleEvent) {
+	h.mu.Lock()
+	h.wake = ev
+	h.mu.Unlock()
+}
+
+// LastReport returns the text an operator surface should show as the
+// subagent's progress. Once the run has finished, what it handed back
+// through its return tool, else its final text. Until then, the latest
+// report_alert text, or failing that the latest model message, so a
+// running subagent's roster row is not blank (#1283).
+//
+// A finished run that left neither reports "": the live text described
+// work in progress, and pairing it with a terminal status would present
+// mid-run narration as the outcome.
+func (h *Handle) LastReport() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.result != nil {
+		if banked := bankedResult(h.result); banked != "" {
+			return banked
+		}
+		return h.result.FinalText
+	}
+	if h.lastAlert != "" {
+		return h.lastAlert
+	}
+	return h.lastText
+}
+
+// maxLiveReportBytes caps the live text LastReport carries. It rides on
+// every GET /agents row, which TUIs poll, and they show only the first
+// line of it anyway.
+const maxLiveReportBytes = 1024
+
+// clipLiveReport trims text and cuts it to maxLiveReportBytes without
+// splitting a UTF-8 sequence.
+func clipLiveReport(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= maxLiveReportBytes {
+		return text
+	}
+	cut := maxLiveReportBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "…"
+}
+
+func (h *Handle) noteAlert(text string) {
+	if text = clipLiveReport(text); text == "" {
+		return
+	}
+	h.mu.Lock()
+	h.lastAlert = text
+	h.mu.Unlock()
+}
+
+// noteModelEvent records the text of a consolidated model message.
+// Partials are skipped because ADK emits the consolidated event in both
+// streaming and non-streaming mode, and thoughts because they are not
+// what the subagent said.
+func (h *Handle) noteModelEvent(ev *session.Event) {
+	if ev == nil || ev.Partial || ev.Content == nil || ev.Content.Role != genai.RoleModel {
+		return
+	}
+	var b strings.Builder
+	for _, p := range ev.Content.Parts {
+		if p == nil || p.Thought || p.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(p.Text)
+	}
+	text := clipLiveReport(b.String())
+	if text == "" {
+		return
+	}
+	h.mu.Lock()
+	h.lastText = text
+	h.mu.Unlock()
 }
 
 // Err returns the terminal error if the subagent's RunAutonomous
@@ -1115,8 +1223,10 @@ func (m *Manager) ListSubagents() []attach.AgentInfo {
 			StartedAt:       h.StartedAt,
 			ParentSessionID: parentSessionID,
 		}
-		if r := h.Result(); r != nil && r.FinalText != "" {
-			ai.LastReport = r.FinalText
+		ai.LastReport = h.LastReport()
+		if wake, ok := h.PendingWake(); ok {
+			ai.NextWakeAt = wake.WakeAt
+			ai.WakeDetail = wake.Detail
 		}
 		out = append(out, ai)
 	}

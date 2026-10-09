@@ -689,6 +689,15 @@ A new `WithScheduleHook(func(ScheduleEvent))` option mirrors
 implementing a full `Scheduler`. Deferred unless a consumer asks —
 `WithProgress` should already cover it.
 
+*Shipped in #1283.* core-tui's running-tasks bar was the consumer
+that asked. `WithProgress` did not cover it: it shows the
+`schedule_next_turn` call, but not the clamped wake time, and no
+event on the stream marks the end of the sleep. The
+hook receives the event (after the `WithMaxDefer` clamp) just before
+the scheduler is consulted, and the zero `ScheduleEvent` once the
+scheduler returns, however it returns. Background subagents use it
+to put `next_wake_at` / `wake_detail` on `GET /agents`.
+
 ## Implementation sketch
 
 Files touched / added:

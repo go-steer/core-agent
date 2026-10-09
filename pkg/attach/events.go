@@ -355,7 +355,15 @@ import "time"
 // failure once. Additive and omitempty: a pre-1.19.0 daemon writes no
 // such rows and never sets the field, and the field is also absent
 // when the session has no eventlog to write to.
-const protocolVersion = "1.19.0"
+//
+// v1.20.0 (#1283): `GET /agents` rows gain `next_wake_at` and
+// `wake_detail`, set only while a subagent sleeps on a
+// schedule_next_turn wake; its `status` stays "running" meanwhile.
+// `last_report` is now filled while a subagent runs, from its latest
+// report_alert text or else its latest model message, instead of only
+// once it has finished. Additive: a pre-1.20.0 daemon never sets the
+// wake fields and leaves `last_report` empty until the subagent ends.
+const protocolVersion = "1.20.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

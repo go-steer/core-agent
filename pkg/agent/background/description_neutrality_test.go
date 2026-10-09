@@ -29,7 +29,7 @@ import (
 func TestBackgroundToolTextIsDeploymentNeutral(t *testing.T) {
 	t.Parallel()
 	mgr := &Manager{}
-	tools := append(NewSpawnTools(mgr), newReportAlertTool(mgr, "probe"))
+	tools := append(NewSpawnTools(mgr), newReportAlertTool(mgr, "probe", nil))
 	if len(tools) < 3 {
 		t.Fatalf("expected spawn_agent + stop_agent + report_alert, got %d", len(tools))
 	}

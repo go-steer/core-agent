@@ -21,7 +21,11 @@ seconds.
   `MODEL_PROVIDER=vertex MODEL_NAME=gemini-3.7-flash`, which needs
   `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` and ADC. For Claude on
   Vertex, use `MODEL_PROVIDER=anthropic-vertex MODEL_NAME=claude-haiku-4-5`
-  with `ANTHROPIC_VERTEX_PROJECT_ID` / `CLOUD_ML_REGION`. The config caps
+  with `ANTHROPIC_VERTEX_PROJECT_ID` / `CLOUD_ML_REGION`. Export them in
+  the shell you run `run.sh` from. The script passes them into its tmux
+  windows itself, because a window in an already-running tmux server
+  otherwise gets that server's environment, and it refuses to start if
+  the chosen provider's project variable is missing. The config caps
   the session at $3, and a full walk-through of both paths on Haiku cost
   about $0.08.
 

@@ -87,19 +87,53 @@ ensure_token() {
     fi
 }
 
+# Provider settings the daemon reads from its environment. A window
+# opened in an already-running tmux server inherits that SERVER's
+# environment, not this shell's, so a variable exported here after the
+# server started never reaches core-agent. They are passed with -e,
+# which also keeps them out of the command line echoed in the pane.
+MODEL_ENV_VARS=(
+    ANTHROPIC_VERTEX_PROJECT_ID CLOUD_ML_REGION ANTHROPIC_API_KEY
+    GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_LOCATION GOOGLE_GENAI_USE_VERTEXAI
+    GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_APPLICATION_CREDENTIALS
+)
+
+# require_model_env fails before anything starts when the chosen
+# provider's project variable is missing, instead of leaving a daemon
+# that died in a tmux pane.
+require_model_env() {
+    case "${MODEL_PROVIDER}" in
+        anthropic-vertex)
+            [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] \
+                || die "MODEL_PROVIDER=anthropic-vertex needs ANTHROPIC_VERTEX_PROJECT_ID (and usually CLOUD_ML_REGION) exported in this shell" ;;
+        vertex)
+            [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]] \
+                || die "MODEL_PROVIDER=vertex needs GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION exported in this shell (or use MODEL_PROVIDER=anthropic-vertex MODEL_NAME=claude-haiku-4-5)" ;;
+        anthropic)
+            [[ -n "${ANTHROPIC_API_KEY:-}" ]] || die "MODEL_PROVIDER=anthropic needs ANTHROPIC_API_KEY exported in this shell" ;;
+        gemini)
+            [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]] || die "MODEL_PROVIDER=gemini needs GEMINI_API_KEY exported in this shell" ;;
+    esac
+}
+
 tmux_window() {
-    local name="$1" cmd="$2"
+    local name="$1" cmd="$2" v
+    local env_args=()
+    for v in "${MODEL_ENV_VARS[@]}"; do
+        [[ -n "${!v:-}" ]] && env_args+=(-e "${v}=${!v}")
+    done
     if ! tmux has-session -t "${SESS}" 2>/dev/null; then
-        tmux new-session -d -s "${SESS}" -n "${name}"
+        tmux new-session -d -s "${SESS}" -n "${name}" "${env_args[@]}"
     else
         tmux kill-window -t "${SESS}:${name}" 2>/dev/null || true
-        tmux new-window -t "${SESS}" -n "${name}"
+        tmux new-window -t "${SESS}" -n "${name}" "${env_args[@]}"
     fi
     tmux send-keys -t "${SESS}:${name}" "${cmd}" C-m
 }
 
 cmd_local() {
     require tmux
+    require_model_env
     ensure_built
     setup_workdir local
     local dir="${UAT_ROOT}/local"
@@ -109,6 +143,7 @@ cmd_local() {
 
 cmd_headless() {
     require tmux curl jq
+    require_model_env
     ensure_built
     ensure_token
     setup_workdir headless

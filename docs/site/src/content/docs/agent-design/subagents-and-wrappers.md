@@ -305,7 +305,7 @@ Both get `return_result(result)` — registered under the aliases `report_done`,
 
 Bounded briefly shipped without the return tool, on the argument that one exit is simpler than two. Because bounded is the default, that left the alias net covering only the path models rarely take: a GKE triage subagent finished its analysis, called `mark_task_done`, and was told it had hallucinated the tool. Two exits are fine when they are ordered.
 
-Which one you get is derived from the scheduler: a subagent that can ask to be re-run later (`scheduler: "sleep"`, `"exit_on_defer"`, or a manager-level default scheduler) is standing; everything else is bounded. Embedders can override it explicitly with `Spec.Mode` / `SubagentTemplate.Mode` (`background.ModeBounded` / `background.ModeStanding`).
+Which one you get is derived from the scheduler: a subagent that can ask to be re-run later (`scheduler: "sleep"`, `"exit_on_defer"`, or a manager-level default scheduler) is standing; everything else is bounded. Embedders can override it explicitly with `Spec.Mode` / `SubagentTemplate.Mode` (`background.ModeBounded` / `background.ModeStanding`). For a subagent declared in config, set [`subagents[].scheduler`](/reference/configuration/) to `"sleep"`. That is the only way to get a standing worker on a `--no-repl` daemon, where ad-hoc spawns are off.
 
 Before v2.9 every spawn ran the standing loop, so a delegation that had already answered was re-driven with `"continue"` until its turn cap — running past its own answer and overwriting it each time. A GKE triage subagent produced a correct root cause and patch on turn 1, then spent six more turns scope-creeping and returned "standing by in a healthy, inactive state" to its parent, at ten times the cost of the correct answer.
 

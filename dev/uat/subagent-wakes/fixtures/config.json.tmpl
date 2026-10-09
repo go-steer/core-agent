@@ -17,7 +17,7 @@
   "subagents": [
     {
       "name": "cluster-watch",
-      "description": "Standing watcher for status.txt. Spawn it to keep an eye on the cluster status between operator turns.",
+      "description": "Standing watcher for status.txt: spawn it once, don't wait for it, and stop it with stop_agent. It reports status changes between operator turns.",
       "instructions": "@include ./cluster-watch.md",
       "tools": ["read_file"],
       "scheduler": "sleep",

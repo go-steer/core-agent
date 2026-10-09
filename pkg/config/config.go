@@ -1404,12 +1404,13 @@ type SubagentSpec struct {
 
 	// Scheduler picks the between-turn scheduler for a spawn_agent
 	// spawn of this subagent: "sleep" (sleep in-process until the wake
-	// the subagent asks for with schedule_next_turn), "exit_on_defer"
-	// (end the run with the wake recorded, for an orchestrator to
-	// restart), "none", or "default"/"" (the manager's default, which
-	// core-agent leaves unset). With a scheduler the subagent is a
-	// standing worker that loops until a budget or an explicit return;
-	// without one it finishes as soon as it stops calling tools.
+	// the subagent asks for with schedule_next_turn), "none", or
+	// "default"/"" (the manager's default, which core-agent leaves
+	// unset). With a scheduler the subagent is a standing worker that
+	// loops until a budget or an explicit return; without one it
+	// finishes as soon as it stops calling tools. The async budget
+	// defaults (10m wall-clock among them, sleep included) still apply,
+	// so a long-lived worker needs Budgets raised.
 	//
 	// It is the operator-vetted way to get a standing worker on a daemon
 	// started with --no-repl, where an ad-hoc spawn_agent can't pick a
@@ -2240,13 +2241,16 @@ func (c *Config) validateSubagents() error {
 		if sa.Root != "" && strings.TrimSpace(sa.Root) == "" {
 			return fmt.Errorf("config: subagents[%d].root is whitespace-only (omit it, or name a real directory)", i)
 		}
-		// The same set background.resolveScheduler accepts, checked here
-		// so a typo stops the daemon at boot instead of failing every
-		// spawn of this subagent later.
+		// Checked here so a typo stops the daemon at boot instead of
+		// failing every spawn of this subagent later. A subset of what
+		// background.resolveScheduler accepts: "exit_on_defer" is left
+		// out because nothing in the core-agent binary restarts a
+		// deferred background subagent, so the worker would end after
+		// one cycle while the parent is told its result arrives later.
 		switch sa.Scheduler {
-		case "", "default", "sleep", "exit_on_defer", "none":
+		case "", "default", "sleep", "none":
 		default:
-			return fmt.Errorf("config: subagents[%d].scheduler %q is unknown (want one of \"default\", \"sleep\", \"exit_on_defer\", \"none\")", i, sa.Scheduler)
+			return fmt.Errorf("config: subagents[%d].scheduler %q is unknown (want one of \"default\", \"sleep\", \"none\")", i, sa.Scheduler)
 		}
 		if b := sa.Budgets; b != nil {
 			// Negative is rejected rather than clamped: every dimension

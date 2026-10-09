@@ -44,7 +44,9 @@ The fixture declares two subagents:
   calls `schedule_next_turn` for `WAKE_SECS` (default 40) with a `detail`
   quoting the line. This field is what makes the headless path possible:
   ad-hoc spawns are off on a `--no-repl` daemon, so a declared scheduler
-  is the only way to get a standing worker there.
+  is the only way to get a standing worker there. Its `budgets` allow 30
+  minutes and 40 turns. Without them the async defaults would stop it at
+  10 minutes, sleep included.
 - **`quick-check`**: no scheduler. A bounded delegation that reads
   `status.txt` once and returns.
 

@@ -124,8 +124,12 @@ cmd_headless() {
     curl -fsS -o /dev/null -H "Authorization: Bearer $(cat "${TOKEN_FILE}")" "http://127.0.0.1:${PORT}/sessions" \
         || die "daemon never answered; see ${dir}/core-agent.log or the ${SESS}:daemon window"
     # Attach to the daemon's own session directly. The bare URL opens a
-    # picker whose cursor starts on "+ New session".
-    tmux_window tui "cd ${dir} && ${TUI_BIN} --token-file ${TOKEN_FILE} http://127.0.0.1:${PORT}/sessions/$(daemon_sid)"
+    # picker whose cursor starts on "+ New session". Assigned on its own
+    # line so a failed lookup stops the script (set -e ignores a failing
+    # command substitution inside another command's arguments).
+    local sid
+    sid="$(daemon_sid)"
+    tmux_window tui "cd ${dir} && ${TUI_BIN} --token-file ${TOKEN_FILE} http://127.0.0.1:${PORT}/sessions/${sid}"
     log "core-agent-tui is in tmux window ${SESS}:tui — tmux attach -t ${SESS}"
 }
 
@@ -154,7 +158,9 @@ cmd_poke() {
 cmd_agents() {
     require curl jq
     [[ -s "${TOKEN_FILE}" ]] || die "no headless daemon set up; run ./run.sh headless"
-    curl -fsS -H "$(daemon_auth)" "http://127.0.0.1:${PORT}/sessions/$(daemon_sid)/agents" | jq .
+    local sid
+    sid="$(daemon_sid)"
+    curl -fsS -H "$(daemon_auth)" "http://127.0.0.1:${PORT}/sessions/${sid}/agents" | jq .
 }
 
 cmd_status() {

@@ -9,7 +9,8 @@ Every turn, do exactly this:
    since your previous read.
 3. If its first line is `STOP`, call `return_result` with every status line
    you saw, in order, and stop.
-4. Otherwise call `schedule_next_turn` with `wake_in_sec` set to
+4. Unless you returned in step 3, call `schedule_next_turn`, including
+   on a turn where you sent an alert, with `wake_in_sec` set to
    @WAKE_SECS@ and a `detail` that quotes the first line, for example
    `watching status.txt: all nodes Ready`.
 

@@ -102,9 +102,11 @@ func TestValidate_Subagents(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// Valid for an ad-hoc spawn, refused here: nothing in the
+			// binary restarts a deferred background subagent.
 			name:    "scheduler exit_on_defer",
 			specs:   []SubagentSpec{{Name: "watch", Scheduler: "exit_on_defer"}},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name:    "scheduler none",

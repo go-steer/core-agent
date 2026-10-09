@@ -618,11 +618,14 @@ Budgets are the per-delegate complement to the session-wide ceilings: `--max-tur
 | Value | Between turns |
 |---|---|
 | `"sleep"` | Sleeps in-process until the wake it asked for. It appears on `GET /agents` with `next_wake_at` and `wake_detail`, and on the TUIs' running-tasks bar as a countdown. |
-| `"exit_on_defer"` | Ends the run with the wake recorded, for an orchestrator to restart. |
 | `"none"` | No scheduler: a bounded delegation, the same as omitting the field. |
 | `"default"` / omitted | The manager's default; the `core-agent` binary sets none. |
 
-This is the operator-vetted way to run a standing worker on a daemon started with `--no-repl`. Ad-hoc spawns are off there, so the model can't pick a scheduler itself. An unknown value is a startup error. The field applies only to `spawn_agent`: calling the subagent as a parent tool runs a single delegation, which has no turns to schedule between. Bound a standing worker with `budgets` (in particular `max_wallclock_seconds`), because it doesn't stop on its own. The startup line shows the setting: `subagent "cluster-watch": …, scheduler=sleep`.
+This is the operator-vetted way to run a standing worker on a daemon started with `--no-repl`. Ad-hoc spawns are off there, so the model can't pick a scheduler itself. Any other value is a startup error, including `"exit_on_defer"`: an ad-hoc spawn may still ask for it, but nothing in `core-agent` restarts a deferred background subagent, so a declared one would end after its first cycle. The field applies only to `spawn_agent`: calling the subagent as a parent tool runs a single delegation, which has no turns to schedule between. The startup line shows the setting: `subagent "cluster-watch": …, scheduler=sleep`.
+
+**Raise `budgets` for a worker meant to keep running.** Without a `budgets` block, a spawn gets the async defaults (50 turns / $1 / 10 minutes), and the wall-clock counts time spent asleep. A watcher that wakes every few minutes is therefore stopped after ten minutes with stop reason `budget`. Set `max_wallclock_seconds`, `max_turns` and `max_cost_usd` to the lifetime you want; there is no unlimited setting, because `0` means "use the default".
+
+**Tell the parent it's a standing worker.** The parent's model sees only `name` and `description`. A standing worker never finishes, so if the parent calls `spawn_agent { …, wait: true }`, its turn blocks until the sync-wait cap. It may also spawn a second watcher when one is already running. Say it in `description`, for example: *"Standing watcher: spawn once, don't wait, stop it with stop_agent."*
 
 ### REPL keybindings (v1.3.0+)
 

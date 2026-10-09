@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,9 +28,12 @@ import (
 // blockingPrompter never answers. It reports the context it was handed
 // so a test can assert what the gate told the prompter about why the
 // wait ended — the fact a broker needs to answer a late approver.
+// calls counts every prompt the gate opened, which is how a test tells
+// "refused without asking" from "asked again".
 type blockingPrompter struct {
 	gotCtx  chan context.Context
 	blocked chan struct{}
+	calls   atomic.Int32
 }
 
 func newBlockingPrompter() *blockingPrompter {
@@ -40,6 +44,7 @@ func newBlockingPrompter() *blockingPrompter {
 }
 
 func (p *blockingPrompter) AskApproval(ctx context.Context, _ PromptRequest) (Decision, error) {
+	p.calls.Add(1)
 	select {
 	case p.gotCtx <- ctx:
 	default:

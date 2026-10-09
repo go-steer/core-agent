@@ -1267,6 +1267,10 @@ func (a *coreAgentAdapter) Tools() []coretui.ToolInfo {
 // model message while running, the returned result once done — so the
 // running-tasks bar has progress text. A run error still wins: it is
 // the one thing an operator must see about a failed subagent.
+//
+// NextWakeAt / WakeDetail come from the handle's pending wake, set only
+// while the subagent sleeps on schedule_next_turn; the bar then counts
+// down to the wake instead of up from the start (core-tui v0.31.0).
 func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 	mgr := background.ManagerOf(a.inner)
 	if mgr == nil {
@@ -1286,6 +1290,10 @@ func subagentInfos(handles []*background.Handle) []coretui.SubagentInfo {
 		}
 		if errVal := h.Err(); errVal != nil {
 			entry.LastReport = errVal.Error()
+		}
+		if wake, ok := h.PendingWake(); ok {
+			entry.NextWakeAt = wake.WakeAt
+			entry.WakeDetail = wake.Detail
 		}
 		out = append(out, entry)
 	}

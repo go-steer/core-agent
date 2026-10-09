@@ -329,6 +329,12 @@ func (a *Adapter) refreshSubagents() {
 // subagentsToCoreTui projects an /agents response into core-tui's
 // roster shape. Always returns a non-nil slice so an empty roster
 // caches as "none running" rather than re-reading as a cold cache.
+//
+// The wake fields (protocol 1.20.0, #1283) need no version gate: a
+// pre-1.20.0 daemon never sends them, and zero means "no wake pending"
+// on both sides. Like Status, they are as stale as the roster cache: a
+// wake that already fired reads "waking" until the next refresh, since
+// core-tui never draws a negative countdown.
 func subagentsToCoreTui(infos []attach.AgentInfo) []coretui.SubagentInfo {
 	out := make([]coretui.SubagentInfo, 0, len(infos))
 	for _, ai := range infos {
@@ -337,6 +343,8 @@ func subagentsToCoreTui(infos []attach.AgentInfo) []coretui.SubagentInfo {
 			Status:     ai.Status,
 			LastReport: ai.LastReport,
 			StartedAt:  ai.StartedAt,
+			NextWakeAt: ai.NextWakeAt,
+			WakeDetail: ai.WakeDetail,
 		})
 	}
 	return out

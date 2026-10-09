@@ -48,10 +48,10 @@
 #   docker buildx imagetools inspect golang:<version>-bookworm
 #
 # dev/uat/selfdev-soak's Go test fails while they disagree.
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.26.9
 
 # ---- Builder stage: core-agent at the pinned ref ----
-FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS builder
+FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS builder
 
 ARG GO_VERSION
 # No default, on purpose: see the header. The RUN below is the guard.
@@ -166,7 +166,7 @@ RUN cd /src; \
 # ca-certificates, python3, gcc (for -race) and the Go toolchain, so one
 # digest pins everything the agent runs except jq. The test asserts the
 # two FROM lines are identical.
-FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36
+FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c
 
 # The builder stage has already proved this is the commit it built.
 ARG CORE_AGENT_COMMIT

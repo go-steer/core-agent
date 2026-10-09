@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # UAT driver for the subagent roster's live report and scheduled wakes
 # (#1283): the running-tasks bar in core-agent's in-process TUI, and in
 # core-agent-tui attached to a --no-repl daemon. See README.md.
@@ -94,7 +108,7 @@ cmd_local() {
 }
 
 cmd_headless() {
-    require tmux curl
+    require tmux curl jq
     ensure_built
     ensure_token
     setup_workdir headless
@@ -102,15 +116,26 @@ cmd_headless() {
     tmux_window daemon "cd ${dir} && ${BIN} -c ${dir}/.agents/config.json --no-repl --attach-listen 127.0.0.1:${PORT} --attach-token-file ${TOKEN_FILE} --session-db-path ${dir}/sessions.db --log-file ${dir}/core-agent.log"
     log "waiting for the daemon on 127.0.0.1:${PORT}"
     for _ in $(seq 1 60); do
-        if curl -fsS -o /dev/null -H "Authorization: Bearer $(cat "${TOKEN_FILE}")" "http://127.0.0.1:${PORT}/sessions"; then
+        if curl -fsS -o /dev/null -H "Authorization: Bearer $(cat "${TOKEN_FILE}")" "http://127.0.0.1:${PORT}/sessions" 2>/dev/null; then
             break
         fi
         sleep 0.5
     done
     curl -fsS -o /dev/null -H "Authorization: Bearer $(cat "${TOKEN_FILE}")" "http://127.0.0.1:${PORT}/sessions" \
         || die "daemon never answered; see ${dir}/core-agent.log or the ${SESS}:daemon window"
-    tmux_window tui "${TUI_BIN} --token-file ${TOKEN_FILE} http://127.0.0.1:${PORT}"
+    # Attach to the daemon's own session directly. The bare URL opens a
+    # picker whose cursor starts on "+ New session".
+    tmux_window tui "cd ${dir} && ${TUI_BIN} --token-file ${TOKEN_FILE} http://127.0.0.1:${PORT}/sessions/$(daemon_sid)"
     log "core-agent-tui is in tmux window ${SESS}:tui — tmux attach -t ${SESS}"
+}
+
+daemon_auth() { echo "Authorization: Bearer $(cat "${TOKEN_FILE}")"; }
+
+daemon_sid() {
+    local sid
+    sid="$(curl -fsS -H "$(daemon_auth)" "http://127.0.0.1:${PORT}/sessions" | jq -r '.sessions[0].sessionID // empty')"
+    [[ -n "${sid}" ]] || die "the daemon reports no session"
+    echo "${sid}"
 }
 
 cmd_poke() {
@@ -129,11 +154,7 @@ cmd_poke() {
 cmd_agents() {
     require curl jq
     [[ -s "${TOKEN_FILE}" ]] || die "no headless daemon set up; run ./run.sh headless"
-    local auth sid
-    auth="Authorization: Bearer $(cat "${TOKEN_FILE}")"
-    sid="$(curl -fsS -H "${auth}" "http://127.0.0.1:${PORT}/sessions" | jq -r '.sessions[0].sessionID // empty')"
-    [[ -n "${sid}" ]] || die "the daemon reports no session"
-    curl -fsS -H "${auth}" "http://127.0.0.1:${PORT}/sessions/${sid}/agents" | jq .
+    curl -fsS -H "$(daemon_auth)" "http://127.0.0.1:${PORT}/sessions/$(daemon_sid)/agents" | jq .
 }
 
 cmd_status() {
@@ -154,5 +175,5 @@ case "${1:-}" in
     agents) cmd_agents ;;
     status) cmd_status ;;
     clean) cmd_clean ;;
-    *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '16,33p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

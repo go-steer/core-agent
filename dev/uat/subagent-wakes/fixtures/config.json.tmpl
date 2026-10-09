@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "@MODEL_PROVIDER@",
+    "name": "@MODEL_NAME@"
+  },
+  "permissions": {
+    "mode": "yolo"
+  },
+  "agent": {
+    "display_name": "wakes-demo",
+    "max_session_cost_usd": 3.0
+  },
+  "tools": {
+    "disable": ["bash", "write_file", "edit_file", "delete_file", "fetch_url", "fetch_raw"]
+  },
+  "subagents": [
+    {
+      "name": "cluster-watch",
+      "description": "Standing watcher for status.txt. Spawn it to keep an eye on the cluster status between operator turns.",
+      "instructions": "@include ./cluster-watch.md",
+      "tools": ["read_file"],
+      "scheduler": "sleep",
+      "budgets": {
+        "max_turns": 40,
+        "max_cost_usd": 1.0,
+        "max_wallclock_seconds": 1800
+      }
+    },
+    {
+      "name": "quick-check",
+      "description": "One-shot read of status.txt. Spawn it for a single answer about the current status.",
+      "instructions": "Read status.txt with read_file, then call return_result with its first line and one sentence on whether anything in it needs attention. Do nothing else.",
+      "tools": ["read_file"],
+      "budgets": {
+        "max_turns": 4,
+        "max_cost_usd": 0.2
+      }
+    }
+  ]
+}

@@ -469,7 +469,14 @@ func buildDeclaredSubagents(
 			// manager's defaults (50 turns / $1 / 10m) in place via
 			// mergeBudgets; a per-spawn override may only tighten.
 			Budgets: asyncBudgets(spec.Budgets),
+			// Validated against the accepted set at config load; Mode is
+			// left empty so it derives from this (a scheduler makes a
+			// standing worker).
+			Scheduler: spec.Scheduler,
 		})
+		if spec.Scheduler != "" {
+			scopeDesc += ", scheduler=" + spec.Scheduler
+		}
 
 		if len(droppedTools) > 0 {
 			// Say out loud what inheritance withheld, so an operator who

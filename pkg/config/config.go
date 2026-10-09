@@ -1401,6 +1401,22 @@ type SubagentSpec struct {
 	// synchronous door stays unbounded, which is what it has always
 	// been. A per-spawn override may only tighten what is declared here.
 	Budgets *SubagentBudgets `json:"budgets,omitempty"`
+
+	// Scheduler picks the between-turn scheduler for a spawn_agent
+	// spawn of this subagent: "sleep" (sleep in-process until the wake
+	// the subagent asks for with schedule_next_turn), "exit_on_defer"
+	// (end the run with the wake recorded, for an orchestrator to
+	// restart), "none", or "default"/"" (the manager's default, which
+	// core-agent leaves unset). With a scheduler the subagent is a
+	// standing worker that loops until a budget or an explicit return;
+	// without one it finishes as soon as it stops calling tools.
+	//
+	// It is the operator-vetted way to get a standing worker on a daemon
+	// started with --no-repl, where an ad-hoc spawn_agent can't pick a
+	// scheduler because ad-hoc spawns are off. Only the spawn_agent door
+	// reads it: calling the subagent as a parent tool runs one
+	// delegation, which has no turns to schedule between.
+	Scheduler string `json:"scheduler,omitempty"`
 }
 
 // SubagentBudgets caps one delegation. Field names mirror spawn_agent's
@@ -2223,6 +2239,14 @@ func (c *Config) validateSubagents() error {
 		}
 		if sa.Root != "" && strings.TrimSpace(sa.Root) == "" {
 			return fmt.Errorf("config: subagents[%d].root is whitespace-only (omit it, or name a real directory)", i)
+		}
+		// The same set background.resolveScheduler accepts, checked here
+		// so a typo stops the daemon at boot instead of failing every
+		// spawn of this subagent later.
+		switch sa.Scheduler {
+		case "", "default", "sleep", "exit_on_defer", "none":
+		default:
+			return fmt.Errorf("config: subagents[%d].scheduler %q is unknown (want one of \"default\", \"sleep\", \"exit_on_defer\", \"none\")", i, sa.Scheduler)
 		}
 		if b := sa.Budgets; b != nil {
 			// Negative is rejected rather than clamped: every dimension

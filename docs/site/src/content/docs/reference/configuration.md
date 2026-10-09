@@ -570,7 +570,8 @@ A top-level `subagents` array declares a **fixed roster** of named delegates the
         "max_turns": 20,
         "max_cost_usd": 0.5,
         "max_wallclock_seconds": 300
-      }
+      },
+      "scheduler": "sleep"                // optional: spawn_agent spawns become standing workers (v2.10+)
     }
   ]
 }
@@ -611,6 +612,17 @@ Each dimension is independent, and `0` (or an omitted field) means **no declared
 **A cap that fires does not fail the delegation.** Whatever the subagent produced is returned to the parent, labelled as a partial and naming the cap that stopped it, with a line telling the parent what to do next — re-delegate the remainder with specifics, or finish it itself. Discarding the partial would make the parent pay twice for work it already bought, and the parent is the one holding the goal.
 
 Budgets are the per-delegate complement to the session-wide ceilings: `--max-turn-cost-usd` and `--max-session-cost-usd` bound the whole tree (delegated turns count toward them since v2.9), while `budgets` stops one wandering delegate before it eats that allowance.
+
+**Standing workers — the `scheduler` field (v2.10+).** By default a spawned subagent is a bounded delegation: it finishes as soon as it stops calling tools. Set `scheduler` to make a `spawn_agent { agent: "…" }` spawn a standing worker instead. It gets `schedule_next_turn`, and loops until a budget fires or it returns a result.
+
+| Value | Between turns |
+|---|---|
+| `"sleep"` | Sleeps in-process until the wake it asked for. It appears on `GET /agents` with `next_wake_at` and `wake_detail`, and on the TUIs' running-tasks bar as a countdown. |
+| `"exit_on_defer"` | Ends the run with the wake recorded, for an orchestrator to restart. |
+| `"none"` | No scheduler: a bounded delegation, the same as omitting the field. |
+| `"default"` / omitted | The manager's default; the `core-agent` binary sets none. |
+
+This is the operator-vetted way to run a standing worker on a daemon started with `--no-repl`. Ad-hoc spawns are off there, so the model can't pick a scheduler itself. An unknown value is a startup error. The field applies only to `spawn_agent`: calling the subagent as a parent tool runs a single delegation, which has no turns to schedule between. Bound a standing worker with `budgets` (in particular `max_wallclock_seconds`), because it doesn't stop on its own. The startup line shows the setting: `subagent "cluster-watch": …, scheduler=sleep`.
 
 ### REPL keybindings (v1.3.0+)
 

@@ -97,6 +97,31 @@ func TestValidate_Subagents(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "scheduler sleep",
+			specs:   []SubagentSpec{{Name: "watch", Scheduler: "sleep"}},
+			wantErr: false,
+		},
+		{
+			name:    "scheduler exit_on_defer",
+			specs:   []SubagentSpec{{Name: "watch", Scheduler: "exit_on_defer"}},
+			wantErr: false,
+		},
+		{
+			name:    "scheduler none",
+			specs:   []SubagentSpec{{Name: "watch", Scheduler: "none"}},
+			wantErr: false,
+		},
+		{
+			name:    "scheduler default",
+			specs:   []SubagentSpec{{Name: "watch", Scheduler: "default"}},
+			wantErr: false,
+		},
+		{
+			name:    "unknown scheduler",
+			specs:   []SubagentSpec{{Name: "watch", Scheduler: "slep"}},
+			wantErr: true,
+		},
+		{
 			name:    "model without name",
 			specs:   []SubagentSpec{{Name: "cluster", Model: &ModelConfig{Provider: ProviderVertex}}},
 			wantErr: true,

@@ -151,7 +151,7 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/compact [focus]`, `/done [note]` | Trigger summarization or task-boundary checkpoints on the remote agent. The TUI shows an in-chat preamble row during the 5–30 s round-trip. |
 | `/btw <question>` | One-shot context-grounded side question. |
 | `/subagent <goal>` | Spawn a background subagent on the remote agent (requires `--no-background-agents=false` daemon side). |
-| `/tools [source]`, `/subagents` | List the daemon's tool palette and the configured subagent roster. `/tools` groups by `source` with a count per group (declarative subagents wired as parent tools show `subagent`; MCP/skill tools currently show `other`), `builtin` first and `other` last, and pass a source to bring that group's descriptions back — which is the difference between reading your own 14 built-ins and scrolling past 31 rows of somebody's MCP server. `/subagents` shows the roster the daemon loaded — name, model, `root`, and `sync`/`async` modes — from `GET /subagents` (distinct from `/agents`, which lists *running* instances). |
+| `/tools [source]`, `/subagents [name]` | List the daemon's tool palette and the subagents this session has spawned. `/tools` groups by `source` with a count per group (declarative subagents wired as parent tools show `subagent`; MCP/skill tools currently show `other`), `builtin` first and `other` last, and pass a source to bring that group's descriptions back — which is the difference between reading your own 14 built-ins and scrolling past 31 rows of somebody's MCP server. `/subagents` lists the spawned instances, running and finished, with status and latest report, from `GET /agents`; `/subagents <name>` opens one with its full report and turn log. The *configured* roster (name, model, `root`, `sync`/`async` modes) is `GET /subagents`, which the TUI doesn't render. |
 | `/interrupt` | Cancel the in-flight model turn on the remote **and hold the session** — see [The hold](#the-hold). Both halves run and both are reported, so an interrupt that killed a turn but failed to shut the gate says so. |
 | `/pause` | Shut the gate without interrupting anything: the running turn finishes, and no new one starts until you resume. `POST /pause`. |
 | `/continue` (`/cont`) | Open the gate and carry on where the agent left off. `POST /resume` with an empty body. |
@@ -307,6 +307,10 @@ Operators who want zero prompts can pass `--yolo` to the daemon or pre-populate 
 ### Queue panel
 
 The strip between the scrollback and the input box renders any operator messages typed while the agent is mid-turn. On turn-end, all queued entries get auto-submitted as a single follow-up turn (with a `↻` marker), wrapped in a system-note framing block so the model knows they arrived mid-task. Soft cap of 10 consecutive auto-continues.
+
+### Running-tasks bar
+
+While background subagents are in flight, a strip between the input box and the footer shows one row per subagent: its name, how long it has been running, and the first line of its latest report. It shows at most three rows; past that, the last one reads `+ N more · /subagents`. The status line or sidebar shows a count alongside (`1 subagent running · 1 scheduled`); the sidebar no longer lists subagents by name. While it runs, that report is its latest `report_alert`, or else its latest model message. A subagent sleeping on `schedule_next_turn` gets a `◷` row that counts down (`wakes in …`) and shows the reason it gave for sleeping. A subagent that finishes keeps its row for five seconds with its outcome. `/subagents` is still where you read the full roster. The local `--tui` shows the same bar. Wake rows need a 1.20.0+ daemon; against an older one a sleeping subagent counts up like a working one ([#1283](https://github.com/go-steer/core-agent/issues/1283), [Subagent progress and pending wakes](/reference/attach-http/#subagent-progress-and-pending-wakes-protocol-1200)).
 
 ### Status bar
 

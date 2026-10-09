@@ -234,7 +234,7 @@ The fix is mechanical: we call `google.FindDefaultCredentials` ourselves, surfac
 
 Vertex sometimes serves Claude under date-suffixed IDs like `claude-opus-4-5@20251101`. The bare alias often works but isn't guaranteed. We pass `req.Model` (or `cfg.Model.Name`) verbatim to the SDK, which puts it directly into the Vertex URL path. Users get to provide whatever Vertex accepts.
 
-`DefaultModel` is `claude-opus-5` in both backends — good for first-party, may need an override for Vertex.
+`DefaultModel` is `claude-opus-5-5` in both backends — good for first-party, may need an override for Vertex.
 
 ### Auto-detection deliberately off
 

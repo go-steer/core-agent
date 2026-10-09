@@ -49,13 +49,13 @@ import (
 // TestDefaultModel_MatchesFrontierTier: an operator who sets
 // --task=implement and one who sets nothing should land on the same
 // model, or the task-class flag reads as a silent downgrade.
-const DefaultModel = "claude-opus-5"
+const DefaultModel = "claude-opus-5-5"
 
 // DefaultSmallModelID is the Anthropic cheap-tier model used by default
 // for agentic subtasks when the operator hasn't pinned one with
 // --agentic-small-model. Same value for the first-party and Vertex
 // backends; the Vertex publication name resolves at call time.
-const DefaultSmallModelID = "claude-haiku-4-5"
+const DefaultSmallModelID = "claude-haiku-5-5"
 
 // DefaultMaxTokens caps a single response when the caller hasn't set
 // one. 16K is a comfortable middle ground: plenty for most turns,

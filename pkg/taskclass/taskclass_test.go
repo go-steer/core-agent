@@ -181,10 +181,10 @@ func TestModelForTier(t *testing.T) {
 		{"vertex", "small", "gemini-3.5-flash-lite"},
 
 		// Anthropic family.
-		{"anthropic", "frontier", "claude-opus-5"},
-		{"anthropic", "mid", "claude-sonnet-5"},
-		{"anthropic", "small", "claude-haiku-4-5"},
-		{"anthropic-vertex", "frontier", "claude-opus-5"},
+		{"anthropic", "frontier", "claude-opus-5-5"},
+		{"anthropic", "mid", "claude-sonnet-5-5"},
+		{"anthropic", "small", "claude-haiku-5-5"},
+		{"anthropic-vertex", "frontier", "claude-opus-5-5"},
 
 		// Negative cases — caller falls through to whatever model
 		// would've been chosen without --task.
@@ -231,8 +231,8 @@ func TestModelForTier_ConsistentWithSmallModelDefaulters(t *testing.T) {
 	}{
 		{"gemini", "gemini-3.5-flash-lite"},
 		{"vertex", "gemini-3.5-flash-lite"},
-		{"anthropic", "claude-haiku-4-5"},
-		{"anthropic-vertex", "claude-haiku-4-5"},
+		{"anthropic", "claude-haiku-5-5"},
+		{"anthropic-vertex", "claude-haiku-5-5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {

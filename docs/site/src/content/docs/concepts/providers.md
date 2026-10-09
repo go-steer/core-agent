@@ -385,7 +385,7 @@ The reason both paths are needed is that Vertex describes one dead cache three d
 Native ADK `model.LLM` adapter for Claude. ADK Go ships only Gemini and Apigee out of the box; this is one of `core-agent`'s two new pieces of code (the other is the same adapter pointed at Vertex AI — see below).
 
 | Provider name | `anthropic` |
-| Default model | `claude-opus-5` |
+| Default model | `claude-opus-5-5` |
 | Auth | API key |
 | Env vars | `ANTHROPIC_API_KEY` |
 | Config block | `model.anthropic.api_key` (overrides env) |
@@ -525,8 +525,9 @@ The same options apply to `anthropic.NewVertex(...)`. Other Anthropic server-sid
 ### Notes
 
 - Get a key at [console.anthropic.com](https://console.anthropic.com).
-- The current default model is `claude-opus-5`. Override per-call with `--model` or `cfg.Model.Name`.
+- The current default model is `claude-opus-5-5`. Override per-call with `--model` or `cfg.Model.Name`.
 - Claude 5-generation models (`claude-sonnet-5`, `claude-opus-5`, `claude-fable-5`) are fully supported as of v2.8: thinking-default tool loops round-trip correctly (thinking blocks are replayed with signatures intact), builtin pricing ships for all three, and they appear in the TUI's `/model` picker.
+- The Claude 5.5 models are the tier defaults: `claude-opus-5-5` (frontier and `DefaultModel`), `claude-sonnet-5-5` (mid) and `claude-haiku-5-5` (small, and the `--agentic-small-model` default). Haiku 5.5's list price steps with prompt length ($0.10/$0.50 per MTok up to 100,000 prompt tokens, $0.50/$2.50 above), and the builtin catalog carries one flat rate per model, so cost reporting and the `max_*_cost_usd` ceilings under-count calls past 100K prompt tokens on it by up to 5×. Pin `claude-haiku-4-5` with `--agentic-small-model` if that matters for your budget.
 - Builtin pricing ships for every chat/tool-calling Claude model in the LiteLLM catalog, including the cache read and cache write rates, so `usage.Tracker.Append` records real cost for Claude turns out of the box. Override per-model via `cfg.Model.Pricing`; a model with no builtin entry still resolves by longest-prefix match (`claude-opus-4-7-1m` picks up `claude-opus-4-7`'s rates) and only falls through to zero cost if nothing matches at all.
 
 ---
@@ -536,7 +537,7 @@ The same options apply to `anthropic.NewVertex(...)`. Other Anthropic server-sid
 Same adapter as `anthropic`, but the underlying client is constructed against Google Vertex AI. Use this when you want Claude but already have GCP infrastructure: ADC for auth, GCP billing, GCP IAM and compliance posture, no separate Anthropic API key to manage.
 
 | Provider name | `anthropic-vertex` |
-| Default model | `claude-opus-5` (Vertex sometimes wants a date-suffixed variant) |
+| Default model | `claude-opus-5-5` (Vertex sometimes wants a date-suffixed variant) |
 | Auth | ADC + GCP project + region |
 | Env vars | `ANTHROPIC_VERTEX_PROJECT_ID` (or `GOOGLE_CLOUD_PROJECT`), `CLOUD_ML_REGION` (or `GOOGLE_CLOUD_LOCATION`) |
 | Config block | `model.anthropic.vertex.{project,location}` |

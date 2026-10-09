@@ -1,0 +1,2 @@
+# Local provider settings for run.sh; copy env.example.
+.env

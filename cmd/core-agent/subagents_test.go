@@ -1069,3 +1069,42 @@ func TestBuildDeclaredSubagents_NoBudgetsLeavesBothDoorsAtTheirDefault(t *testin
 		t.Errorf("async spawn template budgets = %+v, want zero (manager defaults apply)", got)
 	}
 }
+
+// TestBuildDeclaredSubagents_SchedulerReachesTheSpawnTemplate: a declared
+// scheduler is what lets a --no-repl daemon run a standing worker at all,
+// since ad-hoc spawns (the only other way to pick one) are off there. It
+// has to land on the async template, and the boot line has to say so.
+func TestBuildDeclaredSubagents_SchedulerReachesTheSpawnTemplate(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Model:     config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{Name: "cluster-watch", Scheduler: "sleep"}, {Name: "cluster"}},
+	}
+	var lines []string
+	deps := testDeps()
+	deps.send = func(s string) { lines = append(lines, s) }
+	_, templates, _, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(), parentSurface{}, deps,
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	if templates[0].Scheduler != "sleep" {
+		t.Errorf("cluster-watch template Scheduler = %q, want \"sleep\"", templates[0].Scheduler)
+	}
+	if templates[1].Scheduler != "" {
+		t.Errorf("cluster template Scheduler = %q, want empty — an undeclared scheduler stays the manager default", templates[1].Scheduler)
+	}
+	var sawWatch, sawPlain bool
+	for _, l := range lines {
+		switch {
+		case strings.Contains(l, `"cluster-watch"`):
+			sawWatch = strings.Contains(l, "scheduler=sleep")
+		case strings.Contains(l, `"cluster"`):
+			sawPlain = !strings.Contains(l, "scheduler=")
+		}
+	}
+	if !sawWatch || !sawPlain {
+		t.Errorf("boot lines = %q, want scheduler=sleep on cluster-watch's line only", lines)
+	}
+}

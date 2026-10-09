@@ -1401,6 +1401,23 @@ type SubagentSpec struct {
 	// synchronous door stays unbounded, which is what it has always
 	// been. A per-spawn override may only tighten what is declared here.
 	Budgets *SubagentBudgets `json:"budgets,omitempty"`
+
+	// Scheduler picks the between-turn scheduler for a spawn_agent
+	// spawn of this subagent: "sleep" (sleep in-process until the wake
+	// the subagent asks for with schedule_next_turn), "none", or
+	// "default"/"" (the manager's default, which core-agent leaves
+	// unset). With a scheduler the subagent is a standing worker that
+	// loops until a budget or an explicit return; without one it
+	// finishes as soon as it stops calling tools. The async budget
+	// defaults (10m wall-clock among them, sleep included) still apply,
+	// so a long-lived worker needs Budgets raised.
+	//
+	// It is the operator-vetted way to get a standing worker on a daemon
+	// started with --no-repl, where an ad-hoc spawn_agent can't pick a
+	// scheduler because ad-hoc spawns are off. Only the spawn_agent door
+	// reads it: calling the subagent as a parent tool runs one
+	// delegation, which has no turns to schedule between.
+	Scheduler string `json:"scheduler,omitempty"`
 }
 
 // SubagentBudgets caps one delegation. Field names mirror spawn_agent's
@@ -2223,6 +2240,17 @@ func (c *Config) validateSubagents() error {
 		}
 		if sa.Root != "" && strings.TrimSpace(sa.Root) == "" {
 			return fmt.Errorf("config: subagents[%d].root is whitespace-only (omit it, or name a real directory)", i)
+		}
+		// Checked here so a typo stops the daemon at boot instead of
+		// failing every spawn of this subagent later. A subset of what
+		// background.resolveScheduler accepts: "exit_on_defer" is left
+		// out because nothing in the core-agent binary restarts a
+		// deferred background subagent, so the worker would end after
+		// one cycle while the parent is told its result arrives later.
+		switch sa.Scheduler {
+		case "", "default", "sleep", "none":
+		default:
+			return fmt.Errorf("config: subagents[%d].scheduler %q is unknown (want one of \"default\", \"sleep\", \"none\")", i, sa.Scheduler)
 		}
 		if b := sa.Budgets; b != nil {
 			// Negative is rejected rather than clamped: every dimension

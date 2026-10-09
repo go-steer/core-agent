@@ -202,6 +202,13 @@ var GatedFeatures = []GatedFeature{
 			"subagent uncapped while the config reads as though it were bounded",
 	},
 	{
+		Path: "subagents[].scheduler",
+		Min:  "2.10.0-dev.2",
+		Why: "a declared standing worker that sleeps between turns on schedule_next_turn (#1283). " +
+			"An older daemon drops it, so the subagent spawns as a bounded delegation that " +
+			"finishes after its first turn, and a watcher the content relies on never watches",
+	},
+	{
 		Path: "model.builtin_tools",
 		Min:  "2.9.0-dev.4",
 		Why: "the provider's server-side built-ins — web search, URL fetching, code execution (#876). " +

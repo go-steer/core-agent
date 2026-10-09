@@ -161,6 +161,7 @@ subagents[].model.vertex.location
 subagents[].model.vertex.project
 subagents[].name
 subagents[].root
+subagents[].scheduler
 subagents[].skills
 subagents[].tools
 tool_output.max_bytes

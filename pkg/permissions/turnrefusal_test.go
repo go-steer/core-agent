@@ -70,12 +70,13 @@ func TestTurnRefusal_AnExpiredPromptIsNotReopened(t *testing.T) {
 	}
 	// The saving that matters operationally: the retry does not spend
 	// another ApprovalTimeout waiting for the operator who was already
-	// absent. Generous bound — this is asserting "did not wait", not a
-	// latency budget.
-	start := time.Now()
+	// absent. Asserted by counting prompts, not by timing the retry: a
+	// wall-clock bound equal to the timeout failed under -race on a
+	// loaded runner (an immediate refusal measured 61ms), and it could
+	// not see a regression that re-prompts quickly anyway.
 	second := g.CheckBash(ctx, "kubectl apply -f patch.yaml")
-	if elapsed := time.Since(start); elapsed >= 40*time.Millisecond {
-		t.Errorf("the repeat waited %s, i.e. it re-armed the timeout instead of being refused outright", elapsed)
+	if n := p.calls.Load(); n != 1 {
+		t.Errorf("the gate opened %d prompts for one expired request, want 1: the repeat was put to a human again instead of being refused outright", n)
 	}
 	if second == nil {
 		t.Fatal("expected the repeat to be refused")

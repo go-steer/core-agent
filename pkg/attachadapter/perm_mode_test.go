@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"

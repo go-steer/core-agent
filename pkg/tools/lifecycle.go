@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 )
 
 // LifecycleEvent is the payload delivered to a LifecycleHandler each
@@ -119,7 +119,7 @@ func lifecycleFunc(handler LifecycleHandler, allowedStates []string) functiontoo
 	for _, s := range allowedStates {
 		allowed[strings.TrimSpace(s)] = struct{}{}
 	}
-	return func(ctx adkagent.ToolContext, in lifecycleArgs) (lifecycleResult, error) {
+	return func(ctx adkagent.Context, in lifecycleArgs) (lifecycleResult, error) {
 		state := strings.TrimSpace(in.State)
 		if state == "" {
 			return lifecycleResult{Ack: "rejected: state is required"}, nil
@@ -134,7 +134,7 @@ func lifecycleFunc(handler LifecycleHandler, allowedStates []string) functiontoo
 			Detail: strings.TrimSpace(in.Detail),
 			Time:   time.Now(),
 		}
-		// adkagent.ToolContext embeds context.Context via CallbackContext;
+		// adkagent.Context embeds context.Context via CallbackContext;
 		// fall back to Background when callers (typically tests)
 		// pass an explicit nil interface.
 		var hctx context.Context = ctx

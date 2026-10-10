@@ -26,7 +26,7 @@ import (
 	"context"
 	"strings"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // branchSeparator joins branch path segments, matching ADK's convention.

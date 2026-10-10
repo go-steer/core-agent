@@ -66,6 +66,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "gke-drill"))
+import adkv2_fixture as v2  # noqa: E402
+
 GRADER = HERE / "grade_a7.py"
 FIXTURE = HERE / "testdata" / "a7" / "pass"
 FAKEBIN = HERE / "testdata" / "a7" / "fakebin"
@@ -663,6 +666,24 @@ def log_only_halt(run: Run) -> None:
                    f"guardrail tripped: repeated identical tool call")
 
 
+def ends_on_partial(run: Run) -> None:
+    run.add_event("core_agent", content={"role": "model", "parts": [{"text": "Opened the PR"}]},
+                  at=len(run.frames))["Partial"] = True
+
+
+def as_v2(doctor: Callable[[Run], None] | None) -> Callable[[Run], None]:
+    """The same doctored run, with every replay event rewritten into ADK
+    v2's wire form (camelCase keys, zero values omitted) after the doctor
+    ran on the recorded v1 shape."""
+    def d(run: Run) -> None:
+        if doctor:
+            doctor(run)
+        run.frames = [(e, v2.v2_tree(data)) for e, data in run.frames]
+        if any(v2.has_v1_keys(data) for _, data in run.frames):
+            raise AssertionError("as_v2: a v1 key survived the rewrite")
+    return d
+
+
 def perms_approvals_object(run: Run) -> None:
     run.perms["approvals"] = {"tool": "bash"}
 
@@ -808,7 +829,35 @@ CASES: list[tuple[str, Callable[[Run], None] | None, int, dict[str, str], str, s
      "after a checkpoint"),
     ("ended by work: a trip only the log witnessed", log_only_halt, 1, {"ended by work": "FAIL"}, "ended by work",
      "the log records a watchdog guardrail trip"),
+    ("ended by work: the last model event is a partial chunk", ends_on_partial, 1, {"ended by work": "FAIL"},
+     "ended by work", "is a partial chunk"),
 ]
+
+# The event-reading cases again, on an ADK v2 replay: a reader still keyed
+# on "Author"/"ID"/"Timestamp"/"CustomMetadata"/"Content"/"Partial" sees
+# none of it and grades these differently from their v1 twins.
+V2_TWINS = (
+    "the recorded passing run grades PASS",
+    "posture: mode changed mid-run",
+    "no human: a person injected into the session",
+    "no human: a person denied a prompt",
+    "no human: guardrails/reset in the history",
+    "no human: a turn a background report woke has no caller, and is not a person",
+    "ended by work: halted",
+    "ended by work: the per-turn ceiling cut a turn",
+    "ended by work: the last turn errored",
+    "ended by work: a turn error a later turn recovered from",
+    "ended by work: interrupted at the wallclock",
+    "ended by work: the last model event is a tool call",
+    "ended by work: the last model event is a partial chunk",
+    "VOID: the session compacted",
+    "VOID: tool calls after a checkpoint",
+    "run identity: a DB row the replay lacks (a capture cut short)",
+    "VOID: a restart after the run, with no approver allow to check the capture against",
+)
+CASES += [(f"ADK v2 replay — {desc}", as_v2(doctor), code, verdicts, row, message)
+          for desc, doctor, code, verdicts, row, message in CASES if desc in V2_TWINS]
+assert len(CASES) - len([c for c in CASES if not c[0].startswith("ADK v2")]) == len(V2_TWINS), "a V2_TWINS name matches no case"
 
 
 def text_case() -> None:

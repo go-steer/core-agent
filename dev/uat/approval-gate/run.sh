@@ -776,7 +776,7 @@ curl -sS --max-time 20 -H "Authorization: Bearer ${TOKEN}" \
 # author: the gate's refusals are written by `core_agent`, and anything
 # the daemon injects on the operator's side of the conversation is not a
 # call the model made.
-SUPPRESSED="$(grep '"Author":"core_agent"' "${RUN_DIR}/final-events.txt" 2>/dev/null | grep -o 'not attempted: an identical request' | grep -c . || true)"
+SUPPRESSED="$(grep -E '"[Aa]uthor":"core_agent"' "${RUN_DIR}/final-events.txt" 2>/dev/null | grep -o 'not attempted: an identical request' | grep -c . || true)"
 [[ "${SUPPRESSED}" =~ ^[0-9]+$ ]] || SUPPRESSED=0
 log "prompts opened across the run:  ${PROMPTS} (one per leg is the floor; more means a refused call re-opened the gate)"
 log "gated calls the model made:     $(( PROMPTS + SUPPRESSED )) (${SUPPRESSED} refused without a prompt — #1074)"

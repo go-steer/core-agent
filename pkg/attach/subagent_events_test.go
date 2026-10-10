@@ -23,7 +23,7 @@ import (
 	"slices"
 	"testing"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
@@ -51,7 +51,7 @@ func appendBranchedEvent(t *testing.T, h *eventlog.Handle, appName, userID, sess
 			t.Fatalf("session Get(%s): %v", sessionID, err)
 		}
 	}
-	ev := session.NewEventWithContext(context.Background(), id)
+	ev := session.NewEvent(context.Background(), id)
 	ev.Author = "test"
 	ev.Branch = branch
 	ev.CustomMetadata = map[string]any{"id": id}

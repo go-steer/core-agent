@@ -21,9 +21,9 @@ import (
 	"io"
 	"strings"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 )
 
 // Prompter delivers a question from the agent to a human (or any
@@ -105,7 +105,7 @@ func NewAskUserTool(opts AskUserOptions) (tool.Tool, error) {
 	}
 	return functiontool.New(
 		functiontool.Config{Name: name, Description: desc},
-		func(ctx adkagent.ToolContext, in askUserArgs) (askUserResult, error) {
+		func(ctx adkagent.Context, in askUserArgs) (askUserResult, error) {
 			ans, err := opts.Prompter.Prompt(ctx, in.Question)
 			if err != nil {
 				// Surface the error as the tool result so the model

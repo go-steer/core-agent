@@ -17,9 +17,9 @@ package tools
 import (
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	adktool "google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -179,7 +179,7 @@ func stubTool(t *testing.T, name string) adktool.Tool {
 	t.Helper()
 	type empty struct{}
 	tl, err := functiontool.New(functiontool.Config{Name: name, Description: "stub"},
-		func(_ adkagent.ToolContext, _ empty) (empty, error) { return empty{}, nil })
+		func(_ adkagent.Context, _ empty) (empty, error) { return empty{}, nil })
 	if err != nil {
 		t.Fatalf("functiontool.New(%q): %v", name, err)
 	}

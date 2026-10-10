@@ -18,23 +18,23 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/toolconfirmation"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 )
 
 // runnableTool mirrors ADK's unexported runnable interface so a test
 // can invoke a built function tool directly. Same shape the pkg/tools
 // tests use.
 type runnableTool interface {
-	Run(ctx adkagent.ToolContext, args any) (map[string]any, error)
+	Run(ctx adkagent.Context, args any) (map[string]any, error)
 }
 
-// stubToolContext satisfies adkagent.ToolContext far enough for functiontool's
+// stubToolContext satisfies adkagent.Context far enough for functiontool's
 // Run, which dereferences ToolConfirmation() before dispatching. The
 // embedded nil interface panics on anything else, which is the point:
 // these tools must not touch the rest of the context.
-type stubToolContext struct{ adkagent.ToolContext }
+type stubToolContext struct{ adkagent.Context }
 
 func (stubToolContext) ToolConfirmation() *toolconfirmation.ToolConfirmation { return nil }
 

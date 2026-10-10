@@ -45,7 +45,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -310,7 +310,7 @@ func (t *turnApprover) drainAudits() {
 		return
 	}
 	for _, au := range audits {
-		ev := session.NewEventWithContext(context.Background(), "gate-approver")
+		ev := session.NewEvent(context.Background(), "gate-approver")
 		ev.Author = approverAuditAuthor
 		meta := map[string]any{
 			"source":  "approver",
@@ -327,7 +327,7 @@ func (t *turnApprover) drainAudits() {
 		_ = a.eventLog.Service.AppendEvent(context.Background(), getResp.Session, ev)
 	}
 	for _, b := range bills {
-		ev := session.NewEventWithContext(context.Background(), "gate-approver-usage")
+		ev := session.NewEvent(context.Background(), "gate-approver-usage")
 		ev.Author = approverUsageAuthor
 		ev.CustomMetadata = usage.SideUsageMetadata(b.model, b.usage)
 		_ = a.eventLog.Service.AppendEvent(context.Background(), getResp.Session, ev)

@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 )
 
 // fakeLLM lets a test decide, per call, what the wrapped model does.

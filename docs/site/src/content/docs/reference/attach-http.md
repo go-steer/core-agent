@@ -102,7 +102,7 @@ Every path suffix below appears under both `/sessions/{sid}/...` and `/sessions/
 
 | Path suffix | Response |
 |---|---|
-| `/events` | SSE, `text/event-stream`. Query `?since=<int64>` cursor for lossless replay. **412** when the session has no eventlog. **409** when the client declares an incompatible protocol major (`?protocol=` / `X-Attach-Protocol-Version`); **400** when the declared version is malformed. Frames typed via `event: <type>` (or legacy `event: agent`). |
+| `/events` | SSE, `text/event-stream`. Query `?since=<int64>` cursor for lossless replay. **412** when the session has no eventlog. **409** when the client declares an incompatible protocol major (`?protocol=` / `X-Attach-Protocol-Version`); **400** when the declared version is malformed. Frames typed via `event: <type>` (or legacy `event: agent`). The `agent` frame's `event` is ADK's `session.Event` JSON. Since the ADK v2 upgrade its keys are camelCase with zero values omitted (`id`, `author`, `content`, `partial`, `customMetadata`, `actions`); earlier daemons sent untagged PascalCase (`ID`, `Author`, `Content`, …) with every zero field present. A client that replays archived transcripts or talks to older daemons should accept both; Go decoders already do, because `encoding/json` matches keys case-insensitively. |
 | `/perms/stream` | SSE, `event: prompt`. **501** without `PromptBrokerProvider`. |
 | `/status` | `{"state":..., "model_name":..., "turn_in_flight":bool, "next_wake_at":..., "current_tool":...}` — never empty `state`. See [Turn state](#turn-state-protocol-1120). |
 | `/usage` | `UsageInfo` — see [UsageMetadata schema](#usagemetadata-schema) below. |

@@ -1,0 +1,33 @@
+{
+  "agent": "cluster",
+  "parent_session_id": "s-1a2b3c",
+  "branches": [
+    "cluster",
+    "bg.cluster",
+    "sub.cluster",
+    "remote.cluster"
+  ],
+  "events": [
+    {
+      "seq": 41,
+      "event": {
+        "content": {
+          "parts": [
+            {
+              "text": "listing nodes in cluster prod-1"
+            }
+          ],
+          "role": "model"
+        },
+        "id": "e-7f3a",
+        "timestamp": "2026-08-12T09:15:00Z",
+        "invocationId": "inv-1",
+        "branch": "bg.cluster",
+        "author": "cluster",
+        "actions": {}
+      }
+    }
+  ],
+  "next_since": 41,
+  "truncated": true
+}

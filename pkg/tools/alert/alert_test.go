@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/internal/testutil"
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -80,7 +80,7 @@ func TestRun_GenericHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newHandler: %v", err)
 	}
-	res, err := h.run(adkagent.ToolContext(nil), Args{
+	res, err := h.run(adkagent.Context(nil), Args{
 		Target:  "audit",
 		Level:   "warning",
 		Summary: "checkout-svc unresolved",
@@ -124,7 +124,7 @@ func TestRun_OmitsDetailsWhenEmpty(t *testing.T) {
 	srv := mockServer(t, 204, "", &got)
 	cfg := cfgWith(config.AlertTarget{Name: "audit", URL: srv.URL, Template: config.AlertTemplateGeneric})
 	h, _ := newHandler(yoloGate(t), cfg, nil, nil, srv.Client())
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "audit", Level: "info", Summary: "hi"}); err != nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "audit", Level: "info", Summary: "hi"}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	var payload map[string]any
@@ -146,7 +146,7 @@ func TestRun_URLEnvResolved(t *testing.T) {
 		return ""
 	}
 	h, _ := newHandler(yoloGate(t), cfg, env, nil, srv.Client())
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "slack", Level: "info", Summary: "hi"}); err != nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "slack", Level: "info", Summary: "hi"}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if got.method != http.MethodPost {
@@ -203,7 +203,7 @@ func TestNewHandler_DropsDeadTargetKeepsLive(t *testing.T) {
 	}
 	// And the model gets a routing error, not a silent no-op, if it asks
 	// for the dropped name anyway (e.g. from an AGENTS.md that names it).
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "oncall", Level: "critical", Summary: "hi"}); err == nil ||
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "oncall", Level: "critical", Summary: "hi"}); err == nil ||
 		!strings.Contains(err.Error(), "unknown target") {
 		t.Errorf("err = %v, want unknown target error for the dropped target", err)
 	}
@@ -228,7 +228,7 @@ func TestRun_URLEnvLostAfterBuild(t *testing.T) {
 		t.Fatalf("newHandler: %v", err)
 	}
 	present = false
-	_, err = h.run(adkagent.ToolContext(nil), Args{Target: "slack", Level: "info", Summary: "hi"})
+	_, err = h.run(adkagent.Context(nil), Args{Target: "slack", Level: "info", Summary: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "url_env") {
 		t.Errorf("err = %v, want url_env unset error", err)
 	}
@@ -289,7 +289,7 @@ func TestRun_BearerAuth(t *testing.T) {
 		return ""
 	}
 	h, _ := newHandler(yoloGate(t), cfg, env, nil, srv.Client())
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "pd", Level: "critical", Summary: "page"}); err != nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "pd", Level: "critical", Summary: "page"}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if got.authHeader != "Bearer s3cr3t" {
@@ -312,7 +312,7 @@ func TestRun_BasicAuth(t *testing.T) {
 		return ""
 	}
 	h, _ := newHandler(yoloGate(t), cfg, env, nil, srv.Client())
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "legacy", Level: "info", Summary: "hi"}); err != nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "legacy", Level: "info", Summary: "hi"}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if !strings.HasPrefix(got.authHeader, "Basic ") {
@@ -356,7 +356,7 @@ func TestRun_BearerEnvLostAfterBuild(t *testing.T) {
 		t.Fatalf("newHandler: %v", err)
 	}
 	present = false
-	_, err = h.run(adkagent.ToolContext(nil), Args{Target: "pd", Level: "info", Summary: "hi"})
+	_, err = h.run(adkagent.Context(nil), Args{Target: "pd", Level: "info", Summary: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "bearer_env") {
 		t.Errorf("err = %v, want bearer_env unset error", err)
 	}
@@ -369,7 +369,7 @@ func TestRun_UnknownTarget(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWith(config.AlertTarget{Name: "audit", URL: "https://example.com", Template: config.AlertTemplateGeneric})
 	h, _ := newHandler(yoloGate(t), cfg, nil, nil, http.DefaultClient)
-	_, err := h.run(adkagent.ToolContext(nil), Args{Target: "nope", Level: "info", Summary: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Target: "nope", Level: "info", Summary: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "unknown target") {
 		t.Errorf("err = %v, want unknown target error", err)
 	}
@@ -382,7 +382,7 @@ func TestRun_InvalidLevel(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWith(config.AlertTarget{Name: "audit", URL: "https://example.com", Template: config.AlertTemplateGeneric})
 	h, _ := newHandler(yoloGate(t), cfg, nil, nil, http.DefaultClient)
-	_, err := h.run(adkagent.ToolContext(nil), Args{Target: "audit", Level: "loud", Summary: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Target: "audit", Level: "loud", Summary: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "level") {
 		t.Errorf("err = %v, want invalid level error", err)
 	}
@@ -392,10 +392,10 @@ func TestRun_MissingRequiredArgs(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWith(config.AlertTarget{Name: "audit", URL: "https://example.com", Template: config.AlertTemplateGeneric})
 	h, _ := newHandler(yoloGate(t), cfg, nil, nil, http.DefaultClient)
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Level: "info", Summary: "hi"}); err == nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Level: "info", Summary: "hi"}); err == nil {
 		t.Error("missing target should error")
 	}
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "audit", Level: "info"}); err == nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "audit", Level: "info"}); err == nil {
 		t.Error("missing summary should error")
 	}
 }
@@ -406,7 +406,7 @@ func TestRun_Non2xxReturnsError(t *testing.T) {
 	srv := mockServer(t, 500, "boom-details", &got)
 	cfg := cfgWith(config.AlertTarget{Name: "audit", URL: srv.URL, Template: config.AlertTemplateGeneric})
 	h, _ := newHandler(yoloGate(t), cfg, nil, nil, srv.Client())
-	_, err := h.run(adkagent.ToolContext(nil), Args{Target: "audit", Level: "info", Summary: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Target: "audit", Level: "info", Summary: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Errorf("err = %v, want HTTP 500 error", err)
 	}
@@ -428,7 +428,7 @@ func TestRun_GateDenied(t *testing.T) {
 	}
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo, Policy: pol})
 	h, _ := newHandler(gate, cfg, nil, nil, srv.Client())
-	if _, runErr := h.run(adkagent.ToolContext(nil), Args{Target: "audit", Level: "info", Summary: "hi"}); runErr == nil {
+	if _, runErr := h.run(adkagent.Context(nil), Args{Target: "audit", Level: "info", Summary: "hi"}); runErr == nil {
 		t.Fatal("gate should deny when a deny pattern matches the target")
 	}
 	if got.method != "" {
@@ -453,10 +453,10 @@ func TestRun_PerTargetGateScoping(t *testing.T) {
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo, Policy: pol})
 	h, _ := newHandler(gate, cfg, nil, nil, srv.Client())
 
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "allowed", Level: "info", Summary: "hi"}); err != nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "allowed", Level: "info", Summary: "hi"}); err != nil {
 		t.Errorf("allowed target should pass the gate, got %v", err)
 	}
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "blocked", Level: "info", Summary: "hi"}); err == nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "blocked", Level: "info", Summary: "hi"}); err == nil {
 		t.Error("blocked target should be denied by the gate")
 	}
 }

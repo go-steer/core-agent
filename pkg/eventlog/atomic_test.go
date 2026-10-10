@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // One event, one transaction (#976). The property under test is that

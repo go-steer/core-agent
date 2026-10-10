@@ -24,8 +24,8 @@ import (
 	"testing"
 
 	"github.com/glebarez/sqlite"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	coretui "github.com/go-steer/core-tui/tui"
@@ -77,7 +77,7 @@ func appendSubagentTurn(t *testing.T, a *coreAgentAdapter, h *eventlog.Handle, b
 			t.Fatalf("session Get: %v", err)
 		}
 	}
-	ev := session.NewEventWithContext(context.Background(), id)
+	ev := session.NewEvent(context.Background(), id)
 	ev.Author = "cluster"
 	ev.Branch = branch
 	ev.LLMResponse = adkmodel.LLMResponse{

@@ -22,11 +22,11 @@ import (
 	"testing"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/models"
@@ -49,7 +49,7 @@ func newNoopTool(t *testing.T) tool.Tool {
 	type empty struct{}
 	tl, err := functiontool.New(
 		functiontool.Config{Name: noopToolName, Description: "does nothing"},
-		func(adkagent.ToolContext, empty) (empty, error) { return empty{}, nil },
+		func(adkagent.Context, empty) (empty, error) { return empty{}, nil },
 	)
 	if err != nil {
 		t.Fatalf("functiontool.New: %v", err)
@@ -191,7 +191,7 @@ func TestRun_PriorSuccessIsMarkedOnlyAfterAServedCall(t *testing.T) {
 func TestMarkIfServed(t *testing.T) {
 	t.Parallel()
 	model := func(parts ...*genai.Part) *session.Event {
-		ev := session.NewEventWithContext(context.Background(), "inv")
+		ev := session.NewEvent(context.Background(), "inv")
 		ev.Content = &genai.Content{Role: genai.RoleModel, Parts: parts}
 		return ev
 	}
@@ -211,7 +211,7 @@ func TestMarkIfServed(t *testing.T) {
 		{"partial chunk", func() *session.Event { ev := model(text); ev.Partial = true; return ev }, nil, false},
 		{"error code", func() *session.Event { ev := model(text); ev.ErrorCode = "SAFETY"; return ev }, nil, false},
 		{"no parts", func() *session.Event { return model() }, nil, false},
-		{"no content", func() *session.Event { return session.NewEventWithContext(context.Background(), "inv") }, nil, false},
+		{"no content", func() *session.Event { return session.NewEvent(context.Background(), "inv") }, nil, false},
 		{"tool response (user role)", func() *session.Event {
 			ev := model(&genai.Part{FunctionResponse: &genai.FunctionResponse{Name: "read_file"}})
 			ev.Content.Role = genai.RoleUser

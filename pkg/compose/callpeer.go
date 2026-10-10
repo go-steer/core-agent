@@ -17,7 +17,7 @@ package compose
 import (
 	"time"
 
-	adktool "google.golang.org/adk/tool"
+	adktool "google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/config"

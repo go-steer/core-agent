@@ -18,7 +18,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // A side call (the auto-mode approver, #1175) is spend, not a

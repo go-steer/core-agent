@@ -28,7 +28,7 @@ import (
 // Two problems it solves, both visible on a live GKE run:
 //
 //  1. The turn had no root of our own. ADK emits `invoke_agent <name>`
-//     from google.golang.org/adk/agent (via its internal/telemetry
+//     from google.golang.org/adk/v2/agent (via its internal/telemetry
 //     package, which we cannot import), and it inherits whatever
 //     parent is on the context handed to runner.Run. On the wake-loop
 //     path that context is the daemon's long-lived loop context with

@@ -18,8 +18,8 @@ import (
 	"context"
 	"testing"
 
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -44,7 +44,7 @@ func (h hintingTool) ReadOnlyHint() bool  { return h.hint }
 func (h hintingTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: h.name}
 }
-func (h hintingTool) Run(agent.ToolContext, any) (map[string]any, error) {
+func (h hintingTool) Run(agent.Context, any) (map[string]any, error) {
 	return map[string]any{"ok": true}, nil
 }
 
@@ -59,7 +59,7 @@ func (p plainTool) IsLongRunning() bool { return false }
 func (p plainTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: p.name}
 }
-func (p plainTool) Run(agent.ToolContext, any) (map[string]any, error) {
+func (p plainTool) Run(agent.Context, any) (map[string]any, error) {
 	return map[string]any{"ok": true}, nil
 }
 

@@ -21,9 +21,9 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/digest"
@@ -44,7 +44,7 @@ func (s *surveyTool) IsLongRunning() bool { return false }
 func (s *surveyTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: s.name}
 }
-func (s *surveyTool) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
+func (s *surveyTool) Run(_ adkagent.Context, _ any) (map[string]any, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -93,7 +93,7 @@ func runWrapped(t *testing.T, opts *DigestOptions, inner adktool.Tool) (map[stri
 	if !ok {
 		t.Fatalf("wrapped tool %T is not runnable", wrapped[0])
 	}
-	got, err := rn.Run(&planToolCtx{Context: context.Background()}, nil)
+	got, err := rn.Run(&planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestDigester_FailurePathsReturnTheOriginal(t *testing.T) {
 	t.Run("inner error propagates", func(t *testing.T) {
 		inner := &surveyTool{name: "grep", err: context.DeadlineExceeded}
 		wrapped := NewDigester(opts).Wrap([]adktool.Tool{inner})
-		got, err := wrapped[0].(runnableTool).Run(&planToolCtx{Context: context.Background()}, nil)
+		got, err := wrapped[0].(runnableTool).Run(&planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, nil)
 		if err == nil {
 			t.Fatal("error was swallowed")
 		}
@@ -283,7 +283,7 @@ func TestDigester_FailurePathsReturnTheOriginal(t *testing.T) {
 		resp := map[string]any{"pad": strings.Repeat("x", 20_000), "ch": make(chan int)}
 		inner := &surveyTool{name: "grep", resp: resp}
 		wrapped := NewDigester(opts).Wrap([]adktool.Tool{inner})
-		got, err := wrapped[0].(runnableTool).Run(&planToolCtx{Context: context.Background()}, nil)
+		got, err := wrapped[0].(runnableTool).Run(&planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, nil)
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -319,7 +319,7 @@ func TestDigester_ToolsetWrapsLazily(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Tools: %v", err)
 	}
-	res, err := got[0].(runnableTool).Run(&planToolCtx{Context: context.Background()}, nil)
+	res, err := got[0].(runnableTool).Run(&planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestDigester_WrapIsIdempotent(t *testing.T) {
 	if twice[0] != once[0] {
 		t.Fatalf("second Wrap produced a new wrapper: %T", twice[0])
 	}
-	got, err := twice[0].(runnableTool).Run(&planToolCtx{Context: context.Background()}, nil)
+	got, err := twice[0].(runnableTool).Run(&planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

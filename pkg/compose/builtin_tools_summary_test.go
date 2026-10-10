@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 )
 
 // plainProvider has no server-side built-in concept — the echo /

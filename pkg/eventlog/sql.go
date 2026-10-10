@@ -25,8 +25,8 @@ import (
 	"time"
 	"unsafe"
 
-	"google.golang.org/adk/session"
-	adkdatabase "google.golang.org/adk/session/database"
+	"google.golang.org/adk/v2/session"
+	adkdatabase "google.golang.org/adk/v2/session/database"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

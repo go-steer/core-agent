@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -88,7 +88,7 @@ func TestAgentToolsCannotReachTheBearerTable(t *testing.T) {
 	t.Parallel()
 	dir, table, sibling, gate := bearerTableFixture(t)
 	cfg := config.DefaultConfig()
-	ctx := adkagent.ToolContext(nil)
+	ctx := adkagent.Context(nil)
 
 	// Control: the same tools read an ordinary file beside it, so every
 	// refusal below is about the table, not the directory or the mode.
@@ -146,7 +146,7 @@ func TestAgentToolsCannotReachTheBearerTableThroughALink(t *testing.T) {
 	}
 	dir, table, _, gate := bearerTableFixture(t)
 	cfg := config.DefaultConfig()
-	ctx := adkagent.ToolContext(nil)
+	ctx := adkagent.Context(nil)
 
 	sym := filepath.Join(dir, "innocent.txt")
 	if err := os.Symlink(table, sym); err != nil {
@@ -215,7 +215,7 @@ func TestAgentToolsCannotReachTheBearerTableAfterASecretUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := adkagent.ToolContext(nil)
+	ctx := adkagent.Context(nil)
 	for _, p := range []string{table, filepath.Join(dir, "..2026_B", "users.json"), filepath.Join(dir, "..data", "users.json")} {
 		res, err := readFileFunc(gate, config.DefaultConfig())(ctx, readFileArgs{Path: p})
 		mustRefuse(t, "read_file "+strings.TrimPrefix(p, dir), res, err)

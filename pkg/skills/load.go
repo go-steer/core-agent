@@ -34,9 +34,9 @@ import (
 	"strings"
 	"time"
 
-	adktool "google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/skilltoolset"
-	"google.golang.org/adk/tool/skilltoolset/skill"
+	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/skilltoolset"
+	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 	"gopkg.in/yaml.v3"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -398,7 +398,7 @@ func sanitizeFrontmatter(data []byte) []byte {
 		return data
 	}
 
-	// Filter down to fields strictly supported by google.golang.org/adk/tool/skilltoolset/skill.Frontmatter.
+	// Filter down to fields strictly supported by google.golang.org/adk/v2/tool/skilltoolset/skill.Frontmatter.
 	// This ensures maximum compatibility and prevents yaml unmarshal errors for extended schemas (e.g. Claude Skills 2.0).
 	//
 	// core-agent's own `requires:` key (#962) is among the fields this

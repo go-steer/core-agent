@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/models"
@@ -36,7 +36,7 @@ import (
 // stop a pathological server from spinning us forever.
 const maxPauseTurnContinuations = 4
 
-// llm implements google.golang.org/adk/model.LLM for Anthropic Claude.
+// llm implements google.golang.org/adk/v2/model.LLM for Anthropic Claude.
 // One llm corresponds to one model ID; the Provider mints a fresh
 // instance per Model() call.
 type llm struct {

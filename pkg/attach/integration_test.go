@@ -28,8 +28,8 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
@@ -109,7 +109,7 @@ func appendTestEvent(t *testing.T, h *eventlog.Handle, appName, userID, sessionI
 	if err != nil {
 		t.Fatalf("session Get: %v", err)
 	}
-	ev := session.NewEventWithContext(context.Background(), "evt-"+text)
+	ev := session.NewEvent(context.Background(), "evt-"+text)
 	ev.Author = "test"
 	ev.LLMResponse = adkmodel.LLMResponse{}
 	// Attach a synthetic detail in CustomMetadata so receivers can

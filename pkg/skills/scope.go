@@ -20,9 +20,9 @@ import (
 	"io"
 	"sort"
 
-	adktool "google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/skilltoolset"
-	"google.golang.org/adk/tool/skilltoolset/skill"
+	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/skilltoolset"
+	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )

@@ -23,23 +23,25 @@ import (
 	"sync"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/memory"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/toolconfirmation"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/memory"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/digest"
 )
 
-// stubToolCtx is a minimal adkagent.ToolContext implementation for digest_wrap
-// unit tests. Only FunctionCallID is meaningfully populated; every
-// other method returns the zero value. Full-interface satisfaction
-// keeps compile-time honest — a future ADK bump that adds a method
-// forces us to update the stub rather than silently drifting.
+// stubToolCtx is a minimal adkagent.Context implementation for digest_wrap
+// unit tests. Only FunctionCallID is meaningfully populated; the
+// methods it defines return zero values. Embedding
+// agent.StrictContextMock keeps it compiling as ADK grows the interface,
+// and any method the fake does not override panics when called, so a
+// new dependency on the context fails loudly instead of reading a
+// silent zero value.
 type stubToolCtx struct {
-	context.Context
+	adkagent.StrictContextMock
 	callID string
 }
 
@@ -59,7 +61,7 @@ func (s *stubToolCtx) Branch() string                       { return "" }
 func (s *stubToolCtx) Artifacts() adkagent.Artifacts { return nil }
 func (s *stubToolCtx) State() session.State          { return nil }
 
-// adkagent.ToolContext (adds).
+// adkagent.Context (adds).
 func (s *stubToolCtx) FunctionCallID() string                               { return s.callID }
 func (s *stubToolCtx) Actions() *session.EventActions                       { return nil }
 func (s *stubToolCtx) ToolConfirmation() *toolconfirmation.ToolConfirmation { return nil }
@@ -180,7 +182,7 @@ func TestDigestingTool_Run_LargeJSONResponsePruned(t *testing.T) {
 	}
 
 	bigMsg := strings.Repeat("x", 5000)
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-abc"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-abc"}
 	res, err := echo.(runnable).Run(callCtx, map[string]any{"msg": bigMsg})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -225,7 +227,7 @@ func TestDigestingTool_Run_UnderThresholdPassesThrough(t *testing.T) {
 		t.Fatal("no echo tool found")
 	}
 
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-tiny"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-tiny"}
 	res, err := echo.(runnable).Run(callCtx, map[string]any{"msg": "hi"})
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +250,7 @@ func TestDigestingTool_Run_UpstreamErrorPropagatesUnwrapped(t *testing.T) {
 		inner: renamedTool{inner: inner, prefix: "demo"},
 		opts:  &DigestOptions{Threshold: 0},
 	}
-	_, err := dt.Run(&stubToolCtx{Context: context.Background()}, nil)
+	_, err := dt.Run(&stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, nil)
 	if err == nil || err.Error() != "upstream boom" {
 		t.Errorf("expected upstream error to propagate verbatim, got %v", err)
 	}
@@ -274,7 +276,7 @@ func TestDigestingTool_Run_TelemetryRecorded(t *testing.T) {
 		t.Fatal("no echo tool found")
 	}
 	bigMsg := strings.Repeat("y", 5000)
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-tel"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-tel"}
 	if _, err := echo.(runnable).Run(callCtx, map[string]any{"msg": bigMsg}); err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +347,7 @@ func TestDigestingTool_Run_LLMFallback_PopulatesSubagentSavings(t *testing.T) {
 		LLMFallback: fallback,
 	})
 
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-fallback"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-fallback"}
 	res, err := tool.(runnable).Run(callCtx, map[string]any{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -416,7 +418,7 @@ func TestDigestingTool_Run_LLMFallback_NotInvokedOnStructuralPath(t *testing.T) 
 	// Structurally-reducible payload: a long-string value that the
 	// pruner will truncate, taking the response back under threshold.
 	bigMsg := strings.Repeat("x", 5000)
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-structural"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-structural"}
 	res, err := echo.(runnable).Run(callCtx, map[string]any{"msg": bigMsg})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -461,7 +463,7 @@ func TestDigestingTool_Run_LLMFallback_ErrorDegradesToBoundedPassthrough(t *test
 		LLMFallback: fallback,
 	})
 
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-fallback-err"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-fallback-err"}
 	res, err := tool.(runnable).Run(callCtx, map[string]any{})
 	if err != nil {
 		t.Fatalf("Run should not surface fallback errors — got: %v", err)
@@ -508,7 +510,7 @@ func (errRunnable) Name() string                            { return "err" }
 func (errRunnable) Description() string                     { return "always errors" }
 func (errRunnable) IsLongRunning() bool                     { return false }
 func (errRunnable) Declaration() *genai.FunctionDeclaration { return nil }
-func (e errRunnable) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
+func (e errRunnable) Run(_ adkagent.Context, _ any) (map[string]any, error) {
 	return nil, e.err
 }
 
@@ -526,7 +528,7 @@ func (f fixedResponseRunnable) Name() string                            { return
 func (f fixedResponseRunnable) Description() string                     { return "returns a fixed map" }
 func (f fixedResponseRunnable) IsLongRunning() bool                     { return false }
 func (f fixedResponseRunnable) Declaration() *genai.FunctionDeclaration { return nil }
-func (f fixedResponseRunnable) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
+func (f fixedResponseRunnable) Run(_ adkagent.Context, _ any) (map[string]any, error) {
 	return f.resp, nil
 }
 
@@ -564,8 +566,8 @@ func wrapFixedTool(t *testing.T, name string, resp map[string]any, opts *DigestO
 // Compile-time asserts so future ADK / interface bumps force the
 // stub to update rather than silently drift.
 var (
-	_ adkagent.ToolContext = (*stubToolCtx)(nil)
-	_ digest.Store         = (*spyStore)(nil)
+	_ adkagent.Context = (*stubToolCtx)(nil)
+	_ digest.Store     = (*spyStore)(nil)
 )
 
 // TestDigestingTool_Run_LatencyStampedOnAllPaths pins the #277
@@ -588,7 +590,7 @@ func TestDigestingTool_Run_LatencyStampedOnAllPaths(t *testing.T) {
 	toolsLarge := runWrappedEcho(t, "demo", "demo", &DigestOptions{Threshold: 100})
 	echoLarge := pickEchoTool(t, toolsLarge)
 	res, err := echoLarge.(runnable).Run(
-		&stubToolCtx{Context: context.Background(), callID: "call-latency-large"},
+		&stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-latency-large"},
 		map[string]any{"msg": strings.Repeat("x", 5000)},
 	)
 	if err != nil {
@@ -600,7 +602,7 @@ func TestDigestingTool_Run_LatencyStampedOnAllPaths(t *testing.T) {
 	toolsSmall := runWrappedEcho(t, "demo", "demo", &DigestOptions{Threshold: 100_000})
 	echoSmall := pickEchoTool(t, toolsSmall)
 	res, err = echoSmall.(runnable).Run(
-		&stubToolCtx{Context: context.Background(), callID: "call-latency-small"},
+		&stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-latency-small"},
 		map[string]any{"msg": "tiny"},
 	)
 	if err != nil {
@@ -696,7 +698,7 @@ func TestDigestingTool_Run_OnResultFiresWithDecoratedSavings(t *testing.T) {
 		OnResult:    onResult,
 	})
 
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-onresult"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-onresult"}
 	if _, err := tool.(runnable).Run(callCtx, map[string]any{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -726,7 +728,7 @@ func TestDigestingTool_Run_OnResultNilSkipsCallback(t *testing.T) {
 		// OnResult intentionally nil
 	})
 	echo := pickEchoTool(t, tools)
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-noon"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-noon"}
 	if _, err := echo.(runnable).Run(callCtx, map[string]any{"msg": strings.Repeat("x", 5000)}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -745,7 +747,7 @@ func TestDigestingTool_Run_EmitsMCPToolCallSpan(t *testing.T) {
 
 	tools := runWrappedEcho(t, "demo", "demo", &DigestOptions{Threshold: 100})
 	echo := pickEchoTool(t, tools)
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-otel"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-otel"}
 	if _, err := echo.(runnable).Run(callCtx, map[string]any{"msg": strings.Repeat("x", 5000)}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -851,7 +853,7 @@ func TestDigestingTool_Run_LLMFallback_CarriesTheSubagentCacheBuckets(t *testing
 		LLMFallback: fallback,
 	})
 
-	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-cache"}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-cache"}
 	res, err := tool.(runnable).Run(callCtx, map[string]any{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -911,7 +913,7 @@ func TestDigestingTool_Run_LLMFallback_EmitsZeroCacheBucketsExplicitly(t *testin
 	})
 
 	res, err := tool.(runnable).Run(
-		&stubToolCtx{Context: context.Background(), callID: "call-nocache"}, map[string]any{})
+		&stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-nocache"}, map[string]any{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

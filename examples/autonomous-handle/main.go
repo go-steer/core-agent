@@ -32,8 +32,8 @@ import (
 	"log"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
+	adkmodel "google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"

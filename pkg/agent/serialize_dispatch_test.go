@@ -22,10 +22,10 @@ import (
 	"testing"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 )
 
@@ -90,7 +90,7 @@ func TestDispatch_SerializesMutatingKeepsReadOnlyConcurrent(t *testing.T) {
 	type empty struct{}
 	mkMut := func(name string, first bool) tool.Tool {
 		tl, err := functiontool.New(functiontool.Config{Name: name, Description: "mutating stub"},
-			func(_ adkagent.ToolContext, _ empty) (empty, error) {
+			func(_ adkagent.Context, _ empty) (empty, error) {
 				cur := mutInFlight.Add(1)
 				for {
 					prev := mutMaxInFlight.Load()
@@ -116,7 +116,7 @@ func TestDispatch_SerializesMutatingKeepsReadOnlyConcurrent(t *testing.T) {
 		return tl
 	}
 	grepTool, err := functiontool.New(functiontool.Config{Name: "grep", Description: "read-only stub"},
-		func(_ adkagent.ToolContext, _ empty) (empty, error) {
+		func(_ adkagent.Context, _ empty) (empty, error) {
 			select {
 			case <-mutStarted: // wait until a mutating tool provably holds the lock
 			case <-time.After(5 * time.Second):

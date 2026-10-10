@@ -28,23 +28,24 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/memory"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/toolconfirmation"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/memory"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
-// refusalToolCtx is a minimal adkagent.ToolContext for driving a registered
-// tool's Run directly. Full-interface satisfaction is deliberate: an
-// ADK bump that adds a method should break the stub rather than
-// silently drift.
+// refusalToolCtx is a minimal adkagent.Context for driving a registered
+// tool's Run directly. Embedding agent.StrictContextMock keeps it
+// compiling as ADK grows the interface, and any method the fake does
+// not override panics when called, so a new dependency on the context
+// fails loudly instead of reading a silent zero value.
 type refusalToolCtx struct {
-	context.Context
+	adkagent.StrictContextMock
 }
 
 func (c *refusalToolCtx) UserContent() *genai.Content          { return nil }
@@ -72,12 +73,12 @@ func (c *refusalToolCtx) SearchMemory(context.Context, string) (*memory.SearchRe
 func runToolJSON(t *testing.T, tl tool.Tool, ctx context.Context, args map[string]any) map[string]any {
 	t.Helper()
 	runner, ok := tl.(interface {
-		Run(adkagent.ToolContext, any) (map[string]any, error)
+		Run(adkagent.Context, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("%s is not runnable", tl.Name())
 	}
-	res, err := runner.Run(&refusalToolCtx{Context: ctx}, args)
+	res, err := runner.Run(&refusalToolCtx{StrictContextMock: adkagent.NewStrictContextMock(ctx)}, args)
 	if err != nil {
 		t.Fatalf("%s.Run: %v", tl.Name(), err)
 	}

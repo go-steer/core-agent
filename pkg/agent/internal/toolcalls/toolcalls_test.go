@@ -21,14 +21,14 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
 // callEvent builds a consolidated model event carrying tool calls.
 func callEvent(calls ...*genai.FunctionCall) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv")
+	ev := session.NewEvent(context.Background(), "inv")
 	parts := []*genai.Part{{Text: "calling a tool"}}
 	for _, fc := range calls {
 		parts = append(parts, &genai.Part{FunctionCall: fc})
@@ -41,7 +41,7 @@ func callEvent(calls ...*genai.FunctionCall) *session.Event {
 
 // responseEvent builds the user-role event carrying tool results.
 func responseEvent(resps ...*genai.FunctionResponse) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv")
+	ev := session.NewEvent(context.Background(), "inv")
 	var parts []*genai.Part
 	for _, fr := range resps {
 		parts = append(parts, &genai.Part{FunctionResponse: fr})

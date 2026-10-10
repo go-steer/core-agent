@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -54,7 +54,7 @@ func (f *fakeSessionService) AppendEvent(_ context.Context, _ session.Session, e
 }
 
 func eventWithGrounding(queries []string, sources [][2]string) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-1")
+	ev := session.NewEvent(context.Background(), "inv-1")
 	ev.Author = "agent"
 	ev.Branch = "agent"
 	ev.LLMResponse = adkmodel.LLMResponse{
@@ -73,7 +73,7 @@ func TestGroundingProjection_NoMetadata_NoSynthetics(t *testing.T) {
 	t.Parallel()
 	fake := &fakeSessionService{}
 	wrapped := GroundingProjection(fake)
-	ev := session.NewEventWithContext(context.Background(), "inv-1")
+	ev := session.NewEvent(context.Background(), "inv-1")
 	ev.Author = "agent"
 	if err := wrapped.AppendEvent(context.Background(), nil, ev); err != nil {
 		t.Fatalf("AppendEvent: %v", err)
@@ -154,7 +154,7 @@ func TestGroundingProjection_SkipsEmptySourceEntries(t *testing.T) {
 	t.Parallel()
 	fake := &fakeSessionService{}
 	wrapped := GroundingProjection(fake)
-	ev := session.NewEventWithContext(context.Background(), "inv-1")
+	ev := session.NewEvent(context.Background(), "inv-1")
 	ev.LLMResponse = adkmodel.LLMResponse{
 		GroundingMetadata: &genai.GroundingMetadata{
 			GroundingChunks: []*genai.GroundingChunk{

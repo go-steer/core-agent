@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 )
 
 // ScheduleEvent is what the schedule_next_turn tool emits when the
@@ -159,7 +159,7 @@ func NewScheduleTool(opts ScheduleOptions) (tool.Tool, <-chan ScheduleEvent, err
 // tool. Extracted so tests can drive it directly without going through
 // ADK's functiontool wrapper.
 func scheduleFunc(ch chan<- ScheduleEvent, maxDefer time.Duration) functiontool.Func[scheduleArgs, scheduleResult] {
-	return func(_ adkagent.ToolContext, in scheduleArgs) (scheduleResult, error) {
+	return func(_ adkagent.Context, in scheduleArgs) (scheduleResult, error) {
 		now := time.Now()
 		wakeAt, rerr := resolveWakeAt(in, now)
 		if rerr != "" {

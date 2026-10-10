@@ -18,7 +18,7 @@
 //
 // The two are exposed as distinct provider names ("gemini" and "vertex")
 // so users and automation can pin to a backend explicitly. Both delegate
-// to google.golang.org/adk/model/gemini under the hood.
+// to google.golang.org/adk/v2/model/gemini under the hood.
 package gemini
 
 import (
@@ -28,8 +28,8 @@ import (
 	"os"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	adkmodel "google.golang.org/adk/model"
-	adkgemini "google.golang.org/adk/model/gemini"
+	adkmodel "google.golang.org/adk/v2/model"
+	adkgemini "google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"

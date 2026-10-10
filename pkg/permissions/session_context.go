@@ -54,7 +54,7 @@ func WithSessionGate(ctx context.Context, g *Gate) context.Context {
 // to their constructor-time gate in that case.
 func SessionGateFromContext(ctx context.Context) (g *Gate, ok bool) {
 	if ctx == nil {
-		// Tests sometimes pass a nil agent.ToolContext that fronts a nil
+		// Tests sometimes pass a nil agent.Context that fronts a nil
 		// context.Context. ctx.Value(...) on a nil context panics —
 		// guard so the gate methods stay safe to call from those
 		// paths (where there's no session gate to find anyway).

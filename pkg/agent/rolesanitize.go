@@ -47,7 +47,7 @@ import (
 	"context"
 	"iter"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -93,10 +93,16 @@ func (l *roleSanitizingLLM) WithoutBuiltins() adkmodel.LLM {
 // delegates. When nothing needs dropping the original req is passed
 // through untouched (the common case — a well-formed main-turn request).
 // Otherwise a shallow copy carries the filtered slice so the caller's
-// req and its Contents backing array are never mutated.
+// req and its Contents backing array are never mutated. A request left
+// with no contents — empty to begin with, or emptied by the filter —
+// carries emptyContentsPlaceholder instead.
 func (l *roleSanitizingLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	if req != nil {
-		if cleaned, changed := sanitizeContentRoles(req.Contents); changed {
+		cleaned, changed := sanitizeContentRoles(req.Contents)
+		if len(cleaned) == 0 {
+			cleaned, changed = []*genai.Content{genai.NewContentFromText(emptyContentsPlaceholder, genai.RoleUser)}, true
+		}
+		if changed {
 			cp := *req
 			cp.Contents = cleaned
 			req = &cp
@@ -104,6 +110,17 @@ func (l *roleSanitizingLLM) GenerateContent(ctx context.Context, req *adkmodel.L
 	}
 	return l.inner.GenerateContent(ctx, req, stream)
 }
+
+// emptyContentsPlaceholder is the user turn a request with no contents is
+// sent with. A wake on a fresh session with an empty inbox runs a turn
+// with nothing to say, and both providers refuse an empty conversation:
+// Vertex Gemini with "400 INVALID_ARGUMENT: at least one contents field
+// is required", Anthropic with its own 400. ADK v1's Gemini model added
+// exactly this text on its own; ADK v2 dropped it, so the turn started
+// failing on Gemini after the upgrade. The wording is ADK v1's, so a
+// Gemini session sees what it always saw, and an Anthropic session gets
+// the same instead of an error.
+const emptyContentsPlaceholder = "Handle the requests as specified in the System Instruction."
 
 // validGenaiRole reports whether r is a content role Gemini accepts.
 func validGenaiRole(r string) bool {

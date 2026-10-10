@@ -81,7 +81,7 @@ import (
 	"context"
 	"fmt"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
@@ -236,7 +236,7 @@ func (a *Agent) drainRefusalStormAudit() {
 	if err != nil {
 		return
 	}
-	ev := session.NewEventWithContext(context.Background(), "gate-refusal-storm")
+	ev := session.NewEvent(context.Background(), "gate-refusal-storm")
 	ev.Author = refusalStormAuthor
 	ev.CustomMetadata = map[string]any{
 		"source":  "gate",

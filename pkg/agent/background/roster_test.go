@@ -19,9 +19,9 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -338,7 +338,7 @@ func TestSpawnAgentProcessRequest_PacksTheWrapper(t *testing.T) {
 
 	spawn := NewSpawnAgentTool(mgr)
 	pr, ok := spawn.(interface {
-		ProcessRequest(adkagent.ToolContext, *adkmodel.LLMRequest) error
+		ProcessRequest(adkagent.Context, *adkmodel.LLMRequest) error
 	})
 	if !ok {
 		t.Fatal("spawn_agent does not implement ProcessRequest; ADK preprocess would reject it")

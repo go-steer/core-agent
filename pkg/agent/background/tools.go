@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
@@ -606,7 +606,7 @@ func requiresAbsorbDisclosure(class StopClass) bool {
 // NewSpawnAgentTool returns a tool the parent's model can call to
 // launch a new in-process background subagent. The tool's name in
 // the model's view is "spawn_agent"; the registered handler defers
-// to mgr.Spawn after reading the calling adkagent.ToolContext's branch so
+// to mgr.Spawn after reading the calling adkagent.Context's branch so
 // the new subagent's events land in the right hierarchical branch.
 //
 // Spawn errors (invalid spec, depth/concurrency cap, unknown tool)
@@ -616,7 +616,7 @@ func requiresAbsorbDisclosure(class StopClass) bool {
 // errors propagate normally since those are typically caller-fixable
 // configuration problems.
 func NewSpawnAgentTool(mgr *Manager) tool.Tool {
-	handler := func(toolCtx adkagent.ToolContext, args spawnAgentArgs) (spawnAgentResult, error) {
+	handler := func(toolCtx adkagent.Context, args spawnAgentArgs) (spawnAgentResult, error) {
 		// Gate the spawn before resolving it. A denial is a refusal, not
 		// a Go error, for the same reason every other failed launch here
 		// is one: the model can act on it (record the plan, pick a
@@ -739,7 +739,7 @@ type stopAgentResult struct {
 // tool (#748) rather than gating it. The docs were corrected to say
 // spawn_agent instead of the family.
 func NewStopAgentTool(mgr *Manager) tool.Tool {
-	handler := func(_ adkagent.ToolContext, args stopAgentArgs) (stopAgentResult, error) {
+	handler := func(_ adkagent.Context, args stopAgentArgs) (stopAgentResult, error) {
 		stopped, err := mgr.StopAndReport(args.Name)
 		if err != nil {
 			return stopAgentResult{

@@ -51,7 +51,7 @@ package attach
 import (
 	"context"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // Event names and authors for the per-turn failure rows.
@@ -95,7 +95,7 @@ const (
 // typed frame's field: true when the trip cut the turn in flight (a
 // `canceled` turn error follows), false when it fired at the boundary.
 func NewGuardrailTurnTripEvent(guardrail, reason string, haltedTurn bool) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), GuardrailTurnTripEventName)
+	ev := session.NewEvent(context.Background(), GuardrailTurnTripEventName)
 	ev.Author = GuardrailTurnTripEventAuthor
 	ev.CustomMetadata = map[string]any{
 		guardrailMetaSource:    "agent",
@@ -165,7 +165,7 @@ func guardrailTripFromRow(ev *session.Event) GuardrailTrip {
 // always present but meaningless half the time is a key consumers read
 // wrong.
 func NewTurnErrorEvent(te TurnError, promptID, cutBy string) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), TurnErrorEventName)
+	ev := session.NewEvent(context.Background(), TurnErrorEventName)
 	ev.Author = TurnErrorEventAuthor
 	md := map[string]any{
 		guardrailMetaSource:  "agent",

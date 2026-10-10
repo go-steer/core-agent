@@ -19,11 +19,11 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/memory"
-	"google.golang.org/adk/session"
-	adktool "google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/toolconfirmation"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/memory"
+	"google.golang.org/adk/v2/session"
+	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -41,7 +41,7 @@ func (p *probeTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: "probe"}
 }
 
-func (p *probeTool) Run(adkagent.ToolContext, any) (map[string]any, error) {
+func (p *probeTool) Run(adkagent.Context, any) (map[string]any, error) {
 	return map[string]any{"state": p.payload}, nil
 }
 
@@ -70,13 +70,13 @@ func TestNew_BindsTheToolCatalogToWaitAndVerify(t *testing.T) {
 		t.Fatal("wait_and_verify is not in the agent's tool list")
 	}
 	runnable, ok := registered.(interface {
-		Run(adkagent.ToolContext, any) (map[string]any, error)
+		Run(adkagent.Context, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("registered wait_and_verify (%T) is not callable", registered)
 	}
 
-	out, err := runnable.Run(&wiringToolCtx{Context: context.Background()}, map[string]any{
+	out, err := runnable.Run(&wiringToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, map[string]any{
 		"tool":            "probe",
 		"expect_contains": "ready",
 	})
@@ -102,19 +102,19 @@ func TestNew_WaitAndVerifyStillRefusesAMutatingSibling(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	var runnable interface {
-		Run(adkagent.ToolContext, any) (map[string]any, error)
+		Run(adkagent.Context, any) (map[string]any, error)
 	}
 	for _, tl := range a.Tools() {
 		if tl.Name() == tools.WaitAndVerifyToolName {
 			runnable, _ = tl.(interface {
-				Run(adkagent.ToolContext, any) (map[string]any, error)
+				Run(adkagent.Context, any) (map[string]any, error)
 			})
 		}
 	}
 	if runnable == nil {
 		t.Fatal("wait_and_verify is not callable in the agent's tool list")
 	}
-	_, err = runnable.Run(&wiringToolCtx{Context: context.Background()}, map[string]any{
+	_, err = runnable.Run(&wiringToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, map[string]any{
 		"tool":            "apply_manifest",
 		"expect_contains": "ok",
 	})
@@ -132,16 +132,17 @@ func (m *mutatingProbe) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: "apply_manifest"}
 }
 
-func (m *mutatingProbe) Run(adkagent.ToolContext, any) (map[string]any, error) {
+func (m *mutatingProbe) Run(adkagent.Context, any) (map[string]any, error) {
 	return map[string]any{"applied": true}, nil
 }
 
-// wiringToolCtx is a minimal agent.ToolContext for driving a registered
-// tool's Run directly. Full-interface satisfaction is deliberate: an
-// ADK bump that adds a method should break the stub rather than
-// silently drift.
+// wiringToolCtx is a minimal agent.Context for driving a registered
+// tool's Run directly. Embedding agent.StrictContextMock keeps it
+// compiling as ADK grows the interface, and any method the fake does
+// not override panics when called, so a new dependency on the context
+// fails loudly instead of reading a silent zero value.
 type wiringToolCtx struct {
-	context.Context
+	adkagent.StrictContextMock
 }
 
 func (c *wiringToolCtx) UserContent() *genai.Content          { return nil }

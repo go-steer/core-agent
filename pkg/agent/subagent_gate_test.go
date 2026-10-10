@@ -20,12 +20,12 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/memory"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/toolconfirmation"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/memory"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/internal/testutil"
@@ -49,10 +49,12 @@ func (answeringLLM) GenerateContent(context.Context, *adkmodel.LLMRequest, bool)
 	}
 }
 
-// gateToolCtx is a minimal adkagent.ToolContext for driving a subagent tool's
-// Run directly. Full-interface satisfaction is deliberate: an ADK bump
-// that adds a method should break the stub rather than silently drift.
-type gateToolCtx struct{ context.Context }
+// gateToolCtx is a minimal adkagent.Context for driving a subagent tool's
+// Run directly. Embedding agent.StrictContextMock keeps it
+// compiling as ADK grows the interface, and any method the fake does
+// not override panics when called, so a new dependency on the context
+// fails loudly instead of reading a silent zero value.
+type gateToolCtx struct{ adkagent.StrictContextMock }
 
 func (c *gateToolCtx) UserContent() *genai.Content          { return nil }
 func (c *gateToolCtx) InvocationID() string                 { return "test-invocation" }
@@ -79,12 +81,12 @@ func (c *gateToolCtx) SearchMemory(context.Context, string) (*memory.SearchRespo
 func runSubagentTool(t *testing.T, tl tool.Tool) error {
 	t.Helper()
 	runner, ok := tl.(interface {
-		Run(adkagent.ToolContext, any) (map[string]any, error)
+		Run(adkagent.Context, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("%s is not runnable", tl.Name())
 	}
-	_, err := runner.Run(&gateToolCtx{Context: context.Background()},
+	_, err := runner.Run(&gateToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())},
 		map[string]any{"request": "look into the crashloop"})
 	return err
 }
@@ -205,9 +207,9 @@ func TestSubagentTool_PassesFullArgsToTheApprover(t *testing.T) {
 	g, probe := testutil.AutoGate(t, subagentGateBucket+":*")
 	tl := gatedSubagentTool(t, g)
 	runner := tl.(interface {
-		Run(adkagent.ToolContext, any) (map[string]any, error)
+		Run(adkagent.Context, any) (map[string]any, error)
 	})
-	_, err := runner.Run(&gateToolCtx{Context: testutil.ApproverContext(context.Background())},
+	_, err := runner.Run(&gateToolCtx{StrictContextMock: adkagent.NewStrictContextMock(testutil.ApproverContext(context.Background()))},
 		map[string]any{"request": "marker-request"})
 	if err == nil {
 		t.Fatal("subagent ran, want the probe's deny")

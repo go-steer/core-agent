@@ -15,7 +15,7 @@
 package usage
 
 import (
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // TurnTap accumulates per-model-turn usage from a stream of

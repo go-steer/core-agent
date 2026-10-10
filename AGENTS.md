@@ -7,7 +7,7 @@ instruction prefix. Keep it short and load-bearing.
 ## What this project is
 
 `core-agent` is a reusable Go-based agent built on the Google ADK
-(`google.golang.org/adk`). It's the bottom layer for any project that
+(`google.golang.org/adk/v2`). It's the bottom layer for any project that
 needs a multi-turn LLM agent in Go — model providers, MCP servers,
 skills, instruction loading, permission gating, telemetry, durable
 sessions, remote attach, and a baseline built-in tool suite

@@ -17,7 +17,7 @@ package tools
 import (
 	"fmt"
 
-	"google.golang.org/adk/model"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -34,7 +34,7 @@ type Packable interface {
 // (via req.Config.Tools[*].FunctionDeclarations).
 //
 // This is a re-implementation of
-// google.golang.org/adk/internal/toolinternal/toolutils.PackTool —
+// google.golang.org/adk/v2/internal/toolinternal/toolutils.PackTool —
 // that package is internal to ADK and we can't import it. The
 // algorithm is identical: register the tool in req.Tools, then
 // either append the declaration onto an existing genai.Tool that

@@ -19,7 +19,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -75,7 +75,7 @@ func TestReadFile_SymlinkEscape_Denied(t *testing.T) {
 
 	gate := symlinkScopeGate(t, proj)
 	fn := readFileFunc(gate, config.DefaultConfig())
-	if _, err := fn(adkagent.ToolContext(nil), readFileArgs{Path: link}); err == nil {
+	if _, err := fn(adkagent.Context(nil), readFileArgs{Path: link}); err == nil {
 		t.Fatal("read_file through escaping symlink should be denied")
 	}
 }
@@ -105,7 +105,7 @@ func TestWriteFile_SymlinkEscape_Denied(t *testing.T) {
 
 	gate := symlinkScopeGate(t, proj)
 	fn := writeFileFunc(gate)
-	if _, err := fn(adkagent.ToolContext(nil), writeFileArgs{Path: link, Content: "pwned"}); err == nil {
+	if _, err := fn(adkagent.Context(nil), writeFileArgs{Path: link, Content: "pwned"}); err == nil {
 		t.Fatal("write_file through escaping symlink should be denied")
 	}
 	if got, _ := os.ReadFile(target); string(got) != "original" {
@@ -136,7 +136,7 @@ func TestWriteFile_NewFileInSymlinkedDir_Denied(t *testing.T) {
 	gate := symlinkScopeGate(t, proj)
 	fn := writeFileFunc(gate)
 	newFile := filepath.Join(dirlink, "planted.txt")
-	if _, err := fn(adkagent.ToolContext(nil), writeFileArgs{Path: newFile, Content: "x"}); err == nil {
+	if _, err := fn(adkagent.Context(nil), writeFileArgs{Path: newFile, Content: "x"}); err == nil {
 		t.Fatal("write_file of new file in escaping symlinked dir should be denied")
 	}
 	if _, err := os.Stat(filepath.Join(outside, "planted.txt")); err == nil {
@@ -167,7 +167,7 @@ func TestDeleteFile_SymlinkEscape_Denied(t *testing.T) {
 
 	gate := symlinkScopeGate(t, proj)
 	fn := deleteFileFunc(gate)
-	if _, err := fn(adkagent.ToolContext(nil), deleteFileArgs{Path: link}); err == nil {
+	if _, err := fn(adkagent.Context(nil), deleteFileArgs{Path: link}); err == nil {
 		t.Fatal("delete_file through escaping symlink should be denied")
 	}
 	if _, err := os.Stat(victim); err != nil {
@@ -186,7 +186,7 @@ func TestReadFile_NormalPathUnaffected(t *testing.T) {
 	}
 	gate := symlinkScopeGate(t, dir)
 	fn := readFileFunc(gate, config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), readFileArgs{Path: path})
+	res, err := fn(adkagent.Context(nil), readFileArgs{Path: path})
 	if err != nil {
 		t.Fatalf("in-scope read: %v", err)
 	}

@@ -26,7 +26,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
@@ -929,7 +929,7 @@ func appendInterruptAudit(ctx context.Context, entry *Entry) {
 // (appendInterruptAudit) and by self-auditing registrants
 // (InterruptSelfAuditor) so the two paths can never drift (#565).
 func NewInterruptAuditEvent() *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "attach-interrupt")
+	ev := session.NewEvent(context.Background(), "attach-interrupt")
 	ev.Author = "attach/interrupt"
 	ev.CustomMetadata = map[string]any{"source": "operator"}
 	return ev

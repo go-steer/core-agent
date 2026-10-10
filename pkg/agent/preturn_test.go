@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -507,13 +507,13 @@ func seedPreTurnHistory(t *testing.T, a *Agent, modelParts ...*genai.Part) {
 	if err != nil {
 		t.Fatalf("session Get: %v", err)
 	}
-	user := session.NewEventWithContext(context.Background(), "preturn")
+	user := session.NewEvent(context.Background(), "preturn")
 	user.Author = "user"
 	user.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "list the pods"}}}
 	if err := svc.AppendEvent(ctx, resp.Session, user); err != nil {
 		t.Fatalf("AppendEvent(user): %v", err)
 	}
-	mdl := session.NewEventWithContext(context.Background(), "preturn")
+	mdl := session.NewEvent(context.Background(), "preturn")
 	mdl.Author = defaultAgentName
 	mdl.Content = &genai.Content{Role: genai.RoleModel, Parts: modelParts}
 	if err := svc.AppendEvent(ctx, resp.Session, mdl); err != nil {

@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 )
 
 // reportArgs is the JSON shape the spawned subagent's model sees when
@@ -48,7 +48,7 @@ func newReportAlertTool(mgr *Manager, from string, onReport func(text string)) t
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "report_alert",
 		Description: "Send an alert back to the parent agent. The text is delivered to the parent agent before its next turn. Use for noteworthy findings or things the parent should react to.",
-	}, func(_ adkagent.ToolContext, args reportArgs) (reportResult, error) {
+	}, func(_ adkagent.Context, args reportArgs) (reportResult, error) {
 		if onReport != nil {
 			onReport(args.Text)
 		}

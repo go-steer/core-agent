@@ -41,12 +41,12 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/agent/llmagent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/runner"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
@@ -698,7 +698,7 @@ func WithTools(ts []tool.Tool) Option {
 }
 
 // WithToolsets registers groups of tools (MCP servers, skills, etc.).
-// Each Toolset implements google.golang.org/adk/tool.Toolset and is
+// Each Toolset implements google.golang.org/adk/v2/tool.Toolset and is
 // passed to llmagent.Config.Toolsets.
 func WithToolsets(ts []tool.Toolset) Option {
 	return func(o *options) { o.toolsets = append(o.toolsets, ts...) }
@@ -1998,7 +1998,7 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 			if c == nil {
 				continue
 			}
-			ev := session.NewEventWithContext(ctx, fmt.Sprintf("rwc-history-%d", i))
+			ev := session.NewEvent(ctx, fmt.Sprintf("rwc-history-%d", i))
 			ev.Author = authorFor(c.Role, a.agentName)
 			ev.LLMResponse = adkmodel.LLMResponse{Content: c}
 			if err := a.sessionService.AppendEvent(ctx, sess, ev); err != nil {

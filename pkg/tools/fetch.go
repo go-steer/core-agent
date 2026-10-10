@@ -27,9 +27,9 @@ import (
 	"strings"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -164,7 +164,7 @@ func fetchURLFuncWithResolver(gate *permissions.Gate, cfg *config.Config, resolv
 			return nil
 		},
 	}
-	return func(ctx adkagent.ToolContext, in fetchURLArgs) (fetchURLResult, error) {
+	return func(ctx adkagent.Context, in fetchURLArgs) (fetchURLResult, error) {
 		if in.URL == "" {
 			return fetchURLResult{}, errors.New("fetch_url: url is required")
 		}
@@ -201,7 +201,7 @@ func fetchURLFuncWithResolver(gate *permissions.Gate, cfg *config.Config, resolv
 		// Parent the request on the inbound tool ctx (not
 		// context.Background) so the turn-level cancel signal —
 		// /interrupt, daemon shutdown — aborts an in-flight fetch.
-		// adkagent.ToolContext is an interface; some tests pass nil. Fall
+		// adkagent.Context is an interface; some tests pass nil. Fall
 		// back to Background in that case.
 		parent := context.Context(ctx)
 		if parent == nil {

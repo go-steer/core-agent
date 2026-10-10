@@ -130,6 +130,16 @@ def canonical(obj):
         return ""
 
 
+def ev_get(ev, camel, pascal, default=None):
+    """One session.Event field, from either wire form: ADK v1 wrote
+    PascalCase keys and every zero value, v2 writes camelCase and omits
+    zero values, and the archive holds both. Key presence decides, so a
+    v2 event with no `partial` reads like v1's explicit false."""
+    if camel in ev:
+        return ev[camel]
+    return ev.get(pascal, default)
+
+
 def failed(resp):
     """The ADK convention: a tool error is a reserved "error" key.
     Mirrors toolcalls.ResponseError, which the agent tap delegates to;
@@ -173,12 +183,12 @@ def trace(path):
         except json.JSONDecodeError:
             continue
         ev = frame.get("event")
-        if not isinstance(ev, dict) or ev.get("Partial"):
+        if not isinstance(ev, dict) or ev_get(ev, "partial", "Partial"):
             # Partial events are what the agent tap skips too: in
             # streaming mode ADK re-emits every part on the aggregated
             # event, and counting both doubles every call.
             continue
-        content = ev.get("Content") or {}
+        content = ev_get(ev, "content", "Content") or {}
         role = content.get("role")
         for part in content.get("parts") or []:
             got = None

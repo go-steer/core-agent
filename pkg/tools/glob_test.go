@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -73,7 +73,7 @@ func TestGlob_RequiresPattern(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := globFunc(permissiveGate(t, dir), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), globArgs{Path: dir})
+	_, err := fn(adkagent.Context(nil), globArgs{Path: dir})
 	if err == nil || !strings.Contains(err.Error(), "pattern is required") {
 		t.Errorf("err = %v, want pattern-required", err)
 	}
@@ -88,7 +88,7 @@ func TestGlob_MatchesByBasename(t *testing.T) {
 	writeFile(t, dir, "sub/util.go", "")
 
 	fn := globFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), globArgs{Path: dir, Pattern: "*.go"})
+	res, err := fn(adkagent.Context(nil), globArgs{Path: dir, Pattern: "*.go"})
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestGlob_DefaultsToCurrentDir(t *testing.T) {
 	writeFile(t, dir, "x.txt", "")
 	t.Chdir(dir)
 	fn := globFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), globArgs{Pattern: "*.txt"})
+	res, err := fn(adkagent.Context(nil), globArgs{Pattern: "*.txt"})
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestGlob_SkipsHiddenDirs(t *testing.T) {
 	writeFile(t, dir, "vendor/dep.go", "")
 
 	fn := globFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), globArgs{Path: dir, Pattern: "*.go"})
+	res, err := fn(adkagent.Context(nil), globArgs{Path: dir, Pattern: "*.go"})
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestGlob_ReturnsSortedPaths(t *testing.T) {
 	writeFile(t, dir, "a.txt", "")
 	writeFile(t, dir, "b.txt", "")
 	fn := globFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), globArgs{Path: dir, Pattern: "*.txt"})
+	res, err := fn(adkagent.Context(nil), globArgs{Path: dir, Pattern: "*.txt"})
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestGlob_GateDeniesPathOutsideScope(t *testing.T) {
 	// Scope is restricted to dir; querying other should fail under
 	// allow-mode (no prompt path open).
 	fn := globFunc(scopedGate(t, dir), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), globArgs{Path: other, Pattern: "*.go"})
+	_, err := fn(adkagent.Context(nil), globArgs{Path: other, Pattern: "*.go"})
 	if err == nil {
 		t.Errorf("expected gate to deny path outside scope, got nil error")
 	}
@@ -177,7 +177,7 @@ func TestGlob_TruncatedAtLineCap(t *testing.T) {
 		"glob": {MaxLines: 3, MaxBytes: 0},
 	}
 	fn := globFunc(permissiveGate(t, dir), cfg)
-	res, err := fn(adkagent.ToolContext(nil), globArgs{Path: dir, Pattern: "*.txt"})
+	res, err := fn(adkagent.Context(nil), globArgs{Path: dir, Pattern: "*.txt"})
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestGlob_InvalidPatternRejected(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := globFunc(permissiveGate(t, dir), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), globArgs{Path: dir, Pattern: "[unclosed"})
+	_, err := fn(adkagent.Context(nil), globArgs{Path: dir, Pattern: "[unclosed"})
 	if err == nil || !strings.Contains(err.Error(), "invalid pattern") {
 		t.Errorf("err = %v, want invalid-pattern", err)
 	}

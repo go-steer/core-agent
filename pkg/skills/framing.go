@@ -19,7 +19,7 @@ import (
 	"io"
 	"strings"
 
-	"google.golang.org/adk/tool/skilltoolset/skill"
+	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 )
 
 // InstructionFraming is appended to every skill body served by

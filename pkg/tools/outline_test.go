@@ -23,8 +23,8 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -94,7 +94,7 @@ func outlineGoFixture(t *testing.T) viewFileOutlineResult {
 		t.Fatal(err)
 	}
 	fn := viewFileOutlineFunc(gateFor(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: path})
+	res, err := fn(adkagent.Context(nil), viewFileOutlineArgs{Path: path})
 	if err != nil {
 		t.Fatalf("view_file_outline: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestViewFileOutline_GoParseErrorIsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := viewFileOutlineFunc(gateFor(t, dir), config.DefaultConfig())
-	if _, err := fn(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: path}); err == nil {
+	if _, err := fn(adkagent.Context(nil), viewFileOutlineArgs{Path: path}); err == nil {
 		t.Fatal("expected an error for an unparseable Go file")
 	}
 }
@@ -216,7 +216,7 @@ func TestViewFileOutline_NonGoIsLabelledHeuristic(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := viewFileOutlineFunc(gateFor(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: path})
+	res, err := fn(adkagent.Context(nil), viewFileOutlineArgs{Path: path})
 	if err != nil {
 		t.Fatalf("view_file_outline: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestViewFileOutline_UnknownExtensionDeclines(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := viewFileOutlineFunc(gateFor(t, dir), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: path})
+	_, err := fn(adkagent.Context(nil), viewFileOutlineArgs{Path: path})
 	if err == nil {
 		t.Fatal("expected a decline for an unknown extension")
 	}
@@ -299,7 +299,7 @@ func TestViewFileOutline_NoExtensionDeclinesReadably(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := viewFileOutlineFunc(gateFor(t, dir), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: path})
+	_, err := fn(adkagent.Context(nil), viewFileOutlineArgs{Path: path})
 	if err == nil {
 		t.Fatal("expected a decline for a file with no extension")
 	}
@@ -327,7 +327,7 @@ func TestViewFileOutline_OutOfScope_Denied(t *testing.T) {
 		Scope: scope,
 	})
 	fn := viewFileOutlineFunc(gate, config.DefaultConfig())
-	if _, err := fn(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: outside}); err == nil {
+	if _, err := fn(adkagent.Context(nil), viewFileOutlineArgs{Path: outside}); err == nil {
 		t.Fatal("expected denial for an out-of-scope outline")
 	}
 }
@@ -351,7 +351,7 @@ func TestViewFileOutline_HonorsOutputCaps(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ToolOutput.PerTool["view_file_outline"] = config.ToolOutputPerToolCaps{MaxLines: 10}
 	fn := viewFileOutlineFunc(gateFor(t, dir), cfg)
-	res, err := fn(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: path})
+	res, err := fn(adkagent.Context(nil), viewFileOutlineArgs{Path: path})
 	if err != nil {
 		t.Fatalf("view_file_outline: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestViewFileOutline_IsAnOrdinaryReadTool(t *testing.T) {
 		Scope:               scope,
 		RequirePlanArtifact: true,
 	})
-	res, err := viewFileOutlineFunc(planGate, config.DefaultConfig())(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: path})
+	res, err := viewFileOutlineFunc(planGate, config.DefaultConfig())(adkagent.Context(nil), viewFileOutlineArgs{Path: path})
 	if err != nil {
 		t.Fatalf("view_file_outline must run before a plan is recorded, as read_file does: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestViewFileOutline_IsAnOrdinaryReadTool(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("package y\n\nfunc G() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := viewFileOutlineFunc(planGate, config.DefaultConfig())(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: outside}); err != nil {
+	if _, err := viewFileOutlineFunc(planGate, config.DefaultConfig())(adkagent.Context(nil), viewFileOutlineArgs{Path: outside}); err != nil {
 		t.Errorf("view_file_outline is not plan-exempt: an out-of-scope read before a plan was denied with %v", err)
 	}
 }
@@ -467,7 +467,7 @@ func TestViewFileOutline_CFamilyDeclines(t *testing.T) {
 		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, err := fn(adkagent.ToolContext(nil), viewFileOutlineArgs{Path: path})
+		_, err := fn(adkagent.Context(nil), viewFileOutlineArgs{Path: path})
 		if err == nil || !strings.Contains(err.Error(), "no outline available for") {
 			t.Errorf("%s: want the extension refusal, got %v; a prefix scan cannot see C function definitions", name, err)
 		}

@@ -77,7 +77,8 @@ with the old fixture kept frozen.
 | `rest-sessions-list-v2.json` | `GET /sessions` with the optional `title` on rows (protocol 1.6.0, #808) — the titled row pins the field name, the untitled one pins its absence | v2 |
 | `rest-create-session-v1.json` | `POST /sessions` → 201 body | v1 |
 | `rest-whoami-v1.json` | `GET /whoami` (asserted-proxy variant — populates the `omitempty` fields) | v1 |
-| `rest-subagent-events-v1.json` | `GET /sessions/{app}/{sid}/agents/{name}/events` (a truncated page — populates `next_since` + `truncated`) | v1 |
+| `rest-subagent-events-v1.json` | `GET /sessions/{app}/{sid}/agents/{name}/events` (a truncated page — populates `next_since` + `truncated`). Frozen: no longer emitted, still decoded (`TestConformance_RESTSubagentEventsV1_StillDecodes`) | v1 |
+| `rest-subagent-events-v2.json` | Same endpoint and envelope under ADK v2: the embedded `event` uses ADK's camelCase keys with zero values omitted (`"id"`, `"content"`, `"invocationId"`, `"actions": {}`) instead of v1's untagged `"ID"`, `"Content"`, … with every zero field spelled out. The same change reaches every SSE `agent` frame | v2 |
 | `rest-session-acl-v1.json` | `GET` / `PATCH /sessions/{app}/{sid}/acl` → 200 body (protocol 1.10.0, #797) | v1 |
 | `rest-perms-respond-v1.json` | `POST /sessions/{app}/{sid}/perms/respond` → 200 body, attributed variant (populates the `omitempty` `approver`; protocol 1.10.0, #830) | v1 |
 | `rest-session-title-v1.json` | `POST /sessions/{app}/{sid}/title` → 200 body, persisted variant (protocol 1.10.0, #808) | v1 |

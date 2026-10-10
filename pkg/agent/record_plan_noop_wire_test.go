@@ -35,7 +35,7 @@ import (
 	"fmt"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
@@ -63,7 +63,7 @@ func runRecordPlan(t *testing.T) func(invocation, plan string) map[string]any {
 		t.Fatalf("tools.RecordPlan: %v", err)
 	}
 	runner, ok := tl.(interface {
-		Run(adkagent.ToolContext, any) (map[string]any, error)
+		Run(adkagent.Context, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("%s is not runnable", tl.Name())
@@ -71,7 +71,7 @@ func runRecordPlan(t *testing.T) func(invocation, plan string) map[string]any {
 	return func(invocation, plan string) map[string]any {
 		t.Helper()
 		ctx := &planTurnCtx{
-			gateToolCtx: &gateToolCtx{Context: context.Background()},
+			gateToolCtx: &gateToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())},
 			invocation:  invocation,
 		}
 		resp, err := runner.Run(ctx, map[string]any{"plan": plan})

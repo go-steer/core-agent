@@ -21,9 +21,9 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -183,11 +183,11 @@ func (tt *timedTool) Declaration() *genai.FunctionDeclaration {
 // ProcessRequest packs tt — the wrapper — so ADK dispatch routes
 // through the timer instead of bypassing it. Same shape as
 // serializedTool.ProcessRequest.
-func (tt *timedTool) ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error {
+func (tt *timedTool) ProcessRequest(ctx agent.Context, req *model.LLMRequest) error {
 	return PackTool(req, tt)
 }
 
-func (tt *timedTool) Run(ctx agent.ToolContext, args any) (map[string]any, error) {
+func (tt *timedTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 	rn, ok := tt.inner.(runnableTool)
 	if !ok {
 		return nil, nil
@@ -198,7 +198,7 @@ func (tt *timedTool) Run(ctx agent.ToolContext, args any) (map[string]any, error
 	if err != nil {
 		attrs = append(attrs, attribute.String(AttrErrorType, classifyToolError(err)))
 	}
-	// ctx (agent.ToolContext embeds context.Context) carries the live
+	// ctx (agent.Context embeds context.Context) carries the live
 	// mcp.tool_call / turn span, so exemplar linkage works when a
 	// span is recording. Record ignores ctx cancellation. Nil guard:
 	// ADK always passes a real Context, but direct callers (tests,

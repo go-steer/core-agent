@@ -2,7 +2,7 @@
 title: Why core-agent
 ---
 
-If you're building an agent in Go, your starting point is the [Google Agent Development Kit](https://pkg.go.dev/google.golang.org/adk) (ADK). ADK gives you a model interface, a tool-calling loop, a session abstraction, and some streaming primitives. That's roughly 30% of what a production agent needs. `core-agent` is the other 70% — the parts every team writes the second they take an ADK demo from "responds to my prompt" to "I'd let a real user touch this."
+If you're building an agent in Go, your starting point is the [Google Agent Development Kit](https://pkg.go.dev/google.golang.org/adk/v2) (ADK). ADK gives you a model interface, a tool-calling loop, a session abstraction, and some streaming primitives. That's roughly 30% of what a production agent needs. `core-agent` is the other 70% — the parts every team writes the second they take an ADK demo from "responds to my prompt" to "I'd let a real user touch this."
 
 This page makes the case directly: what `core-agent` provides on top of ADK, what you'd otherwise build yourself, and when raw ADK (or something else) is actually the right call.
 

@@ -17,7 +17,7 @@ package agent
 import (
 	"testing"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // The dispatch mechanism itself is exercised in pkg/hooks; here we

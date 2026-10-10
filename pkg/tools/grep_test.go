@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
@@ -28,7 +28,7 @@ func TestGrep_RequiresPattern(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := grepFunc(permissiveGate(t, dir), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), grepArgs{Path: dir})
+	_, err := fn(adkagent.Context(nil), grepArgs{Path: dir})
 	if err == nil || !strings.Contains(err.Error(), "pattern is required") {
 		t.Errorf("err = %v, want pattern-required", err)
 	}
@@ -38,7 +38,7 @@ func TestGrep_InvalidRegexRejected(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := grepFunc(permissiveGate(t, dir), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), grepArgs{Path: dir, Pattern: "(unclosed"})
+	_, err := fn(adkagent.Context(nil), grepArgs{Path: dir, Pattern: "(unclosed"})
 	if err == nil || !strings.Contains(err.Error(), "invalid pattern") {
 		t.Errorf("err = %v, want invalid-pattern", err)
 	}
@@ -51,7 +51,7 @@ func TestGrep_RecursiveOverDirectory(t *testing.T) {
 	writeFile(t, dir, "sub/b.go", "package b\n// TODO: also fix\n")
 	writeFile(t, dir, "c.txt", "no todo here\n")
 	fn := grepFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), grepArgs{Path: dir, Pattern: "TODO"})
+	res, err := fn(adkagent.Context(nil), grepArgs{Path: dir, Pattern: "TODO"})
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestGrep_SingleFileMode(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "a.go", "line one\nline two\nline three\n")
 	fn := grepFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), grepArgs{Path: path, Pattern: "two"})
+	res, err := fn(adkagent.Context(nil), grepArgs{Path: path, Pattern: "two"})
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestGrep_SkipsHiddenDirs(t *testing.T) {
 	writeFile(t, dir, ".git/HEAD.go", "// TODO\n")
 	writeFile(t, dir, "node_modules/lib.go", "// TODO\n")
 	fn := grepFunc(permissiveGate(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), grepArgs{Path: dir, Pattern: "TODO"})
+	res, err := fn(adkagent.Context(nil), grepArgs{Path: dir, Pattern: "TODO"})
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestGrep_TruncatedAtLineCap(t *testing.T) {
 		"grep": {MaxLines: 5, MaxBytes: 0},
 	}
 	fn := grepFunc(permissiveGate(t, dir), cfg)
-	res, err := fn(adkagent.ToolContext(nil), grepArgs{Path: path, Pattern: "match"})
+	res, err := fn(adkagent.Context(nil), grepArgs{Path: path, Pattern: "match"})
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestGrep_GateDeniesPathOutsideScope(t *testing.T) {
 	other := t.TempDir()
 	writeFile(t, other, "secret.go", "TODO\n")
 	fn := grepFunc(scopedGate(t, dir), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), grepArgs{Path: other, Pattern: "TODO"})
+	_, err := fn(adkagent.Context(nil), grepArgs{Path: other, Pattern: "TODO"})
 	if err == nil {
 		t.Errorf("expected gate to deny path outside scope, got nil")
 	}
@@ -142,7 +142,7 @@ func TestGrep_RegexGroupsAndAnchors(t *testing.T) {
 	writeFile(t, dir, "a.txt", "FOOBAR\nfoobar\nbaz\n")
 	fn := grepFunc(permissiveGate(t, dir), config.DefaultConfig())
 	// Case-sensitive RE2: only the first line matches.
-	res, err := fn(adkagent.ToolContext(nil), grepArgs{Path: dir, Pattern: "^FOO"})
+	res, err := fn(adkagent.Context(nil), grepArgs{Path: dir, Pattern: "^FOO"})
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}

@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // countInterruptAuditRows returns how many operator-interrupt audit rows

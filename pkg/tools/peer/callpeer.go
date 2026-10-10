@@ -49,10 +49,10 @@ import (
 	"strings"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/internal/attachclient"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -236,7 +236,7 @@ func defaultDescription(name string) string {
 		"in, so an operator can read the full transcript on the peer itself."
 }
 
-func (h *handler) run(ctx adkagent.ToolContext, in Args) (Result, error) {
+func (h *handler) run(ctx adkagent.Context, in Args) (Result, error) {
 	target, err := h.resolve(in.Peer)
 	if err != nil {
 		return Result{}, err
@@ -259,7 +259,7 @@ func (h *handler) run(ctx adkagent.ToolContext, in Args) (Result, error) {
 	}
 
 	// Parent on the inbound tool ctx (not Background) so /interrupt and
-	// daemon shutdown abort an in-flight delegation. adkagent.ToolContext is an
+	// daemon shutdown abort an in-flight delegation. adkagent.Context is an
 	// interface; some tests pass nil.
 	parent := context.Context(ctx)
 	if parent == nil {

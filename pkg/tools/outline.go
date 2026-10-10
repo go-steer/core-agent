@@ -28,8 +28,8 @@ import (
 	"sort"
 	"strings"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -128,7 +128,7 @@ var heuristicLangs = map[string]heuristicLang{
 // read_file: gate.CheckFileRead before touching disk, capsFor +
 // Truncate on the way out.
 func viewFileOutlineFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[viewFileOutlineArgs, viewFileOutlineResult] {
-	return func(ctx adkagent.ToolContext, in viewFileOutlineArgs) (viewFileOutlineResult, error) {
+	return func(ctx adkagent.Context, in viewFileOutlineArgs) (viewFileOutlineResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return viewFileOutlineResult{}, err

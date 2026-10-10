@@ -24,7 +24,7 @@ import (
 	"strings"
 	"sync"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/internal/vertexcache"
@@ -895,7 +895,7 @@ var ErrEmptyResponse = fmt.Errorf(
 	models.ErrEmptyResponse)
 
 // adkEmptyResponseError is the literal error text ADK's streaming
-// aggregator (google.golang.org/adk/internal/llminternal) and
+// aggregator (google.golang.org/adk/v2/internal/llminternal) and
 // non-streaming gemini model raise when a response carries no
 // Candidates[]. We string-match because the error isn't exported.
 const adkEmptyResponseError = "empty response"

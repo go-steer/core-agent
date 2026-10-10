@@ -22,9 +22,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -35,7 +35,7 @@ import (
 // implement against it for our gating wrapper.
 type runnableTool interface {
 	Declaration() *genai.FunctionDeclaration
-	Run(ctx agent.ToolContext, args any) (result map[string]any, err error)
+	Run(ctx agent.Context, args any) (result map[string]any, err error)
 }
 
 // GateToolset wraps ts so every tool inside it goes through the
@@ -119,7 +119,7 @@ func (gt *gatedTool) Declaration() *genai.FunctionDeclaration {
 // `f.Tools` to implement it). We pack `gt` (the wrapper) — not
 // `gt.inner` — so ADK's call-back dispatch routes through the gate
 // instead of bypassing it.
-func (gt *gatedTool) ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error {
+func (gt *gatedTool) ProcessRequest(ctx agent.Context, req *model.LLMRequest) error {
 	return PackTool(req, gt)
 }
 
@@ -127,7 +127,7 @@ func (gt *gatedTool) ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest
 // The args are JSON-marshalled into a short summary so the user-facing
 // prompt has context.
 //
-// The ADK runner's agent.ToolContext embeds context.Context, so we
+// The ADK runner's agent.Context embeds context.Context, so we
 // thread it through to gate.CheckGeneric — that's how the per-request
 // Caller (set by Agent.Run via auth.WithCaller) reaches the
 // permission gate, the per-session prompter, the eventlog metadata
@@ -135,7 +135,7 @@ func (gt *gatedTool) ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest
 // context.Background(), which silently stripped the Caller before
 // gate enforcement — a multi-session correctness bug found by γ
 // review. See docs/multi-session-design.md.
-func (gt *gatedTool) Run(ctx agent.ToolContext, args any) (map[string]any, error) {
+func (gt *gatedTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 	rn, ok := gt.inner.(runnableTool)
 	if !ok {
 		return nil, fmt.Errorf("tools: gated tool %q is not runnable", gt.inner.Name())

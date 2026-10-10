@@ -26,7 +26,7 @@ import (
 
 	"google.golang.org/genai"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
@@ -41,7 +41,7 @@ const budgetModel = "claude-opus-4-1"
 // toolResultEvent builds the event shape the in-turn tap sees when a
 // tool returns: one FunctionResponse part carrying n bytes of payload.
 func toolResultEvent(name string, n int) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "tool")
+	ev := session.NewEvent(context.Background(), "tool")
 	ev.Content = &genai.Content{
 		Role: genai.RoleUser,
 		Parts: []*genai.Part{{
@@ -119,7 +119,7 @@ func TestContextGrowth_IgnoresModelText(t *testing.T) {
 	t.Parallel()
 	a := budgetAgent(t, "s-975-text", 1000, NewDefaultCompactor())
 
-	ev := session.NewEventWithContext(context.Background(), "model")
+	ev := session.NewEvent(context.Background(), "model")
 	ev.Content = genai.NewContentFromText(strings.Repeat("y", 20_000), genai.RoleModel)
 	a.observeContextGrowth(ev)
 
@@ -132,7 +132,7 @@ func TestContextGrowth_SurvivesAnEmptyOrPartlessEvent(t *testing.T) {
 	t.Parallel()
 	a := budgetAgent(t, "s-975-empty", 1000, NewDefaultCompactor())
 	a.observeContextGrowth(nil)
-	a.observeContextGrowth(session.NewEventWithContext(context.Background(), "bare"))
+	a.observeContextGrowth(session.NewEvent(context.Background(), "bare"))
 	if got := a.tracker.PendingContextBytes(); got != 0 {
 		t.Errorf("PendingContextBytes = %d, want 0", got)
 	}

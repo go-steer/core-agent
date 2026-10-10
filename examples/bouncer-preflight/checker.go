@@ -21,10 +21,10 @@ import (
 	"strings"
 	"sync"
 
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -103,7 +103,7 @@ func reportVerdictTool(sink *verdictSink) (adktool.Tool, error) {
 				"if the logs prove the framework initialized the TPU and completed its miniature " +
 				"workload; put the deciding evidence in details so the generator can act on it.",
 		},
-		func(_ adkagent.ToolContext, in reportVerdictArgs) (reportVerdictResult, error) {
+		func(_ adkagent.Context, in reportVerdictArgs) (reportVerdictResult, error) {
 			sink.record(verdict(in))
 			return reportVerdictResult{Recorded: true}, nil
 		},
@@ -133,7 +133,7 @@ func saveLibraryTool(st *store, sourceJob string) (adktool.Tool, error) {
 			Description: "Save the candidate manifest you just verified into the durable preflight " +
 				"library. Call this only after the run genuinely passed, and before report_verdict.",
 		},
-		func(_ adkagent.ToolContext, in saveLibraryArgs) (saveLibraryResult, error) {
+		func(_ adkagent.Context, in saveLibraryArgs) (saveLibraryResult, error) {
 			manifest, err := st.readCandidate()
 			if err != nil {
 				return saveLibraryResult{}, err
@@ -179,7 +179,7 @@ func submitCandidateTool(st *store, s *sandbox, namespace string) (adktool.Tool,
 				"it always submits the manifest the generator saved, into the test namespace. " +
 				"A non-zero exit code means the cluster rejected it — do not fix it, report it.",
 		},
-		func(ctx adkagent.ToolContext, _ struct{}) (submitResult, error) {
+		func(ctx adkagent.Context, _ struct{}) (submitResult, error) {
 			return submitCandidateFunc(st, s, namespace)(stdContext(ctx))
 		},
 	)
@@ -231,7 +231,7 @@ func readCandidateTool(st *store) (adktool.Tool, error) {
 			Name:        "read_candidate_manifest",
 			Description: "Read the candidate preflight manifest the generator saved for you.",
 		},
-		func(_ adkagent.ToolContext, _ struct{}) (readCandidateResult, error) {
+		func(_ adkagent.Context, _ struct{}) (readCandidateResult, error) {
 			manifest, err := st.readCandidate()
 			if err != nil {
 				return readCandidateResult{}, err

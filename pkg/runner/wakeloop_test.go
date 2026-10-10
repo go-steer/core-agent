@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -133,6 +133,7 @@ func TestWakeLoop_RepeatedFailuresBackOffAndShowUpAsUnhealthy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
+	llm.interrupt = a.Interrupt
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -324,7 +325,11 @@ func TestCountsAsFailure(t *testing.T) {
 
 // flakyLLM fails, obeys a stop, or echoes on demand, so one test can
 // walk a loop from a persistent fault through to recovery.
-type flakyLLM struct{ mode atomic.Int32 }
+type flakyLLM struct {
+	mode atomic.Int32
+	// interrupt is the operator's stop — Agent.Interrupt in the test.
+	interrupt func() bool
+}
 
 const (
 	llmOK int32 = iota
@@ -336,17 +341,26 @@ func (l *flakyLLM) set(mode int32) { l.mode.Store(mode) }
 
 func (*flakyLLM) Name() string { return "flaky" }
 
-func (l *flakyLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+func (l *flakyLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		switch l.mode.Load() {
 		case llmFail:
 			yield(nil, errors.New("flaky: the cluster hung up"))
 			return
 		case llmCanceled:
-			// Not the loop's ctx — an operator interrupt or a guardrail
-			// cutting THIS turn short, which the loop must read as an
-			// obeyed stop rather than a fault.
-			yield(nil, fmt.Errorf("model call: %w", context.Canceled))
+			// Not the loop's ctx — an operator interrupt cutting THIS
+			// turn short, which the loop must read as an obeyed stop
+			// rather than a fault. Interrupt cancels the turn's context
+			// the way a real stop does: ADK v2's scheduler reads a bare
+			// context.Canceled under a live invocation as a sibling
+			// cancellation and reports the turn as clean, so a model
+			// error alone no longer stands in for a stop.
+			if !l.interrupt() {
+				yield(nil, errors.New("flaky: no turn in flight to interrupt"))
+				return
+			}
+			<-ctx.Done()
+			yield(nil, fmt.Errorf("model call: %w", ctx.Err()))
 			return
 		}
 		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "ok"}}}

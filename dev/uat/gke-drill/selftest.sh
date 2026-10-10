@@ -91,7 +91,7 @@ done
 
 head_ "Python syntax"
 for f in sse2jsonl.py score.py soak_verdict.py soak_verdict_selftest.py a2_count.py a2_count_selftest.py \
-         boundary_score.py boundary_score_selftest.py; do
+         boundary_score.py boundary_score_selftest.py adkv2_fixture.py; do
     if python3 -m py_compile "${f}" 2>/dev/null; then
         ok "${f}"
     else
@@ -465,6 +465,71 @@ refute "does not condemn a run that answered first" "${TERMINAL}" 'NOT SCOREABLE
 check  "says it died after answering" "${TERMINAL}" '^## ⚠ This run ended on an error, after it had answered'
 check  "names G6 as the box to distrust" "${TERMINAL}" '\*\*G6 is the one to distrust\*\*'
 rm -rf "${TERM_DIR}"
+
+# ── ADK v2 wire form ─────────────────────────────────────────────────
+#
+# adk/v2 tags session.Event camelCase with omitempty, so a live run on a
+# v2 daemon writes `author`/`content`/`partial` where every fixture above
+# has `Author`/`Content`/`Partial`, and leaves out a false `partial`
+# altogether. Every recorded run is graded twice — as recorded, and
+# rewritten by adkv2_fixture.py — and the two sheets must be identical.
+# The clean run is also graded with one extra partial chunk carrying a
+# resolution claim and one event carrying an ErrorCode, since no recorded
+# run has either: a reader blind to camelCase would count the partial's
+# claim and miss the error.
+head_ "score.py — ADK v2 camelCase events grade the same"
+V2_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gke-drill-selftest-v2.XXXXXX")
+python3 - "${V2_DIR}" <<'PY'
+import json, pathlib, shutil, sys
+sys.path.insert(0, ".")
+import adkv2_fixture as v2
+out = pathlib.Path(sys.argv[1])
+runs = sorted(p for p in pathlib.Path("testdata").glob("*-run") if (p / "transcript.jsonl").is_file())
+def inject(d):
+    # One partial chunk claiming success, one errored event: v1 shape.
+    p = d / "transcript.jsonl"
+    rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+    i, last = next((i, r) for i, r in reversed(list(enumerate(rows)))
+                   if r.get("sse") == "agent" and (r["data"]["event"].get("Content") or {}).get("role") == "model")
+    part = json.loads(json.dumps(last))
+    part["data"]["event"].update({"Partial": True, "Content": {"role": "model", "parts": [{"text": "The incident is resolved."}]}})
+    err = json.loads(json.dumps(last))
+    err["data"]["event"].update({"ErrorCode": "RESOURCE_EXHAUSTED", "ErrorMessage": "quota", "Content": None})
+    rows[i:i] = [part, err]
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+cases = [(src, src.name, None) for src in runs] + [(pathlib.Path("testdata/clean-run"), "clean-run-injected", inject)]
+for src, name, mutate in cases:
+    for side in ("v1", "v2"):
+        d = out / side / name
+        shutil.copytree(src, d)
+        (d / "evidence.md").unlink(missing_ok=True)
+        if mutate:
+            mutate(d)
+        if side == "v2":
+            t = d / "transcript.jsonl"
+            t.write_text(v2.v2_jsonl(t.read_text()))
+            s = d / "subagents.json"
+            if s.is_file():
+                s.write_text(json.dumps(v2.v2_tree(json.loads(s.read_text()))))
+            assert not any(v2.has_v1_keys(json.loads(l)) for l in t.read_text().splitlines() if l.strip()), d
+PY
+for d in "${V2_DIR}"/v1/*; do
+    name=${d##*/}
+    python3 ./score.py --run-dir "${V2_DIR}/v1/${name}" >/dev/null
+    python3 ./score.py --run-dir "${V2_DIR}/v2/${name}" >/dev/null
+    if diff <(sed "s#${V2_DIR}/v1#RUN#g" "${V2_DIR}/v1/${name}/evidence.md") \
+            <(sed "s#${V2_DIR}/v2#RUN#g" "${V2_DIR}/v2/${name}/evidence.md") >"${V2_DIR}/${name}.diff"; then
+        ok "${name}: the camelCase capture's sheet is identical"
+    else
+        bad "${name}: the camelCase capture's sheet differs from the PascalCase one"
+        head -20 "${V2_DIR}/${name}.diff" | sed 's/^/      /'
+    fi
+done
+V2_INJ="${V2_DIR}/v2/clean-run-injected/evidence.md"
+check  "v2: an errorCode is counted"          "${V2_INJ}" 'events carrying an ErrorCode: \*\*1\*\*'
+check  "v2: …and quoted with its errorMessage" "${V2_INJ}" '`RESOURCE_EXHAUSTED` quota'
+refute "v2: a partial chunk's claim is not read as an answer" "${V2_INJ}" 'assertive resolution claim\(s\) found'
+rm -rf "${V2_DIR}"
 
 # ── Scenario D: the apply leg ────────────────────────────────────────
 #

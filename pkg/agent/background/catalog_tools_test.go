@@ -17,7 +17,7 @@ package background
 import (
 	"testing"
 
-	"google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 )

@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	adktool "google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -51,7 +51,7 @@ func (p *pollTarget) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: p.name}
 }
 
-func (p *pollTarget) Run(ctx adkagent.ToolContext, args any) (map[string]any, error) {
+func (p *pollTarget) Run(ctx adkagent.Context, args any) (map[string]any, error) {
 	p.mu.Lock()
 	p.calls++
 	n := p.calls
@@ -671,10 +671,10 @@ func (s *stubToolset) Tools(adkagent.ReadonlyContext) ([]adktool.Tool, error) {
 	return s.tools, s.err
 }
 
-// waitToolCtx adapts a plain context into agent.ToolContext for the
+// waitToolCtx adapts a plain context into agent.Context for the
 // cancellation test; only the context half is backed.
 type waitToolCtx struct {
-	adkagent.ToolContext
+	adkagent.Context
 	ctx context.Context
 }
 

@@ -60,7 +60,12 @@ while (( $# > 0 )); do
     esac
 done
 
-[[ -n "$KUBE_CONTEXT" ]] || fail "--context is required"
+# No target cluster is a missing prerequisite, like a missing env var:
+# run-all.sh calls every script with no arguments, and the other
+# scripts skip (exit 77) in that case rather than fail. A run that
+# names a cluster but leaves out --namespace is a usage error and still
+# fails below.
+[[ -n "$KUBE_CONTEXT" ]] || skip "no --context given (run $(basename "$0") --context <kube-context> --namespace <ns> to target a GKE cluster)"
 [[ -n "$NAMESPACE" ]] || fail "--namespace is required"
 [[ -z "$GSA" || -n "$KSA" ]] || fail "--gsa requires --ksa"
 

@@ -128,7 +128,7 @@ log_step "start core-agent daemon (run 1)"
 start_daemon "${LOG_FILE_1}"
 
 log_step "alice creates her own session via POST /sessions"
-alice_create=$(curl -s -X POST -H "Authorization: Bearer ${ALICE_TOKEN}" "${BASE}/sessions")
+alice_create=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${ALICE_TOKEN}" "${BASE}/sessions")
 ALICE_SID=$(printf '%s' "${alice_create}" | grep -o '"sessionID":"[^"]*"' | head -1 | cut -d'"' -f4)
 if [[ -z "${ALICE_SID}" ]]; then
     fail "alice POST /sessions did not return a sessionID; got: ${alice_create}"
@@ -136,7 +136,7 @@ fi
 pass "alice owns session ${ALICE_SID} (run 1)"
 
 log_step "bob creates his own session via POST /sessions"
-bob_create=$(curl -s -X POST -H "Authorization: Bearer ${BOB_TOKEN}" "${BASE}/sessions")
+bob_create=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${BOB_TOKEN}" "${BASE}/sessions")
 BOB_SID=$(printf '%s' "${bob_create}" | grep -o '"sessionID":"[^"]*"' | head -1 | cut -d'"' -f4)
 if [[ -z "${BOB_SID}" ]]; then
     fail "bob POST /sessions did not return a sessionID; got: ${bob_create}"

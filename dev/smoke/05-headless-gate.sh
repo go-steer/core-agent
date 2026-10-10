@@ -36,15 +36,28 @@ log_step "headless-gate: bash call without --yolo surfaces helpful error"
 #                                          no-input path
 # The --yolo hint is only in (a); we assert on whichever signal
 # fires plus the bypass-mention when (a) fires.
+#
+# The probe must be a command the gate would ASK about. `echo` used to
+# be the probe, but the default read_only bundle (use_builtin_allow)
+# auto-allows `bash:echo *`, so the call simply ran and this smoke
+# failed on a gate that was working. `touch` is in no bundle, and the
+# marker it would create doubles as proof the call never ran.
+marker="${TMPDIR:-/tmp}/core-agent-smoke-05-${RANDOM}${RANDOM}"
+rm -f "${marker}"
 output=$(
     echo "" | (
         GOOGLE_GENAI_USE_VERTEXAI=true \
         GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-global}" \
         timeout 60 "${CORE_AGENT}" -c "${SMOKE_CONFIG}" --provider=vertex \
-            -p "Use bash to print hello world. If bash refuses, tell me exactly what error it returned." 2>&1
+            -p "Use the bash tool to run exactly: touch ${marker}   If bash refuses, tell me exactly what error it returned." 2>&1
     )
 )
 echo "${output}"
+
+if [[ -e "${marker}" ]]; then
+    rm -f "${marker}"
+    fail "headless bash ran touch without approval (${marker} was created)"
+fi
 
 # Either failure mode is acceptable evidence the headless path is
 # gated. Prefer the ErrNoPrompter (a) message since it names --yolo.

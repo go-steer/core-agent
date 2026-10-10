@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke: examples/autonomous-handle runs end-to-end with no
 # credentials. Exercises the full v1.3.0 surface:
-#   - StartAutonomous + AutonomousHandle returned
+#   - autonomous.Start + the returned handle
 #   - Pause / Resume around an Inject
 #   - Wait blocks until terminal
 #   - Status transitions visible in the printed output
@@ -17,7 +17,7 @@ output=$(
 )
 echo "${output}"
 
-assert_contains "== StartAutonomous ==" "${output}"
+assert_contains "== autonomous.Start ==" "${output}"
 assert_contains "== Pause ==" "${output}"
 assert_contains "status: paused" "${output}"
 assert_contains "== Inject ==" "${output}"

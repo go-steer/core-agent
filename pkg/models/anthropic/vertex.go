@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/go-steer/core-models/profile"
 
@@ -60,7 +61,12 @@ func NewVertex(ctx context.Context, project, region string, opts ...Option) (*Pr
 	// and a caller of NewVertex passes them explicitly.
 	prof.Params = map[string]string{"project": project, "region": region}
 	p := &Provider{name: config.ProviderAnthropicVertex, prof: prof}
-	return p.init(ctx, opts)
+	out, err := p.init(ctx, opts)
+	if err != nil && strings.Contains(err.Error(), "Application Default Credentials") {
+		// The wording operators (and the ADC-less CI skip guards) know.
+		return nil, fmt.Errorf("anthropic-vertex: load default credentials: %w (run `gcloud auth application-default login`)", err)
+	}
+	return out, err
 }
 
 // newVertexProvider is the registry constructor for "anthropic-vertex".

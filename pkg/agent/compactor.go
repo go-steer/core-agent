@@ -842,27 +842,31 @@ func (s *compactingService) Get(ctx context.Context, req *session.GetRequest) (*
 	if err != nil || resp == nil || resp.Session == nil {
 		return resp, err
 	}
-	// Materialize all events so we can scan + slice them.
-	var all []*session.Event
-	for ev := range resp.Session.Events().All() {
-		all = append(all, ev)
-	}
-	sliced := sliceFromBoundary(all)
-	if len(sliced) == len(all) {
+	all := collectEvents(resp.Session)
+	if sliced := sliceFromBoundary(all); len(sliced) == len(all) {
 		// No boundary marker; pass through unchanged.
 		return resp, nil
 	}
-	resp.Session = &slicedSession{inner: resp.Session, events: sliced}
+	resp.Session = &slicedSession{inner: resp.Session}
 	return resp, nil
 }
 
-// slicedSession wraps a real session.Session so Events() yields a
-// pre-computed sliced view. Every other method delegates to inner
-// so AppendEvent + ID + metadata behave normally (writes land in
-// the real underlying storage).
+// slicedSession wraps a real session.Session so Events() yields the
+// post-summary view. Every other method delegates to inner so
+// AppendEvent + ID + metadata behave normally (writes land in the
+// real underlying storage).
+//
+// The view is recomputed from inner on every Events() call, never
+// cached. The runner Gets the session once per turn and then appends
+// the user's message, each function call and each function response
+// to inner (AppendEvent unwraps us) — and builds every model request
+// of the turn from Events(). A view frozen at Get time therefore
+// omitted all of them: after a session's first compaction, every turn
+// sent the summary and "the actual user message follows below" with
+// no user message after it, and a tool turn's follow-up request
+// lacked its own call and response.
 type slicedSession struct {
-	inner  session.Session
-	events []*session.Event
+	inner session.Session
 }
 
 func (s *slicedSession) AppName() string           { return s.inner.AppName() }
@@ -872,11 +876,22 @@ func (s *slicedSession) State() session.State      { return s.inner.State() }
 func (s *slicedSession) LastUpdateTime() time.Time { return s.inner.LastUpdateTime() }
 
 func (s *slicedSession) Events() session.Events {
-	return &slicedEvents{events: s.events}
+	return &slicedEvents{events: sliceFromBoundary(collectEvents(s.inner))}
 }
 
-// slicedEvents implements session.Events over a pre-computed
-// in-memory slice. The runner's contents processor reads via All()
+// collectEvents materializes a session's events so they can be
+// scanned for the boundary and sliced.
+func collectEvents(sess session.Session) []*session.Event {
+	var all []*session.Event
+	for ev := range sess.Events().All() {
+		all = append(all, ev)
+	}
+	return all
+}
+
+// slicedEvents implements session.Events over one snapshot of the
+// sliced view, taken when Events() was called, so All/Len/At agree
+// with each other. The runner's contents processor reads via All()
 // (and At/Len for indexing); writes go through session.Service's
 // AppendEvent, not through this view.
 type slicedEvents struct {

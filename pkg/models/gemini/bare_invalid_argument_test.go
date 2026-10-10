@@ -122,7 +122,7 @@ func TestGenerateContent_RetriesBare400AfterSuccess(t *testing.T) {
 		Contents: []*genai.Content{{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hi"}}}},
 		Config:   &genai.GenerateContentConfig{},
 	}
-	for resp, err := range (&builtinsLLM{inner: inner}).GenerateContent(servedCtx(), req, false) {
+	for resp, err := range (retrying{inner: inner}).GenerateContent(servedCtx(), req, false) {
 		if err != nil {
 			t.Fatalf("caller saw %v, want the retry to recover", err)
 		}
@@ -156,7 +156,7 @@ func TestGenerateContent_Bare400PersistingIsARetryError(t *testing.T) {
 		{{modelText("unreached"), nil}},
 	}}
 
-	_, errs := drainLLMCtx(servedCtx(), &builtinsLLM{inner: inner})
+	_, errs := drainLLMCtx(servedCtx(), retrying{inner: inner})
 
 	if inner.calls != 2 {
 		t.Errorf("inner calls = %d, want exactly 2", inner.calls)
@@ -194,7 +194,7 @@ func TestGenerateContent_400NotRetriedOutsideThePolicy(t *testing.T) {
 				{{modelText("unreached"), nil}},
 			}}
 
-			_, errs := drainLLMCtx(tc.ctx, &builtinsLLM{inner: inner})
+			_, errs := drainLLMCtx(tc.ctx, retrying{inner: inner})
 
 			if inner.calls != 1 {
 				t.Errorf("inner calls = %d, want 1", inner.calls)

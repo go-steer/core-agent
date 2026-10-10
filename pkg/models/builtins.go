@@ -14,10 +14,11 @@
 
 package models
 
-import "context"
+import (
+	"context"
 
-// noBuiltinsKey is the context key carrying the per-request opt-out.
-type noBuiltinsKey struct{}
+	"github.com/go-steer/core-models/callctx"
+)
 
 // WithoutBuiltins marks ctx as a request that must go to the model
 // with EXACTLY the tools the caller put on it: no provider-injected
@@ -42,17 +43,9 @@ type noBuiltinsKey struct{}
 // tool-lessness would trade one bug for another.
 //
 // Both Gemini and Anthropic honor it. It can only take tools away.
-func WithoutBuiltins(ctx context.Context) context.Context {
-	return context.WithValue(ctx, noBuiltinsKey{}, true)
-}
+func WithoutBuiltins(ctx context.Context) context.Context { return callctx.WithoutBuiltins(ctx) }
 
 // BuiltinsSuppressed reports whether WithoutBuiltins was applied to
 // ctx. Backends consult it per request, since one model.LLM serves
 // both the agentic loop and the one-shot side calls.
-func BuiltinsSuppressed(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	suppressed, _ := ctx.Value(noBuiltinsKey{}).(bool)
-	return suppressed
-}
+func BuiltinsSuppressed(ctx context.Context) bool { return callctx.BuiltinsSuppressed(ctx) }

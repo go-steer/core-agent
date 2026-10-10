@@ -17,11 +17,11 @@ package compose
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
-	"google.golang.org/genai"
+	"github.com/go-steer/core-models/dialect/gemini/vertexcache"
 
-	"github.com/go-steer/core-agent/v2/internal/vertexcache"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/models/gemini"
@@ -56,7 +56,7 @@ type ContextCacheHandle interface {
 //
 // Returns the handle on success (caller wires deferred Delete) or
 // nil when caching was skipped for any reason. Never fails hard: if
-// constructing the sibling genai.Client fails, the helper logs and
+// building the caches client fails, the helper logs and
 // returns nil — the agent still starts, just without caching.
 //
 // Contract note: every skip path returns a LITERAL nil (a nil
@@ -101,14 +101,9 @@ func MaybeWireContextCache(
 		// something a normal operator would see.
 		return nil
 	}
-	clientCfg := gemProvider.ClientConfig()
-	if clientCfg == nil {
-		send("context cache: skipped (provider has no ClientConfig)")
-		return nil
-	}
-	client, err := genai.NewClient(ctx, clientCfg)
+	caches, err := gemProvider.Caches(ctx)
 	if err != nil {
-		send(fmt.Sprintf("context cache: skipped (genai.NewClient failed: %v)", err))
+		send(fmt.Sprintf("context cache: skipped (%v)", err))
 		return nil
 	}
 	// Parse TTL/Refresh from the config strings. Fall back to
@@ -117,6 +112,10 @@ func MaybeWireContextCache(
 	// over an operator typo in a duration string.
 	var opts vertexcache.Options
 	opts.DisplayName = fmt.Sprintf("core-agent-%s", cfg.Model.Name)
+	// The library's lines start "vertexcache:"; the message prefix keeps
+	// them "core-agent-vertexcache: …" on the daemon log, which the
+	// providers page and grep-based triage quote.
+	opts.Logger = log.New(log.Writer(), "core-agent-", log.Flags()|log.Lmsgprefix)
 	if cc != nil {
 		if cc.TTL != "" {
 			if d, err := time.ParseDuration(cc.TTL); err == nil {
@@ -133,13 +132,13 @@ func MaybeWireContextCache(
 			}
 		}
 	}
-	manager := vertexcache.NewManager(client.Caches, cfg.Model.Name, opts)
-	gemProvider.SetContextCache(manager.Init, manager.Name)
+	manager := vertexcache.NewManager(caches, cfg.Model.Name, opts)
+	gemProvider.SetContextCache(manager.Model(), manager.Init, manager.Name)
 	// Wire the eviction-recovery hook so a Vertex-side TTL expiry
 	// (the common case on long-lived daemons whose cache outlives a
 	// single session) triggers uncached retry + fresh Init on the
 	// next turn instead of a hard turn error.
-	gemProvider.SetContextCacheInvalidate(manager.MarkEvicted)
+	gemProvider.SetContextCacheInvalidate(manager.MarkEvictedName)
 
 	// Startup log — mirrors the "agentic subtasks:" line pattern so
 	// operators see cache state at the same glance.

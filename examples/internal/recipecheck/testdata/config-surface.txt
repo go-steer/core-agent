@@ -123,6 +123,7 @@ permissions.require_plan_artifact
 permissions.use_builtin_allow
 pricing.refresh
 pricing.source
+providers[].auth.alt_env
 providers[].auth.env
 providers[].auth.kind
 providers[].auth.scopes
@@ -155,6 +156,7 @@ providers[].models[].tier
 providers[].name
 providers[].open_models
 providers[].params
+providers[].platform
 providers[].reasoning_format
 providers[].tiers
 providers[].usage.cached_tokens

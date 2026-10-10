@@ -14,10 +14,11 @@
 
 package models
 
-import "context"
+import (
+	"context"
 
-// noPromptCacheKey is the context key carrying the one-shot opt-out.
-type noPromptCacheKey struct{}
+	"github.com/go-steer/core-models/callctx"
+)
 
 // WithoutPromptCache marks ctx as a one-shot request: a call whose
 // prompt prefix is not expected to recur, so a provider that would
@@ -40,17 +41,9 @@ type noPromptCacheKey struct{}
 // provider whose caching is disabled by config or CLI stays disabled.
 // It lives here rather than on a provider-specific option so callers in
 // pkg/agent can set it without importing a backend.
-func WithoutPromptCache(ctx context.Context) context.Context {
-	return context.WithValue(ctx, noPromptCacheKey{}, true)
-}
+func WithoutPromptCache(ctx context.Context) context.Context { return callctx.WithoutPromptCache(ctx) }
 
 // PromptCacheSuppressed reports whether WithoutPromptCache was applied
 // to ctx. Backends consult it per request, since one model.LLM serves
 // both the agentic loop and the one-shot side calls.
-func PromptCacheSuppressed(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	suppressed, _ := ctx.Value(noPromptCacheKey{}).(bool)
-	return suppressed
-}
+func PromptCacheSuppressed(ctx context.Context) bool { return callctx.PromptCacheSuppressed(ctx) }

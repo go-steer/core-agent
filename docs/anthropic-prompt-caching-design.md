@@ -109,12 +109,12 @@ Two latent invalidators are worth knowing about because they are one line away r
 
 | Concern | Location |
 |---|---|
-| Breakpoint placement | `pkg/models/anthropic/cache.go` |
+| Breakpoint placement | core-models `dialect/anthropic/cache.go` (moved from `pkg/models/anthropic/cache.go` in L4) |
 | Policy type + config gate | `pkg/models/anthropic/anthropic.go` (`CacheOptions`, `cacheOptionsFromConfig`) |
-| Request assembly | `pkg/models/anthropic/convert.go` (`buildParams`) |
-| Per-request opt-out | `pkg/models/promptcache.go`; set in `pkg/agent/compactor.go`, `pkg/agent/btw.go`, `pkg/agent/subtask.go` |
-| Re-marking a grown request | `pkg/models/anthropic/cache.go` (`reapplyCacheBreakpoints`), called from `llm.go`'s pause_turn loop |
+| Request assembly | core-models `dialect/anthropic/convert.go` (`buildParams`) |
+| Per-request opt-out | `pkg/models/promptcache.go` (core-models `callctx`); set in `pkg/agent/compactor.go`, `pkg/agent/btw.go`, `pkg/agent/subtask.go` |
+| Re-marking a grown request | core-models `dialect/anthropic/cache.go` (`reapplyCacheBreakpoints`), called from its `llm.go` pause_turn loop |
 | CLI kill switch + TTL | `cmd/core-agent/main.go` (`--no-prompt-cache`, `--prompt-cache-ttl`), `pkg/compose/prompt_cache.go` |
 | Subagent plumbing | `cmd/core-agent/subagents.go` (`resolveSubagentProvider`, `inheritPromptCache`) |
 | Config schema | `pkg/config/config.go` (`PromptCacheConfig`) |
-| Cost accounting | `pkg/pricing/pricing.go`, `pkg/usage` (see #263) |
+| Cost accounting | `pkg/pricing/pricing.go`, `pkg/usage` (see #263); the library's record reaches it through `models.Adapt` |

@@ -34,6 +34,12 @@ import (
 )
 
 // scriptedLLM answers its Nth invocation with the Nth script entry.
+// fakeEvent is one (response, error) pair a scripted model yields.
+type fakeEvent struct {
+	resp *adkmodel.LLMResponse
+	err  error
+}
+
 type scriptedLLM struct {
 	script [][]fakeEvent
 	calls  int
@@ -117,7 +123,7 @@ func TestGenerateContent_RetriesArchived429(t *testing.T) {
 		{{nil, errors.New(archived429)}},
 		{{modelText("the answer"), nil}},
 	}}
-	wrapped := &builtinsLLM{inner: inner}
+	wrapped := retrying{inner: inner}
 
 	texts, errs := drainLLM(t, wrapped)
 
@@ -141,7 +147,7 @@ func TestGenerateContent_PersistentRateLimitSurfaces(t *testing.T) {
 		{{nil, errors.New(archived429)}},
 		{{modelText("unreached"), nil}},
 	}}
-	wrapped := &builtinsLLM{inner: inner}
+	wrapped := retrying{inner: inner}
 
 	texts, errs := drainLLM(t, wrapped)
 
@@ -157,7 +163,7 @@ func TestGenerateContent_PersistentRateLimitSurfaces(t *testing.T) {
 }
 
 // The retry budget has to hold across GenerateContent calls on
-// different builtinsLLM instances — a daemon's parent and its subagents
+// different wrapped models — a daemon's parent and its subagents
 // each get their own wrapper from Model(), and quota is per project. If
 // the policy were a per-instance field, every wrapper below would find
 // a full budget and retry.
@@ -180,7 +186,7 @@ func TestTransientRetryBudgetIsProcessWide(t *testing.T) {
 			{{nil, errors.New(archived429)}},
 			{{nil, errors.New(archived429)}},
 		}}
-		drainLLM(t, &builtinsLLM{inner: spender})
+		drainLLM(t, retrying{inner: spender})
 		if spender.calls != 2 {
 			t.Fatalf("wrapper %d made %d calls, want 2 — it is inside the burst", i, spender.calls)
 		}
@@ -190,7 +196,7 @@ func TestTransientRetryBudgetIsProcessWide(t *testing.T) {
 		{{nil, errors.New(archived429)}},
 		{{modelText("unreached"), nil}},
 	}}
-	drainLLM(t, &builtinsLLM{inner: last})
+	drainLLM(t, retrying{inner: last})
 	if last.calls != 1 {
 		t.Errorf("the wrapper past the burst made %d calls, want 1 — the budget is not shared", last.calls)
 	}
@@ -205,7 +211,7 @@ func TestGenerateContent_PermanentErrorStillNotRetried(t *testing.T) {
 		{{nil, boom}},
 		{{modelText("unreached"), nil}},
 	}}
-	wrapped := &builtinsLLM{inner: inner}
+	wrapped := retrying{inner: inner}
 
 	_, errs := drainLLM(t, wrapped)
 

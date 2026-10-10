@@ -3,7 +3,7 @@ title: Providers
 ---
 
 
-`core-agent` ships four model backends, all behind the same `models.Provider` interface. Pick one explicitly via `model.provider` in `.agents/config.json` or with the `--provider` CLI flag, or let env-based auto-detection pick.
+`core-agent` ships four model backends of its own, plus [provider profiles](#provider-profiles) for everything else — OpenAI-compatible endpoints, self-hosted vLLM, SGLang and Ollama servers, Vertex AI partner models — all behind the same `models.Provider` interface. Pick one explicitly via `model.provider` in `.agents/config.json` or with the `--provider` CLI flag, or let env-based auto-detection pick.
 
 ---
 
@@ -574,6 +574,57 @@ ANTHROPIC_VERTEX_PROJECT_ID=my-gcp-project \
 - Vertex's Claude model IDs sometimes carry a `@version` suffix (e.g. `claude-opus-4-5@20251101`). The bare alias often works; if it doesn't, check the [Vertex Model Garden](https://console.cloud.google.com/vertex-ai/model-garden) for the current ID and pass it via `--model`.
 - All adapter behavior (streaming, tool round-trip, system extraction, caching) is identical to first-party Anthropic — only the client construction differs. The conversion code (`models/anthropic/convert.go`, `stream.go`, `llm.go`) is shared.
 - Auto-detection is intentionally off — opt in via `--provider anthropic-vertex` or `model.provider: "anthropic-vertex"`.
+
+---
+
+## Provider profiles
+
+Models outside Gemini and Claude are reached through **provider profiles**, built in the shared [`go-steer/core-models`](https://github.com/go-steer/core-models) library that mast uses too. A profile names a server, its wire format, its credential and what it can do; `--provider <profile>` selects one exactly like a built-in backend.
+
+core-models ships five built-in profiles:
+
+| Profile | For | Needs |
+|---|---|---|
+| `vertex-maas` | Vertex AI partner and open models (GLM, Kimi, Qwen, gpt-oss, Gemma, …) | `GOOGLE_CLOUD_PROJECT`, Application Default Credentials; `GOOGLE_CLOUD_LOCATION` (default `global`) |
+| `vllm` | a vLLM server | `base_url` |
+| `sglang` | an SGLang server | `base_url` |
+| `ollama` | a local Ollama | — (defaults to `http://localhost:11434/v1`) |
+| `openai-compatible` | any other Chat Completions endpoint | `base_url`, usually `auth` |
+
+A built-in that needs a `base_url` is used by declaring a profile that extends it, under [`providers`](/reference/configuration/#providers) in `.agents/config.json`:
+
+```json
+{
+  "version": 1,
+  "model": { "provider": "house-vllm", "name": "google/gemma-4-26B-A4B-it" },
+  "providers": [
+    {
+      "name": "house-vllm",
+      "extends": "vllm",
+      "base_url": "http://10.0.0.2:8000/v1",
+      "auth": { "kind": "bearer", "env": "HOUSE_VLLM_API_KEY" },
+      "tiers": { "mid": "google/gemma-4-26B-A4B-it" }
+    }
+  ]
+}
+```
+
+### CLI
+
+```bash
+core-agent --provider vertex-maas --model zai-org/glm-5.2-maas
+core-agent --provider house-vllm          # runs the profile's mid tier
+```
+
+### Notes
+
+- **No model named, the profile picks.** With no `--model` and no `model.name`, core-agent runs the profile's tier for the task class (`mid` without `--task`) and says so at startup. A profile with no such tier is a config error naming the fix.
+- **`small` tier is the agentic small model.** A profile's `tiers.small` is the default `--agentic-small-model`; without one, agentic subtasks inherit the parent's model.
+- **Function tools only.** The `openai-chat` wire format carries no server-side built-ins, so a `model.builtin_tools` that turns one on is refused at startup rather than silently dropped.
+- **Usage parity.** Prompt, output, cache-read, cache-write and reasoning tokens are carried into the same per-turn usage record the other backends feed, so `/stats`, metrics and cost work unchanged. Which fields a server actually reports varies; core-models' [tested models](https://github.com/go-steer/core-models/blob/main/docs/site/src/content/docs/reference/tested-models.md) page lists them per server.
+- **Pricing.** The built-in table covers Gemini and Claude. Price anything else with `model.pricing`, `.agents/pricing.json`, or `rates` on the profile's model, the lowest-precedence layer. A cost ceiling (`--max-turn-cost-usd`, `--max-session-cost-usd`, or their config fields) on a profile model with **no** price is refused at startup, because every call would count as $0 and the ceiling could never trip; the unattended default session ceiling is not refused but prints a warning.
+- **Not auto-detected.** Auto-detection only ever picks the four built-in backends; a profile is always an explicit choice.
+- **Self-hosting.** core-models keeps a [GKE vLLM fixture](https://github.com/go-steer/core-models/tree/main/deploy/gke-vllm) for running models on your own GPUs.
 
 ---
 

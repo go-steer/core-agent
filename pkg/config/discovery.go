@@ -89,6 +89,11 @@ func Load(agentsDir string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
 	}
 	warnUnknownKeys(path, data)
+	// Provider profiles first, naming the file: a profile error points
+	// at a nested block whose index alone is hard to find.
+	if err := cfg.validateProviders(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

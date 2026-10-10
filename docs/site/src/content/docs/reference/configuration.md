@@ -160,7 +160,8 @@ Top-level shape, with all fields optional except `version` and `model.name`:
   "otel": { ... },
   "url_scope": { ... },
   "content_roots": [ ... ],
-  "attach": { ... }
+  "attach": { ... },
+  "providers": [ ... ]
 }
 ```
 
@@ -203,7 +204,7 @@ Selects the LLM backend.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `provider` | string | `""` (auto-detect) | One of `gemini`, `vertex`, `anthropic`, `anthropic-vertex`. Empty = auto-detect from env. |
+| `provider` | string | `""` (auto-detect) | One of `gemini`, `vertex`, `anthropic`, `anthropic-vertex`, `echo`, `scripted`, or the name of a [provider profile](#providers): a core-models built-in (`vertex-maas`, `vllm`, `sglang`, `ollama`, `openai-compatible`) or one declared under `providers`. Empty = auto-detect from env (never a profile). |
 | `name` | string | `gemini-3.7-flash` | Model ID. **Required.** For Gemini, version 3.0 or later is required when using the default tool suite — see [Providers → Gemini 3.0+ required](/concepts/providers/#gemini-30-required-when-combining-built-ins-with-function-tools). The default is a current-generation, generally-available flash model that combines server-side search built-ins with function tools out of the box. Override with a pro-class model, or with the `gemini-3.1-pro-preview-customtools` variant (fine-tuned to prefer developer-defined tools over raw bash), when you want that behavior. |
 | `api_key` | string | `""` | Inline key for `provider: gemini`. Usually unset; read from `GOOGLE_API_KEY` / `GEMINI_API_KEY` at runtime. |
 | `vertex` | object | `null` | GCP project + region. Required when `provider: vertex`. |
@@ -245,6 +246,44 @@ Example:
 ```
 
 See [Providers](/concepts/providers/) for full details on each backend.
+
+---
+
+## `providers`
+
+Provider profiles: ways to reach models beyond the built-in backends — an OpenAI-compatible endpoint, a self-hosted vLLM, SGLang or Ollama server, a Vertex AI partner model. Each entry is one profile in [core-models' schema](https://github.com/go-steer/core-models/blob/main/docs/site/src/content/docs/reference/profiles.md), selected by its `name` with `model.provider` or `--provider`. See [Providers → Provider profiles](/concepts/providers/#provider-profiles).
+
+```json
+{
+  "version": 1,
+  "model": { "provider": "house-vllm", "name": "google/gemma-4-26B-A4B-it" },
+  "providers": [
+    {
+      "name": "house-vllm",
+      "extends": "vllm",
+      "base_url": "http://10.0.0.2:8000/v1",
+      "auth": { "kind": "bearer", "env": "HOUSE_VLLM_API_KEY" },
+      "models": [
+        {
+          "id": "google/gemma-4-26B-A4B-it",
+          "extra_body": { "chat_template_kwargs": { "enable_thinking": true } },
+          "rates": { "input_per_mtok": 0.10, "output_per_mtok": 0.40 }
+        }
+      ],
+      "tiers": { "mid": "google/gemma-4-26B-A4B-it" }
+    }
+  ]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `name` | What `model.provider` / `--provider` names. May not be one of core-agent's own six provider names, and may appear once. |
+| `extends` | A core-models built-in to start from. Every field set here overrides it. |
+| `models[].rates` | Your price for a model no catalog covers (USD per 1M tokens). The lowest-precedence [pricing](#model) layer: `model.pricing`, pricing files and the built-in table all outrank it. |
+| `tiers` | The model per tier. `mid` is what runs when you name no model; `small` is the default `--agentic-small-model`. |
+
+Profiles are checked for shape when the file loads — an error names the file. Credentials and environment variables are checked only when a profile is selected, so a declared profile nobody uses never fails a run.
 
 ---
 

@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-steer/core-models/profile"
+
 	"github.com/go-steer/core-agent/v2/pkg/hooks"
 )
 
@@ -61,6 +63,15 @@ type Config struct {
 	Checkpoint  CheckpointConfig  `json:"checkpoint,omitempty"`
 	Session     SessionConfig     `json:"session,omitempty"`
 	Safety      SafetyConfig      `json:"safety,omitempty"`
+
+	// Providers declares provider profiles: ways to reach models beyond
+	// the built-in gemini / vertex / anthropic / anthropic-vertex paths
+	// — an OpenAI-compatible endpoint, a self-hosted vLLM, SGLang or
+	// Ollama server, a Vertex AI partner model. The schema is
+	// core-models' profile.Profile; a declared profile is selected by
+	// name with model.provider or --provider, exactly like a built-in
+	// one. See providers.go and docs/model-support-design.md.
+	Providers []profile.Profile `json:"providers,omitempty"`
 
 	// ContentRoots are operator-declared external directories trusted as
 	// additional instruction/skill scopes, so an unmodified external agent
@@ -1861,11 +1872,11 @@ func (c *Config) Validate() error {
 	if c.Model.Name == "" {
 		return fmt.Errorf("config: model.name is required")
 	}
-	switch c.Model.Provider {
-	case "", ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted:
-		// ok; "" means auto-detect at resolve time.
-	default:
-		return fmt.Errorf("config: unknown model.provider %q (want one of %q, %q, %q, %q, %q, %q)", c.Model.Provider, ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted)
+	if err := c.validateProviders(); err != nil {
+		return err
+	}
+	if !c.KnownProvider(c.Model.Provider) {
+		return fmt.Errorf("config: unknown model.provider %q (want one of %s)", c.Model.Provider, c.providerChoices())
 	}
 	if c.Model.Provider == ProviderScripted && c.Mock.Script == "" {
 		return fmt.Errorf("config: mock.script is required when provider is %q (or pass --script PATH)", ProviderScripted)
@@ -2209,11 +2220,9 @@ func (c *Config) validateSubagents() error {
 			if sa.Model.Name == "" {
 				return fmt.Errorf("config: subagents[%d].model.name is required when model is set", i)
 			}
-			switch sa.Model.Provider {
-			case "", ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted:
-				// ok; "" means inherit the parent's auto-detected provider.
-			default:
-				return fmt.Errorf("config: subagents[%d].model.provider %q is unknown (want one of %q, %q, %q, %q, %q, %q)", i, sa.Model.Provider, ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted)
+			// "" means inherit the parent's auto-detected provider.
+			if !c.KnownProvider(sa.Model.Provider) {
+				return fmt.Errorf("config: subagents[%d].model.provider %q is unknown (want one of %s)", i, sa.Model.Provider, c.providerChoices())
 			}
 			// A subagent's block reaches the same CacheTTL fallback the
 			// parent's does, so it has to reach the same check — a typo

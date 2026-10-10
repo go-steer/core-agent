@@ -20,9 +20,13 @@
 // Built-in providers:
 //   - "gemini" / "vertex" — google.golang.org/adk/model/gemini
 //   - "anthropic"         — Claude via github.com/anthropics/anthropic-sdk-go
+//   - any provider profile — github.com/go-steer/core-models, through
+//     pkg/models/profiles (OpenAI-compatible endpoints, vLLM, SGLang,
+//     Ollama, Vertex AI partner models)
 //
-// Each backend's package init() calls Register so importing the
-// subpackage is enough to make the provider available.
+// Each backend's package init() calls Register (RegisterProfiles for
+// pkg/models/profiles) so importing the subpackage is enough to make
+// the provider available.
 package models
 
 import (
@@ -119,6 +123,19 @@ type Constructor func(*config.Config) (Provider, error)
 
 var registry = map[string]Constructor{}
 
+// profileConstructor builds a Provider for a provider profile — any
+// cfg.Model.Provider the registry does not hold but cfg declares or
+// core-models ships (config.Config.IsProfileProvider). Installed by
+// pkg/models/profiles' init, the same import-to-enable shape the
+// fixed-name backends use; nil until then.
+var profileConstructor Constructor
+
+// RegisterProfiles installs the Constructor for provider profiles.
+// Idiomatically called from pkg/models/profiles' init().
+func RegisterProfiles(c Constructor) {
+	profileConstructor = c
+}
+
 // Register installs a Constructor under its provider name. Idiomatically
 // called from package init() in each backend implementation.
 func Register(name string, c Constructor) {
@@ -138,8 +155,14 @@ func Resolve(cfg *config.Config) (Provider, error) {
 		return nil, fmt.Errorf("models: no provider configured and none could be auto-detected; set model.provider in .agents/config.json or one of GOOGLE_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENAI_USE_VERTEXAI=true (with GOOGLE_CLOUD_PROJECT)")
 	}
 	c, ok := registry[name]
+	if !ok && cfg.IsProfileProvider(name) {
+		if profileConstructor == nil {
+			return nil, fmt.Errorf("models: %q is a provider profile, but profile support is not linked in; import github.com/go-steer/core-agent/v2/pkg/models/profiles", name)
+		}
+		c, ok = profileConstructor, true
+	}
 	if !ok {
-		return nil, fmt.Errorf("models: unknown provider %q (registered: %v); did you forget to import the provider's package?", name, registeredNames())
+		return nil, fmt.Errorf("models: unknown provider %q (registered: %v, profiles: %v); did you forget to import the provider's package?", name, registeredNames(), cfg.ProfileNames())
 	}
 	return c(cfg)
 }

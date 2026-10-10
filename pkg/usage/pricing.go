@@ -92,7 +92,7 @@ func KnownModelsCount() int {
 	}
 	counts := c.Counts()
 	return counts.CfgOverride + counts.ProjectFile + counts.UserManual +
-		counts.UserExternal + counts.Builtin
+		counts.UserExternal + counts.Builtin + counts.Declared
 }
 
 // PriceForWithSource is PriceFor + the catalog layer name that served
@@ -111,6 +111,7 @@ func PriceForWithSource(modelID string, cfg *config.Config) (Pricing, string) {
 	}
 	c, _ := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToOverride(cfg),
+		Declared:    declaredRates(cfg),
 	})
 	r, src, found := c.LookupWithSource(modelID)
 	return ratesToPricing(r, found), src
@@ -140,6 +141,7 @@ func PriceFor(modelID string, cfg *config.Config) Pricing {
 	// what SetCatalog'd consumers would get.
 	c, _ := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToOverride(cfg),
+		Declared:    declaredRates(cfg),
 	})
 	r, found := c.Lookup(modelID)
 	return ratesToPricing(r, found)
@@ -202,11 +204,27 @@ func ratesToPricing(r pricing.Rates, found bool) Pricing {
 // cfgToOverride extracts the cfg.Model.Pricing map into the
 // pkg/pricing wire shape. nil-safe.
 func cfgToOverride(cfg *config.Config) map[string]pricing.ModelRates {
-	if cfg == nil || len(cfg.Model.Pricing) == 0 {
+	if cfg == nil {
 		return nil
 	}
-	out := make(map[string]pricing.ModelRates, len(cfg.Model.Pricing))
-	for k, v := range cfg.Model.Pricing {
+	return pricingMapToRates(cfg.Model.Pricing)
+}
+
+// declaredRates is the provider profiles' declared rates, for the
+// catalog's lowest layer — see pricing.Options.Declared.
+func declaredRates(cfg *config.Config) map[string]pricing.ModelRates {
+	if cfg == nil {
+		return nil
+	}
+	return pricingMapToRates(cfg.ProfileRates())
+}
+
+func pricingMapToRates(m config.PricingMap) map[string]pricing.ModelRates {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]pricing.ModelRates, len(m))
+	for k, v := range m {
 		out[k] = pricing.ModelRates{
 			InputPerMTok:                v.InputPerMTok,
 			CachedInputPerMTok:          v.CachedInputPerMTok,

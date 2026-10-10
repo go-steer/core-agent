@@ -18,7 +18,7 @@ import (
 	"context"
 	"iter"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // RebuildTrackerFromEvents replays a persisted-event stream into t,

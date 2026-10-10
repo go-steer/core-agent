@@ -22,9 +22,9 @@ import (
 	"sync"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 )
 
 // RemoteAgentSpawner is implemented by consumers who want the parent
@@ -193,7 +193,7 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 	if spawner == nil {
 		return nil, ErrNoSpawner
 	}
-	handler := func(toolCtx adkagent.ToolContext, args spawnRemoteAgentArgs) (spawnRemoteAgentResult, error) {
+	handler := func(toolCtx adkagent.Context, args spawnRemoteAgentArgs) (spawnRemoteAgentResult, error) {
 		// Same gate as the in-process door (#758) — gating only
 		// spawn_agent would leave the escape hatch open, and this one
 		// launches work on a substrate the parent's gate can't reach

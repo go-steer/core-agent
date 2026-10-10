@@ -22,7 +22,7 @@ import (
 	"log"
 	"sync"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 )
 
 // NewRecorder wraps inner so every GenerateContent turn is appended

@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 )
 
 func TestTodo_AddListSetClear(t *testing.T) {
@@ -27,34 +27,34 @@ func TestTodo_AddListSetClear(t *testing.T) {
 	fn := todoFunc(store)
 
 	// Empty list
-	res, err := fn(adkagent.ToolContext(nil), todoArgs{Action: "list"})
+	res, err := fn(adkagent.Context(nil), todoArgs{Action: "list"})
 	if err != nil || len(res.Items) != 0 {
 		t.Fatalf("empty list: %v %+v", err, res)
 	}
 
 	// Add two
-	if _, err := fn(adkagent.ToolContext(nil), todoArgs{Action: "add", Text: "first"}); err != nil {
+	if _, err := fn(adkagent.Context(nil), todoArgs{Action: "add", Text: "first"}); err != nil {
 		t.Fatal(err)
 	}
-	res, _ = fn(adkagent.ToolContext(nil), todoArgs{Action: "add", Text: "second"})
+	res, _ = fn(adkagent.Context(nil), todoArgs{Action: "add", Text: "second"})
 	if len(res.Items) != 2 || res.Items[1].ID != 2 {
 		t.Fatalf("after add: %+v", res)
 	}
 
 	// Set status
-	res, err = fn(adkagent.ToolContext(nil), todoArgs{Action: "set_status", ID: 1, Status: "completed"})
+	res, err = fn(adkagent.Context(nil), todoArgs{Action: "set_status", ID: 1, Status: "completed"})
 	if err != nil || res.Items[0].Status != "completed" {
 		t.Fatalf("set_status: %v %+v", err, res)
 	}
 
 	// Bad status
-	_, err = fn(adkagent.ToolContext(nil), todoArgs{Action: "set_status", ID: 1, Status: "wat"})
+	_, err = fn(adkagent.Context(nil), todoArgs{Action: "set_status", ID: 1, Status: "wat"})
 	if err == nil || !strings.Contains(err.Error(), "pending|in_progress|completed") {
 		t.Errorf("expected invalid-status error, got %v", err)
 	}
 
 	// Clear
-	res, _ = fn(adkagent.ToolContext(nil), todoArgs{Action: "clear"})
+	res, _ = fn(adkagent.Context(nil), todoArgs{Action: "clear"})
 	if len(res.Items) != 0 {
 		t.Errorf("clear left items: %+v", res.Items)
 	}
@@ -64,7 +64,7 @@ func TestTodoStore_Items_DefensiveCopy(t *testing.T) {
 	t.Parallel()
 	store := NewTodoStore()
 	fn := todoFunc(store)
-	if _, err := fn(adkagent.ToolContext(nil), todoArgs{Action: "add", Text: "alpha"}); err != nil {
+	if _, err := fn(adkagent.Context(nil), todoArgs{Action: "add", Text: "alpha"}); err != nil {
 		t.Fatal(err)
 	}
 	items := store.Items()

@@ -44,7 +44,7 @@ import (
 	"context"
 	"iter"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // Event names and authors for the durable guardrail rows. The author
@@ -103,7 +103,7 @@ func (s GuardrailPersistedState) Halted() bool {
 // carried verbatim so the restored halt says the same thing the
 // original did rather than a reconstruction of it.
 func NewGuardrailTripEvent(guardrail, reason string) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), GuardrailTripEventName)
+	ev := session.NewEvent(context.Background(), GuardrailTripEventName)
 	ev.Author = GuardrailTripEventAuthor
 	ev.CustomMetadata = map[string]any{
 		guardrailMetaSource:    "agent",
@@ -119,7 +119,7 @@ func NewGuardrailTripEvent(guardrail, reason string) *session.Event {
 // restart (#643): CustomMetadata carries who did it, what was cleared,
 // and how much budget was added.
 func NewGuardrailResetAuditEvent(identity string, reset []string, budgetUSD float64) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), GuardrailResetEventName)
+	ev := session.NewEvent(context.Background(), GuardrailResetEventName)
 	ev.Author = GuardrailResetEventAuthor
 	meta := map[string]any{
 		guardrailMetaSource: "operator",

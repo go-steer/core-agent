@@ -19,9 +19,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -182,7 +182,7 @@ func spinAgentWithLog(llm *stubLLM, h *eventlog.Handle, app, user, sess string, 
 	type empty struct{}
 	spin, err := functiontool.New(
 		functiontool.Config{Name: "spin", Description: "no-op that keeps the turn going"},
-		func(_ adkagent.ToolContext, _ empty) (empty, error) {
+		func(_ adkagent.Context, _ empty) (empty, error) {
 			calls.Add(1)
 			return empty{}, nil
 		})

@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -136,7 +136,7 @@ func pingTool(t *testing.T) tool.Tool {
 	t.Helper()
 	tl, err := functiontool.New(
 		functiontool.Config{Name: "ping", Description: "return pong"},
-		func(_ adkagent.ToolContext, _ struct{}) (map[string]any, error) {
+		func(_ adkagent.Context, _ struct{}) (map[string]any, error) {
 			return map[string]any{"result": "pong"}, nil
 		})
 	if err != nil {

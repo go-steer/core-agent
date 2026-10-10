@@ -25,7 +25,7 @@ import (
 	"os"
 	"sync"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/core-agent/v2/pkg/recording"
 )

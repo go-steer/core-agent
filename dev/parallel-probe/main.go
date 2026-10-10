@@ -15,7 +15,7 @@
 // Diagnostic: measure how often the model emits multiple tool calls
 // per assistant turn. ADK already dispatches a single-message
 // multi-call response concurrently (see
-// google.golang.org/adk/internal/llminternal/base_flow.go:585
+// google.golang.org/adk/v2/internal/llminternal/base_flow.go:585
 // handleFunctionCalls — sync.WaitGroup over fnCalls). The remaining
 // question is whether the model produces those multi-call responses
 // in the first place. This probe answers that for a real workflow.

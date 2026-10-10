@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -518,15 +518,15 @@ func TestTurnFailure_RowsAreNotConversation(t *testing.T) {
 func TestTurnFailure_RowsChangeNoTailVerdict(t *testing.T) {
 	t.Parallel()
 	text := func(author, role, s string) *session.Event {
-		ev := session.NewEventWithContext(context.Background(), "inv")
+		ev := session.NewEvent(context.Background(), "inv")
 		ev.Author = author
 		ev.Content = &genai.Content{Role: role, Parts: []*genai.Part{{Text: s}}}
 		return ev
 	}
-	call := session.NewEventWithContext(context.Background(), "inv")
+	call := session.NewEvent(context.Background(), "inv")
 	call.Author = "agent"
 	call.Content = &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{ID: "c1", Name: "read_file"}}}}
-	resp := session.NewEventWithContext(context.Background(), "inv")
+	resp := session.NewEvent(context.Background(), "inv")
 	resp.Author = "agent"
 	resp.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{{FunctionResponse: &genai.FunctionResponse{ID: "c1", Name: "read_file"}}}}
 	rows := []*session.Event{

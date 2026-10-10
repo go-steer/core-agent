@@ -20,7 +20,7 @@
 package agent
 
 import (
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // WithEventHook wires per-event and end-of-turn observer callbacks.

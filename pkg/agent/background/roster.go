@@ -19,9 +19,9 @@ import (
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/model"
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -57,7 +57,7 @@ type rosterTool struct {
 // Declared here rather than imported because ADK keeps it internal.
 type runnableTool interface {
 	Declaration() *genai.FunctionDeclaration
-	Run(ctx adkagent.ToolContext, args any) (map[string]any, error)
+	Run(ctx adkagent.Context, args any) (map[string]any, error)
 }
 
 func (r rosterTool) Name() string        { return r.inner.Name() }
@@ -109,7 +109,7 @@ func (r rosterTool) Declaration() *genai.FunctionDeclaration {
 	return &clone
 }
 
-func (r rosterTool) Run(ctx adkagent.ToolContext, args any) (map[string]any, error) {
+func (r rosterTool) Run(ctx adkagent.Context, args any) (map[string]any, error) {
 	rn, ok := r.inner.(runnableTool)
 	if !ok {
 		return nil, fmt.Errorf("background: %q is not runnable", r.inner.Name())
@@ -121,7 +121,7 @@ func (r rosterTool) Run(ctx adkagent.ToolContext, args any) (map[string]any, err
 // receives the roster-annotated declaration and ADK's dispatch routes
 // calls back through this wrapper. Same discipline as the gate,
 // serializer, and MCP namespace wrappers.
-func (r rosterTool) ProcessRequest(_ adkagent.ToolContext, req *model.LLMRequest) error {
+func (r rosterTool) ProcessRequest(_ adkagent.Context, req *model.LLMRequest) error {
 	return coretools.PackTool(req, r)
 }
 

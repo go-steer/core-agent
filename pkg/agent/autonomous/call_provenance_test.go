@@ -20,10 +20,10 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -60,7 +60,7 @@ func buildProbeAgent(llm *stubLLM, name string) func([]tool.Tool) (*agent.Agent,
 	return func(extras []tool.Tool) (*agent.Agent, error) {
 		probe, err := functiontool.New(
 			functiontool.Config{Name: "probe", Description: "look at a namespace"},
-			func(_ adkagent.ToolContext, in probeIn) (probeOut, error) {
+			func(_ adkagent.Context, in probeIn) (probeOut, error) {
 				if in.Namespace == "boom" {
 					return probeOut{}, errors.New("forbidden: no list access")
 				}

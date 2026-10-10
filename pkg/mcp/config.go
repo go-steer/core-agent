@@ -18,7 +18,7 @@
 // At startup the host calls Build, which reads .agents/mcp.json,
 // spawns each declared server (stdio child or Streamable HTTP
 // client), wraps the resulting MCP toolsets via ADK's
-// google.golang.org/adk/tool/mcptoolset, and returns:
+// google.golang.org/adk/v2/tool/mcptoolset, and returns:
 //
 //   - the toolsets, so they can be passed to agent.New(WithToolsets…)
 //   - per-server records the host can render (e.g. a /mcp slash

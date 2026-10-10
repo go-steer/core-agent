@@ -242,7 +242,7 @@ class Inputs:
     session: str
 
     def window(self) -> tuple[datetime | None, datetime | None]:
-        stamps = [t for t in (a2_count.parse_ts(e.get("Timestamp")) for e in self.events) if t]
+        stamps = [t for t in (a2_count.parse_ts(ev_ts(e)) for e in self.events) if t]
         return (min(stamps), max(stamps)) if stamps else (None, None)
 
 
@@ -262,7 +262,7 @@ def load_events(path: pathlib.Path) -> list[dict[str, Any]]:
         event = data.get("event") if ev == "agent" and isinstance(data, dict) else None
         if not isinstance(event, dict):
             continue
-        eid = event.get("ID")
+        eid = ev_id(event)
         if isinstance(eid, str) and eid:
             if eid in seen:
                 continue
@@ -308,13 +308,28 @@ def sidecar(row: dict[str, Any]) -> dict[str, str]:
     return {k: str(v) for k, v in md.items() if v}
 
 
+def ev_author(ev: dict[str, Any]) -> Any:
+    """Event fields through a2_count.ev_get, which reads ADK v1's
+    PascalCase and v2's camelCase keys alike: replay.sse from a v2
+    daemon must grade the same as the v1 captures in testdata/."""
+    return a2_count.ev_get(ev, "author", "Author")
+
+
+def ev_id(ev: dict[str, Any]) -> Any:
+    return a2_count.ev_get(ev, "id", "ID")
+
+
+def ev_ts(ev: dict[str, Any]) -> Any:
+    return a2_count.ev_get(ev, "timestamp", "Timestamp")
+
+
 def meta(ev: dict[str, Any]) -> dict[str, Any]:
-    md = ev.get("CustomMetadata")
+    md = a2_count.ev_get(ev, "customMetadata", "CustomMetadata")
     return md if isinstance(md, dict) else {}
 
 
 def parts(ev: dict[str, Any]) -> list[dict[str, Any]]:
-    content = ev.get("Content")
+    content = a2_count.ev_get(ev, "content", "Content")
     ps = content.get("parts") if isinstance(content, dict) else None
     return [p for p in (ps if isinstance(ps, list) else []) if isinstance(p, dict)]
 
@@ -339,11 +354,11 @@ def has_call(ev: dict[str, Any]) -> bool:
 def is_row(ev: dict[str, Any]) -> bool:
     """An eventlog row the runtime writes (agent/…, gate/…, attach/…), as
     opposed to a turn's own event."""
-    return "/" in str(ev.get("Author") or "")
+    return "/" in str(ev_author(ev) or "")
 
 
 def is_model_event(ev: dict[str, Any]) -> bool:
-    return not is_row(ev) and ev.get("Author") != "user" and bool(parts(ev))
+    return not is_row(ev) and ev_author(ev) != "user" and bool(parts(ev))
 
 
 def boundary_tag(ev: dict[str, Any]) -> str:
@@ -418,8 +433,8 @@ def grade_identity(args: argparse.Namespace, inp: Inputs) -> Row:
         r.fail(inp.db_error)
     elif inp.events:
         db_ids = {row["event_id"] for row in inp.db_rows}
-        replay_ids = {e.get("ID") for e in inp.events}
-        missing = [e.get("ID") for e in inp.events if e.get("ID") not in db_ids]
+        replay_ids = {ev_id(e) for e in inp.events}
+        missing = [ev_id(e) for e in inp.events if ev_id(e) not in db_ids]
         if missing:
             r.fail(f"{len(missing)} of {len(inp.events)} replay events are not rows of session {inp.session} in the "
                    f"eventlog DB (first: {missing[0]}); copy the DB's -wal file with it, or pass the matching session")
@@ -469,10 +484,10 @@ def grade_posture(inp: Inputs) -> Row:
     if mode != "auto":
         r.fail(f"the session's permission mode is {mode!r} (GET …/perms), not 'auto'")
     for ev in inp.events:
-        if ev.get("Author") == PERM_MODE:
+        if ev_author(ev) == PERM_MODE:
             md = meta(ev)
             r.fail(f"the permission mode changed mid-run: {md.get('from')} → {md.get('to')}"
-                   f" by {md.get('caller') or 'an unattributed caller'} ({ev.get('Timestamp')})")
+                   f" by {md.get('caller') or 'an unattributed caller'} ({ev_ts(ev)})")
     if r.verdict == PASS:
         c = ceilings[-1]
         r.note(f"{len(watchdogs)} boot(s), each `watchdog: enforce`; ceilings per-turn=${float(c.group(1)):g} "
@@ -532,19 +547,19 @@ def grade_no_human(inp: Inputs) -> Row:
     for ev in inp.events:
         for err in tool_errors(ev):
             if DENIED_BY_USER_RE.match(err):
-                r.fail(f"a person denied a permission prompt: {err[:160]!r} ({ev.get('Timestamp')})")
+                r.fail(f"a person denied a permission prompt: {err[:160]!r} ({ev_ts(ev)})")
             elif EXPIRED_PREFIX in err:
                 expired.append(err)
-        if ev.get("Author") == APPROVER:
+        if ev_author(ev) == APPROVER:
             md = meta(ev)
             if md.get("verdict") == "escalate":
                 escalations.append((str(md.get("tool") or ""), str(md.get("detail") or "")))
             elif md.get("verdict") == "allow":
                 approver_allows += 1
-        if ev.get("Author") == RESET:
+        if ev_author(ev) == RESET:
             md = meta(ev)
             r.fail(f"guardrails/reset in the session: {md.get('reset')} by "
-                   f"{md.get('caller') or 'an unattributed caller'} ({ev.get('Timestamp')})")
+                   f"{md.get('caller') or 'an unattributed caller'} ({ev_ts(ev)})")
     for tool, detail in escalations:
         # gate.go askWithTimeout: "... after <d> (tool=%s detail=%q); ..."
         want = f"(tool={tool} detail={json.dumps(detail, ensure_ascii=False)})"
@@ -610,7 +625,7 @@ def grade_ended(inp: Inputs) -> Row:
     last_error: dict[str, Any] | None = None
     checkpoint_at = ""
     for ev in inp.events:
-        author, md, ts = ev.get("Author"), meta(ev), ev.get("Timestamp")
+        author, md, ts = ev_author(ev), meta(ev), ev_ts(ev)
         tag = boundary_tag(ev)
         if tag == COMPACTION_TAG:
             kind = "a mechanical" if md.get(MECHANICAL_KEY) is True else "a"
@@ -639,7 +654,7 @@ def grade_ended(inp: Inputs) -> Row:
     if last_error is not None:
         md = meta(last_error)
         r.fail(f"the session's last turn ended in an error: {md.get('kind')}: {str(md.get('message'))[:160]} "
-               f"({last_error.get('Timestamp')})")
+               f"({ev_ts(last_error)})")
     for line in inp.lines:
         m = a2_count.GUARDRAIL_RE.search(line)
         if m and a2_count.line_session(line) == inp.session:
@@ -649,16 +664,16 @@ def grade_ended(inp: Inputs) -> Row:
         r.fail("the replay holds no model output")
     else:
         last = model[-1]
-        if last.get("Partial"):
-            r.fail(f"the session's last model event is a partial chunk ({last.get('Timestamp')})")
+        if a2_count.ev_get(last, "partial", "Partial"):
+            r.fail(f"the session's last model event is a partial chunk ({ev_ts(last)})")
         elif has_call(last):
             names = [p["functionCall"].get("name") for p in parts(last) if isinstance(p.get("functionCall"), dict)]
             r.fail(f"the session's last model event is a call to {', '.join(map(str, names))}, not a finished answer "
-                   f"({last.get('Timestamp')})")
+                   f"({ev_ts(last)})")
         elif not any(isinstance(p.get("text"), str) and p["text"].strip() for p in parts(last)):
-            r.fail(f"the session's last model event carries no text ({last.get('Timestamp')})")
+            r.fail(f"the session's last model event carries no text ({ev_ts(last)})")
         elif r.verdict == PASS:
-            r.note(f"PR {inp.pr.get('state') if inp.pr else '?'}; the last model event ({last.get('Timestamp')}) is a "
+            r.note(f"PR {inp.pr.get('state') if inp.pr else '?'}; the last model event ({ev_ts(last)}) is a "
                    f"finished answer; no halt, trip, refusal storm, interrupt or unrecovered turn error")
     return r
 

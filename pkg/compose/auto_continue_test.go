@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -65,7 +65,7 @@ func seedAC(t *testing.T, events ...*session.Event) *eventlog.Handle {
 }
 
 func acUserEvent(text string, ts time.Time) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-u")
+	ev := session.NewEvent(context.Background(), "inv-u")
 	ev.Author = "user"
 	ev.Timestamp = ts
 	ev.LLMResponse = adkmodel.LLMResponse{
@@ -78,7 +78,7 @@ func acUserEvent(text string, ts time.Time) *session.Event {
 // events by timestamp, so fixtures must be monotonic like real
 // histories (a "later" event with an older stamp would reorder).
 func acModelEvent(text string, ts time.Time) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-m")
+	ev := session.NewEvent(context.Background(), "inv-m")
 	ev.Author = "core_agent"
 	ev.Timestamp = ts
 	ev.LLMResponse = adkmodel.LLMResponse{
@@ -91,7 +91,7 @@ func acModelEvent(text string, ts time.Time) *session.Event {
 // (a mid-tool interruption) — the shape whose continuation note carries
 // the "re-issue interrupted tool calls" nudge (#624).
 func acCallEvent(toolName string, ts time.Time) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-call")
+	ev := session.NewEvent(context.Background(), "inv-call")
 	ev.Author = "core_agent"
 	ev.Timestamp = ts
 	ev.LLMResponse = adkmodel.LLMResponse{
@@ -849,7 +849,7 @@ func TestMaybeAutoContinue_SkipsCompletedAndStaleAndLocked(t *testing.T) {
 // LLMResponse carrying an ErrorCode and no content, the shape ADK's
 // converter produces for a candidate the provider refused or dropped.
 func acErrorEvent(code string, ts time.Time) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-err")
+	ev := session.NewEvent(context.Background(), "inv-err")
 	ev.Author = "core_agent"
 	ev.Timestamp = ts
 	ev.LLMResponse = adkmodel.LLMResponse{ErrorCode: code}

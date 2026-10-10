@@ -20,10 +20,10 @@ import (
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/model"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/mcptoolset"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/mcptoolset"
 )
 
 func TestSanitizePrefix(t *testing.T) {
@@ -145,7 +145,7 @@ func TestRenamedTool_ProcessRequest_PacksWrapper(t *testing.T) {
 	req := &model.LLMRequest{}
 	for _, tl := range tools {
 		rp, ok := tl.(interface {
-			ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error
+			ProcessRequest(ctx agent.Context, req *model.LLMRequest) error
 		})
 		if !ok {
 			t.Fatalf("renamedTool %q does not implement ProcessRequest — regression of the GKE MCP bug", tl.Name())
@@ -162,7 +162,7 @@ func TestRenamedTool_ProcessRequest_PacksWrapper(t *testing.T) {
 			continue
 		}
 		if _, isInner := got.(interface {
-			ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error
+			ProcessRequest(ctx agent.Context, req *model.LLMRequest) error
 		}); !isInner {
 			t.Errorf("packed entry for %q must itself implement ProcessRequest", tl.Name())
 		}
@@ -257,7 +257,7 @@ func TestRenamedTool_Run_StampsLatencyMS(t *testing.T) {
 		t.Fatal("demo_echo tool not found on wrapped toolset")
 	}
 	res, err := echo.(runnable).Run(
-		&stubToolCtx{Context: context.Background()},
+		&stubToolCtx{StrictContextMock: agent.NewStrictContextMock(context.Background())},
 		map[string]any{"msg": "ping"},
 	)
 	if err != nil {

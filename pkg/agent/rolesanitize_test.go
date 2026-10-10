@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -89,6 +89,63 @@ func TestRoleSanitizingLLM_DropsInvalidRoleContentDoesNotMutateCaller(t *testing
 	got := capture.lastRequest()
 	if got == nil || len(got.Contents) != 1 || got.Contents[0].Role != genai.RoleUser {
 		t.Fatalf("inner request = %v, want a single user content", got)
+	}
+}
+
+// TestRoleSanitizingLLM_EmptyContentsGetThePlaceholder covers both ways
+// a request reaches the wrapper with nothing to send: empty from the
+// start, and emptied by the role filter. Either one is a 400 from the
+// provider, so the inner model must see the placeholder user turn — and
+// the caller's request must not be touched.
+func TestRoleSanitizingLLM_EmptyContentsGetThePlaceholder(t *testing.T) {
+	t.Parallel()
+	for name, contents := range map[string][]*genai.Content{
+		"empty":         nil,
+		"emptied":       {{Parts: []*genai.Part{{Text: "audit note"}}}},
+		"empty non-nil": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			capture := &captureLLM{response: "ok"}
+			req := &adkmodel.LLMRequest{Contents: contents}
+			for range newRoleSanitizingLLM(capture).GenerateContent(context.Background(), req, false) {
+			}
+			if len(req.Contents) != len(contents) {
+				t.Errorf("caller req.Contents len = %d, want %d (must not be mutated)", len(req.Contents), len(contents))
+			}
+			got := capture.lastRequest()
+			if got == nil || len(got.Contents) != 1 || got.Contents[0].Role != genai.RoleUser ||
+				len(got.Contents[0].Parts) != 1 || got.Contents[0].Parts[0].Text != emptyContentsPlaceholder {
+				t.Fatalf("inner request = %+v, want exactly the placeholder user turn", got)
+			}
+		})
+	}
+}
+
+// TestRun_EmptyWakeOnFreshSessionSendsContents is the ADK v2 regression:
+// a wake on a fresh session with nothing in the inbox runs a.Run(ctx, "").
+// ADK v1's Gemini model padded the resulting empty request; v2's does not,
+// and Vertex answered "400 INVALID_ARGUMENT: at least one contents field
+// is required" (seen live against gemini-3.7-flash). The model must never
+// be handed an empty conversation.
+func TestRun_EmptyWakeOnFreshSessionSendsContents(t *testing.T) {
+	t.Parallel()
+	capture := &captureLLM{response: "ready"}
+	a, err := New(capture)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, err := range a.Run(context.Background(), "") {
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	}
+	got := capture.lastRequest()
+	if got == nil {
+		t.Fatal("the model was never called")
+	}
+	if len(got.Contents) == 0 {
+		t.Fatal("the model was handed an empty conversation; Gemini rejects that with a 400")
 	}
 }
 

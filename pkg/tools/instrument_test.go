@@ -23,9 +23,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -42,7 +42,7 @@ func (f *timedFakeTool) IsLongRunning() bool { return false }
 func (f *timedFakeTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: f.name}
 }
-func (f *timedFakeTool) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
+func (f *timedFakeTool) Run(_ adkagent.Context, _ any) (map[string]any, error) {
 	if f.sleep > 0 {
 		time.Sleep(f.sleep)
 	}

@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 func TestContextReductionFailedEvent_RoundTrip(t *testing.T) {
@@ -110,10 +110,10 @@ func TestContextReductionFailedEvent_CarriesNoModelContent(t *testing.T) {
 // its own rows.
 func TestContextReductionFailure_IgnoresOtherEvents(t *testing.T) {
 	t.Parallel()
-	other := session.NewEventWithContext(context.Background(), "model-turn")
+	other := session.NewEvent(context.Background(), "model-turn")
 	other.Author = "assistant"
 	other.CustomMetadata = map[string]any{ctxReductionMetaOp: ContextReductionCompaction}
-	for _, ev := range []*session.Event{nil, session.NewEventWithContext(context.Background(), "bare"), other,
+	for _, ev := range []*session.Event{nil, session.NewEvent(context.Background(), "bare"), other,
 		NewGuardrailTripEvent("watchdog", "looping")} {
 		if _, _, ok := ContextReductionFailure(ev); ok {
 			t.Errorf("claimed a foreign event: %+v", ev)

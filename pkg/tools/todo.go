@@ -19,8 +19,8 @@ import (
 	"strings"
 	"sync"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool/functiontool"
 )
 
 // TodoStore is the in-process backing for the agent's todo list.
@@ -61,7 +61,7 @@ type todoResult struct {
 }
 
 func todoFunc(store *TodoStore) functiontool.Func[todoArgs, todoResult] {
-	return func(_ adkagent.ToolContext, in todoArgs) (todoResult, error) {
+	return func(_ adkagent.Context, in todoArgs) (todoResult, error) {
 		store.mu.Lock()
 		defer store.mu.Unlock()
 		switch strings.ToLower(in.Action) {

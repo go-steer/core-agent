@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
@@ -103,10 +103,10 @@ func TestSenderBudgetIsNotTheToolsBudget(t *testing.T) {
 
 	// The model spends the tool's whole budget.
 	in := Args{Target: "oncall", Level: "info", Summary: "chatter"}
-	if _, err := h.run(adkagent.ToolContext(nil), in); err != nil {
+	if _, err := h.run(adkagent.Context(nil), in); err != nil {
 		t.Fatalf("first tool call: %v", err)
 	}
-	if _, err := h.run(adkagent.ToolContext(nil), in); err == nil {
+	if _, err := h.run(adkagent.Context(nil), in); err == nil {
 		t.Fatal("the tool's own budget should now be spent")
 	}
 

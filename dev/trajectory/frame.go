@@ -23,7 +23,7 @@ import (
 	"sort"
 	"strings"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // Parent is the agent name given to frames from the parent session, so

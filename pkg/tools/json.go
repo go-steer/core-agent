@@ -21,9 +21,9 @@ import (
 	"os"
 
 	"github.com/itchyny/gojq"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -75,7 +75,7 @@ func NewJSONQueryTool(gate *permissions.Gate, cfg *config.Config) tool.Tool {
 // jsonQueryFunc is the handler, extracted so tests can drive it
 // without going through ADK's functiontool wrapper.
 func jsonQueryFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[jsonQueryArgs, jsonQueryResult] {
-	return func(ctx adkagent.ToolContext, in jsonQueryArgs) (jsonQueryResult, error) {
+	return func(ctx adkagent.Context, in jsonQueryArgs) (jsonQueryResult, error) {
 		hasPath := in.Path != ""
 		hasJSON := in.JSON != ""
 		if hasPath == hasJSON {

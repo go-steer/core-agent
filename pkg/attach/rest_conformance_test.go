@@ -25,8 +25,8 @@ import (
 	"testing"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/internal/subagentlog"
@@ -462,20 +462,53 @@ func TestConformance_RESTSessionsListV2_LiveHandlerAgreesWithFixture(t *testing.
 	}
 }
 
-// TestConformance_RESTSubagentEventsV1 pins the subagent turn-history
-// envelope (#638). Its Frame rows reuse the SSE frame shape, which is
-// already fixture-pinned, so the value here is the envelope around
-// them: the paging contract (next_since/truncated) is the part a
-// client gets silently wrong, and `branches` is a normative statement
-// about which launch-path spellings the server searched — a client
-// that renders it tells the operator why an empty list is empty.
-func TestConformance_RESTSubagentEventsV1(t *testing.T) {
+// TestConformance_RESTSubagentEventsV2 pins the subagent turn-history
+// envelope (#638). The paging contract (next_since/truncated) is the
+// part a client gets silently wrong, and `branches` is a normative
+// statement about which launch-path spellings the server searched — a
+// client that renders it tells the operator why an empty list is empty.
+//
+// v2 is the shape under ADK v2, which put camelCase `json:` tags with
+// omitempty on session.Event, EventActions and LLMResponse: the
+// embedded event went from `"ID"`/`"Content"`/every zero field spelled
+// out to `"id"`/`"content"` with the zeros dropped. The envelope is
+// unchanged.
+func TestConformance_RESTSubagentEventsV2(t *testing.T) {
 	t.Parallel()
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-subagent-events-v2.json",
+		subagentEventsFixtureResponse())
+}
+
+// TestConformance_RESTSubagentEventsV1_StillDecodes keeps the frozen v1
+// fixture honest in the only direction a v1 body still travels: an
+// archived transcript or an older daemon read by this build. The server
+// no longer emits it, but a client decoding one must get the same value
+// it would from v2 — Go's case-insensitive key match is what carries
+// that, and this pins it.
+func TestConformance_RESTSubagentEventsV1_StillDecodes(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("testdata/conformance/rest-subagent-events-v1.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var got SubagentEventsResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode v1 fixture: %v", err)
+	}
+	if want := subagentEventsFixtureResponse(); !reflect.DeepEqual(got, want) {
+		t.Errorf("v1 fixture decodes to\n%+v\nwant\n%+v", got.Events[0].Event, want.Events[0].Event)
+	}
+}
+
+// subagentEventsFixtureResponse is the value both subagent-events
+// fixtures encode.
+func subagentEventsFixtureResponse() SubagentEventsResponse {
 	// A truncated page: the operator asked for more turns than the
 	// limit allowed, so next_since is a resume cursor, not the end.
 	// Populating both flags is what pins their names — neither is
 	// omitempty, but a rename would otherwise sail past the tests.
-	resp := SubagentEventsResponse{
+	return SubagentEventsResponse{
 		Agent:           "cluster",
 		ParentSessionID: "s-1a2b3c",
 		Branches:        subagentlog.BranchPrefixes("cluster"),
@@ -498,9 +531,6 @@ func TestConformance_RESTSubagentEventsV1(t *testing.T) {
 		NextSince: 41,
 		Truncated: true,
 	}
-	assertMatchesConformanceFixture(t,
-		"testdata/conformance/rest-subagent-events-v1.json",
-		resp)
 }
 
 // TestConformance_RESTSubagentEventsV1_EmptyIsArrayNotNull pins the

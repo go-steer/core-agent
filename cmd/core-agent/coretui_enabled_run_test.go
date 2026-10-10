@@ -24,7 +24,7 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/internal/testutil"

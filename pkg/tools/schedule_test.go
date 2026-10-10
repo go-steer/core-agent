@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 )
 
 func TestNewScheduleTool_Defaults(t *testing.T) {
@@ -63,7 +63,7 @@ func TestScheduleFunc_AcceptsWakeInSec(t *testing.T) {
 	t.Parallel()
 	ch := make(chan ScheduleEvent, 1)
 	fn := scheduleFunc(ch, 0)
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{
+	res, err := fn(adkagent.Context(nil), scheduleArgs{
 		WakeInSec:  60,
 		NextPrompt: "rescan",
 		Detail:     "10m cadence",
@@ -102,7 +102,7 @@ func TestScheduleFunc_AcceptsWakeAtAbsolute(t *testing.T) {
 	ch := make(chan ScheduleEvent, 1)
 	fn := scheduleFunc(ch, 0)
 	target := time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{
+	res, err := fn(adkagent.Context(nil), scheduleArgs{
 		WakeAt: target.Format(time.RFC3339),
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestScheduleFunc_RejectsBothArgs(t *testing.T) {
 	t.Parallel()
 	ch := make(chan ScheduleEvent, 1)
 	fn := scheduleFunc(ch, 0)
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{
+	res, err := fn(adkagent.Context(nil), scheduleArgs{
 		WakeAt:    time.Now().Format(time.RFC3339),
 		WakeInSec: 30,
 	})
@@ -142,7 +142,7 @@ func TestScheduleFunc_RejectsNeitherArg(t *testing.T) {
 	t.Parallel()
 	ch := make(chan ScheduleEvent, 1)
 	fn := scheduleFunc(ch, 0)
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{})
+	res, err := fn(adkagent.Context(nil), scheduleArgs{})
 	if err != nil {
 		t.Fatalf("fn: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestScheduleFunc_RejectsMalformedAbsolute(t *testing.T) {
 	t.Parallel()
 	ch := make(chan ScheduleEvent, 1)
 	fn := scheduleFunc(ch, 0)
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{WakeAt: "not-a-time"})
+	res, err := fn(adkagent.Context(nil), scheduleArgs{WakeAt: "not-a-time"})
 	if err != nil {
 		t.Fatalf("fn: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestScheduleFunc_RejectsNegativeRelative(t *testing.T) {
 	t.Parallel()
 	ch := make(chan ScheduleEvent, 1)
 	fn := scheduleFunc(ch, 0)
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{WakeInSec: -10})
+	res, err := fn(adkagent.Context(nil), scheduleArgs{WakeInSec: -10})
 	if err != nil {
 		t.Fatalf("fn: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestScheduleFunc_EnforcesMaxDefer(t *testing.T) {
 	fn := scheduleFunc(ch, 10*time.Minute) // cap at 10m
 
 	// Within the cap: accepted.
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{WakeInSec: 300})
+	res, err := fn(adkagent.Context(nil), scheduleArgs{WakeInSec: 300})
 	if err != nil {
 		t.Fatalf("fn (within cap): %v", err)
 	}
@@ -198,7 +198,7 @@ func TestScheduleFunc_EnforcesMaxDefer(t *testing.T) {
 	<-ch // drain
 
 	// Past the cap: rejected.
-	res, err = fn(adkagent.ToolContext(nil), scheduleArgs{WakeInSec: 3600})
+	res, err = fn(adkagent.Context(nil), scheduleArgs{WakeInSec: 3600})
 	if err != nil {
 		t.Fatalf("fn (past cap): %v", err)
 	}
@@ -216,7 +216,7 @@ func TestScheduleFunc_ZeroMaxDeferMeansNoCap(t *testing.T) {
 	t.Parallel()
 	ch := make(chan ScheduleEvent, 1)
 	fn := scheduleFunc(ch, 0)
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{WakeInSec: 31536000}) // one year
+	res, err := fn(adkagent.Context(nil), scheduleArgs{WakeInSec: 31536000}) // one year
 	if err != nil {
 		t.Fatalf("fn: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestScheduleFunc_TrimsStringArgs(t *testing.T) {
 	t.Parallel()
 	ch := make(chan ScheduleEvent, 1)
 	fn := scheduleFunc(ch, 0)
-	if _, err := fn(adkagent.ToolContext(nil), scheduleArgs{
+	if _, err := fn(adkagent.Context(nil), scheduleArgs{
 		WakeInSec:  10,
 		NextPrompt: "  rescan  ",
 		Detail:     "  10m cadence  ",
@@ -252,11 +252,11 @@ func TestScheduleFunc_NonBlockingOverflow(t *testing.T) {
 	fn := scheduleFunc(ch, 0)
 
 	// First call lands.
-	if _, err := fn(adkagent.ToolContext(nil), scheduleArgs{WakeInSec: 10}); err != nil {
+	if _, err := fn(adkagent.Context(nil), scheduleArgs{WakeInSec: 10}); err != nil {
 		t.Fatalf("fn (first): %v", err)
 	}
 	// Second call would block on a buffered=1 channel — must drop instead.
-	res, err := fn(adkagent.ToolContext(nil), scheduleArgs{WakeInSec: 20})
+	res, err := fn(adkagent.Context(nil), scheduleArgs{WakeInSec: 20})
 	if err != nil {
 		t.Fatalf("fn (second): %v", err)
 	}

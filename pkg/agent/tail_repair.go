@@ -45,8 +45,8 @@ import (
 	"fmt"
 	"os"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -214,7 +214,7 @@ func (a *Agent) repairDanglingToolCalls(ctx context.Context) {
 		if len(parts) == 0 {
 			continue
 		}
-		ev := session.NewEventWithContext(ctx, cev.InvocationID)
+		ev := session.NewEvent(ctx, cev.InvocationID)
 		ev.Author = cev.Author
 		ev.Branch = cev.Branch
 		ev.LLMResponse = adkmodel.LLMResponse{

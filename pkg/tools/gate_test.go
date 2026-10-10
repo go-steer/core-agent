@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/model"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -38,7 +38,7 @@ func (f *fakeInnerTool) Name() string                            { return f.name
 func (f *fakeInnerTool) Description() string                     { return "fake" }
 func (f *fakeInnerTool) IsLongRunning() bool                     { return false }
 func (f *fakeInnerTool) Declaration() *genai.FunctionDeclaration { return f.decl }
-func (f *fakeInnerTool) Run(_ adkagent.ToolContext, _ any) (map[string]any, error) {
+func (f *fakeInnerTool) Run(_ adkagent.Context, _ any) (map[string]any, error) {
 	return map[string]any{"ok": true}, nil
 }
 
@@ -123,7 +123,7 @@ func TestGatedTool_PlanFirstExemptsReadOnlyCalls(t *testing.T) {
 			}
 			gt := &gatedTool{inner: inner, gate: gate, namespace: "mcp"}
 
-			_, err := gt.Run(&planToolCtx{Context: context.Background()}, map[string]any{})
+			_, err := gt.Run(&planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, map[string]any{})
 			if tc.wantAllow && err != nil {
 				t.Errorf("read-only call denied under plan-first: %v", err)
 			}
@@ -156,7 +156,7 @@ func TestGatedTool_ReadOnlyDoesNotBypassPolicy(t *testing.T) {
 	}
 	gt := &gatedTool{inner: inner, gate: gate, namespace: "mcp"}
 
-	if _, err := gt.Run(&planToolCtx{Context: context.Background()}, map[string]any{}); err == nil {
+	if _, err := gt.Run(&planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, map[string]any{}); err == nil {
 		t.Fatal("a read-only tool escaped a deny policy — read_only is not an allowlist")
 	}
 }

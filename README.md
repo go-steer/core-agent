@@ -1,6 +1,6 @@
 # core-agent
 
-A production-grade Go substrate for multi-turn LLM agents, built on the [Google Agent Development Kit](https://pkg.go.dev/google.golang.org/adk). Ships the wiring — providers, MCP, skills, permissions, durable sessions, remote attach, an in-process Bubble Tea TUI, and a headless CLI — so downstream projects can focus on their own tools and product logic.
+A production-grade Go substrate for multi-turn LLM agents, built on the [Google Agent Development Kit](https://pkg.go.dev/google.golang.org/adk/v2). Ships the wiring — providers, MCP, skills, permissions, durable sessions, remote attach, an in-process Bubble Tea TUI, and a headless CLI — so downstream projects can focus on their own tools and product logic.
 
 **📚 Full documentation: [go-steer.github.io/core-agent](https://go-steer.github.io/core-agent/)**
 

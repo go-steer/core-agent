@@ -22,11 +22,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/runner"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
@@ -336,8 +336,8 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 	// (#364).
 	parentSessionID := firstNonEmpty(opts.ParentSessionID, opts.Inner.SessionID())
 
-	handler := func(toolCtx adkagent.ToolContext, args subagentArgs) (subagentResult, error) {
-		// adkagent.ToolContext embeds agent.ReadonlyContext which embeds
+	handler := func(toolCtx adkagent.Context, args subagentArgs) (subagentResult, error) {
+		// adkagent.Context embeds agent.ReadonlyContext which embeds
 		// context.Context, so we can read context values and pass
 		// it to runner.Run directly.
 		//

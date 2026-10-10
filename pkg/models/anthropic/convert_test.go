@@ -22,8 +22,8 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 )
 
@@ -253,7 +253,7 @@ func TestBuildParams_ToolDeclarations_RealADKTool(t *testing.T) {
 	}
 	ft, err := functiontool.New(
 		functiontool.Config{Name: "probe", Description: "probe"},
-		func(ctx adkagent.ToolContext, in args) (map[string]any, error) { return nil, nil },
+		func(ctx adkagent.Context, in args) (map[string]any, error) { return nil, nil },
 	)
 	if err != nil {
 		t.Fatalf("functiontool.New: %v", err)

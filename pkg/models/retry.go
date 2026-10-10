@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 )
 
 // Default retry timings. Both are deliberately modest; see RetryPolicy

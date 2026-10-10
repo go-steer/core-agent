@@ -24,9 +24,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	adkagent "google.golang.org/adk/agent"
-	adktool "google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 )
 
 // This file ports bouncer's `sandbox_run_command`
@@ -241,7 +241,7 @@ func sandboxTool(s *sandbox) (adktool.Tool, error) {
 				"service account, and can only write to /workspace. Non-zero exits are " +
 				"returned to you rather than raised: read the stderr and try again.",
 		},
-		func(ctx adkagent.ToolContext, in sandboxArgs) (sandboxOutcome, error) {
+		func(ctx adkagent.Context, in sandboxArgs) (sandboxOutcome, error) {
 			if strings.TrimSpace(in.Command) == "" {
 				return sandboxOutcome{}, errors.New("sandbox_run_command: command is required")
 			}
@@ -290,7 +290,7 @@ func waitTool() (adktool.Tool, error) {
 			Description: "Pause before checking again — use this while a workload is Pending on quota. " +
 				"Capped at 900 seconds per call.",
 		},
-		func(ctx adkagent.ToolContext, in waitArgs) (waitResult, error) {
+		func(ctx adkagent.Context, in waitArgs) (waitResult, error) {
 			return waitFunc(stdContext(ctx), in)
 		},
 	)

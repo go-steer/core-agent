@@ -117,7 +117,7 @@
 // outcome) across a parent and its subagents. The drill already records
 // exactly that, and the recording turns out to be free to read: the
 // `event` object in a run's transcript.jsonl is a marshalled
-// google.golang.org/adk/session.Event — the same type pkg/eventlog
+// google.golang.org/adk/v2/session.Event — the same type pkg/eventlog
 // persists. All fifteen runs archived as of 2026-09-11 decode into it
 // with DisallowUnknownFields set and no failures, so this package gets
 // typed FunctionCall.Args, FunctionResponse.Response, UsageMetadata,

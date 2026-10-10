@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -38,7 +38,7 @@ const sampleK8sJSON = `{
 func TestJSONQuery_InlineJSON_BasicSelect(t *testing.T) {
 	t.Parallel()
 	fn := jsonQueryFunc(gateFor(t, t.TempDir()), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{
+	res, err := fn(adkagent.Context(nil), jsonQueryArgs{
 		JSON:  sampleK8sJSON,
 		Query: ".items[].metadata.name",
 	})
@@ -59,7 +59,7 @@ func TestJSONQuery_InlineJSON_BasicSelect(t *testing.T) {
 func TestJSONQuery_FilterAndProject(t *testing.T) {
 	t.Parallel()
 	fn := jsonQueryFunc(gateFor(t, t.TempDir()), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{
+	res, err := fn(adkagent.Context(nil), jsonQueryArgs{
 		JSON:  sampleK8sJSON,
 		Query: `.items[] | select(.status.phase == "Running") | .metadata.name`,
 	})
@@ -79,7 +79,7 @@ func TestJSONQuery_FromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := jsonQueryFunc(gateFor(t, dir), config.DefaultConfig())
-	res, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{
+	res, err := fn(adkagent.Context(nil), jsonQueryArgs{
 		Path:  path,
 		Query: "length",
 	})
@@ -94,7 +94,7 @@ func TestJSONQuery_FromFile(t *testing.T) {
 func TestJSONQuery_RejectsBothPathAndJSON(t *testing.T) {
 	t.Parallel()
 	fn := jsonQueryFunc(gateFor(t, t.TempDir()), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{
+	_, err := fn(adkagent.Context(nil), jsonQueryArgs{
 		Path:  "/tmp/x.json",
 		JSON:  "{}",
 		Query: ".",
@@ -107,7 +107,7 @@ func TestJSONQuery_RejectsBothPathAndJSON(t *testing.T) {
 func TestJSONQuery_RejectsNeither(t *testing.T) {
 	t.Parallel()
 	fn := jsonQueryFunc(gateFor(t, t.TempDir()), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{Query: "."})
+	_, err := fn(adkagent.Context(nil), jsonQueryArgs{Query: "."})
 	if err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Errorf("expected exactly-one error, got %v", err)
 	}
@@ -116,7 +116,7 @@ func TestJSONQuery_RejectsNeither(t *testing.T) {
 func TestJSONQuery_RejectsEmptyQuery(t *testing.T) {
 	t.Parallel()
 	fn := jsonQueryFunc(gateFor(t, t.TempDir()), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{JSON: "{}"})
+	_, err := fn(adkagent.Context(nil), jsonQueryArgs{JSON: "{}"})
 	if err == nil || !strings.Contains(err.Error(), "query is required") {
 		t.Errorf("expected missing-query error, got %v", err)
 	}
@@ -125,7 +125,7 @@ func TestJSONQuery_RejectsEmptyQuery(t *testing.T) {
 func TestJSONQuery_MalformedJSON(t *testing.T) {
 	t.Parallel()
 	fn := jsonQueryFunc(gateFor(t, t.TempDir()), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{JSON: "not json", Query: "."})
+	_, err := fn(adkagent.Context(nil), jsonQueryArgs{JSON: "not json", Query: "."})
 	if err == nil || !strings.Contains(err.Error(), "parse input") {
 		t.Errorf("expected parse-input error, got %v", err)
 	}
@@ -134,7 +134,7 @@ func TestJSONQuery_MalformedJSON(t *testing.T) {
 func TestJSONQuery_BadQueryExpression(t *testing.T) {
 	t.Parallel()
 	fn := jsonQueryFunc(gateFor(t, t.TempDir()), config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{JSON: "{}", Query: "not a valid (((expr"})
+	_, err := fn(adkagent.Context(nil), jsonQueryArgs{JSON: "{}", Query: "not a valid (((expr"})
 	if err == nil || !strings.Contains(err.Error(), "parse query") {
 		t.Errorf("expected parse-query error, got %v", err)
 	}
@@ -146,7 +146,7 @@ func TestJSONQuery_EvalErrorSurfaces(t *testing.T) {
 	// `.foo / .bar` against ints both equal to zero is a jq runtime error
 	// (division by zero); surfaced as a Go error so the model sees the
 	// failure rather than getting empty results.
-	_, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{
+	_, err := fn(adkagent.Context(nil), jsonQueryArgs{
 		JSON:  `{"foo": 0, "bar": 0}`,
 		Query: ".foo / .bar",
 	})
@@ -171,7 +171,7 @@ func TestJSONQuery_OutOfScope_Denied(t *testing.T) {
 		Scope: scope,
 	})
 	fn := jsonQueryFunc(gate, config.DefaultConfig())
-	_, err := fn(adkagent.ToolContext(nil), jsonQueryArgs{
+	_, err := fn(adkagent.Context(nil), jsonQueryArgs{
 		Path:  outside,
 		Query: ".",
 	})

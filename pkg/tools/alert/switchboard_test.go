@@ -21,22 +21,21 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/memory"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool/toolconfirmation"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/memory"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
-// alertToolCtx is an adkagent.ToolContext that names a session, which is the
-// whole point here: the switchboard template reads one. Full-interface
-// satisfaction is deliberate — an ADK bump that adds a method should
-// break the stub rather than silently drift (the planToolCtx pattern in
-// pkg/tools).
+// alertToolCtx is an adkagent.Context that names a session, which is the
+// whole point here: the switchboard template reads one. It embeds
+// agent.StrictContextMock the way planToolCtx in pkg/tools does: methods
+// it does not override panic when called rather than read a silent zero.
 type alertToolCtx struct {
-	context.Context
+	adkagent.StrictContextMock
 	session string
 }
 
@@ -60,9 +59,9 @@ func (c *alertToolCtx) SearchMemory(context.Context, string) (*memory.SearchResp
 	return nil, nil
 }
 
-// inSession returns an adkagent.ToolContext reporting sess.
-func inSession(sess string) adkagent.ToolContext {
-	return &alertToolCtx{Context: context.Background(), session: sess}
+// inSession returns an adkagent.Context reporting sess.
+func inSession(sess string) adkagent.Context {
+	return &alertToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), session: sess}
 }
 
 // switchboardTarget is the shape validateAlerts accepts for the gateway:
@@ -174,9 +173,9 @@ func TestRun_SwitchboardOmitsTheSessionHeaderWhenThereIsNone(t *testing.T) {
 	cfg := cfgWith(switchboardTarget("chat", srv.URL, "C0123"))
 	h, _ := newHandler(yoloGate(t), cfg, sbEnv, nil, srv.Client())
 
-	// A nil adkagent.ToolContext names no session; an empty header value is not
+	// A nil adkagent.Context names no session; an empty header value is not
 	// an id, so the header is absent rather than blank.
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Target: "chat", Level: "info", Summary: "hi"}); err != nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Target: "chat", Level: "info", Summary: "hi"}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if _, has := got.header[sessionHeader]; has {

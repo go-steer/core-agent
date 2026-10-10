@@ -18,7 +18,7 @@
 // so additional backends plug in behind the same contract.
 //
 // Built-in providers:
-//   - "gemini" / "vertex" — google.golang.org/adk/model/gemini
+//   - "gemini" / "vertex" — google.golang.org/adk/v2/model/gemini
 //   - "anthropic"         — Claude via github.com/anthropics/anthropic-sdk-go
 //
 // Each backend's package init() calls Register so importing the
@@ -30,7 +30,7 @@ import (
 	"fmt"
 	"os"
 
-	"google.golang.org/adk/model"
+	"google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )

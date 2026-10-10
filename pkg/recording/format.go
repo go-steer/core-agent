@@ -22,7 +22,7 @@
 package recording
 
 import (
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 )
 
 // RecordedTurn is the on-disk shape of a single LLM turn captured by

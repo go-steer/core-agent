@@ -28,9 +28,10 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
-// streamed yields what core-models' streaming dialects yield: a last
-// partial and the aggregate after it, both marked TurnComplete, both
-// carrying the call's usage.
+// streamed yields what core-models' streaming dialects yield from
+// v0.6.1 (llm.Response's contract): partial chunks, none marked
+// TurnComplete, then the aggregate, the call's one TurnComplete. The
+// last chunk carries usage too, as Gemini's does.
 type streamed struct{}
 
 func (streamed) Name() string { return "streamed" }
@@ -39,7 +40,7 @@ func (streamed) GenerateContent(_ context.Context, _ *llm.Request, _ bool) iter.
 	u := &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 100, CandidatesTokenCount: 10, TotalTokenCount: 110}
 	content := genai.NewContentFromText("hi", genai.RoleModel)
 	return func(yield func(*llm.Response, error) bool) {
-		if !yield(&llm.Response{Content: content, Partial: true, TurnComplete: true, UsageMetadata: u}, nil) {
+		if !yield(&llm.Response{Content: content, Partial: true, UsageMetadata: u}, nil) {
 			return
 		}
 		yield(&llm.Response{Content: content, TurnComplete: true, UsageMetadata: u}, nil)
@@ -47,9 +48,10 @@ func (streamed) GenerateContent(_ context.Context, _ *llm.Request, _ bool) iter.
 }
 
 // TestAdapt_StreamedCallCountsOnce: usage.TurnTap commits on every
-// TurnComplete event, so a streamed call whose partial and aggregate
-// are both marked complete was billed twice. Adapt keeps the mark on
-// the partial only, as ADK v1's Gemini model does.
+// TurnComplete event. core-models v0.6.0's Gemini dialect marked the
+// last chunk as well as the aggregate, and a streamed call was billed
+// twice; v0.6.1 marks only the aggregate. This pins that core-agent
+// counts a call under that contract once.
 func TestAdapt_StreamedCallCountsOnce(t *testing.T) {
 	t.Parallel()
 	m := Adapt(streamed{})

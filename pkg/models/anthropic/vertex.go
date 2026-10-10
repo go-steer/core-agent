@@ -18,10 +18,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/vertex"
-	"golang.org/x/oauth2/google"
+	"github.com/go-steer/core-models/profile"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/models"
@@ -48,11 +47,7 @@ func init() {
 // Vertex AI. project and region are required. Authentication uses
 // Application Default Credentials (run `gcloud auth application-default
 // login`, or set GOOGLE_APPLICATION_CREDENTIALS, or rely on workload
-// identity in production).
-//
-// We deliberately load credentials via google.FindDefaultCredentials
-// ourselves and pass them to vertex.WithCredentials — vertex.WithGoogleAuth
-// panics on missing creds, which we don't want at startup.
+// identity in production); missing credentials fail here, at startup.
 func NewVertex(ctx context.Context, project, region string, opts ...Option) (*Provider, error) {
 	if project == "" {
 		return nil, fmt.Errorf("anthropic-vertex: project is required (set model.anthropic.vertex.project in .agents/config.json or %s env)", EnvVertexProject)
@@ -60,20 +55,18 @@ func NewVertex(ctx context.Context, project, region string, opts ...Option) (*Pr
 	if region == "" {
 		return nil, fmt.Errorf("anthropic-vertex: region is required (set model.anthropic.vertex.location in .agents/config.json or %s env)", EnvVertexRegion)
 	}
-	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
-	if err != nil {
+	prof, _ := profile.Builtin(config.ProviderAnthropicVertex)
+	// Pinned rather than left to the profile's own env chain: core-agent
+	// resolves project and region from config first (newVertexProvider),
+	// and a caller of NewVertex passes them explicitly.
+	prof.Params = map[string]string{"project": project, "region": region}
+	p := &Provider{name: config.ProviderAnthropicVertex, prof: prof}
+	out, err := p.init(ctx, opts)
+	if err != nil && strings.Contains(err.Error(), "Application Default Credentials") {
+		// The wording operators (and the ADC-less CI skip guards) know.
 		return nil, fmt.Errorf("anthropic-vertex: load default credentials: %w (run `gcloud auth application-default login`)", err)
 	}
-	p := &Provider{
-		name:     config.ProviderAnthropicVertex,
-		client:   anthropic.NewClient(vertex.WithCredentials(ctx, region, project, creds)),
-		cache:    DefaultCacheOptions(),
-		builtins: DefaultBuiltinTools(),
-	}
-	for _, opt := range opts {
-		opt(p)
-	}
-	return p, nil
+	return out, err
 }
 
 // newVertexProvider is the registry constructor for "anthropic-vertex".

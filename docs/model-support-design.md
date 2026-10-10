@@ -64,14 +64,25 @@ R1–R8, including cost and usage parity with Gemini and Claude.
     profile model with no price is refused at startup.
   - The existing `gemini`, `vertex`, `anthropic` and `anthropic-vertex` paths
     are unchanged, and so is auto-detection.
-- **The Gemini and Anthropic adapters move later (L4/L5).** core-agent's newer
-  behaviour comes along with them: prompt caching and its TTLs, the 1-hour
-  cache-write share, Gemini retry, and the cache-minimum check. After that,
-  `pkg/models` becomes a thin facade that maps `config.ModelConfig` onto
-  profiles, and its subpackages become imports. The legacy cache-write sidecar
-  keys (`cache_creation_input_tokens`, `cache_creation_1h_input_tokens`) keep
-  being written until `pkg/usage` reads the library's record, so `usage.Rebuild`
-  over old event logs keeps working.
+- **The Gemini and Anthropic adapters move (L4/L5)** to core-models v0.6.0
+  (`dialect/anthropic`, `dialect/gemini`, `dialect/gemini/vertexcache`).
+  core-agent's newer behaviour came along with them: prompt caching and its
+  TTLs, the 1-hour cache-write share, the bare-400 classification, and the
+  cache-minimum check. `pkg/models/anthropic` and `pkg/models/gemini` become
+  thin facades with the same exported API, mapping `config.Config` onto the
+  library; `internal/vertexcache` is gone. Decisions the facades make:
+  - **One Gemini retry layer.** `pkg/models.RetryPolicy` keeps 429/503 and the
+    bare 400, its process-wide budget and the `RetryError` a transcript
+    shows (#1206); the library's HTTP-layer retry is turned off for Gemini.
+    Claude keeps the library's HTTP-layer retry, which replaces the SDK's own.
+  - **One context vocabulary.** `models.AsSideCall`, `WithPriorSuccess`,
+    `WithoutPromptCache` and `WithoutBuiltins` are core-models' `callctx`
+    marks, so the library sees exactly what core-agent sets.
+  - **The cache-write sidecar is a translation.** `models.Adapt` copies the
+    library's `usage.Detail` cache writes into `cache_creation_input_tokens`
+    and `cache_creation_1h_input_tokens`, so `pkg/usage` and `usage.Rebuild`
+    over old event logs are unchanged.
+  - The Gemini grounding projection (session events) stays here.
 - **Pricing moves last (L6).** `pkg/pricing`'s mechanics merge with mast's
   backend-keyed catalog in core-models. The file locations under
   `~/.core-agent`, the refresh policy and the config override stay here.
@@ -85,7 +96,6 @@ R1–R8, including cost and usage parity with Gemini and Claude.
 
 ## What does not change
 
-Provider fixes to
-`pkg/models/{anthropic,gemini}` and `internal/vertexcache` keep landing here
-until each package is extracted. After that a fix is a core-models release and a
-version bump here.
+A provider fix is a core-models release and a version bump here. What stays
+here is the facade: config mapping, defaults, the Gemini retry policy, and the
+grounding projection.

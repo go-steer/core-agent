@@ -23,6 +23,8 @@ import (
 	"time"
 
 	adkmodel "google.golang.org/adk/model"
+
+	"github.com/go-steer/core-models/callctx"
 )
 
 // Default retry timings. Both are deliberately modest; see RetryPolicy
@@ -105,8 +107,6 @@ func (e *RetryError) Error() string {
 
 func (e *RetryError) Unwrap() error { return e.Err }
 
-type sideCallKey struct{}
-
 // AsSideCall marks ctx as a one-shot internal call — the approver, the
 // compaction summarizer, a session title, a /btw question — so a retry
 // it triggers logs as one (#1206). A side call's response is never a
@@ -114,18 +114,16 @@ type sideCallKey struct{}
 // transcript surface by construction; labelling the log line lets box
 // A2's counter tell those retries from the ones a transcript must show,
 // instead of failing the run on them.
+//
+// The mark is core-models' callctx one, so the library adapters read
+// the same key: a side call neither uses nor seeds a Vertex context
+// cache, and never counts as evidence for the bare-400 retry.
 func AsSideCall(ctx context.Context, name string) context.Context {
-	return context.WithValue(ctx, sideCallKey{}, name)
+	return callctx.AsSideCall(ctx, name)
 }
 
 // SideCallName returns the name AsSideCall gave ctx, or "".
-func SideCallName(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	name, _ := ctx.Value(sideCallKey{}).(string)
-	return name
-}
+func SideCallName(ctx context.Context) string { return callctx.SideCallName(ctx) }
 
 // sideCallPrefix is the log prefix for a call AsSideCall marked.
 func sideCallPrefix(ctx context.Context) string {

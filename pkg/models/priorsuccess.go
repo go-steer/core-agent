@@ -16,7 +16,8 @@ package models
 
 import (
 	"context"
-	"sync/atomic"
+
+	"github.com/go-steer/core-models/callctx"
 )
 
 // PriorSuccess records that a model call in one agent session has
@@ -28,33 +29,16 @@ import (
 // malformed from the start.
 //
 // The agent owns one per session and marks it from its event loop when
-// a model response arrives; the retry policy only reads it. The policy
-// is one process-wide instance with no session of its own, so the
-// record travels on the call's context (WithPriorSuccess), the same way
+// a model response arrives; the retry policy only reads it. The record
+// travels on the call's context (WithPriorSuccess), the same way
 // AsSideCall does. A nil *PriorSuccess is valid and never succeeded.
 //
-// Safe for concurrent use.
-type PriorSuccess struct {
-	ok atomic.Bool
-}
+// It is core-models' callctx.PriorSuccess, so the library's HTTP-layer
+// retry and this package's RetryPolicy read the same record.
+type PriorSuccess = callctx.PriorSuccess
 
 // NewPriorSuccess returns an unmarked record.
-func NewPriorSuccess() *PriorSuccess { return &PriorSuccess{} }
-
-// Mark records that a model call has succeeded. Nil-safe.
-func (p *PriorSuccess) Mark() {
-	if p != nil {
-		p.ok.Store(true)
-	}
-}
-
-// Succeeded reports whether Mark has been called. Nil-safe: a nil
-// record has never succeeded.
-func (p *PriorSuccess) Succeeded() bool {
-	return p != nil && p.ok.Load()
-}
-
-type priorSuccessKey struct{}
+func NewPriorSuccess() *PriorSuccess { return callctx.NewPriorSuccess() }
 
 // WithPriorSuccess puts rec on ctx for the model calls made under it.
 //
@@ -64,24 +48,16 @@ type priorSuccessKey struct{}
 // call, and the parent's success says nothing about whether the child's
 // request is well formed.
 func WithPriorSuccess(ctx context.Context, rec *PriorSuccess) context.Context {
-	return context.WithValue(ctx, priorSuccessKey{}, rec)
+	return callctx.WithPriorSuccess(ctx, rec)
 }
 
 // PriorSuccessFrom returns the record WithPriorSuccess put on ctx, or
 // nil.
-func PriorSuccessFrom(ctx context.Context) *PriorSuccess {
-	if ctx == nil {
-		return nil
-	}
-	rec, _ := ctx.Value(priorSuccessKey{}).(*PriorSuccess)
-	return rec
-}
+func PriorSuccessFrom(ctx context.Context) *PriorSuccess { return callctx.PriorSuccessFrom(ctx) }
 
 // priorCallSucceeded reports whether a call under ctx may be judged by
 // IsTransientAfterSuccess: its session has had a model call succeed,
 // and it is not a side call. A side call — the approver, a title, the
 // summarizer — sends its own instruction and no tools, so the session's
 // success is no evidence about its request.
-func priorCallSucceeded(ctx context.Context) bool {
-	return SideCallName(ctx) == "" && PriorSuccessFrom(ctx).Succeeded()
-}
+func priorCallSucceeded(ctx context.Context) bool { return callctx.PriorCallSucceeded(ctx) }

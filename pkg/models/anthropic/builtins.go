@@ -14,10 +14,6 @@
 
 package anthropic
 
-import (
-	"github.com/anthropics/anthropic-sdk-go"
-)
-
 // BuiltinTools toggles Anthropic's server-side built-in tools surfaced
 // by core-agent. Each enabled flag becomes one entry on the request's
 // Tools slice alongside any user-defined function declarations.
@@ -50,19 +46,6 @@ type BuiltinTools struct {
 // per-tool helpers. Currently empty — see BuiltinTools doc for why.
 func DefaultBuiltinTools() BuiltinTools {
 	return BuiltinTools{}
-}
-
-// asAnthropicTools projects the toggles into the SDK's ToolUnionParam
-// shape. Order matches the field order in the struct so the request
-// shape is deterministic across runs (matters for prompt caching).
-func (b BuiltinTools) asAnthropicTools() []anthropic.ToolUnionParam {
-	var out []anthropic.ToolUnionParam
-	if b.WebSearch {
-		out = append(out, anthropic.ToolUnionParam{
-			OfWebSearchTool20260209: &anthropic.WebSearchTool20260209Param{},
-		})
-	}
-	return out
 }
 
 // Names reports the enabled built-ins under the provider-neutral names

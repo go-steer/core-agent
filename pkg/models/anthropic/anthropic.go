@@ -12,28 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package anthropic implements models.Provider for Anthropic / Claude.
+// Package anthropic implements models.Provider for Anthropic / Claude,
+// on the first-party API and on Vertex AI.
 //
-// ADK Go ships only the Gemini and Apigee model backends, so this
-// package adapts the official Anthropic Go SDK
-// (github.com/anthropics/anthropic-sdk-go) to the ADK's model.LLM
-// interface. genai-shaped requests are translated to Anthropic's
-// Messages API; streaming responses are accumulated back into
-// genai-shaped events the ADK runner expects.
-//
-// Conversation history is preserved automatically by the ADK runner
-// (the in-memory session service replays prior events on each turn);
-// this provider is stateless aside from the API client.
+// The adapter itself lives in core-models (dialect/anthropic,
+// docs/model-support-design.md): request conversion, streaming,
+// rolling and 1-hour prompt caching, thinking, the usage record. This
+// package is core-agent's facade over it — it maps config.Config onto
+// core-models' built-in anthropic and anthropic-vertex profiles, keeps
+// core-agent's defaults (DefaultModel, the small-model tier, caching on,
+// built-ins off) and exported API, and adapts each model to ADK v1
+// through models.Adapt, which also writes the cache-write sidecar
+// pkg/usage reads.
 package anthropic
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	adkmodel "google.golang.org/adk/model"
+
+	coremodels "github.com/go-steer/core-models"
+	cmanthropic "github.com/go-steer/core-models/dialect/anthropic"
+	"github.com/go-steer/core-models/profile"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/models"
@@ -58,9 +61,9 @@ const DefaultModel = "claude-opus-5-5"
 const DefaultSmallModelID = "claude-haiku-5-5"
 
 // DefaultMaxTokens caps a single response when the caller hasn't set
-// one. 16K is a comfortable middle ground: plenty for most turns,
-// well under the streaming SDK's HTTP timeouts.
-const DefaultMaxTokens = 16_384
+// one. It is core-models' value, re-exported for callers that sized
+// against this package's constant.
+const DefaultMaxTokens = cmanthropic.DefaultMaxTokens
 
 // EnvAPIKey is the environment variable consulted when no key is
 // supplied via config.
@@ -72,13 +75,20 @@ func init() {
 
 // Provider is the Anthropic implementation of models.Provider. The
 // same struct serves both the first-party API and Vertex AI backends —
-// only the embedded client differs. name carries which one this is so
-// telemetry and Resolve() see the right identity.
+// only the core-models profile it opens differs. name carries which one
+// this is so telemetry and Resolve() see the right identity.
 type Provider struct {
 	name     string
-	client   anthropic.Client
+	prof     profile.Profile
+	getenv   func(string) string // nil = os.Getenv
 	cache    CacheOptions
 	builtins BuiltinTools
+
+	// opened caches the core-models provider per caching and built-in
+	// policy, so every Model() under one policy shares a connection
+	// pool and SetPromptCache after construction still takes effect.
+	mu     sync.Mutex
+	opened map[string]coremodels.Provider
 }
 
 // Option configures a Provider at construction.
@@ -128,23 +138,21 @@ type CacheOptions struct {
 	// the response reports which one each write used, so the ledger is
 	// right either way (#770).
 	//
-	// Any other value is treated as 5m; see cacheControl.
+	// Any other value is treated as 5m.
 	TTL string
 }
 
 // Enabled reports whether any breakpoint would be placed.
 func (o CacheOptions) Enabled() bool { return o.System || o.History }
 
-// cacheControl is the marker every breakpoint in this request carries.
-// One TTL per request: Anthropic permits mixing, but a mixed request
-// would make "which breakpoint expired" depend on marker position, and
-// there is no use case in the loop for the two policies at once.
-func (o CacheOptions) cacheControl() anthropic.CacheControlEphemeralParam {
-	cc := anthropic.NewCacheControlEphemeralParam()
+// library is the same policy in core-models' vocabulary. The TTL
+// strings are the same two ("5m", "1h") on both sides.
+func (o CacheOptions) library() cmanthropic.CacheOptions {
+	ttl := cmanthropic.TTL5m
 	if o.TTL == config.PromptCacheTTL1h {
-		cc.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+		ttl = cmanthropic.TTL1h
 	}
-	return cc
+	return cmanthropic.CacheOptions{System: o.System, History: o.History, TTL: ttl}
 }
 
 // DefaultCacheOptions is what every constructor starts from: cache the
@@ -182,16 +190,58 @@ func New(apiKey string, opts ...Option) (*Provider, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("anthropic: api key is required (set ANTHROPIC_API_KEY or model.anthropic.api_key in .agents/config.json)")
 	}
+	prof, _ := profile.Builtin(config.ProviderAnthropic)
 	p := &Provider{
-		name:     config.ProviderAnthropic,
-		client:   anthropic.NewClient(option.WithAPIKey(apiKey)),
-		cache:    DefaultCacheOptions(),
-		builtins: DefaultBuiltinTools(),
+		name: config.ProviderAnthropic,
+		prof: prof,
+		// The profile reads its key from ANTHROPIC_API_KEY; a key from
+		// config answers that lookup instead.
+		getenv: func(name string) string {
+			if name == prof.Auth.Env {
+				return apiKey
+			}
+			return os.Getenv(name)
+		},
 	}
+	return p.init(context.Background(), opts)
+}
+
+// init applies the defaults and opts, then opens the profile once so a
+// bad credential fails at startup rather than on the first turn.
+func (p *Provider) init(ctx context.Context, opts []Option) (*Provider, error) {
+	p.cache = DefaultCacheOptions()
+	p.builtins = DefaultBuiltinTools()
 	for _, opt := range opts {
 		opt(p)
 	}
+	if _, err := p.open(ctx); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// open returns the core-models provider for the current policy.
+func (p *Provider) open(ctx context.Context) (coremodels.Provider, error) {
+	key := fmt.Sprintf("%+v|%+v", p.cache, p.builtins)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if lib, ok := p.opened[key]; ok {
+		return lib, nil
+	}
+	cache := p.cache.library()
+	lib, err := coremodels.Open(ctx, p.prof, coremodels.Options{
+		Resolve:      profile.Options{Getenv: p.getenv},
+		PromptCache:  &cache,
+		BuiltinTools: p.builtins.Names(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", p.name, err)
+	}
+	if p.opened == nil {
+		p.opened = map[string]coremodels.Provider{}
+	}
+	p.opened[key] = lib
+	return lib, nil
 }
 
 // Name reports the provider identity ("anthropic" or "anthropic-vertex").
@@ -207,26 +257,29 @@ func (p *Provider) DefaultSmallModel() string { return DefaultSmallModelID }
 //
 // Note: Vertex AI sometimes serves Claude under date-suffixed model IDs
 // (e.g. "claude-opus-4-5@20251101"). When using "anthropic-vertex",
-// pass the exact ID Vertex expects via cfg.Model.Name; the SDK plugs
-// it into the Vertex URL path verbatim.
-func (p *Provider) Model(_ context.Context, modelID string) (adkmodel.LLM, error) {
+// pass the exact ID Vertex expects via cfg.Model.Name; it goes into the
+// Vertex URL path verbatim.
+func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, error) {
 	if modelID == "" {
 		modelID = DefaultModel
 	}
-	return &llm{
-		client:   p.client,
-		modelID:  modelID,
-		cache:    p.cache,
-		builtins: p.builtins,
-	}, nil
+	lib, err := p.open(ctx)
+	if err != nil {
+		return nil, err
+	}
+	m, err := lib.Model(ctx, modelID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", p.name, err)
+	}
+	return models.Adapt(m), nil
 }
 
 // SetPromptCache installs the caching policy after construction. Exists
 // for the daemon's wiring order: the provider comes out of the registry
 // (models.Resolve, which sees only config) before the CLI kill switch
-// can be applied, and Model() copies the policy into each LLM it
-// builds. Call it before the first Model() call — like the Gemini
-// provider's cache hooks, it is startup wiring, not a live control.
+// can be applied, and Model() reads the policy when it builds an LLM.
+// Call it before the first Model() call — like the Gemini provider's
+// cache hooks, it is startup wiring, not a live control.
 func (p *Provider) SetPromptCache(o CacheOptions) { p.cache = o }
 
 // PromptCache reports the currently installed policy. Lets a host log

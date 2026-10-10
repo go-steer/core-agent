@@ -29,19 +29,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"iter"
 	"sync"
 
 	"google.golang.org/adk/model"
 
 	coremodels "github.com/go-steer/core-models"
-	"github.com/go-steer/core-models/adkv1"
 	"github.com/go-steer/core-models/profile"
-	coreusage "github.com/go-steer/core-models/usage"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/models"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 func init() {
@@ -121,7 +117,7 @@ func (p *Provider) Model(ctx context.Context, modelID string) (model.LLM, error)
 	if err != nil {
 		return nil, err
 	}
-	return usageBridge{inner: adkv1.Wrap(m)}, nil
+	return models.Adapt(m), nil
 }
 
 // DefaultModel is the model to run on a profile when the operator
@@ -167,46 +163,4 @@ func builtinsOn(bt *config.BuiltinToolsConfig) []string {
 		}
 	}
 	return on
-}
-
-// usageBridge copies the parts of core-models' usage record that
-// genai's UsageMetadata cannot hold into the CustomMetadata sidecar
-// pkg/usage reads. The openai-chat adapter already fills the genai
-// fields (prompt, completion, cache reads, reasoning); what remains is
-// the cache-write bucket, which only usage.CacheCreationTokensMetadataKey
-// carries — the key pkg/models/anthropic writes and usage.Rebuild
-// reads back from an event log. ToolUseTokens is deliberately not
-// mapped: no core-models dialect reports it today, and genai's field
-// for it is outside the prompt count, so guessing a mapping risks
-// counting tokens twice.
-type usageBridge struct {
-	inner model.LLM
-}
-
-func (b usageBridge) Name() string { return b.inner.Name() }
-
-func (b usageBridge) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
-	return func(yield func(*model.LLMResponse, error) bool) {
-		for resp, err := range b.inner.GenerateContent(ctx, req, stream) {
-			if resp != nil {
-				bridgeUsage(resp)
-			}
-			if !yield(resp, err) {
-				return
-			}
-		}
-	}
-}
-
-func bridgeUsage(resp *model.LLMResponse) {
-	d, ok := coreusage.FromMetadata(resp.CustomMetadata)
-	if !ok {
-		return
-	}
-	if d.CacheWriteTokens != nil {
-		resp.CustomMetadata[usage.CacheCreationTokensMetadataKey] = *d.CacheWriteTokens
-	}
-	if d.CacheWrite1hTokens != nil {
-		resp.CustomMetadata[usage.CacheCreation1hTokensMetadataKey] = *d.CacheWrite1hTokens
-	}
 }

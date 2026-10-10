@@ -5,6 +5,8 @@ title: Providers
 
 `core-agent` ships four model backends of its own, plus [provider profiles](#provider-profiles) for everything else — OpenAI-compatible endpoints, self-hosted vLLM, SGLang and Ollama servers, Vertex AI partner models — all behind the same `models.Provider` interface. Pick one explicitly via `model.provider` in `.agents/config.json` or with the `--provider` CLI flag, or let env-based auto-detection pick.
 
+All of them run on [core-models](https://github.com/go-steer/core-models), the provider library core-agent shares with mast: the four backends are thin facades over its Gemini and Anthropic adapters, and profiles open its Chat Completions adapter. A provider fix ships as a core-models release.
+
 ---
 
 ## Auto-detection
@@ -365,7 +367,7 @@ core-agent-vertexcache: Caches.Create failed 6 times (giving up; agent will run 
 **One failure gets no retries at all: a prompt below the model's minimum cacheable size.** Explicit caching has a floor (4096 tokens on `gemini-3.7-flash` at the time of writing, and it is per-model), and what gets cached is the system instruction plus the tool declarations — a property of the agent's configuration that does not grow while the daemon runs. Attempt 6 would carry exactly the tokens attempt 1 did, so the manager says so once and stops ([#1067](https://github.com/go-steer/core-agent/issues/1067)). Small agents land here routinely: a daemon with no persona, no skills and most built-in tools disabled is under the floor by construction.
 
 ```
-core-agent-vertexcache: context cache: disabled for model gemini-3.7-flash — this agent's system instruction + tools are below the provider's minimum cacheable size, and retrying cannot change that. Nothing to fix; a larger prompt would qualify: Error 400, Message: The cached content is of 2373 tokens. The minimum token count to start explicit caching is 4096., Status: INVALID_ARGUMENT
+core-agent-vertexcache: context cache: disabled for model gemini-3.7-flash — the system instruction + tools are below the provider's minimum cacheable size, and retrying cannot change that. Nothing to fix; a larger prompt would qualify: Error 400, Message: The cached content is of 2373 tokens. The minimum token count to start explicit caching is 4096., Status: INVALID_ARGUMENT
 ```
 
 That line is the retraction of the startup line above it: `context cache: enabled` is a statement about configuration, and this is the daemon reporting that the provider would not honour it. Nothing needs fixing — the agent runs uncached and every turn still works.

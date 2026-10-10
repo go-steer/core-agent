@@ -15,11 +15,8 @@
 package gemini
 
 import (
-	"context"
 	"strings"
 	"testing"
-
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/models"
@@ -156,61 +153,5 @@ func TestDefaultSmallModel(t *testing.T) {
 	}
 	if DefaultSmallModelID != "gemini-3.5-flash-lite" {
 		t.Errorf("DefaultSmallModelID = %q; expected gemini-3.5-flash-lite (the cheap-tier alias used across the codebase; moves in lockstep with taskclass's gemini small tier)", DefaultSmallModelID)
-	}
-}
-
-// TestNewAPIKey_TracedHTTPClient pins the #325 contract: the direct
-// Gemini API backend supplies its own otelhttp-instrumented client
-// (genai would otherwise fall back to an untraced bare http.Client).
-func TestNewAPIKey_TracedHTTPClient(t *testing.T) {
-	p, err := NewAPIKey("test-key")
-	if err != nil {
-		t.Fatalf("NewAPIKey: %v", err)
-	}
-	if p.cfg.HTTPClient == nil {
-		t.Fatal("NewAPIKey: cfg.HTTPClient is nil; direct Gemini API calls would be untraced")
-	}
-	if _, ok := p.cfg.HTTPClient.Transport.(*otelhttp.Transport); !ok {
-		t.Errorf("NewAPIKey: transport is %T, want *otelhttp.Transport", p.cfg.HTTPClient.Transport)
-	}
-}
-
-// TestNewVertex_NoHTTPClientOverride pins the other half of the #325
-// contract: the Vertex backend must NOT set HTTPClient. genai only
-// wires ADC credentials into a client it builds itself, and that
-// client is already otelhttp-instrumented via
-// cloud.google.com/go/auth/httptransport's default telemetry —
-// overriding would break auth and double-instrument.
-func TestNewVertex_NoHTTPClientOverride(t *testing.T) {
-	p, err := NewVertex("proj", "us-central1")
-	if err != nil {
-		t.Fatalf("NewVertex: %v", err)
-	}
-	if p.cfg.HTTPClient != nil {
-		t.Error("NewVertex: cfg.HTTPClient is set; this bypasses genai's ADC wiring (auth breaks) and double-instruments the transport")
-	}
-}
-
-// ADK v1.7.0's stream aggregator no longer errors on a stream of
-// candidate-less chunks: it yields a final event with no parts. The
-// direct Gemini API with every built-in off used to get the raw ADK
-// model, so that stream would end the turn silently (#220's shape).
-// Every Model is now wrapped, so the empty-tail detection is always in
-// place.
-func TestModel_DirectAPIWithoutBuiltinsIsStillWrapped(t *testing.T) {
-	p, err := NewAPIKey("test-key", WithBuiltinTools(BuiltinTools{}))
-	if err != nil {
-		t.Fatalf("NewAPIKey: %v", err)
-	}
-	m, err := p.Model(context.Background(), "gemini-3.5-flash")
-	if err != nil {
-		t.Fatalf("Model: %v", err)
-	}
-	b, ok := m.(*builtinsLLM)
-	if !ok {
-		t.Fatalf("Model returned %T, want *builtinsLLM", m)
-	}
-	if len(b.builtins) != 0 || b.tolerateEmptyChunks {
-		t.Errorf("wrapper = %+v, want no built-ins and empty chunks not tolerated", b)
 	}
 }

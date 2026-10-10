@@ -33,6 +33,10 @@ import (
 // it reaches the world through the fixture's own tool on PATH, so the
 // witness is written by the world and not by the harness.
 const stubAgent = `#!/bin/sh
+# One argument per line, for the tests about what the runner passes.
+if [ -n "$STUB_ARGS_FILE" ]; then
+  printf '%s\n' "$@" > "$STUB_ARGS_FILE"
+fi
 # Args mirror core-agent's: everything up to -p is ignored, and the
 # prompt is the argument after it.
 while [ "$1" != "-p" ] && [ $# -gt 0 ]; do shift; done
@@ -400,4 +404,91 @@ func TestRunnerReadsPreconditionsFromTheProcessItRan(t *testing.T) {
 			t.Fatalf("want the stderr report to decide it, got %+v", res.Preconditions)
 		}
 	})
+}
+
+// runArgs runs the stub once in tier and returns the arguments the
+// runner gave it.
+func runArgs(t *testing.T, c *Case, f *Fixture, agent string, tier Tier) []string {
+	t.Helper()
+	argsFile := filepath.Join(t.TempDir(), "args")
+	t.Setenv("STUB_ARGS_FILE", argsFile)
+	// Only the arguments matter here. Blind, the stub never reaches for
+	// kubectl — off PATH in the no-access tier, a real one would sit on
+	// the runner's timeout trying to find a cluster.
+	t.Setenv("STUB_MODE", "blind")
+	r := &Runner{Binary: agent, Timeout: 30 * time.Second}
+	if _, err := r.Run(context.Background(), c, f, tier); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("the stub recorded no arguments: %v", err)
+	}
+	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+}
+
+// flagValue returns the argument after name, and whether name was there.
+func flagValue(args []string, name string) (string, bool) {
+	for i, a := range args {
+		if a == name && i+1 < len(args) {
+			return args[i+1], true
+		}
+	}
+	return "", false
+}
+
+// A fixture that ships its own .agents/ — a planted skill, an installed
+// persona — must have it loaded. The config pin's `-c` would otherwise
+// make the world root the agents dir and hide it: skill-steered-subject
+// and persona-long-horizon failed their "was it actually loaded"
+// preconditions on every run until the runner said --agents-dir.
+func TestRunnerPointsTheAgentsDirAtTheFixturesOwn(t *testing.T) {
+	c, f, agent := runHarness(t)
+	mustWrite(t, filepath.Join(f.dir, "workspace", ".agents", "skills", "triage", "SKILL.md"),
+		"---\nname: triage\ndescription: d\n---\nbody\n", 0o644)
+
+	for _, tier := range []Tier{TierTools, TierNoAccess} {
+		t.Run(string(tier), func(t *testing.T) {
+			args := runArgs(t, c, f, agent, tier)
+			pin, ok := flagValue(args, "-c")
+			if !ok {
+				t.Fatalf("no -c in %q: the config is no longer pinned", args)
+			}
+			dir, ok := flagValue(args, "--agents-dir")
+			if !ok {
+				t.Fatalf("no --agents-dir in %q: -c makes %s the agents dir and the fixture's .agents/ is never loaded",
+					args, filepath.Dir(pin))
+			}
+			if want := filepath.Join("workspace", ".agents"); !strings.HasSuffix(dir, want) {
+				t.Errorf("--agents-dir %q, want the workdir's %s", dir, want)
+			}
+			if strings.HasPrefix(pin, filepath.Dir(dir)+string(filepath.Separator)) {
+				t.Errorf("the pin %s sits inside the workspace; it must stay out of fixture content", pin)
+			}
+		})
+	}
+}
+
+// A workspace without .agents/ gets no --agents-dir: core-agent treats a
+// missing --agents-dir as fatal, and there is nothing to load. The agents
+// dir is then the pin's directory, and the project root the instruction
+// loader reads AGENTS.md from is that directory's parent — which must be
+// the world, not the world's parent. A pin directly in the world root
+// made the project root $TMPDIR, and a stray /tmp/AGENTS.md became part
+// of the run.
+func TestRunnerLeavesTheAgentsDirAloneWithoutOne(t *testing.T) {
+	c, f, agent := runHarness(t)
+	args := runArgs(t, c, f, agent, TierTools)
+	pin, ok := flagValue(args, "-c")
+	if !ok {
+		t.Fatalf("no -c in %q", args)
+	}
+	if dir, ok := flagValue(args, "--agents-dir"); ok {
+		t.Errorf("--agents-dir %q passed for a workspace with no .agents/", dir)
+	}
+	projectRoot := filepath.Dir(filepath.Dir(pin))
+	if !strings.HasPrefix(filepath.Base(projectRoot), "core-agent-eval-") {
+		t.Errorf("-c %s makes the project root %s, outside the materialized world; "+
+			"the instruction loader would read AGENTS.md from there", pin, projectRoot)
+	}
 }

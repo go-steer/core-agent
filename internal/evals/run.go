@@ -180,15 +180,37 @@ func sourceFor(ck Check, world *World, art RunArtifacts) Source {
 // and returns its path, for `-c`. Minimal is the point: the eval wants the
 // binary's defaults and the flags it passes explicitly, not a recipe.
 //
-// It goes in the world root rather than the workdir because `-c` also
-// fixes the agents dir to the config's directory, and the workdir is
-// fixture content the case may assert over.
+// `-c` also makes the config's directory the agents dir, and that dir's
+// parent the project root the instruction loader reads AGENTS.md from.
+// So the pin goes one level down, in its own directory under the world
+// root: the agents dir is then empty and owned by the eval, and the
+// project root is the world root, which holds only fixture content. A
+// pin directly in the world root put the project root at the root's
+// parent — $TMPDIR — and the run picked up any AGENTS.md lying there.
+// It stays out of the workdir because that is fixture content a case may
+// assert over. A fixture that ships its own agents dir gets it back
+// through worldAgentsDir.
 func writePinnedConfig(root string) (string, error) {
-	path := filepath.Join(root, "eval-pin-config.json")
+	dir := filepath.Join(root, "eval-pin")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte("{\"version\": 1}\n"), 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// worldAgentsDir returns the workdir's `.agents` directory when the
+// fixture ships one — the directory core-agent's discovery would find
+// from the workdir — and "" otherwise.
+func worldAgentsDir(world *World) string {
+	dir := filepath.Join(world.Workdir, ".agents")
+	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		return dir
+	}
+	return ""
 }
 
 func (r *Runner) exec(ctx context.Context, c *Case, world *World, tier Tier) RunArtifacts {
@@ -230,6 +252,21 @@ func (r *Runner) exec(ctx context.Context, c *Case, world *World, tier Tier) Run
 		r.logf("warning: could not pin config (%v); the run inherits config.Find's walk-up", err)
 	} else {
 		args = append(args, "-c", pin)
+	}
+	// `-c` also makes the pin's directory — the world root — the agents
+	// dir, so on its own it hid a fixture's own `.agents/`: the skill
+	// skill-steered-subject plants and the persona persona-long-horizon
+	// installs were never loaded, and both cases failed their
+	// "was it actually loaded" preconditions on every run after the pin
+	// landed. Point the agents dir back at the fixture's. --agents-dir
+	// moves skills, AGENTS.md and sessions and leaves the pinned config
+	// alone, which is the split wanted here. The run writes into that
+	// dir exactly what discovery from the workdir did before the pin: a
+	// sessions/ transcript once the agent has exited, which no check
+	// reads. Only when the directory exists: a bad --agents-dir is
+	// fatal, and a workspace without one has nothing to load.
+	if dir := worldAgentsDir(world); dir != "" {
+		args = append(args, "--agents-dir", dir)
 	}
 	if tier == TierNoAccess {
 		// The whole baseline, in one flag. Same binary, same prompt,

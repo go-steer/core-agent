@@ -19,13 +19,23 @@
 # it reports success with an explicit "SKIP — no provider credentials"
 # line instead of red noise.
 #
-# To arm it, configure repository secrets:
-#   GCP_SA_KEY                   — service-account key JSON with Vertex
-#                                  access (used by google-github-actions/auth)
-#   GOOGLE_CLOUD_PROJECT         — project for the Gemini-via-Vertex leg
-#   ANTHROPIC_VERTEX_PROJECT_ID  — project for the Claude-via-Vertex leg
-# Optional: GOOGLE_CLOUD_LOCATION (default global), CLOUD_ML_REGION
-# (default us-east5), ANTHROPIC_SMOKE_MODEL (default claude-sonnet-5).
+# Auth is keyless: Workload Identity Federation, the same shape as
+# mast's evals-nightly, but with core-agent's own provider and service
+# account (core-agent-e2e, roles/aiplatform.user only, impersonable only
+# by this repo). No service-account key exists to leak or rotate. To arm
+# it, configure:
+#   secrets.CORE_AGENT_E2E_WIF_PROVIDER    — projects/<n>/locations/global/
+#                                            workloadIdentityPools/<pool>/providers/<p>
+#   secrets.CORE_AGENT_E2E_SERVICE_ACCOUNT — the SA the workflow impersonates
+#   vars.GOOGLE_CLOUD_PROJECT              — project for the Gemini-via-Vertex leg
+#   vars.ANTHROPIC_VERTEX_PROJECT_ID       — project for the Claude-via-Vertex legs
+# Optional: vars.GOOGLE_CLOUD_LOCATION (default global), vars.CLOUD_ML_REGION
+# (default us-east5), vars.ANTHROPIC_SMOKE_MODEL (default claude-sonnet-5).
+# The maintainer's one-time setup script creates all of it idempotently.
+#
+# Without the WIF secrets the auth step is skipped and the run reports a
+# green SKIP. Read the "e2e-real-provider:" summary line, not the check
+# colour, before counting a run as coverage.
 #
 # Scheduled weekly rather than per-PR: these legs spend real API money
 # and guard the provider-regression class (wire-format drift, thinking
@@ -46,23 +56,27 @@ permissions:
 jobs:
   e2e-real-provider:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The evals legs run several model turns per tier; a full local run
+    # took ~20 minutes, past the old 15.
+    timeout-minutes: 35
     env:
-      HAS_GCP_KEY: ${{ secrets.GCP_SA_KEY != '' }}
-      GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+      HAS_WIF: ${{ secrets.CORE_AGENT_E2E_WIF_PROVIDER != '' && secrets.CORE_AGENT_E2E_SERVICE_ACCOUNT != '' }}
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
       GOOGLE_GENAI_USE_VERTEXAI: 'true'
-      GOOGLE_CLOUD_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
-      ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.ANTHROPIC_VERTEX_PROJECT_ID }}
-      CLOUD_ML_REGION: ${{ secrets.CLOUD_ML_REGION }}
+      GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
+      ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.ANTHROPIC_VERTEX_PROJECT_ID }}
+      CLOUD_ML_REGION: ${{ vars.CLOUD_ML_REGION }}
+      ANTHROPIC_SMOKE_MODEL: ${{ vars.ANTHROPIC_SMOKE_MODEL }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/go-toolchain
 
-      - name: Authenticate to Google Cloud
-        if: env.HAS_GCP_KEY == 'true'
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        if: env.HAS_WIF == 'true'
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.CORE_AGENT_E2E_WIF_PROVIDER }}
+          service_account: ${{ secrets.CORE_AGENT_E2E_SERVICE_ACCOUNT }}
 
       - name: Run real-provider E2E (skips without credentials)
         run: bash dev/ci/presubmits/e2e-real-provider

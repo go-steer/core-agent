@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
@@ -73,7 +73,7 @@ func tailEvents(t *testing.T, svc session.Service) []*session.Event {
 }
 
 func userTextEvent(text string) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-user")
+	ev := session.NewEvent(context.Background(), "inv-user")
 	ev.Author = "user"
 	ev.LLMResponse = adkmodel.LLMResponse{
 		Content: &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{{Text: text}}},
@@ -82,7 +82,7 @@ func userTextEvent(text string) *session.Event {
 }
 
 func callEvent(author, invocationID string, longRunning []string, calls ...*genai.FunctionCall) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), invocationID)
+	ev := session.NewEvent(context.Background(), invocationID)
 	ev.Author = author
 	ev.LongRunningToolIDs = longRunning
 	parts := []*genai.Part{{Text: "calling a tool"}}
@@ -96,7 +96,7 @@ func callEvent(author, invocationID string, longRunning []string, calls ...*gena
 }
 
 func responseEvent(author string, resps ...*genai.FunctionResponse) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-resp")
+	ev := session.NewEvent(context.Background(), "inv-resp")
 	ev.Author = author
 	var parts []*genai.Part
 	for _, fr := range resps {

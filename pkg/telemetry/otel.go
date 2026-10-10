@@ -48,7 +48,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	adktelemetry "google.golang.org/adk/telemetry"
+	adktelemetry "google.golang.org/adk/v2/telemetry"
 )
 
 // Mode names recognized by Setup.

@@ -36,7 +36,7 @@ When one turn isn't enough — for example a long-running research-and-write tas
 
 ```go
 import (
-    adktool "google.golang.org/adk/tool"
+    adktool "google.golang.org/adk/v2/tool"
     "github.com/go-steer/core-agent/pkg/agent"
 )
 

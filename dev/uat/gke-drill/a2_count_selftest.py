@@ -37,6 +37,7 @@ import tempfile
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import a2_count as a2  # noqa: E402
+import adkv2_fixture as v2  # noqa: E402
 
 REAL = HERE / "testdata" / "a2" / "0913-failed-delegation.sse"
 failures = 0
@@ -382,6 +383,35 @@ def main() -> int:
         c, _ = run(tmp, "session-retry", [RETRY], [sse()], session="s-1")
         check("whole log" in c["provider retry"].note and c["provider retry"].log == 1,
               "--session cannot scope retry lines, and says so", c["provider retry"].note)
+
+        print("ADK v2 wire form — camelCase keys, zero values omitted")
+        # The same captures as above, rewritten the way an adk/v2 daemon
+        # marshals session.Event. Each case asserts the counts its v1
+        # twin asserts; a reader still keyed on "Author"/"ID"/... reads
+        # nothing from these and lands on NOT EXERCISED or 0.
+        real_v2 = tmp / "real-v2.sse"
+        real_v2.write_text(v2.v2_sse(REAL.read_text()))
+        check(not any(v2.has_v1_keys(d) for _, d in a2.sse_frames(real_v2)) and "\"author\"" in real_v2.read_text(),
+              "v2: the rewrite left no v1 key on any event", "a v1 key survived the rewrite")
+        counts = {c.name: c for c in a2.count(empty_log, [real_v2], None)}
+        expect(counts, "failed delegation", None, 1, a2.NOT_COUNTABLE,
+               "v2: the delegation a 429 killed is found in the camelCase capture")
+        c, _ = run(tmp, "v2-retry-1206", [RETRY, RETRY_RECOVERED, RETRY_SUPPRESSED], [v2.v2_sse(sse(recovered, skipped_err))])
+        expect(c, "provider retry", 2, 2, a2.PASS, "v2: a customMetadata provider_retry stamp pairs with its log line")
+        c, _ = run(tmp, "v2-retry-alert", [RETRY], [v2.v2_sse(sse(alert, echo))])
+        expect(c, "provider retry", 1, 1, a2.PASS, "v2: a user-authored background alert counts, the echo does not")
+        c, _ = run(tmp, "v2-fault-replay", cuts7 + errs7, [v2.v2_sse(r) for r in replays])
+        expect(c, "guardrail trip", 7, 7, a2.PASS, "v2: every cut is a row, read by author")
+        expect(c, "turn error", 7, 7, a2.PASS, "v2: …and every turn error, read by author and customMetadata")
+        c, _ = run(tmp, "v2-replay-twice", [], [v2.v2_sse(sse(recovered_id)), v2.v2_sse(sse(recovered_id))])
+        expect(c, "provider retry", 0, 1, a2.TRANSCRIPT_ONLY, "v2: one event in two captures is one retry, deduplicated by id")
+        bare, win = run_w("v2-window-mask", [CUT], [v2.v2_sse(sse(old_row))])
+        expect(bare, "guardrail trip", 1, 1, a2.PASS, "v2: no window: the old row is read (by author) and counted")
+        expect(win, "guardrail trip", 1, 0, a2.FAIL, "v2: --since drops that same row by its camelCase timestamp")
+        child_v2 = tmp / "child-v2.json"
+        child_v2.write_text(json.dumps(v2.v2_tree({"agent": "cluster-2", "events": [recovered[1]], "next_since": 7})))
+        c = {x.name: x for x in a2.count(log, [parent], None, [child_v2])}
+        expect(c, "provider retry", 1, 1, a2.PASS, "v2: a child's recovered retry is found in a camelCase --subagent-events body")
 
         print("empty run")
         c, _ = run(tmp, "empty", [], [sse()])

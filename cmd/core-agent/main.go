@@ -38,8 +38,8 @@ import (
 	"github.com/glebarez/sqlite"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/term"
-	adkmodel "google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
+	adkmodel "google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v2/internal/approvalnotify"
 	"github.com/go-steer/core-agent/v2/internal/version"

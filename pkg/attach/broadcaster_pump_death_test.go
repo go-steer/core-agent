@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
@@ -157,7 +157,7 @@ func TestBroadcaster_PumpDeathDetachesAndRecovers(t *testing.T) {
 
 	// First subscriber: prove the pump is alive, then kill it.
 	ch1 := b.Subscribe(context.Background(), 0)
-	stream.frames <- eventlog.Entry{Seq: 1, Event: session.NewEventWithContext(context.Background(), "e1")}
+	stream.frames <- eventlog.Entry{Seq: 1, Event: session.NewEvent(context.Background(), "e1")}
 	waitForSeq(t, ch1, 1)
 
 	stream.errs <- errors.New("database is locked (transient)")
@@ -177,7 +177,7 @@ func TestBroadcaster_PumpDeathDetachesAndRecovers(t *testing.T) {
 
 	// (3) A reconnecting client gets a working live-tail again.
 	ch2 := b.Subscribe(context.Background(), 1)
-	stream.frames <- eventlog.Entry{Seq: 2, Event: session.NewEventWithContext(context.Background(), "e2")}
+	stream.frames <- eventlog.Entry{Seq: 2, Event: session.NewEvent(context.Background(), "e2")}
 	waitForSeq(t, ch2, 2)
 
 	if calls := stream.WatchCalls(); calls != 2 {
@@ -218,7 +218,7 @@ func TestBroadcaster_StalePumpSweepSparesSuccessor(t *testing.T) {
 	// sub1 starts pump A; prove it's alive.
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ch1 := b.Subscribe(ctx1, 0)
-	stream.frames <- eventlog.Entry{Seq: 1, Event: session.NewEventWithContext(context.Background(), "e1")}
+	stream.frames <- eventlog.Entry{Seq: 1, Event: session.NewEvent(context.Background(), "e1")}
 	waitForSeq(t, ch1, 1)
 
 	// sub1 disconnects: detachLocked cancels pump A's ctx and nils
@@ -230,7 +230,7 @@ func TestBroadcaster_StalePumpSweepSparesSuccessor(t *testing.T) {
 	// sub2 subscribes into the window: b.cancel == nil ⇒ successor
 	// pump B starts, with sub2 as its subscriber. Prove B pumps.
 	ch2 := b.Subscribe(context.Background(), 1)
-	stream.frames <- eventlog.Entry{Seq: 2, Event: session.NewEventWithContext(context.Background(), "e2")}
+	stream.frames <- eventlog.Entry{Seq: 2, Event: session.NewEvent(context.Background(), "e2")}
 	waitForSeq(t, ch2, 2)
 
 	// Release pump A: its deferred sweep now runs against state that
@@ -246,6 +246,6 @@ func TestBroadcaster_StalePumpSweepSparesSuccessor(t *testing.T) {
 	// is still open. Without the generation guard the sweep closes
 	// ch2 (spurious EOF right after boot) and cancels pump B, so the
 	// frame below never arrives.
-	stream.frames <- eventlog.Entry{Seq: 3, Event: session.NewEventWithContext(context.Background(), "e3")}
+	stream.frames <- eventlog.Entry{Seq: 3, Event: session.NewEvent(context.Background(), "e3")}
 	waitForSeq(t, ch2, 3)
 }

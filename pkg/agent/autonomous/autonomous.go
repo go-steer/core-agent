@@ -25,8 +25,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"

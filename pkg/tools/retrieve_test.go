@@ -21,7 +21,7 @@ import (
 	"sync"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/digest"
 )
@@ -92,7 +92,7 @@ func TestRetrieveRawFunc_HappyPath(t *testing.T) {
 	store := &memStore{}
 	_ = store.Put(context.Background(), "call-1", []byte(`{"raw":"data"}`))
 
-	res, err := retrieveRawFunc(store)(adkagent.ToolContext(nil), retrieveRawArgs{CallID: "call-1"})
+	res, err := retrieveRawFunc(store)(adkagent.Context(nil), retrieveRawArgs{CallID: "call-1"})
 	if err != nil {
 		t.Fatalf("handler err: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestRetrieveRawFunc_EmptyCallIDReturnsFriendlyError(t *testing.T) {
 	t.Parallel()
 	// Model-facing "error" should be a tool response, never a Go
 	// error — the model needs to stay in the loop to recover.
-	res, err := retrieveRawFunc(&memStore{})(adkagent.ToolContext(nil), retrieveRawArgs{})
+	res, err := retrieveRawFunc(&memStore{})(adkagent.Context(nil), retrieveRawArgs{})
 	if err != nil {
 		t.Errorf("expected nil Go error (model-visible error string), got %v", err)
 	}
@@ -125,7 +125,7 @@ func TestRetrieveRawFunc_UnknownCallIDDistinguishedFromStoreFailure(t *testing.T
 	// Unknown call_id → error message says "no raw payload stored"
 	// so the model can differentiate "typo, try another id" from
 	// "store is broken, give up."
-	res, err := retrieveRawFunc(&memStore{})(adkagent.ToolContext(nil), retrieveRawArgs{CallID: "unknown"})
+	res, err := retrieveRawFunc(&memStore{})(adkagent.Context(nil), retrieveRawArgs{CallID: "unknown"})
 	if err != nil {
 		t.Errorf("expected nil Go error, got %v", err)
 	}
@@ -143,7 +143,7 @@ func TestRetrieveRawFunc_StoreFailureSurfacesInResponse(t *testing.T) {
 	// error message so the model can distinguish "id doesn't exist"
 	// from "store is broken." Wrap the memStore to inject a failure.
 	store := &memStore{getErr: errors.New("disk read error")}
-	res, err := retrieveRawFunc(store)(adkagent.ToolContext(nil), retrieveRawArgs{CallID: "any"})
+	res, err := retrieveRawFunc(store)(adkagent.Context(nil), retrieveRawArgs{CallID: "any"})
 	if err != nil {
 		t.Errorf("expected nil Go error, got %v", err)
 	}
@@ -164,7 +164,7 @@ func TestRetrieveRawFunc_LargePayloadReturnsFullSize(t *testing.T) {
 	big := strings.Repeat("x", 100_000)
 	_ = store.Put(context.Background(), "big", []byte(big))
 
-	res, _ := retrieveRawFunc(store)(adkagent.ToolContext(nil), retrieveRawArgs{CallID: "big"})
+	res, _ := retrieveRawFunc(store)(adkagent.Context(nil), retrieveRawArgs{CallID: "big"})
 	if res.Bytes != 100_000 {
 		t.Errorf("Bytes = %d, want 100000", res.Bytes)
 	}

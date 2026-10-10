@@ -558,7 +558,7 @@ while (( SECONDS < events_deadline )); do
         | jq -rs --arg pod "$BROKEN_POD" '
             [ .[] | objects | .seq as $seq
                   | (.event? // empty) | objects
-                  | (.Content? // empty) | objects
+                  | (.content? // .Content? // empty) | objects
                   | select(((.parts // []) | map(.text // "") | join(" "))
                            | contains($pod))
                   | {seq: $seq, role: (.role // "")} ] as $hits
@@ -600,7 +600,7 @@ if ! sed -n 's/^data: //p' "$SCRATCH_DIR/pipeline-events.sse" \
     | jq -rs --arg pod "$BROKEN_POD" '
         [ .[] | objects
               | (.event? // empty) | objects
-              | (.Content? // empty) | objects
+              | (.content? // .Content? // empty) | objects
               | select((.role // "") == "user")
               | ((.parts // []) | map(.text // "") | join(" "))
               | select(contains($pod)) ] | join("\n")' \

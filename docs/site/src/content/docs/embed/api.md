@@ -387,7 +387,7 @@ The lock lives in its own `agent_run_lock` table in the same database; callers d
 
 ```go
 import (
-    adktool "google.golang.org/adk/tool"
+    adktool "google.golang.org/adk/v2/tool"
     "github.com/go-steer/core-agent/v2/pkg/agent"
     "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 )
@@ -1023,8 +1023,9 @@ Use ADK's `functiontool.New` to wrap a Go function as a tool the agent can call.
 
 ```go
 import (
-    adktool "google.golang.org/adk/tool"
-    "google.golang.org/adk/tool/functiontool"
+    adkagent "google.golang.org/adk/v2/agent"
+    adktool "google.golang.org/adk/v2/tool"
+    "google.golang.org/adk/v2/tool/functiontool"
 )
 
 type addArgs struct {
@@ -1042,7 +1043,7 @@ func addTool() adktool.Tool {
             Name:        "add",
             Description: "Add two integers and return the sum.",
         },
-        func(_ adktool.Context, in addArgs) (addResult, error) {
+        func(_ adkagent.Context, in addArgs) (addResult, error) {
             return addResult{Sum: in.A + in.B}, nil
         },
     )
@@ -1067,7 +1068,7 @@ package myprovider
 import (
     "context"
 
-    adkmodel "google.golang.org/adk/model"
+    adkmodel "google.golang.org/adk/v2/model"
     "github.com/go-steer/core-agent/v2/pkg/config"
     "github.com/go-steer/core-agent/v2/pkg/models"
 )
@@ -1081,7 +1082,7 @@ type Provider struct{ /* …client state… */ }
 func (p *Provider) Name() string { return "my-provider" }
 
 func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, error) {
-    // return a type implementing google.golang.org/adk/model.LLM
+    // return a type implementing google.golang.org/adk/v2/model.LLM
     return &llm{...}, nil
 }
 

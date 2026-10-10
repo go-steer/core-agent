@@ -49,7 +49,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // DefaultMaxCalls bounds how many calls one [Recorder] keeps.

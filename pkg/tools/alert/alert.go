@@ -34,9 +34,9 @@ import (
 	"strings"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -153,7 +153,7 @@ type handler struct {
 	getenv  func(string) string
 }
 
-func (h *handler) run(ctx adkagent.ToolContext, in Args) (Result, error) {
+func (h *handler) run(ctx adkagent.Context, in Args) (Result, error) {
 	if in.Target == "" {
 		return Result{}, errors.New("alert: target is required")
 	}
@@ -180,7 +180,7 @@ func (h *handler) run(ctx adkagent.ToolContext, in Args) (Result, error) {
 
 	// Parent the request on the inbound tool ctx (not context.Background)
 	// so a turn-level cancel — /interrupt, daemon shutdown — aborts an
-	// in-flight alert. adkagent.ToolContext is an interface; some tests pass nil.
+	// in-flight alert. adkagent.Context is an interface; some tests pass nil.
 	parent := context.Context(ctx)
 	if parent == nil {
 		parent = context.Background()
@@ -252,10 +252,10 @@ func post(ctx context.Context, client *http.Client, getenv func(string) string, 
 }
 
 // sessionOf returns the session the tool call is running in, or "" when
-// the invocation does not name one. adkagent.ToolContext is an interface and
+// the invocation does not name one. adkagent.Context is an interface and
 // some tests pass a nil one, so the guard is load-bearing rather than
 // defensive.
-func sessionOf(ctx adkagent.ToolContext) string {
+func sessionOf(ctx adkagent.Context) string {
 	if ctx == nil {
 		return ""
 	}

@@ -18,7 +18,7 @@
 //   - Built-in tool suite: file I/O, shell, todo tracking, output truncation
 //
 // All built-in tools share a common shape via
-// google.golang.org/adk/tool/functiontool and the helpers in this
+// google.golang.org/adk/v2/tool/functiontool and the helpers in this
 // package: output truncation (Truncate) and gate consultation (via
 // permissions.Gate). Tool authors define a typed Args + Result pair
 // and a handler closing over any dependencies; builtins.go assembles

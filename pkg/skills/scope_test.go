@@ -19,7 +19,7 @@ import (
 	"errors"
 	"testing"
 
-	"google.golang.org/adk/tool/skilltoolset/skill"
+	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 )
 
 // loadThree returns a Skills over a project with skills alpha/beta/gamma.

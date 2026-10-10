@@ -25,9 +25,9 @@ import (
 	"testing"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/internal/testutil"
@@ -294,7 +294,7 @@ func TestCallPeer_DelegatesAndReturnsTheAnswer(t *testing.T) {
 		roster(Peer{Name: "operator-prod-1", Endpoint: p.srv.URL}),
 		func(string) string { return "s3cret" })
 
-	res, err := h.run(adkagent.ToolContext(nil), Args{Peer: "operator-prod-1", Prompt: "what is the node count in prod-1?"})
+	res, err := h.run(adkagent.Context(nil), Args{Peer: "operator-prod-1", Prompt: "what is the node count in prod-1?"})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -326,11 +326,11 @@ func TestCallPeer_OpensAFreshSessionPerCall(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	first, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "one"})
+	first, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "one"})
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	second, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "two"})
+	second, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "two"})
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestCallPeer_UnknownPeerIsRefusedAndListsTheRoster(t *testing.T) {
 			Peer{Name: "devteam-web", Endpoint: p.srv.URL},
 		), nil)
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "operator-prod-2", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "operator-prod-2", Prompt: "hi"})
 	if err == nil {
 		t.Fatal("an unregistered peer name must be refused, not dialed")
 	}
@@ -374,7 +374,7 @@ func TestCallPeer_URLShapedNameIsNotDialed(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Peer: p.srv.URL, Prompt: "hi"}); err == nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Peer: p.srv.URL, Prompt: "hi"}); err == nil {
 		t.Fatal("a URL passed as the peer name must be refused as unknown")
 	}
 	if p.sessionCount() != 0 {
@@ -403,7 +403,7 @@ func TestCallPeer_EmptyNameListsTheRoster(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: "http://example.test"}), nil)
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Prompt: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "ops") {
 		t.Fatalf("empty peer name should return the roster, got %v", err)
 	}
@@ -413,7 +413,7 @@ func TestCallPeer_EmptyRosterSaysSo(t *testing.T) {
 	t.Parallel()
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}), roster(), nil)
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "no peers are registered") {
 		t.Fatalf("empty roster error = %v, want a 'no peers are registered' message", err)
 	}
@@ -430,7 +430,7 @@ func TestCallPeer_GateDeniesBeforeAnyNetworkCall(t *testing.T) {
 	h := mustHandler(t, gate, cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"}); err == nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"}); err == nil {
 		t.Fatal("a deny pattern must stop the call (deny wins in every mode, including yolo)")
 	}
 	if p.sessionCount() != 0 {
@@ -453,10 +453,10 @@ func TestCallPeer_GateIsKeyedPerPeer(t *testing.T) {
 			Peer{Name: "blocked", Endpoint: p.srv.URL},
 		), nil)
 
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Peer: "allowed", Prompt: "hi"}); err != nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Peer: "allowed", Prompt: "hi"}); err != nil {
 		t.Errorf("allowed peer should pass the gate, got %v", err)
 	}
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Peer: "blocked", Prompt: "hi"}); err == nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Peer: "blocked", Prompt: "hi"}); err == nil {
 		t.Error("blocked peer should be denied")
 	}
 }
@@ -469,7 +469,7 @@ func TestCallPeer_ConfiguredTokenEnvUnsetIsAnError(t *testing.T) {
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}),
 		func(string) string { return "" })
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "PEER_TOKEN") {
 		t.Fatalf("error = %v, want a complaint about the unset token_env (not an anonymous request)", err)
 	}
@@ -487,7 +487,7 @@ func TestCallPeer_TurnErrorSurfacesThePeersKindAndMessage(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err == nil {
 		t.Fatal("a turn-error on the peer must fail the call")
 	}
@@ -507,7 +507,7 @@ func TestCallPeer_TimesOutWhenThePeerNeverFinishes(t *testing.T) {
 	h.timeout = 150 * time.Millisecond
 
 	start := time.Now()
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err == nil {
 		t.Fatal("a peer that never completes its turn must fail the call, not hang it")
 	}
@@ -532,7 +532,7 @@ func TestCallPeer_LongAnswerIsCappedAndFlagged(t *testing.T) {
 		cfgCallPeer(config.CallPeerConfig{Enabled: true, MaxResponseBytes: 64}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	res, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	res, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestCallPeer_StreamEndingWithoutATurnIsAnError(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "ended before the turn completed") {
 		t.Fatalf("error = %v, want a stream-ended-early failure rather than an empty success", err)
 	}
@@ -568,7 +568,7 @@ func TestCallPeer_MissingSessionFactoryExplainsTheFix(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "multi_session") {
 		t.Fatalf("error = %v, want the 501 to carry the multi_session fix", err)
 	}
@@ -579,7 +579,7 @@ func TestCallPeer_NonHTTPEndpointIsRefused(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: "unix:///tmp/agent.sock"}), nil)
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "not callable") {
 		t.Fatalf("error = %v, want a refusal for a non-http endpoint", err)
 	}
@@ -591,7 +591,7 @@ func TestCallPeer_EmptyPromptIsRefused(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "   "}); err == nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "   "}); err == nil {
 		t.Fatal("a whitespace-only prompt must be refused before the call")
 	}
 	if p.sessionCount() != 0 {
@@ -669,7 +669,7 @@ func TestCallPeer_RenamedToolMovesTheGateKey(t *testing.T) {
 		cfgCallPeer(config.CallPeerConfig{Enabled: true, Name: "ask_operator"}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	if _, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"}); err == nil {
+	if _, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"}); err == nil {
 		t.Fatal("deny pattern keyed on the renamed tool should apply")
 	}
 	if p.sessionCount() != 0 {
@@ -693,7 +693,7 @@ func TestCallPeer_EndpointlessPeerIsRefused(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops"}), nil)
 
-	_, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "no endpoint") {
 		t.Fatalf("error = %v, want a no-endpoint refusal", err)
 	}
@@ -711,7 +711,7 @@ func TestCallPeer_SubscribesBeforeInjecting(t *testing.T) {
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
 
-	res, err := h.run(adkagent.ToolContext(nil), Args{Peer: "ops", Prompt: "hi"})
+	res, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

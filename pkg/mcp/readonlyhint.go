@@ -19,9 +19,9 @@ import (
 	"sync"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/mcptoolset"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/mcptoolset"
 	"google.golang.org/genai"
 )
 
@@ -208,7 +208,7 @@ func (h hintedTool) Declaration() *genai.FunctionDeclaration {
 	return rn.Declaration()
 }
 
-func (h hintedTool) Run(ctx agent.ToolContext, args any) (map[string]any, error) {
+func (h hintedTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 	rn, ok := h.inner.(runnable)
 	if !ok {
 		return nil, errNotRunnable

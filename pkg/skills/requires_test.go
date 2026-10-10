@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/adk/tool/skilltoolset/skill"
+	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )

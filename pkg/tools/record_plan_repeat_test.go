@@ -36,8 +36,8 @@ import (
 	"sync"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
@@ -61,10 +61,10 @@ func newPlanDriver(t *testing.T, gate *permissions.Gate) *planDriver {
 // call from a goroutine (t.Fatalf from a non-test goroutine is UB).
 func (d *planDriver) try(agent, session, invocation, plan string) (recordPlanResult, error) {
 	ctx := &planToolCtx{
-		Context:    context.Background(),
-		agent:      agent,
-		session:    session,
-		invocation: invocation,
+		StrictContextMock: adkagent.NewStrictContextMock(context.Background()),
+		agent:             agent,
+		session:           session,
+		invocation:        invocation,
 	}
 	res, err := d.fn(ctx, recordPlanArgs{Plan: plan})
 	if err != nil {
@@ -321,10 +321,10 @@ func TestRecordPlanMessage_TransitionIsReadOnTheSessionGate(t *testing.T) {
 
 	session := template.DeriveForSession("s-new", nil)
 	ctx := &planToolCtx{
-		Context:    permissions.WithSessionGate(context.Background(), session),
-		agent:      "core_agent",
-		session:    "s-new",
-		invocation: "inv-1",
+		StrictContextMock: adkagent.NewStrictContextMock(permissions.WithSessionGate(context.Background(), session)),
+		agent:             "core_agent",
+		session:           "s-new",
+		invocation:        "inv-1",
 	}
 	res, err := fn(ctx, recordPlanArgs{Plan: "## Goal\nMy own first plan."})
 	if err != nil {
@@ -344,7 +344,7 @@ func TestRecordPlan_NoInvocationContextStillGuardsRepeats(t *testing.T) {
 	fn := recordPlanFunc(armedGate(), dir)
 
 	for i := 1; i <= 5; i++ {
-		if _, err := fn(adkagent.ToolContext(nil), recordPlanArgs{Plan: fmt.Sprintf("plan rev %d", i)}); err != nil {
+		if _, err := fn(adkagent.Context(nil), recordPlanArgs{Plan: fmt.Sprintf("plan rev %d", i)}); err != nil {
 			t.Fatal(err)
 		}
 	}

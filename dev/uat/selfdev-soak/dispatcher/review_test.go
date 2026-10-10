@@ -30,7 +30,7 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -114,7 +114,7 @@ func TestWatcherForgetsATurnErrorALaterTurnRecoveredFrom(t *testing.T) {
 }
 
 func modelRow(text string) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "turn")
+	ev := session.NewEvent(context.Background(), "turn")
 	ev.Author = "core-agent"
 	ev.Content = genai.NewContentFromText(text, genai.RoleModel)
 	return ev

@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/tool"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -58,8 +58,8 @@ func hasTool(tools []tool.Tool, name string) bool {
 func invokeRecordPlan(t *testing.T, gate *permissions.Gate, agentsDir, plan string) (recordPlanResult, error) {
 	t.Helper()
 	fn := recordPlanFunc(gate, agentsDir)
-	// adkagent.ToolContext's zero value is fine — the handler doesn't touch it.
-	return fn(adkagent.ToolContext(nil), recordPlanArgs{Plan: plan})
+	// adkagent.Context's zero value is fine — the handler doesn't touch it.
+	return fn(adkagent.Context(nil), recordPlanArgs{Plan: plan})
 }
 
 func TestRecordPlan_WritesArtifactAndFlipsGate(t *testing.T) {
@@ -151,7 +151,7 @@ func TestMarkPlanRecorded_RoutesThroughSessionGate(t *testing.T) {
 
 		// context.TODO() carries no session gate — falls through to
 		// the template. Mirrors the shape existing tests use via
-		// adkagent.ToolContext(nil), except linter-safe (SA1012 rejects
+		// adkagent.Context(nil), except linter-safe (SA1012 rejects
 		// bare nil contexts). SessionGateFromContext handles the
 		// nil-context case internally at pkg/permissions/session_context.go
 		// so the recordPlanFunc handler stays safe regardless.

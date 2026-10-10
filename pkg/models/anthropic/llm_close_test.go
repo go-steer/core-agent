@@ -24,7 +24,7 @@ import (
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 )
 
 // The #487 fixes: every stream NewStreaming opens must be Close()d —

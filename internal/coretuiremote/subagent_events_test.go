@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	coretui "github.com/go-steer/core-tui/tui"
@@ -57,7 +57,7 @@ func subagentEventsServer(t *testing.T, status int, body any) (*Adapter, *string
 }
 
 func subagentFrame(seq int64, text string, parts ...*genai.Part) attach.Frame {
-	ev := session.NewEventWithContext(context.Background(), "e-"+text)
+	ev := session.NewEvent(context.Background(), "e-"+text)
 	ev.Author = "cluster"
 	ev.Timestamp = time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
 	all := []*genai.Part{}

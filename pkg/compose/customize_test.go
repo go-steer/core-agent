@@ -21,10 +21,10 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -46,7 +46,7 @@ func stubTool(t *testing.T, name string) tool.Tool {
 	type empty struct{}
 	tl, err := functiontool.New(
 		functiontool.Config{Name: name, Description: "stub"},
-		func(_ adkagent.ToolContext, _ empty) (empty, error) { return empty{}, nil },
+		func(_ adkagent.Context, _ empty) (empty, error) { return empty{}, nil },
 	)
 	if err != nil {
 		t.Fatalf("functiontool.New(%q): %v", name, err)

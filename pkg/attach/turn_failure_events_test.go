@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/adk/session"
+	"google.golang.org/adk/v2/session"
 )
 
 // The per-turn failure rows (#1258). The agent-side tests drive the
@@ -126,7 +126,7 @@ func TestTurnFailureReaders_IgnoreOtherEvents(t *testing.T) {
 	t.Parallel()
 	impostor := NewGuardrailTurnTripEvent(GuardrailWatchdog, "x", true)
 	impostor.InvocationID = "something-else"
-	others := []*session.Event{nil, session.NewEventWithContext(context.Background(), "bare"), impostor,
+	others := []*session.Event{nil, session.NewEvent(context.Background(), "bare"), impostor,
 		NewContextReductionFailedEvent(ContextReductionCompaction, "boom", 0, 0)}
 	for _, ev := range others {
 		if _, ok := GuardrailTurnTrip(ev); ok {

@@ -152,8 +152,9 @@ The built-in tools cover file I/O, shell, and search. For everything domain-spec
 
 ```go
 import (
-    adktool "google.golang.org/adk/tool"
-    "google.golang.org/adk/tool/functiontool"
+    adkagent "google.golang.org/adk/v2/agent"
+    adktool "google.golang.org/adk/v2/tool"
+    "google.golang.org/adk/v2/tool/functiontool"
 )
 
 type lookupOrderArgs struct {
@@ -172,7 +173,7 @@ func lookupOrderTool(db *sql.DB, gate *permissions.Gate) adktool.Tool {
             Name:        "lookup_order",
             Description: "Look up an Acme order by ID. Returns status, total, and customer.",
         },
-        func(_ adktool.Context, in lookupOrderArgs) (lookupOrderResult, error) {
+        func(_ adkagent.Context, in lookupOrderArgs) (lookupOrderResult, error) {
             if err := gate.Check(context.Background(), "lookup_order", in.OrderID); err != nil {
                 return lookupOrderResult{}, err
             }

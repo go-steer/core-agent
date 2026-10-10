@@ -20,8 +20,8 @@ import (
 	"testing"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -29,7 +29,7 @@ import (
 
 // modelTextEvent is a completed final model turn.
 func modelTextEvent(text string) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-model")
+	ev := session.NewEvent(context.Background(), "inv-model")
 	ev.Author = defaultAgentName
 	ev.LLMResponse = adkmodel.LLMResponse{
 		Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: text}}},
@@ -40,7 +40,7 @@ func modelTextEvent(text string) *session.Event {
 // annotationEvent mimics autonomous notes: content-bearing but
 // role-less, which ADK's content processor (and our classifier) skip.
 func annotationEvent() *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-note")
+	ev := session.NewEvent(context.Background(), "inv-note")
 	ev.Author = "core-agent/autonomous"
 	ev.LLMResponse = adkmodel.LLMResponse{
 		Content:        &genai.Content{Parts: []*genai.Part{{Text: "paused"}}},
@@ -83,20 +83,20 @@ func branched(ev *session.Event) *session.Event {
 }
 
 func interruptAuditRow() *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-audit")
+	ev := session.NewEvent(context.Background(), "inv-audit")
 	ev.Author = interruptAuditAuthor // contentless audit row, mirrors pkg/attach
 	return ev
 }
 
 func errorFinalEvent(code string) *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-err")
+	ev := session.NewEvent(context.Background(), "inv-err")
 	ev.Author = defaultAgentName
 	ev.LLMResponse = adkmodel.LLMResponse{ErrorCode: code}
 	return ev
 }
 
 func emptyModelFinal() *session.Event {
-	ev := session.NewEventWithContext(context.Background(), "inv-empty")
+	ev := session.NewEvent(context.Background(), "inv-empty")
 	ev.Author = defaultAgentName
 	ev.LLMResponse = adkmodel.LLMResponse{
 		Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{}},

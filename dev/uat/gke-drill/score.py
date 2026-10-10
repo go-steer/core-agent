@@ -230,8 +230,27 @@ def load_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
     return out
 
 
+def ev_get(event: Any, camel: str, pascal: str, default: Any = None) -> Any:
+    """One field of an ADK session.Event, from either wire form.
+
+    ADK v1 marshalled Event (and the LLMResponse and EventActions inside
+    it) with Go's default PascalCase keys and wrote every zero value; v2
+    tags them camelCase with omitempty. The checked-in runs are v1, a
+    live run on a v2 daemon is v2, and both must grade the same. Key
+    presence decides, never truthiness: a v2 event that omits `partial`
+    reads as `default`, the same as v1's explicit false. The two names
+    are spelled out because the mapping is not mechanical (`ID` -> `id`).
+    a2_count.py carries the same helper; the two scripts import nothing
+    from each other."""
+    if not isinstance(event, dict):
+        return default
+    if camel in event:
+        return event[camel]
+    return event.get(pascal, default)
+
+
 def parts_of(event: dict[str, Any]) -> list[dict[str, Any]]:
-    content = event.get("Content") or {}
+    content = ev_get(event, "content", "Content") or {}
     return [p for p in (content.get("parts") or []) if isinstance(p, dict)]
 
 
@@ -249,15 +268,15 @@ class Frame:
 
     @property
     def author(self) -> str:
-        return self.event.get("Author") or "?"
+        return ev_get(self.event, "author", "Author") or "?"
 
     @property
     def partial(self) -> bool:
-        return bool(self.event.get("Partial"))
+        return bool(ev_get(self.event, "partial", "Partial"))
 
     @property
     def role(self) -> str:
-        return (self.event.get("Content") or {}).get("role") or ""
+        return (ev_get(self.event, "content", "Content") or {}).get("role") or ""
 
     @property
     def calls(self) -> list[dict[str, Any]]:
@@ -912,7 +931,7 @@ def render(run: pathlib.Path) -> str:
         r for r in typed
         if r.get("sse") != "capabilities" and guard_re.search(json.dumps(r, default=str))
     ] + [f for f in frames if guard_re.search(f.text)]
-    errors = [f for f in frames if f.event.get("ErrorCode")]
+    errors = [f for f in frames if ev_get(f.event, "errorCode", "ErrorCode")]
 
     # A `turn-error` frame is the daemon saying a turn died — an auth
     # failure, a provider outage, a 4xx. Distinct from ErrorCode above,
@@ -1565,8 +1584,8 @@ def render(run: pathlib.Path) -> str:
         a(f"  - {' '.join(blob.split())[:220]}")
     a(f"- events carrying an ErrorCode: **{len(errors)}**")
     for f in errors[:10]:
-        a(f"  - seq {f.seq} ({f.agent}): `{f.event.get('ErrorCode')}` "
-          f"{str(f.event.get('ErrorMessage') or '')[:160]}")
+        a(f"  - seq {f.seq} ({f.agent}): `{ev_get(f.event, 'errorCode', 'ErrorCode')}` "
+          f"{str(ev_get(f.event, 'errorMessage', 'ErrorMessage') or '')[:160]}")
     a("")
     if g5_fail_reasons:
         a("**FAIL:** " + "; ".join(g5_fail_reasons))

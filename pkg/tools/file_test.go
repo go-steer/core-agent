@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -51,7 +51,7 @@ func TestReadFile_RoundTrip(t *testing.T) {
 	cfg := config.DefaultConfig()
 	gate := gateFor(t, dir)
 	fn := readFileFunc(gate, cfg)
-	res, err := fn(adkagent.ToolContext(nil), readFileArgs{Path: path})
+	res, err := fn(adkagent.Context(nil), readFileArgs{Path: path})
 	if err != nil {
 		t.Fatalf("read_file: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestReadFile_OutOfScope_Denied(t *testing.T) {
 		Scope: scope,
 	})
 	fn := readFileFunc(gate, cfg)
-	_, err := fn(adkagent.ToolContext(nil), readFileArgs{Path: outside})
+	_, err := fn(adkagent.Context(nil), readFileArgs{Path: outside})
 	if err == nil {
 		t.Fatalf("expected denial for out-of-scope read")
 	}
@@ -88,7 +88,7 @@ func TestWriteFile_AtomicAndContent(t *testing.T) {
 	path := filepath.Join(dir, "sub", "out.txt")
 	gate := gateFor(t, dir)
 	fn := writeFileFunc(gate)
-	res, err := fn(adkagent.ToolContext(nil), writeFileArgs{Path: path, Content: "abc\n"})
+	res, err := fn(adkagent.Context(nil), writeFileArgs{Path: path, Content: "abc\n"})
 	if err != nil {
 		t.Fatalf("write_file: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestEditFile_UniqueReplacement(t *testing.T) {
 	}
 	gate := gateFor(t, dir)
 	fn := editFileFunc(gate)
-	res, err := fn(adkagent.ToolContext(nil), editFileArgs{Path: path, OldString: "BETA", NewString: "delta"})
+	res, err := fn(adkagent.Context(nil), editFileArgs{Path: path, OldString: "BETA", NewString: "delta"})
 	if err != nil {
 		t.Fatalf("edit_file: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestEditFile_AmbiguousMatch(t *testing.T) {
 	}
 	gate := gateFor(t, dir)
 	fn := editFileFunc(gate)
-	_, err := fn(adkagent.ToolContext(nil), editFileArgs{Path: path, OldString: "foo", NewString: "bar"})
+	_, err := fn(adkagent.Context(nil), editFileArgs{Path: path, OldString: "foo", NewString: "bar"})
 	if err == nil || !strings.Contains(err.Error(), "appears 3 times") {
 		t.Fatalf("expected ambiguity error, got %v", err)
 	}
@@ -160,7 +160,7 @@ func TestEditFile_ReplaceAllChangesEveryOccurrence(t *testing.T) {
 	}
 	gate := gateFor(t, dir)
 	fn := editFileFunc(gate)
-	res, err := fn(adkagent.ToolContext(nil), editFileArgs{
+	res, err := fn(adkagent.Context(nil), editFileArgs{
 		Path: path, OldString: "foo", NewString: "qux", ReplaceAll: true,
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func TestEditFile_ReplaceAllOnAUniqueMatchIsAnOrdinaryEdit(t *testing.T) {
 	}
 	gate := gateFor(t, dir)
 	fn := editFileFunc(gate)
-	res, err := fn(adkagent.ToolContext(nil), editFileArgs{
+	res, err := fn(adkagent.Context(nil), editFileArgs{
 		Path: path, OldString: "BETA", NewString: "delta", ReplaceAll: true,
 	})
 	if err != nil {
@@ -223,7 +223,7 @@ func TestEditFile_ReplaceAllStillFailsOnNoMatch(t *testing.T) {
 	}
 	gate := gateFor(t, dir)
 	fn := editFileFunc(gate)
-	_, err := fn(adkagent.ToolContext(nil), editFileArgs{
+	_, err := fn(adkagent.Context(nil), editFileArgs{
 		Path: path, OldString: "gamma", NewString: "delta", ReplaceAll: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "not found") {
@@ -247,7 +247,7 @@ func TestEditFile_ReplaceAllCountsNonOverlappingMatches(t *testing.T) {
 	}
 	gate := gateFor(t, dir)
 	fn := editFileFunc(gate)
-	res, err := fn(adkagent.ToolContext(nil), editFileArgs{
+	res, err := fn(adkagent.Context(nil), editFileArgs{
 		Path: path, OldString: "aa", NewString: "b", ReplaceAll: true,
 	})
 	if err != nil {
@@ -284,7 +284,7 @@ func TestEditFile_ReplaceAllStillHonorsTheGate(t *testing.T) {
 	}
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeAllow, Scope: scope})
 	fn := editFileFunc(gate)
-	if _, err := fn(adkagent.ToolContext(nil), editFileArgs{
+	if _, err := fn(adkagent.Context(nil), editFileArgs{
 		Path: outside, OldString: "foo", NewString: "bar", ReplaceAll: true,
 	}); err == nil {
 		t.Fatal("edit_file wrote outside the path scope with replace_all set")
@@ -303,7 +303,7 @@ func TestListDir_SortedEntries(t *testing.T) {
 	cfg := config.DefaultConfig()
 	gate := gateFor(t, dir)
 	fn := listDirFunc(gate, cfg)
-	res, err := fn(adkagent.ToolContext(nil), listDirArgs{Path: dir})
+	res, err := fn(adkagent.Context(nil), listDirArgs{Path: dir})
 	if err != nil {
 		t.Fatalf("list_dir: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestDeleteFile_RemovesRegularFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := deleteFileFunc(gateFor(t, dir))
-	res, err := fn(adkagent.ToolContext(nil), deleteFileArgs{Path: path})
+	res, err := fn(adkagent.Context(nil), deleteFileArgs{Path: path})
 	if err != nil {
 		t.Fatalf("delete_file: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestDeleteFile_MissingIsIdempotent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := deleteFileFunc(gateFor(t, dir))
-	res, err := fn(adkagent.ToolContext(nil), deleteFileArgs{Path: filepath.Join(dir, "never-existed")})
+	res, err := fn(adkagent.Context(nil), deleteFileArgs{Path: filepath.Join(dir, "never-existed")})
 	if err != nil {
 		t.Fatalf("delete_file: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestDeleteFile_RefusesDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := deleteFileFunc(gateFor(t, dir))
-	_, err := fn(adkagent.ToolContext(nil), deleteFileArgs{Path: sub})
+	_, err := fn(adkagent.Context(nil), deleteFileArgs{Path: sub})
 	if err == nil || !strings.Contains(err.Error(), "directory") {
 		t.Errorf("expected directory-refusal error, got %v", err)
 	}
@@ -376,7 +376,7 @@ func TestDeleteFile_OutOfScope_Denied(t *testing.T) {
 		Scope: scope,
 	})
 	fn := deleteFileFunc(gate)
-	_, err := fn(adkagent.ToolContext(nil), deleteFileArgs{Path: outside})
+	_, err := fn(adkagent.Context(nil), deleteFileArgs{Path: outside})
 	if err == nil {
 		t.Fatalf("expected denial for out-of-scope delete")
 	}
@@ -393,7 +393,7 @@ func TestStat_ReturnsMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := statFunc(gateFor(t, dir))
-	res, err := fn(adkagent.ToolContext(nil), statArgs{Path: path})
+	res, err := fn(adkagent.Context(nil), statArgs{Path: path})
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestStat_MissingPathExistsFalse(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := statFunc(gateFor(t, dir))
-	res, err := fn(adkagent.ToolContext(nil), statArgs{Path: filepath.Join(dir, "never-existed")})
+	res, err := fn(adkagent.Context(nil), statArgs{Path: filepath.Join(dir, "never-existed")})
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestStat_DirReportsIsDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fn := statFunc(gateFor(t, dir))
-	res, err := fn(adkagent.ToolContext(nil), statArgs{Path: dir})
+	res, err := fn(adkagent.Context(nil), statArgs{Path: dir})
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}

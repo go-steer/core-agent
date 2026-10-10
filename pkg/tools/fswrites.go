@@ -14,7 +14,7 @@
 
 package tools
 
-import adktool "google.golang.org/adk/tool"
+import adktool "google.golang.org/adk/v2/tool"
 
 // Shared-filesystem classification (#653). Distinct from the #460
 // read-only classification next door, and the difference is the whole

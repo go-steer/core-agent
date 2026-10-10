@@ -411,7 +411,7 @@ drill_session_prompt() {
     # it has — from which "the first one" is `[Inbox]` and nothing
     # else. Pick the first frame's text as a JSON string, then decode.
     python3 "${DRILL_DIR}/sse2jsonl.py" < "${raw}" 2>/dev/null \
-        | jq -c 'try (.data.event.Content.parts[]? | .text // empty) catch empty' 2>/dev/null \
+        | jq -c 'try ((.data.event.content // .data.event.Content).parts[]? | .text // empty) catch empty' 2>/dev/null \
         | grep -m1 . \
         | jq -r . 2>/dev/null || true
 }

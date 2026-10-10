@@ -18,8 +18,10 @@ import (
 	"context"
 	"testing"
 
+	adkagent "google.golang.org/adk/v2/agent"
+
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
@@ -183,7 +185,7 @@ func TestReadOnlyHint_StillRunnable(t *testing.T) {
 	if d == nil || d.Name != "gke_get_pod" {
 		t.Fatalf("declaration = %+v, want name gke_get_pod", d)
 	}
-	res, err := tl.(runnable).Run(&stubToolCtx{Context: context.Background()}, map[string]any{"msg": "ping"})
+	res, err := tl.(runnable).Run(&stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, map[string]any{"msg": "ping"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

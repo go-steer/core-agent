@@ -22,11 +22,11 @@ import (
 	"testing"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
+	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -151,7 +151,7 @@ func newApproverRig(t *testing.T, withApprover bool, commands ...string) *approv
 	type empty struct{}
 	tl, err := functiontool.New(
 		functiontool.Config{Name: approverProbeTool, Description: "run a command"},
-		func(ctx adkagent.ToolContext, in args) (empty, error) {
+		func(ctx adkagent.Context, in args) (empty, error) {
 			r.mu.Lock()
 			r.toolSaw = append(r.toolSaw, operatorTaskFrom(ctx))
 			r.mu.Unlock()

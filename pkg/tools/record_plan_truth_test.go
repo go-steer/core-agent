@@ -27,22 +27,23 @@ import (
 	"strings"
 	"testing"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/memory"
-	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool/toolconfirmation"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/memory"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
-// planToolCtx is a agent.ToolContext that reports an agent and a session,
-// which is the whole point: the handler now reads both. Full-interface
-// satisfaction is deliberate — an ADK bump that adds a method should
-// break the stub rather than silently drift.
+// planToolCtx is a agent.Context that reports an agent and a session,
+// which is the whole point: the handler now reads both. Embedding
+// agent.StrictContextMock keeps it compiling as ADK grows the interface,
+// and any method it does not override panics when called rather than
+// reading a silent zero value.
 type planToolCtx struct {
-	context.Context
+	adkagent.StrictContextMock
 	agent   string
 	session string
 	// invocation is the per-turn ID the repeat guard keys off (#906).
@@ -81,7 +82,7 @@ func (c *planToolCtx) SearchMemory(context.Context, string) (*memory.SearchRespo
 func recordPlanAs(t *testing.T, gate *permissions.Gate, agentsDir, agent, sessionID, plan string) recordPlanResult {
 	t.Helper()
 	fn := recordPlanFunc(gate, agentsDir)
-	ctx := &planToolCtx{Context: context.Background(), agent: agent, session: sessionID}
+	ctx := &planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), agent: agent, session: sessionID}
 	res, err := fn(ctx, recordPlanArgs{Plan: plan})
 	if err != nil {
 		t.Fatalf("record_plan as %s: %v", agent, err)

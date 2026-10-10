@@ -19,8 +19,8 @@ import (
 	"iter"
 	"sort"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 

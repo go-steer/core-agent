@@ -68,8 +68,8 @@ The easiest path is `functiontool.New(config, handler)` — it derives schema fr
 
 ```go
 import (
-    adkagent "google.golang.org/adk/agent" // ADK's agent package; `agent` below is core-agent's
-    "google.golang.org/adk/tool/functiontool"
+    adkagent "google.golang.org/adk/v2/agent" // ADK's agent package; `agent` below is core-agent's
+    "google.golang.org/adk/v2/tool/functiontool"
 )
 
 type queryArgs struct {
@@ -82,7 +82,7 @@ type queryResult struct {
 queryTool, err := functiontool.New(functiontool.Config{
     Name:        "db_query",
     Description: "Run a read-only SQL query against the production replica. Returns up to 100 rows. Use INSTEAD OF guessing about data shape — read it.",
-}, func(toolCtx adkagent.ToolContext, args queryArgs) (queryResult, error) {
+}, func(toolCtx adkagent.Context, args queryArgs) (queryResult, error) {
     rows, err := db.QueryContext(toolCtx, args.SQL) // your DB connection
     // ... materialize, cap at 100 rows
     return queryResult{Rows: rows}, nil
@@ -95,7 +95,7 @@ a, err := agent.New(model, agent.WithTools([]tool.Tool{queryTool}))
 
 - **Name + description are model-facing.** They're the trigger for the model to invoke the tool. Be specific in the description ("read-only SQL"), include `Use INSTEAD OF` language if there's a tool the model might fall back to.
 - **Schema derives from Go types.** `jsonschema:""` struct tags become field descriptions. The model sees these — write them as instructions, not as struct field docs.
-- **`adkagent.ToolContext`** (ADK's `agent.ToolContext`) carries the call's context (`context.Context`) plus the agent's session info. Pass `toolCtx` to context-aware operations. ADK v1.7.0 deprecated the older `tool.Context` alias for it.
+- **`adkagent.Context`** (ADK v2's unified `agent.Context`) carries the call's context (`context.Context`) plus the agent's session info. Pass `toolCtx` to context-aware operations. ADK v2 folded the v1 `agent.ToolContext`, `agent.CallbackContext` and `tool.Context` names into this one type.
 - **Errors propagate to the model.** Return a clear error message; the model sees it and decides whether to retry or surface the failure.
 
 ---
@@ -124,7 +124,7 @@ import (
     "context"
     "iter"
 
-    adkmodel "google.golang.org/adk/model"
+    adkmodel "google.golang.org/adk/v2/model"
     "github.com/go-steer/core-agent/v2/pkg/models"
 )
 
@@ -176,7 +176,7 @@ Most embeddings don't need this. The eventlog covers SQL backends well; for non-
 **Pattern:**
 
 ```go
-import "google.golang.org/adk/session"
+import "google.golang.org/adk/v2/session"
 
 type myService struct { /* your storage handle */ }
 

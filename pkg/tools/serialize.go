@@ -17,9 +17,9 @@ package tools
 import (
 	"sync"
 
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/model"
-	adktool "google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -185,11 +185,11 @@ func (st *serializedTool) Declaration() *genai.FunctionDeclaration {
 // interface (ADK requires every tool in f.Tools to implement it) and
 // packs st — the wrapper — so dispatch routes through the serializer
 // instead of bypassing it. Same shape as gatedTool.ProcessRequest.
-func (st *serializedTool) ProcessRequest(ctx agent.ToolContext, req *model.LLMRequest) error {
+func (st *serializedTool) ProcessRequest(ctx agent.Context, req *model.LLMRequest) error {
 	return PackTool(req, st)
 }
 
-func (st *serializedTool) Run(ctx agent.ToolContext, args any) (map[string]any, error) {
+func (st *serializedTool) Run(ctx agent.Context, args any) (map[string]any, error) {
 	rn, ok := st.inner.(runnableTool)
 	if !ok {
 		return nil, nil

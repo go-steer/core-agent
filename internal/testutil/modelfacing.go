@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 

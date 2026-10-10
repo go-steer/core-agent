@@ -1665,7 +1665,7 @@ import (
 	"testing"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 
@@ -1745,22 +1745,22 @@ import (
 	"testing"
 	"time"
 
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
-	adktool "google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/toolconfirmation"
+	adkagent "google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/session"
+	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
-// selfDevT2Ctx is the least tool.Context a read tool can run under. The
+// selfDevT2Ctx is the least agent.Context a read tool can run under. The
 // embedded interface is nil: a method not overridden here panics, and
 // functiontool's Run turns that panic into an error, so a tool that needs
 // more context than a read tool should fails the oracle loudly.
 type selfDevT2Ctx struct {
-	adktool.Context
+	adkagent.Context
 	ctx context.Context
 }
 
@@ -1843,7 +1843,7 @@ func TestSelfDevOracle954(t *testing.T) {
 	}
 	rt, ok := found.(interface {
 		Declaration() *genai.FunctionDeclaration
-		Run(adktool.Context, any) (map[string]any, error)
+		Run(adkagent.Context, any) (map[string]any, error)
 	})
 	if !ok {
 		t.Fatalf("view_file_outline (%T) is not a callable tool", found)
@@ -1877,7 +1877,7 @@ func TestSelfDevOracle954(t *testing.T) {
 		t.Fatalf("view_file_outline(%s=%q) failed before a plan was recorded: %v", arg, abs, err)
 	}
 	if w, ok := write.(interface {
-		Run(adktool.Context, any) (map[string]any, error)
+		Run(adkagent.Context, any) (map[string]any, error)
 	}); !ok {
 		t.Error("write_file is not registered, so the plan gate's arming can't be shown")
 	} else if _, werr := w.Run(ctx, map[string]any{"path": filepath.Join(abs, "..", "w.txt"), "content": "x"}); werr == nil ||

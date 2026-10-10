@@ -172,6 +172,24 @@ SESSION_RE = re.compile(r"\[session ([^\]]+)\]|session (\S+) turn:")
 FRACTION_RE = re.compile(r"\.(\d+)")
 
 
+def ev_get(event: Any, camel: str, pascal: str, default: Any = None) -> Any:
+    """One field of an ADK session.Event, from either wire form.
+
+    ADK v1 marshalled Event (and the LLMResponse and EventActions inside
+    it) with Go's default PascalCase keys and wrote every zero value; v2
+    tags them camelCase with omitempty. Archived runs and testdata are
+    v1, live runs on a v2 daemon are v2, and a reader has to grade both
+    the same. Key presence decides, never truthiness: a v2 event that
+    omits `partial` reads as `default`, the same as v1's explicit false.
+    The two names are spelled out because the mapping is not mechanical
+    (`ID` -> `id`, `InvocationID` -> `invocationId`)."""
+    if not isinstance(event, dict):
+        return default
+    if camel in event:
+        return event[camel]
+    return event.get(pascal, default)
+
+
 def parse_ts(ts: Any) -> datetime | None:
     """An RFC 3339 timestamp, as Go and `kubectl logs --timestamps` write
     it (up to nine fractional digits, Z or an offset), or None."""
@@ -229,7 +247,7 @@ class Window:
     def keep_event(self, event: Any) -> bool:
         if not self.active or not isinstance(event, dict):
             return True
-        if self.outside(parse_ts(event.get("Timestamp"))):
+        if self.outside(parse_ts(ev_get(event, "timestamp", "Timestamp"))):
             self.rows_dropped += 1
             return False
         return True
@@ -337,15 +355,15 @@ def retry_marks(ev: str, data: Any) -> int:
     if not isinstance(event, dict):
         return 0
     n = 0
-    meta = event.get("CustomMetadata")
+    meta = ev_get(event, "customMetadata", "CustomMetadata")
     if isinstance(meta, dict) and isinstance(meta.get("provider_retry"), dict):
         n += 1
     for fr in function_responses(data):
         n += sum(len(RETRY_MARK_RE.findall(x)) for x in strings_in(fr.get("response")))
-    if event.get("Author") == "user":
+    if ev_get(event, "author", "Author") == "user":
         # Only the report block: the operator's prompt and watchdog
         # feedback ("Last error: …") may quote a retry already counted.
-        for part in ((event.get("Content") or {}).get("parts")) or []:
+        for part in ((ev_get(event, "content", "Content") or {}).get("parts")) or []:
             if isinstance(part, dict) and isinstance(part.get("text"), str):
                 n += len(RETRY_MARK_RE.findall(report_block(part["text"])))
     return n
@@ -353,7 +371,7 @@ def retry_marks(ev: str, data: Any) -> int:
 
 def function_responses(payload: Any) -> Iterator[dict[str, Any]]:
     ev = payload.get("event") if isinstance(payload, dict) else None
-    parts = (((ev or {}).get("Content") or {}).get("parts")) or []
+    parts = ((ev_get(ev, "content", "Content") or {}).get("parts")) or []
     for p in parts:
         fr = p.get("functionResponse") if isinstance(p, dict) else None
         if isinstance(fr, dict):
@@ -382,7 +400,8 @@ class Transcript:
         event = data.get("event") if isinstance(data, dict) else None
         if not isinstance(event, dict) or not self.window.keep_event(event):
             return
-        eid = event.get("ID") if isinstance(event.get("ID"), str) and event.get("ID") else None
+        eid = ev_get(event, "id", "ID")
+        eid = eid if isinstance(eid, str) and eid else None
         if eid is not None:
             if eid in self.seen:
                 return  # the same event in a second capture of the session
@@ -395,8 +414,9 @@ class Transcript:
             resp = fr.get("response")
             if isinstance(resp, dict) and resp.get("status") == "failed" and "stop_reason" in resp:
                 self.failed += 1
-        author = event.get("Author")
-        meta = event.get("CustomMetadata") if isinstance(event.get("CustomMetadata"), dict) else {}
+        author = ev_get(event, "author", "Author")
+        meta = ev_get(event, "customMetadata", "CustomMetadata")
+        meta = meta if isinstance(meta, dict) else {}
         if author in GUARDRAIL_ROW_AUTHORS:
             self.trip_rows.add(eid)
             if author == "agent/guardrail-trip":

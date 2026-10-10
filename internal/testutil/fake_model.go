@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package testutil provides shared test helpers for Cogo, most notably
-// FakeModel — a deterministic implementation of google.golang.org/adk/model.LLM
+// FakeModel — a deterministic implementation of google.golang.org/adk/v2/model.LLM
 // that lets us drive end-to-end agent tests without burning real tokens.
 package testutil
 
@@ -11,7 +11,7 @@ import (
 	"iter"
 	"strings"
 
-	"google.golang.org/adk/model"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
 

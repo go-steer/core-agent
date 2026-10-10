@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
+	adkmodel "google.golang.org/adk/v2/model"
 )
 
 // This file is the Go replacement for bouncer's

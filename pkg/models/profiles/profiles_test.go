@@ -176,3 +176,34 @@ func TestDefaultModel(t *testing.T) {
 		t.Errorf("DefaultModel(frontier) err = %v, want the fix named", err)
 	}
 }
+
+// A profile redeclared with different content under the same name (a
+// reloaded config) opens afresh instead of reusing the cached one.
+func TestChangedProfileIsReopened(t *testing.T) {
+	a, b := &fakeServer{}, &fakeServer{}
+	tsA, tsB := httptest.NewServer(a), httptest.NewServer(b)
+	defer tsA.Close()
+	defer tsB.Close()
+	call := func(cfg *config.Config) {
+		t.Helper()
+		p, err := models.Resolve(cfg)
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		m, err := p.Model(context.Background(), cfg.Model.Name)
+		if err != nil {
+			t.Fatalf("Model: %v", err)
+		}
+		req := &model.LLMRequest{Contents: []*genai.Content{genai.NewContentFromText("hi", genai.RoleUser)}}
+		for _, err := range m.GenerateContent(context.Background(), req, false) {
+			if err != nil {
+				t.Fatalf("GenerateContent: %v", err)
+			}
+		}
+	}
+	call(profileConfig(t, "test-reload", tsA.URL))
+	call(profileConfig(t, "test-reload", tsB.URL))
+	if len(a.body) != 1 || len(b.body) != 1 {
+		t.Errorf("server A got %d requests, B got %d; want one each — the second config reused the first's provider", len(a.body), len(b.body))
+	}
+}

@@ -27,9 +27,9 @@ package profiles
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
-	"math"
 	"sync"
 
 	"google.golang.org/adk/model"
@@ -60,9 +60,18 @@ var (
 
 // opened caches one core-models provider per profile per process, so
 // the parent and every subagent on the same profile share its HTTP
-// client. Keyed by name: a profile's declaration cannot change while
-// the process runs.
-var opened sync.Map // name → coremodels.Provider
+// client. Keyed by the declaration itself, not the name, so a config
+// reloaded with a changed profile opens the new one instead of reusing
+// the old.
+var opened sync.Map // cacheKey(profile) → coremodels.Provider
+
+func cacheKey(p profile.Profile) string {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return p.Name
+	}
+	return string(b)
+}
 
 // New builds the Provider cfg.Model.Provider names. Opening resolves
 // the profile against the environment — base URL variables, the API
@@ -80,14 +89,15 @@ func New(cfg *config.Config) (models.Provider, error) {
 	if on := builtinsOn(cfg.Model.BuiltinTools); len(on) > 0 {
 		return nil, fmt.Errorf("models: provider profile %q cannot run the server-side built-in tools %v that model.builtin_tools turns on; turn them off", name, on)
 	}
-	if p, ok := opened.Load(name); ok {
+	key := cacheKey(prof)
+	if p, ok := opened.Load(key); ok {
 		return &Provider{p: p.(coremodels.Provider)}, nil
 	}
 	p, err := coremodels.Open(context.Background(), prof, coremodels.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("models: %w", err)
 	}
-	actual, _ := opened.LoadOrStore(name, p)
+	actual, _ := opened.LoadOrStore(key, p)
 	return &Provider{p: actual.(coremodels.Provider)}, nil
 }
 
@@ -165,7 +175,10 @@ func builtinsOn(bt *config.BuiltinToolsConfig) []string {
 // fields (prompt, completion, cache reads, reasoning); what remains is
 // the cache-write bucket, which only usage.CacheCreationTokensMetadataKey
 // carries — the key pkg/models/anthropic writes and usage.Rebuild
-// reads back from an event log.
+// reads back from an event log. ToolUseTokens is deliberately not
+// mapped: no core-models dialect reports it today, and genai's field
+// for it is outside the prompt count, so guessing a mapping risks
+// counting tokens twice.
 type usageBridge struct {
 	inner model.LLM
 }
@@ -195,8 +208,5 @@ func bridgeUsage(resp *model.LLMResponse) {
 	}
 	if d.CacheWrite1hTokens != nil {
 		resp.CustomMetadata[usage.CacheCreation1hTokensMetadataKey] = *d.CacheWrite1hTokens
-	}
-	if d.ToolUseTokens != nil && resp.UsageMetadata != nil && resp.UsageMetadata.ToolUsePromptTokenCount == 0 {
-		resp.UsageMetadata.ToolUsePromptTokenCount = int32(min(*d.ToolUseTokens, math.MaxInt32)) // #nosec G115 -- clamped to MaxInt32 on this line
 	}
 }

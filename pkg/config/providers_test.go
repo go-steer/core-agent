@@ -91,6 +91,7 @@ func TestLoad_RejectsBadProfiles(t *testing.T) {
 		"no name":        {`{"extends":"vllm","base_url":"http://x/v1"}`, "has no name"},
 		"duplicate":      {houseVLLM + `,` + houseVLLM, "declared twice"},
 		"unknown extend": {`{"name":"x","extends":"nope","base_url":"http://x/v1"}`, "not a built-in"},
+		"misspelt key":   {`{"name":"x","extends":"vllm","base_url":"http://x/v1","tierz":{"mid":"m"}}`, "tierz"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

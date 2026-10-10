@@ -283,7 +283,7 @@ Provider profiles: ways to reach models beyond the built-in backends — an Open
 | `models[].rates` | Your price for a model no catalog covers (USD per 1M tokens). The lowest-precedence [pricing](#model) layer: `model.pricing`, pricing files and the built-in table all outrank it. |
 | `tiers` | The model per tier. `mid` is what runs when you name no model; `small` is the default `--agentic-small-model`. |
 
-Profiles are checked for shape when the file loads — an error names the file. Credentials and environment variables are checked only when a profile is selected, so a declared profile nobody uses never fails a run.
+Profiles are checked for shape when the file loads — an error names the file. Unlike the rest of `config.json`, an unknown key inside a profile is an error, not a warning. Credentials and environment variables are checked only when a profile is selected, so a declared profile nobody uses never fails a run.
 
 ---
 

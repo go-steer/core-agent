@@ -15,6 +15,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -139,4 +140,17 @@ func (c *Config) ProfileRates() PricingMap {
 		}
 	}
 	return out
+}
+
+// strictProviders re-decodes the raw `providers` block of a config file
+// with core-models' strict decoder, which refuses unknown keys.
+func strictProviders(data []byte) error {
+	var top struct {
+		Providers json.RawMessage `json:"providers"`
+	}
+	if err := json.Unmarshal(data, &top); err != nil || len(top.Providers) == 0 || string(top.Providers) == "null" {
+		return nil // a parse error is the caller's to report; no block is fine
+	}
+	_, err := profile.DecodeJSON(top.Providers)
+	return err
 }

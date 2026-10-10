@@ -1015,6 +1015,16 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// generic Opus suggestion when the provider isn't in the
 		// table (e.g. echo / scripted in tests).
 		suggested := taskclass.ModelForTier(provider.Name(), taskclass.TierFrontier)
+		// A provider profile is not in that table; suggest its own
+		// frontier or mid tier rather than a model it cannot serve.
+		if suggested == "" && cfg.IsProfileProvider(cfg.Model.Provider) {
+			for _, tier := range []string{taskclass.TierFrontier, taskclass.TierMid} {
+				if id, err := profiles.DefaultModel(cfg, cfg.Model.Provider, tier); err == nil && id != cfg.Model.Name {
+					suggested = id
+					break
+				}
+			}
+		}
 		if suggested == "" {
 			suggested = anthropic.DefaultModel
 		}

@@ -10,6 +10,8 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.43.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-logr/stdr v1.2.2
+	github.com/go-steer/core-models v0.5.0
+	github.com/go-steer/core-models/adkv1 v0.5.0
 	github.com/go-steer/core-tui v0.31.0
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0

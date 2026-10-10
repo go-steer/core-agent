@@ -1,8 +1,9 @@
 # Model support beyond Gemini and Claude
 
-**Status:** decided 2026-10-08. The implementation lives in another repo. This
-note records what the decision means for core-agent, so a contributor who goes
-looking for OpenAI or vLLM support in `pkg/models` finds out where it went.
+**Status:** decided 2026-10-08; adopted 2026-10-10 (core-models phase L3',
+`pkg/models/profiles`). The implementation lives in another repo. This note
+records what the decision means for core-agent, so a contributor who goes looking
+for OpenAI or vLLM support in `pkg/models` finds out where it went.
 
 ## The decision
 
@@ -41,14 +42,28 @@ R1–R8, including cost and usage parity with Gemini and Claude.
   `google.golang.org/adk` v1's `model.LLM`, and mast uses `adkv2`. When
   core-agent moves to ADK v2 the shim goes away; that move isn't scheduled and
   doesn't block this work.
-- **Adoption is core-models phase L3'**, after the Chat Completions dialect,
-  the Responses dialect and the self-hosted KV-metrics sampler land:
-  - `models.Register` gains profile-backed providers.
-  - `.agents/config.json` gains a profile section; the schema comes from
-    core-models, and core-agent decides where it is read from.
-  - `--provider` stops being a closed set.
+- **Adoption is core-models phase L3', and it has landed.** It was planned for
+  after the Responses dialect (L2) and the self-hosted KV-metrics sampler (L3);
+  it went first, on core-models v0.5.0 with the Chat Completions dialect alone,
+  because that already covers the Vertex AI partner models and every
+  self-hosted server tested. L2 and L3 are still pending in core-models and
+  arrive here as version bumps. What landed:
+  - `pkg/models/profiles` registers one constructor for every profile
+    (`models.RegisterProfiles`); `models.Resolve` routes any provider name that
+    isn't one of core-agent's own six to it.
+  - `.agents/config.json` gains a top-level `providers` list in core-models'
+    profile schema, checked for shape at load. core-models' built-in profiles
+    (`vertex-maas`, `vllm`, `sglang`, `ollama`, `openai-compatible`) are
+    selectable without one.
+  - `--provider` and `model.provider` take any profile name. A profile can't
+    take one of core-agent's six names.
+  - Usage arrives in genai's fields plus the legacy cache-write sidecar key, so
+    `pkg/usage` reads it unchanged.
+  - A model no catalog prices is priced from the profile's declared `rates`, a
+    new lowest-precedence `pricing` layer. An explicit cost ceiling on a
+    profile model with no price is refused at startup.
   - The existing `gemini`, `vertex`, `anthropic` and `anthropic-vertex` paths
-    are unchanged.
+    are unchanged, and so is auto-detection.
 - **The Gemini and Anthropic adapters move later (L4/L5).** core-agent's newer
   behaviour comes along with them: prompt caching and its TTLs, the 1-hour
   cache-write share, Gemini retry, and the cache-minimum check. After that,
@@ -70,7 +85,7 @@ R1–R8, including cost and usage parity with Gemini and Claude.
 
 ## What does not change
 
-Nothing changes in core-agent's code today. Provider fixes to
+Provider fixes to
 `pkg/models/{anthropic,gemini}` and `internal/vertexcache` keep landing here
 until each package is extracted. After that a fix is a core-models release and a
 version bump here.

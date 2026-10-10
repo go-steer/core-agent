@@ -32,6 +32,13 @@ type Options struct {
 	// ~/.core-agent). Catalog construction reads <UserHome>/pricing.json
 	// if present (both manual + external sections).
 	UserHome string
+
+	// Declared is the per-model rates provider profiles declare
+	// (config.Config.ProfileRates): an operator's price for a model no
+	// published catalog covers, such as a self-hosted one. Lowest
+	// precedence — every other layer, builtin included, outranks it, so
+	// a model a catalog does price is never billed at a guess.
+	Declared map[string]ModelRates
 }
 
 // NewCatalog reads every configured source and returns the merged
@@ -46,6 +53,7 @@ func NewCatalog(opts Options) (*Catalog, error) {
 	c := &Catalog{
 		cfgOverride: lowerKeys(opts.CfgOverride),
 		builtin:     lowercopyRates(builtin),
+		declared:    lowerKeys(opts.Declared),
 	}
 
 	if opts.AgentsDir != "" {

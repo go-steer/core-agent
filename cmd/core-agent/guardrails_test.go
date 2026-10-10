@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
@@ -308,5 +309,31 @@ func TestFlagWasSet(t *testing.T) {
 	}
 	if flagWasSet(build([]string{"--max-session-cost-usd=5"}), "no-such-flag") {
 		t.Error("unknown name: got true, want false")
+	}
+}
+
+func TestCheckProfileCeiling(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Model.Provider = "vllm"
+	cfg.Model.Name = "house/model"
+	turn := agent.CostCeiling{MaxTurnUSD: 1}
+	session := agent.CostCeiling{MaxSessionUSD: 5}
+
+	if _, err := checkProfileCeiling(cfg, turn, sourceCostUnset, true); err == nil || !strings.Contains(err.Error(), "models[].rates") {
+		t.Errorf("explicit turn ceiling on an unpriced profile model: err = %v, want a refusal naming the fix", err)
+	}
+	if _, err := checkProfileCeiling(cfg, session, sourceCostFlag, true); err == nil {
+		t.Error("explicit session ceiling on an unpriced profile model was accepted")
+	}
+	warn, err := checkProfileCeiling(cfg, session, sourceCostUnattendedDefault, true)
+	if err != nil || !strings.Contains(warn, "NOT protecting") {
+		t.Errorf("unattended default: warn = %q, err = %v; want a warning and no refusal", warn, err)
+	}
+	if warn, err := checkProfileCeiling(cfg, turn, sourceCostUnset, false); warn != "" || err != nil {
+		t.Errorf("priced model: %q, %v; want nothing", warn, err)
+	}
+	cfg.Model.Provider = config.ProviderGemini
+	if warn, err := checkProfileCeiling(cfg, turn, sourceCostUnset, true); warn != "" || err != nil {
+		t.Errorf("core provider: %q, %v; the check is for profiles only", warn, err)
 	}
 }

@@ -89,6 +89,17 @@ func Load(agentsDir string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
 	}
 	warnUnknownKeys(path, data)
+	// Provider profiles first, naming the file: a profile error points
+	// at a nested block whose index alone is hard to find. Strict where
+	// the rest of the file is tolerant: a misspelt key inside a profile
+	// (base_ur) is a profile that silently lacks the field, with no
+	// forward-compat case to protect — the schema is core-models'.
+	if err := strictProviders(data); err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
+	if err := cfg.validateProviders(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

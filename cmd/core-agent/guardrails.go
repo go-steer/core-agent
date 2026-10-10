@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
@@ -188,4 +189,27 @@ func resolveGuardrails(in guardrailInputs) (guardrailResolution, error) {
 	}
 
 	return res, nil
+}
+
+// checkProfileCeiling vets a cost ceiling against a provider-profile
+// model that has no price. The catalog covers Gemini and Claude, and a
+// self-hosted model is priced only if its profile declares rates;
+// unpriced, every call costs $0 to the ceiling and it can never trip —
+// a ceiling in name only, worse than none because the operator believes
+// they have one.
+//
+// A ceiling the operator asked for (either flag, or config) is refused
+// with err. The unattended default, which nobody asked for, is not: it
+// returns a warning to print and the run goes ahead, since refusing it
+// would fail every unattended run on a self-hosted model.
+func checkProfileCeiling(cfg *config.Config, ceiling agent.CostCeiling, sessionSource string, unpriced bool) (warn string, err error) {
+	if !unpriced || (ceiling.MaxTurnUSD <= 0 && ceiling.MaxSessionUSD <= 0) || !cfg.IsProfileProvider(cfg.Model.Provider) {
+		return "", nil
+	}
+	why := fmt.Sprintf("provider profile %q: model %q has no price — no pricing layer has a rate for it and the profile declares none — so the cost ceiling counts its calls as $0 and can never trip. Declare models[].rates for it in the profile, or set model.pricing",
+		cfg.Model.Provider, cfg.Model.Name)
+	if ceiling.MaxTurnUSD > 0 || sessionSource != sourceCostUnattendedDefault {
+		return "", fmt.Errorf("%s; or drop the ceiling", why)
+	}
+	return fmt.Sprintf("WARNING: %s. The unattended default session ceiling ($%.2f) is NOT protecting this run.", why, ceiling.MaxSessionUSD), nil
 }

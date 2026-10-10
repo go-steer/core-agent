@@ -197,6 +197,7 @@ type Catalog struct {
 	userManual  map[string]Rates // ~/.core-agent/pricing.json "manual"
 	userExt     map[string]Rates // ~/.core-agent/pricing.json "external"
 	builtin     map[string]Rates // compiled-in fallback
+	declared    map[string]Rates // provider profiles' declared rates
 }
 
 // Layer source names surfaced via LookupWithSource + the attach
@@ -208,6 +209,7 @@ const (
 	SourceUserManual   = "user-manual"
 	SourceUserExternal = "user-external"
 	SourceBuiltin      = "builtin"
+	SourceDeclared     = "profile-declared"
 )
 
 // Lookup returns the resolved rates for modelID plus a found flag.
@@ -284,6 +286,7 @@ func (c *Catalog) layersWithSource() []layerWithSource {
 		{c.userManual, SourceUserManual},
 		{c.userExt, SourceUserExternal},
 		{c.builtin, SourceBuiltin},
+		{c.declared, SourceDeclared},
 	}
 }
 
@@ -296,6 +299,7 @@ type CountByLayer struct {
 	UserManual   int
 	UserExternal int
 	Builtin      int
+	Declared     int
 }
 
 // Counts returns per-layer entry counts.
@@ -309,5 +313,6 @@ func (c *Catalog) Counts() CountByLayer {
 		UserManual:   len(c.userManual),
 		UserExternal: len(c.userExt),
 		Builtin:      len(c.builtin),
+		Declared:     len(c.declared),
 	}
 }

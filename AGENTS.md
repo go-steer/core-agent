@@ -40,7 +40,11 @@ pkg/
   skills/             SKILL.md discovery → ADK skilltoolset.
   models/             Provider interface + registry/Resolve;
                       gemini/ (API + Vertex), anthropic/ (native
-                      model.LLM adapter, api.anthropic.com + Vertex).
+                      model.LLM adapter, api.anthropic.com + Vertex),
+                      profiles/ (provider profiles via core-models:
+                      vLLM, SGLang, Ollama, OpenAI-compatible,
+                      Vertex AI MaaS — new providers go there, not
+                      here; see docs/model-support-design.md).
   usage/              Per-turn token + cost tracker.
   modeltier/,         Model-tier + task-class routing tables.
   taskclass/

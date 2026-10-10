@@ -60,6 +60,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/models/anthropic"
 	"github.com/go-steer/core-agent/v2/pkg/models/gemini"
 	_ "github.com/go-steer/core-agent/v2/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/models/profiles"
 	"github.com/go-steer/core-agent/v2/pkg/modeltier"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/pricing"
@@ -145,7 +146,7 @@ func main() {
 	flag.StringVar(&modelOverrideVal, "m", "", "override model name from config")
 	flag.StringVar(&modelOverrideVal, "model", "", "long-form alias for -m — same behavior")
 	modelOverride := &modelOverrideVal
-	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex|echo|scripted)")
+	providerOverride := flag.String("provider", "", "override model.provider: gemini|vertex|anthropic|anthropic-vertex|echo|scripted, or a provider profile — a core-models built-in (vertex-maas|vllm|sglang|ollama|openai-compatible) or one declared under providers in .agents/config.json")
 	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite ("+strings.Join(tools.BuiltinToolNames(), ", ")+")")
 	disableTools := flag.String("disable-tools", "", "comma-separated list of built-in tools to disable (e.g. bash,write_file). Composes with cfg.tools.disable; ignored when --no-builtin-tools is set.")
 	enableTools := flag.String("enable-tools", "", "comma-separated list of built-in tools to add back after a --task profile dropped them (e.g. --task=debug --enable-tools=bash). Cancels the profile's opinion only: it cannot re-enable a tool you turned off in cfg.tools.disable or --disable-tools, and asking for that combination is an error rather than a silent win for either side. Naming a tool the profile never dropped is a no-op.")
@@ -684,6 +685,22 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			cfg.Session.TaskClass, cfg.Model.Name, profile.CompactionThreshold, ask, toolNote)
 	}
 
+	// A provider profile has no entry in taskclass's tables, so the
+	// substrate default (a Gemini id) would reach a server that does
+	// not serve it. When the operator named no model, take the
+	// profile's own tier for the task class instead — mid when no class
+	// is declared — and say so; a profile with no such tier is a config
+	// error naming the fix.
+	if cfg.IsProfileProvider(cfg.Model.Provider) && modelOverride == "" && cfg.Model.Name == config.DefaultConfig().Model.Name {
+		id, err := profiles.DefaultModel(cfg, cfg.Model.Provider, taskProfile.Tier)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+			return runner.ExitConfigError
+		}
+		cfg.Model.Name = id
+		fmt.Fprintf(os.Stderr, "core-agent: provider profile %s → model=%s (from the profile's tiers; override with --model)\n", cfg.Model.Provider, id)
+	}
+
 	// Plan-first (#160) is resolved for every run, not just --task
 	// ones, because the flag is also the CLI mirror of
 	// permissions.require_plan_artifact. The profile can only turn the
@@ -998,6 +1015,16 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// generic Opus suggestion when the provider isn't in the
 		// table (e.g. echo / scripted in tests).
 		suggested := taskclass.ModelForTier(provider.Name(), taskclass.TierFrontier)
+		// A provider profile is not in that table; suggest its own
+		// frontier or mid tier rather than a model it cannot serve.
+		if suggested == "" && cfg.IsProfileProvider(cfg.Model.Provider) {
+			for _, tier := range []string{taskclass.TierFrontier, taskclass.TierMid} {
+				if id, err := profiles.DefaultModel(cfg, cfg.Model.Provider, tier); err == nil && id != cfg.Model.Name {
+					suggested = id
+					break
+				}
+			}
+		}
 		if suggested == "" {
 			suggested = anthropic.DefaultModel
 		}
@@ -1368,6 +1395,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		CfgOverride: compose.CfgToCatalogOverride(cfg.Model.Pricing),
 		AgentsDir:   agentsDir,
 		UserHome:    coreHome,
+		Declared:    compose.CfgToCatalogOverride(cfg.ProfileRates()),
 	}); perr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: pricing: %v\n", perr)
 		// Non-fatal: missing/corrupt files fall back to builtin via
@@ -1916,6 +1944,14 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	ceiling := agent.CostCeiling{MaxSessionUSD: guard.SessionCostUSD}
 	if cfg.Agent.MaxTurnCostUSD != nil {
 		ceiling.MaxTurnUSD = *cfg.Agent.MaxTurnCostUSD
+	}
+	// A cost ceiling on an unpriced provider-profile model can never
+	// trip; see checkProfileCeiling.
+	if warn, err := checkProfileCeiling(cfg, ceiling, guard.SessionCostSource, usage.PriceFor(cfg.Model.Name, cfg).Unpriced); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	} else if warn != "" {
+		send(warn)
 	}
 	if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
 		opts = append(opts, agent.WithCostCeiling(ceiling))

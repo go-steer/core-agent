@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"google.golang.org/adk/tool"
+	"google.golang.org/adk/v2/tool"
 )
 
 // A rejected spawn has to say what WOULD have worked. A parent with no

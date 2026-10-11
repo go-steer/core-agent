@@ -1169,11 +1169,42 @@ func (m *Manager) resolveTools(names []string) ([]tool.Tool, error) {
 		}
 		t, ok := m.catalog[n]
 		if !ok {
-			return nil, fmt.Errorf("%w: %q", ErrUnknownTool, n)
+			return nil, fmt.Errorf("%w: %q; %s", ErrUnknownTool, n, m.grantableHint())
 		}
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// grantableHint completes an ErrUnknownTool with what IS grantable. A
+// bare "unknown tool" leaves the model nothing to do but guess the next
+// name, and a parent with no tools of its own will guess its way through
+// kubectl, bash, shell, exec, ... one spawn at a time, each one rejected
+// the same way.
+func (m *Manager) grantableHint() string {
+	names := m.GrantableToolNames()
+	if len(names) == 0 {
+		// Phrased as a fact about the catalog, not an instruction to the
+		// caller: this error is also how a configured subagent whose own
+		// grant names a missing tool fails, and that caller passed no
+		// tools at all.
+		return "this build has no tools that can be granted to a subagent, so an inline subagent must leave tools and extras empty"
+	}
+	return "the names a subagent can be granted here are: " + joinNames(names)
+}
+
+// maxListedNames caps a name list carried in a spawn error. The error
+// reaches the model twice per rejection (status and error), and a
+// library consumer can put hundreds of MCP tools in the catalog; the
+// full list is in the spawn_agent schema anyway.
+const maxListedNames = 50
+
+func joinNames(names []string) string {
+	if len(names) <= maxListedNames {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:maxListedNames], ", ") +
+		fmt.Sprintf(", and %d more (the spawn_agent parameters list them all)", len(names)-maxListedNames)
 }
 
 // GrantableToolNames returns the sorted names an ad-hoc subagent's

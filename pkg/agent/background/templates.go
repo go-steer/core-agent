@@ -268,7 +268,7 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 	prov := m.provider
 	m.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("%w: %q", ErrUnknownSubagent, name)
+		return nil, m.unknownSubagentError(name)
 	}
 	if len(ov.Tools) > 0 {
 		return nil, fmt.Errorf("background: cannot narrow tools of preconfigured subagent %q (its grant spans built-ins, MCP, and skills); configure a dedicated subagent", name)

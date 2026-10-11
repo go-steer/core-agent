@@ -90,12 +90,13 @@ func (r rosterTool) Declaration() *genai.FunctionDeclaration {
 	}
 	roster := r.mgr.Catalog()
 	grantable := r.mgr.GrantableToolNames()
-	if len(roster) == 0 && len(grantable) == 0 {
-		// Nothing configured: leave the shipped declaration untouched
-		// rather than telling the model "the roster is empty", which
-		// reads as a fault rather than a deployment without subagents.
-		return decl
-	}
+	// No roster: the description and the `agent` property stay exactly as
+	// shipped rather than telling the model "the roster is empty", which
+	// reads as a fault rather than a deployment without subagents. A name
+	// it guesses anyway is answered by the spawn error, which says none
+	// are configured. `tools` is different: its description is a claim
+	// about what can be granted, so it is always rewritten to the truth —
+	// including "nothing", which a tool-less build otherwise never hears.
 	clone := *decl
 	if len(roster) > 0 {
 		clone.Description = decl.Description + "\n\n" + rosterBlock(roster)
@@ -199,7 +200,7 @@ func withRosterEnum(in *jsonschema.Schema, roster []attach.SubagentCatalogInfo, 
 // Structural copy only, matching withRosterEnum: the top-level schema,
 // its Properties map, and the one rewritten property are cloned.
 func withGrantableTools(in *jsonschema.Schema, grantable []string) *jsonschema.Schema {
-	if in == nil || len(grantable) == 0 {
+	if in == nil {
 		return in
 	}
 	prop, ok := in.Properties["tools"]
@@ -215,9 +216,22 @@ func withGrantableTools(in *jsonschema.Schema, grantable []string) *jsonschema.S
 	// Named for both fields: resolveTools looks `tools` and `extras` up
 	// in one catalog, so scoping the list to "built-in tools" would
 	// mislabel the MCP and skill names it also contains.
-	toolsProp.Description = strings.TrimSpace(prop.Description) +
-		" Grantable names in this build (tools and extras draw from one catalog): " +
-		strings.Join(grantable, ", ") + "."
+	if len(grantable) == 0 {
+		// A build with nothing to hand out (--no-builtin-tools) still
+		// offers spawn_agent: a subagent that only reasons is a
+		// legitimate thing to delegate to. Say so, or the model goes
+		// looking for a name to grant. Scoped to the inline form on
+		// purpose: a configured subagent brings its own grant (MCP
+		// toolsets, its own tool list) from outside this catalog, and a
+		// parent with no access delegating to one that has it is exactly
+		// the delegation this must not discourage.
+		toolsProp.Description = strings.TrimSpace(prop.Description) +
+			" No tools can be granted to an inline subagent in this build, so leave tools and extras empty when authoring one; a configured subagent keeps its own grant."
+	} else {
+		toolsProp.Description = strings.TrimSpace(prop.Description) +
+			" Grantable names in this build (tools and extras draw from one catalog): " +
+			strings.Join(grantable, ", ") + "."
+	}
 	schema.Properties["tools"] = &toolsProp
 	return &schema
 }

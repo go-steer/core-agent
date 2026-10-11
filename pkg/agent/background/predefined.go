@@ -109,6 +109,24 @@ func (m *Manager) smallModel() string {
 	return m.smallModelID
 }
 
+// unknownSubagentError completes an ErrUnknownSubagent with the names
+// that DO resolve, or says there are none. A bare "unknown predefined
+// subagent" gave a parent nothing to go on, and one with no tools of its
+// own was seen guessing two dozen plausible names — k8s, sre, devops,
+// triage, oncall — a rejected spawn each. Caller must not hold m.mu.
+func (m *Manager) unknownSubagentError(name string) error {
+	if names := m.ReferenceNames(); len(names) > 0 {
+		return fmt.Errorf("%w: %q; the subagents that can be referenced by name are: %s",
+			ErrUnknownSubagent, name, joinNames(names))
+	}
+	if m.AllowAdhoc() {
+		return fmt.Errorf("%w: %q; no subagents are configured for reference by name here, so leave agent empty and describe the subagent inline with system_prompt",
+			ErrUnknownSubagent, name)
+	}
+	return fmt.Errorf("%w: %q; no subagents are configured for reference by name here, and inline subagents are disabled, so no spawn can succeed",
+		ErrUnknownSubagent, name)
+}
+
 // AllowAdhoc reports whether ad-hoc (inline-persona) spawns are
 // permitted. False (the daemon default) means the model may only spawn
 // by reference to a predefined spec.
@@ -129,7 +147,7 @@ func (m *Manager) resolvePredefinedSpec(name string, ov RefOverrides) (Spec, err
 	smallModelID := m.smallModelID
 	m.mu.Unlock()
 	if !ok {
-		return Spec{}, fmt.Errorf("%w: %q", ErrUnknownSubagent, name)
+		return Spec{}, m.unknownSubagentError(name)
 	}
 
 	spec := base // struct copy; slices are shared but we reassign, never mutate in place

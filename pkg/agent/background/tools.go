@@ -375,7 +375,7 @@ type spawnAgentArgs struct {
 	Goal                string   `json:"goal" jsonschema:"the task the subagent should accomplish, written as a single instruction"`
 	Model               string   `json:"model,omitempty" jsonschema:"optional model override: omit to inherit (the preconfigured subagent's model, or the parent's), or 'small' to downshift to the small tier. A specific model is not selectable here — configure a dedicated subagent for that."`
 	Tools               []string `json:"tools,omitempty" jsonschema:"tool names to grant. For a preconfigured 'agent' this may only NARROW its grant (a subset — unlisted tools are dropped). For an ad-hoc subagent these are the built-in tools it may use. Unknown names error at spawn time."`
-	Extras              []string `json:"extras,omitempty" jsonschema:"ad-hoc only: additional tool names beyond the built-ins (e.g. MCP tools like kubectl_get, or skill names). Looked up in the same catalog as tools."`
+	Extras              []string `json:"extras,omitempty" jsonschema:"ad-hoc only: further tool names, looked up in the same catalog as tools."`
 	MaxTurns            int      `json:"max_turns,omitempty" jsonschema:"tighten the per-subagent turn cap (may only lower a preconfigured subagent's cap)"`
 	MaxCostUSD          float64  `json:"max_cost_usd,omitempty" jsonschema:"tighten the per-subagent dollar cap (may only lower a preconfigured subagent's cap)"`
 	MaxWallclockSeconds int      `json:"max_wallclock_seconds,omitempty" jsonschema:"tighten the per-subagent wall-clock cap (may only lower a preconfigured subagent's cap)"`

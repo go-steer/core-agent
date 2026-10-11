@@ -161,6 +161,49 @@ func TestSpawnAgentSchema_EmptyCatalogDoesNotDisownConfiguredSubagents(t *testin
 	}
 }
 
+// The ad-hoc refusal is the third door. Its fixed text said "reference a
+// configured subagent by name" even when none were configured, which
+// cost a guessed name and a second rejection to learn no spawn could
+// succeed.
+func TestAdhocDisabled_NamesTheRemedyThatExists(t *testing.T) {
+	t.Parallel()
+	inline := spawnAgentArgs{Name: "adhoc", SystemPrompt: "p", Goal: "g"}
+
+	t.Run("roster configured", func(t *testing.T) {
+		t.Parallel()
+		prov := &recordingProvider{llm: &completingLLM{detail: "d"}}
+		mgr := newTemplateManager(t, prov, rosterTemplates(prov))
+		defer mgr.Close()
+		_, _, err := buildSpawnSpec(mgr, inline)
+		if !errors.Is(err, ErrAdhocDisabled) {
+			t.Fatalf("want ErrAdhocDisabled, got %v", err)
+		}
+		want := "reference a configured subagent by name instead: cluster, docs"
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name the roster: %q", err, want)
+		}
+	})
+	t.Run("nothing configured", func(t *testing.T) {
+		t.Parallel()
+		prov := &recordingProvider{llm: &completingLLM{detail: "d"}}
+		mgr, err := NewManager(WithProvider(prov, "parent-model"))
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		defer mgr.Close()
+		_, _, err = buildSpawnSpec(mgr, inline)
+		if !errors.Is(err, ErrAdhocDisabled) {
+			t.Fatalf("want ErrAdhocDisabled, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "no subagents are configured for reference by name here, so no spawn can succeed") {
+			t.Errorf("error = %q, want it to say no spawn can succeed", err)
+		}
+		if strings.Contains(err.Error(), "reference a configured subagent by name instead") {
+			t.Errorf("error = %q still sends the model to a roster that does not exist", err)
+		}
+	})
+}
+
 func TestJoinNames_CapsALongList(t *testing.T) {
 	t.Parallel()
 	names := make([]string, maxListedNames+7)

@@ -341,7 +341,7 @@ func buildSpawnSpec(mgr *Manager, args spawnAgentArgs) (Spec, string, error) {
 	}
 	// Ad-hoc (inline-persona) path — off unless the operator enabled it.
 	if !mgr.AllowAdhoc() {
-		return Spec{}, args.Name, ErrAdhocDisabled
+		return Spec{}, args.Name, mgr.adhocDisabledError()
 	}
 	// Ad-hoc model resolution is looser than the referenced path (D2/§1):
 	// ad-hoc is already parent-authored, so naming a specific model is no

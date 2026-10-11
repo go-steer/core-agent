@@ -17,7 +17,7 @@
 // anthropic-vertex / echo / scripted. The adapters live in
 // github.com/go-steer/core-models (docs/model-support-design.md); this
 // package opens a profile there, adapts its models to ADK v1 through
-// core-models' adkv1 shim, and re-keys its usage record into the shape
+// core-models' adkv2 shim, and re-keys its usage record into the shape
 // pkg/usage reads.
 //
 // Import it for its side effect, as with the other backends:
@@ -32,10 +32,10 @@ import (
 	"iter"
 	"sync"
 
-	"google.golang.org/adk/model"
+	"google.golang.org/adk/v2/model"
 
 	coremodels "github.com/go-steer/core-models"
-	"github.com/go-steer/core-models/adkv1"
+	"github.com/go-steer/core-models/adkv2"
 	"github.com/go-steer/core-models/profile"
 	coreusage "github.com/go-steer/core-models/usage"
 
@@ -121,7 +121,7 @@ func (p *Provider) Model(ctx context.Context, modelID string) (model.LLM, error)
 	if err != nil {
 		return nil, err
 	}
-	return usageBridge{inner: adkv1.Wrap(m)}, nil
+	return usageBridge{inner: adkv2.Wrap(m)}, nil
 }
 
 // DefaultModel is the model to run on a profile when the operator

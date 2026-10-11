@@ -37,11 +37,11 @@ R1–R8, including cost and usage parity with Gemini and Claude.
 - **Do not add new providers to `pkg/models`.** The OpenAI-shaped dialects
   (`openai-chat` and `openai-responses`) and the profiles that ride on them are
   written in core-models.
-- **core-agent consumes core-models through the `adkv1` shim.** The library's
-  core is ADK-free and speaks genai. `core-models/adkv1` adapts it to
-  `google.golang.org/adk` v1's `model.LLM`, and mast uses `adkv2`. When
-  core-agent moves to ADK v2 the shim goes away; that move isn't scheduled and
-  doesn't block this work.
+- **core-agent consumes core-models through the `adkv2` shim.** The library's
+  core is ADK-free and speaks genai. `core-models/adkv2` adapts it to
+  `google.golang.org/adk/v2`'s `model.LLM`, the same shim mast uses. Until
+  core-agent's ADK v2 move (#1291) it used `adkv1`; the two shims have the same
+  API (`Wrap`), so the switch was an import change.
 - **Adoption is core-models phase L3', and it has landed.** It was planned for
   after the Responses dialect (L2) and the self-hosted KV-metrics sampler (L3);
   it went first, on core-models v0.5.0 with the Chat Completions dialect alone,

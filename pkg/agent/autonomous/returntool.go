@@ -23,7 +23,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // DefaultReturnToolName is the name WithReturnTool uses when

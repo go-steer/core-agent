@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // statePath returns a path inside a fresh temp dir. The dir, not just

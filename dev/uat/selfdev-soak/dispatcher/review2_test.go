@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // secretFile stands in for the App key: a file the dispatcher can read

@@ -26,7 +26,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/internal/imagepin"
+	"github.com/go-steer/core-agent/v3/internal/imagepin"
 )
 
 // maxBodyBytes keeps the assembled body inside GitHub's 65,536-byte

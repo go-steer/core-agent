@@ -52,13 +52,13 @@ import (
 
 	"github.com/glebarez/sqlite"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/auth"
-	"github.com/go-steer/core-agent/v2/pkg/compose"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
-	"github.com/go-steer/core-agent/v2/pkg/models/mock"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/compose"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/models/mock"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // Throwaway loopback-only demo tokens. Real deployments generate

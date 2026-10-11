@@ -24,9 +24,9 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // terminalRecorder collects the frames an agent emits. Wired through

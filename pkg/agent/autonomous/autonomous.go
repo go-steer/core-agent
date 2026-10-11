@@ -29,11 +29,11 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent/internal/toolcalls"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // Run drives a multi-turn loop against an Agent built by

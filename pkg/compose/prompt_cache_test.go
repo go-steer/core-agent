@@ -18,8 +18,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models/anthropic"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models/anthropic"
 )
 
 func newTestAnthropicProvider(t *testing.T) *anthropic.Provider {

@@ -32,9 +32,9 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // #1081. Run 11 of dev/uat/approval-gate/ put an operator's "no" in

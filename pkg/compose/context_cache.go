@@ -21,10 +21,10 @@ import (
 
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/internal/vertexcache"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models"
-	"github.com/go-steer/core-agent/v2/pkg/models/gemini"
+	"github.com/go-steer/core-agent/v3/internal/vertexcache"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/models/gemini"
 )
 
 // ContextCacheHandle is the exported face of the wired Vertex

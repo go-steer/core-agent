@@ -20,7 +20,7 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // FetchPermissionMode builds Options.PermissionMode for an attached

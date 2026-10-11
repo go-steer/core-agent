@@ -24,8 +24,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // rosterTool wraps the spawn_agent function tool so the parent model

@@ -7,7 +7,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 [![CI](https://github.com/go-steer/core-agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/go-steer/core-agent/actions/workflows/ci.yml)
 [![Docs](https://github.com/go-steer/core-agent/actions/workflows/docs.yml/badge.svg?branch=main)](https://go-steer.github.io/core-agent/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
-[![Go Reference](https://pkg.go.dev/badge/github.com/go-steer/core-agent/v2.svg)](https://pkg.go.dev/github.com/go-steer/core-agent/v2)
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-steer/core-agent/v3.svg)](https://pkg.go.dev/github.com/go-steer/core-agent/v3)
 [![Release](https://img.shields.io/github/v/release/go-steer/core-agent?sort=semver)](https://github.com/go-steer/core-agent/releases/latest)
 
 ---
@@ -70,7 +70,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 **CLI (Go toolchain, requires Go 1.26+):**
 
 ```bash
-go install github.com/go-steer/core-agent/v2/cmd/core-agent@latest
+go install github.com/go-steer/core-agent/v3/cmd/core-agent@latest
 ```
 
 **Pre-built binary (Sigstore-signed; linux/darwin × amd64/arm64):**
@@ -102,10 +102,10 @@ Floating tags: `:latest`, `:X.Y.Z`, `:X.Y`, `:X` (semver, no `v` prefix), `:main
 **Library:**
 
 ```bash
-go get github.com/go-steer/core-agent/v2
+go get github.com/go-steer/core-agent/v3
 ```
 
-> **Module path note (post-v2.7):** the module path carries the `/v2` suffix required by [Go's SIVE rule](https://go.dev/ref/mod#major-version-suffixes). Consumers upgrading from v2.6 or earlier need to rewrite imports: `github.com/go-steer/core-agent/pkg/...` → `github.com/go-steer/core-agent/v2/pkg/...`. Container images and source builds were never affected; only `go install ...@v2.X.Y` and `go get` require the migration. Pre-fix tags (v2.0.0 through v2.7.0-dev.4) can't be `go install`ed — use `@main`, a pinned commit SHA, container images, or a source build for those.
+> **Module path note:** the module path carries the major-version suffix required by [Go's SIVE rule](https://go.dev/ref/mod#major-version-suffixes). From 3.0 it is `github.com/go-steer/core-agent/v3`; upgrading from 2.x means rewriting imports `github.com/go-steer/core-agent/v2/...` → `github.com/go-steer/core-agent/v3/...` (and moving to `google.golang.org/adk/v2`, see the 3.0 release notes). v2.x tags keep the `/v2` path, so pinned 2.x consumers are unaffected. Container images and source builds never depend on the suffix; only `go install` and `go get` do. Tags v2.0.0 through v2.7.0-dev.4 predate the `/v2` suffix and can't be `go install`ed — use `@main`, a pinned commit SHA, container images, or a source build for those.
 
 ### Container variants at a glance
 
@@ -144,10 +144,10 @@ import (
     "fmt"
     "log"
 
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/config"
-    "github.com/go-steer/core-agent/v2/pkg/models"
-    _ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/config"
+    "github.com/go-steer/core-agent/v3/pkg/models"
+    _ "github.com/go-steer/core-agent/v3/pkg/models/gemini"
 )
 
 func main() {

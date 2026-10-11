@@ -20,7 +20,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // authSourceCtxKey threads the middleware's verdict on HOW a request

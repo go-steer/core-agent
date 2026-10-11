@@ -370,8 +370,8 @@ Permission gating is bridged to ADK via the `tools.GateToolset` wrapper. It wrap
 
 ```go
 import (
-    coretools "github.com/go-steer/core-agent/v2/pkg/tools"
-    "github.com/go-steer/core-agent/v2/pkg/permissions"
+    coretools "github.com/go-steer/core-agent/v3/pkg/tools"
+    "github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 gated := coretools.GateToolset(myToolset, gate, "my-namespace")

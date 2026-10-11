@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // Grade is one case's result.

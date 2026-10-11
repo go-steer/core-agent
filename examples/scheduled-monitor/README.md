@@ -30,9 +30,9 @@ go run ./examples/scheduled-monitor
 
 ## Key APIs
 
-- `tools.SleepScheduler` / `tools.ExitOnDeferScheduler` / `tools.ErrSchedulerDefer` — `github.com/go-steer/core-agent/v2/pkg/tools`
+- `tools.SleepScheduler` / `tools.ExitOnDeferScheduler` / `tools.ErrSchedulerDefer` — `github.com/go-steer/core-agent/v3/pkg/tools`
 - `tools.NewScheduleTool` / `tools.ScheduleEvent` — the `schedule_next_turn` tool and its channel
-- `background.NewManager` / `background.WithDefaultScheduler` — `github.com/go-steer/core-agent/v2/pkg/agent/background`
+- `background.NewManager` / `background.WithDefaultScheduler` — `github.com/go-steer/core-agent/v3/pkg/agent/background`
 - `agent.DefaultSchedulingInstruction` — system-prompt priming for LLM-picked cadence
 
 ## What you should see

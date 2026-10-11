@@ -23,10 +23,10 @@ import (
 
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/auth"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // stubManager is a minimal agent.SubagentManager. It records the parent

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // The tokens below are what a holder presents. Only their digests go

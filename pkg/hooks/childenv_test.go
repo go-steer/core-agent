@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // #1157. A hook command is operator-authored, but it runs on events the

@@ -26,8 +26,8 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/models"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // captureLLM is a tiny adkmodel.LLM that records every request it's

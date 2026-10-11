@@ -72,7 +72,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // CostCeiling configures the per-turn / per-session spend caps

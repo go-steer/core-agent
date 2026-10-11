@@ -17,8 +17,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // compactionBootLine states, in tokens, where automatic compaction fires

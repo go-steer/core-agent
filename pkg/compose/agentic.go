@@ -22,9 +22,9 @@ import (
 
 	adktool "google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/models"
-	"github.com/go-steer/core-agent/v2/pkg/tools/agentic"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/tools/agentic"
 )
 
 // BuildAgenticTools constructs the agentic_* tool wrappers from

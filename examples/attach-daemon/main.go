@@ -47,12 +47,12 @@ import (
 
 	"github.com/glebarez/sqlite"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
-	"github.com/go-steer/core-agent/v2/pkg/models/mock"
-	"github.com/go-steer/core-agent/v2/pkg/runner"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attachadapter"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/models/mock"
+	"github.com/go-steer/core-agent/v3/pkg/runner"
 )
 
 func main() {

@@ -25,8 +25,8 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
-	"github.com/go-steer/core-agent/v2/pkg/runner"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/runner"
 )
 
 // maxHashTokenInput bounds what `auth hash-token` reads from stdin. A

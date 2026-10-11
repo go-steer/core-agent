@@ -24,7 +24,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // POST /inject {"wake": false} — file a message for the next turn

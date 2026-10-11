@@ -22,8 +22,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // hintingTool is an upstream tool that declares its OWN dispatch

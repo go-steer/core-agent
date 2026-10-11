@@ -7,6 +7,19 @@ Cutting a release is fully automated from a tag push. The two release workflows 
 
 Both trigger on `push: tags: ['v*.*.*']`.
 
+## Before a major bump (`vN.0.0`, N ≥ 2)
+
+**The module path moves first, before any `vN` tag, pre-releases included.** Go's semantic import versioning means a `vN.x.y` tag can only be `go install`ed or `go get`ed when `go.mod`'s module path ends in `/vN`, and a tag cut before the rename can never be repaired: v2.0.0 through v2.7.0-dev.4 are permanently un-installable because the `/v2` rename (#327) came after them.
+
+1. **Land the `/vN` rename PR.** Update the module line and every import, plus each place the path lives outside Go code:
+   - the `-X` ldflags in `Dockerfile`, `.goreleaser.yml` and `extras/scion/Dockerfile`;
+   - the release-notes footer `dev/release/install-verify-footer.md.tmpl`, which every GitHub Release body includes;
+   - the `go install` / `go get` / import snippets in `README.md`, the published site, `SKILLS/` and the example READMEs.
+
+   Set `internal/version.Version` to `vN.0.0-dev` in the same PR. `verify-version-fallback` reads the major from `go.mod`, so it fails a `/vN` path with an old-major fallback, a `vN` fallback on an old path, a module path behind the latest release, `-X` flags that name another module, and any live install or import path with the wrong suffix.
+2. **After it merges, check the default branch installs:** `GOPROXY=direct go install github.com/go-steer/core-agent/vN/cmd/core-agent@main`. This can't be checked on the PR. Until `main`'s `go.mod` says `/vN` and no `vN` tag exists, `go install` fails its deprecation lookup with `no matching versions for query "latest"`.
+3. **Cut `vN.0.0-dev.1` on `main`** (see [Pre-release / dev tags](#pre-release--dev-tags)), then check `go install …/vN/cmd/core-agent@vN.0.0-dev.1`. Use `GOPROXY=direct` first. proxy.golang.org can serve a stale version list for a while after the tag.
+
 ## Cut a release
 
 1. **Update `CHANGELOG.md`** — cumulative since the last GA. Run [`dev/release/cut-ga-tag.sh vX.Y.Z`](../dev/release/cut-ga-tag.sh); it folds every pre-release section between `## [Unreleased]` and the previous GA into a new `## [X.Y.Z] — YYYY-MM-DD` entry, hoists any `**BREAKING:**` bullets to a `### Breaking Changes` section, groups the merged PRs by kind (`#### Feature` / `#### Bug or Regression` / `#### Documentation` / `#### Other (Cleanup)`), and appends a pre-release-history trailer listing the dev/rc tags folded. Two things the script leaves for you: (a) replace the `<HEADLINE — ...>` placeholder with a 3-5 sentence operator-facing summary; (b) optionally sub-group bullets under theme headers within a kind (e.g. `_Digest + cost attribution stack:_`) — see v2.7.0 for the pattern. **Do NOT hand-carve** — the manual "promote [Unreleased] verbatim" path is how v2.7.0's first-cut notes ended up covering only ~5 post-dev.5 bullets instead of the full v2.6.0 → v2.7.0 delta, requiring a full rewrite. The whole entry becomes the GitHub Release body verbatim.

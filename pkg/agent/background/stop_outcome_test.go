@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // register plants a handle under a name, the way a completed spawn

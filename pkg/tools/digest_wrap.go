@@ -22,7 +22,7 @@ import (
 	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/digest"
+	"github.com/go-steer/core-agent/v3/pkg/digest"
 )
 
 // DefaultDigestThreshold is the byte size a built-in response has to

@@ -139,7 +139,7 @@ do it manually here.
 - `docker` (Path A only — for the pull/retag/push of the published image)
 - `core-agent-tui` for attaching:
   ```bash
-  go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest
+  go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@latest
   ```
 
 ## Path B: quickstart (`gcloud run deploy --source .`)
@@ -314,7 +314,7 @@ at startup — same env-var-name-indirection pattern as the daemon's
 release since, so a released tag is enough — no main build needed:
 
 ```bash
-go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.9.0
+go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@v2.9.0
 ```
 
 Note the `/v2` in the module path: it became mandatory in v2.7.0 (Go's SIVE rule

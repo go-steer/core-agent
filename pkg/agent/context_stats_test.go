@@ -23,7 +23,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 func TestContextStats_FreshSessionIsZero(t *testing.T) {

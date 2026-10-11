@@ -22,8 +22,8 @@ import (
 
 	adkmodel "google.golang.org/adk/v2/model"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // RunOptions configures Run, the consolidated multi-turn REPL entry

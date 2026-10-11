@@ -33,9 +33,9 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/agent/internal/toolcalls"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // WithWatchdog wires a behavioral watchdog. The agent calls

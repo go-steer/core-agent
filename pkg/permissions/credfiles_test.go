@@ -23,8 +23,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // countingPrompter allows everything and counts how often it was asked.

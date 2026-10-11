@@ -22,7 +22,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // POST /inject echoes the prompt_id it assigned (#840). Without it a

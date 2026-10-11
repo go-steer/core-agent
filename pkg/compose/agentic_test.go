@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 func TestRenderContextStats_FreshSession(t *testing.T) {

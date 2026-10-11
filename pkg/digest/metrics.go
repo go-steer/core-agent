@@ -53,7 +53,7 @@ func RegisterMetrics(mp metric.MeterProvider) (metric.Registration, error) {
 	if mp == nil {
 		return nil, fmt.Errorf("digest.RegisterMetrics: nil MeterProvider")
 	}
-	meter := mp.Meter("github.com/go-steer/core-agent/v2/pkg/digest")
+	meter := mp.Meter("github.com/go-steer/core-agent/v3/pkg/digest")
 
 	calls, err := meter.Int64ObservableCounter(
 		MetricDigestCalls,

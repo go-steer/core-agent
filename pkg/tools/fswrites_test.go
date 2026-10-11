@@ -22,8 +22,8 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // builtinWritesSharedFilesystem is the expected classification of every

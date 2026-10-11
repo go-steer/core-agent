@@ -14,7 +14,7 @@
 
 package compose
 
-import "github.com/go-steer/core-agent/v2/pkg/permissions"
+import "github.com/go-steer/core-agent/v3/pkg/permissions"
 
 // ConfigGrantStore moved to pkg/permissions (#492) — it is the disk
 // half of that package's GrantStore contract. The alias keeps

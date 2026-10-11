@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/examples/internal/recipecheck"
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/examples/internal/recipecheck"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/config-surface.txt from the current pkg/config schema")

@@ -28,10 +28,10 @@ your cwd it just logs and continues.
 ## Key APIs
 
 - `functiontool.New` — `google.golang.org/adk/v2/tool/functiontool`
-- `agent.WithTools` / `agent.WithToolsets` — `github.com/go-steer/core-agent/v2/pkg/agent`
-- `mcp.Build` — `github.com/go-steer/core-agent/v2/pkg/mcp`
-- `skills.Load` — `github.com/go-steer/core-agent/v2/pkg/skills`
-- `permissions.FromConfig` — `github.com/go-steer/core-agent/v2/pkg/permissions`
+- `agent.WithTools` / `agent.WithToolsets` — `github.com/go-steer/core-agent/v3/pkg/agent`
+- `mcp.Build` — `github.com/go-steer/core-agent/v3/pkg/mcp`
+- `skills.Load` — `github.com/go-steer/core-agent/v3/pkg/skills`
+- `permissions.FromConfig` — `github.com/go-steer/core-agent/v3/pkg/permissions`
 
 ## What you should see
 

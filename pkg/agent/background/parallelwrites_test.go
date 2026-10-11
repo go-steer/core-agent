@@ -27,7 +27,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // parkedProvider yields an LLM that parks until release is closed,

@@ -17,7 +17,7 @@ package attach
 import (
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // Wire shapes for the operator interrupt/steer surface introduced in

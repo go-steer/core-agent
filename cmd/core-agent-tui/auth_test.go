@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
 )
 
 func TestAudienceFromURL(t *testing.T) {

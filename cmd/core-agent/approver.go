@@ -19,10 +19,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/go-steer/core-agent/v2/pkg/approver"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/approver"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // wireApprover builds the approver permissions.auto configures and

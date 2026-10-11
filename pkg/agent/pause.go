@@ -19,8 +19,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // Pause reasons stamped on PauseState.Reason. Bare strings (not a Go

@@ -23,10 +23,10 @@ import (
 	"github.com/glebarez/sqlite"
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // Durable guardrail state (#643). "Simulate a restart" here means what

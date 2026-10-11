@@ -24,7 +24,7 @@ import (
 
 	adkmodel "google.golang.org/adk/v2/model"
 
-	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 // A session's title is the short operator-facing label that turns the

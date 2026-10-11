@@ -19,7 +19,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // #1157. A stdio MCP server is third-party code. It used to get the

@@ -123,7 +123,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/imagepin"
+	"github.com/go-steer/core-agent/v3/internal/imagepin"
 )
 
 func main() {

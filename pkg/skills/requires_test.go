@@ -25,7 +25,7 @@ import (
 
 	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // gateWithTools returns a gate that has been told exactly which built-in

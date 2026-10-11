@@ -205,7 +205,7 @@ gcloud container clusters get-credentials core-agent-host \
 - `kubectl` (matching cluster version)
 - `core-agent-tui` for attaching:
   ```bash
-  go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest
+  go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@latest
   ```
   or pull the container image:
   ```bash

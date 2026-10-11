@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // Two places in the tree assert that the skill toolset cannot touch the

@@ -40,10 +40,10 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
-	"github.com/go-steer/core-agent/v2/pkg/models/mock"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/models/mock"
 )
 
 // firstScript: two text turns, then exit because we cap MaxTurns at 2.

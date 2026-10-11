@@ -28,10 +28,10 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // Durable per-turn failures (#1258). Before this, a per-turn guardrail

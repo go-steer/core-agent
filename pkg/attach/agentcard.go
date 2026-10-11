@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/go-steer/core-agent/v2/internal/version"
+	"github.com/go-steer/core-agent/v3/internal/version"
 )
 
 // agentCardProtocolVersion pins the A2A schema version we conform to.

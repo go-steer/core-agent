@@ -24,7 +24,7 @@ import (
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // ApproverProbe is a permissions.Approver that records every request

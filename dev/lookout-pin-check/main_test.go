@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/internal/imagepin"
+	"github.com/go-steer/core-agent/v3/internal/imagepin"
 )
 
 func rel(tag string, opts ...func(*Release)) Release {

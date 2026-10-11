@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // A profile name with pkg/models/profiles not linked in says which

@@ -25,10 +25,10 @@ Takes a couple of seconds (three 400 ms echo turns plus the pause).
 
 ## Key APIs
 
-- `autonomous.Start` — `github.com/go-steer/core-agent/v2/pkg/agent/autonomous`
+- `autonomous.Start` — `github.com/go-steer/core-agent/v3/pkg/agent/autonomous`
 - `autonomous.Handle.Pause` / `.Resume` / `.Inject` / `.Wait` / `.Stop` / `.Status`
 - `autonomous.WithMaxTurns` / `autonomous.WithMaxWallclock` — run budgets
-- `mock.NewEcho` — `github.com/go-steer/core-agent/v2/pkg/models/mock`
+- `mock.NewEcho` — `github.com/go-steer/core-agent/v3/pkg/models/mock`
 
 ## What you should see
 

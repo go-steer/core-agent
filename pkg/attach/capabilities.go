@@ -18,8 +18,8 @@ import (
 	"context"
 	"sort"
 
-	"github.com/go-steer/core-agent/v2/internal/version"
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/internal/version"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // capabilitiesBuilder returns a closure that produces a per-request

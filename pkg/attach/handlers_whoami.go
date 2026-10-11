@@ -17,7 +17,7 @@ package attach
 import (
 	"net/http"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // GET /whoami — resolved caller identity for the current request.

@@ -17,7 +17,7 @@ package permissions
 import (
 	"path/filepath"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // ResolvePath returns the absolute, cleaned, symlink-resolved form of

@@ -29,7 +29,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // digestModel is priced in the builtin catalog with a cache-read

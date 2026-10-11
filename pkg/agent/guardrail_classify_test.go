@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // firstGuardrailTrip returns the payload of the first guardrail-trip

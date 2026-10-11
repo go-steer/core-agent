@@ -21,7 +21,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
 )
 
 // Regression test for #384's credential-exfiltration arm: the TUI

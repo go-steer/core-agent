@@ -17,7 +17,7 @@ package attachclient
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 func TestParseStreamFrame_LegacyAgent(t *testing.T) {

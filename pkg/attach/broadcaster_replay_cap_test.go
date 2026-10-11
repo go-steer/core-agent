@@ -24,7 +24,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // seedTestEvents creates the session once and appends n small events,

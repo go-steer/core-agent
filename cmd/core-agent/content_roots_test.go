@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/instruction"
-	"github.com/go-steer/core-agent/v2/pkg/skills"
+	"github.com/go-steer/core-agent/v3/pkg/instruction"
+	"github.com/go-steer/core-agent/v3/pkg/skills"
 )
 
 // TestResolveContentRoots covers the merge + resolve rules the run() wiring

@@ -18,8 +18,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // Parallel write policy (#653).

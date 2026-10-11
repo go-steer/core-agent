@@ -17,7 +17,7 @@ package agent
 import (
 	"context"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // SubagentManager is the narrow seam the core Agent uses to talk to a

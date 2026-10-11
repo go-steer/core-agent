@@ -22,7 +22,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // Changing a running session's permission mode (#1168, protocol

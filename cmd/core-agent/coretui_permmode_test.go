@@ -24,8 +24,8 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/v2/internal/testutil"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/internal/testutil"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // The local chip's translators round-trip every chip mode, and auto in

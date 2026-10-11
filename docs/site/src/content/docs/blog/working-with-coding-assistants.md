@@ -106,7 +106,7 @@ Examples from core-agent's memory:
 
 - The **cost-stack sequencing** entry records that the five PRs [#222](https://github.com/go-steer/core-agent/issues/222) → [#128](https://github.com/go-steer/core-agent/issues/128) → [#130](https://github.com/go-steer/core-agent/issues/130)+[#129](https://github.com/go-steer/core-agent/issues/129) → [#221](https://github.com/go-steer/core-agent/issues/221) → [#223](https://github.com/go-steer/core-agent/issues/223) landed in that specific order on 2026-07-17, and that the order was the design. If a future session picks up the digest stack and proposes rearranging, this is what makes the resulting "wait, we already decided" moment happen in seconds instead of hours.
 - The **release scripts** entry records that `cut-dev-tag.sh` and `cut-ga-tag.sh` exist, that GA notes must be cumulative since the last GA, and that `cut-ga-tag.sh` (shipped 2026-07-20) folds the `dev.N` sections automatically. This is what stops a future session from hand-carving GA notes and getting them wrong the same way we got them wrong once.
-- The **`v2.7.0` shipped** entry records that main is now `v2.8.0-dev` and that the module path is `github.com/go-steer/core-agent/v2`. That saves a `git log` and a `head CHANGELOG.md` every time a new session starts on this repo.
+- The **`v2.7.0` shipped** entry records that main is now `v2.8.0-dev` and that the module path is `github.com/go-steer/core-agent/v3`. That saves a `git log` and a `head CHANGELOG.md` every time a new session starts on this repo.
 
 The rule of thumb: if a session ends and you'd bet even odds that a future session will re-derive the same conclusion (or re-hit the same wall), that's a memory. If the conclusion is one `grep` away, it's not.
 

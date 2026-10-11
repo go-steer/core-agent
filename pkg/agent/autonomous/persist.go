@@ -29,7 +29,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 )
 
 // checkpointAuthorSuffix is what every checkpoint event's Author

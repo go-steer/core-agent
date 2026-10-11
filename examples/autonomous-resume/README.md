@@ -26,10 +26,10 @@ go run ./examples/autonomous-resume
 
 ## Key APIs
 
-- `autonomous.Run` / `autonomous.Resume` / `autonomous.SessionRef` — `github.com/go-steer/core-agent/v2/pkg/agent/autonomous`
-- `eventlog.Open` — `github.com/go-steer/core-agent/v2/pkg/eventlog`
-- `agent.WithAppName` / `agent.WithSession` / `agent.WithEventLog` — `github.com/go-steer/core-agent/v2/pkg/agent`
-- `mock.NewScripted` — `github.com/go-steer/core-agent/v2/pkg/models/mock`
+- `autonomous.Run` / `autonomous.Resume` / `autonomous.SessionRef` — `github.com/go-steer/core-agent/v3/pkg/agent/autonomous`
+- `eventlog.Open` — `github.com/go-steer/core-agent/v3/pkg/eventlog`
+- `agent.WithAppName` / `agent.WithSession` / `agent.WithEventLog` — `github.com/go-steer/core-agent/v3/pkg/agent`
+- `mock.NewScripted` — `github.com/go-steer/core-agent/v3/pkg/models/mock`
 
 ## What you should see
 

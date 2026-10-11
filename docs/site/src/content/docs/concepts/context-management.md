@@ -522,8 +522,8 @@ The watchdog is the *behavioral signal layer*. Paired with:
 
 ```go
 import (
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/watchdog"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 w := watchdog.NewDefaultWatchdog()
@@ -694,8 +694,8 @@ From your own Go code:
 
 ```go
 import (
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/tools/agentic"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/tools/agentic"
 )
 
 a, err := agent.New(model,

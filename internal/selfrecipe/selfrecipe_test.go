@@ -45,9 +45,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/modeltier"
-	"github.com/go-steer/core-agent/v2/pkg/skills"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/modeltier"
+	"github.com/go-steer/core-agent/v3/pkg/skills"
 )
 
 // `go test` runs with the package dir as the working directory, so the

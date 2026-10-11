@@ -20,8 +20,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // toolProfileOpts bundles the two CLI knobs that exist so a task

@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // The #486 fixes: the broadcaster pool keys by (app, user, sid), so

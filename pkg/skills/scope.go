@@ -24,7 +24,7 @@ import (
 	"google.golang.org/adk/v2/tool/skilltoolset"
 	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // Scoped returns a Skills exposing only the named skills — the mechanism

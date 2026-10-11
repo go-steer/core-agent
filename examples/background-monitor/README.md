@@ -27,10 +27,10 @@ go run ./examples/background-monitor
 
 ## Key APIs
 
-- `background.NewManager` / `Manager.Spawn` / `Manager.OnAlert` / `Manager.PrependPendingAlerts` — `github.com/go-steer/core-agent/v2/pkg/agent/background`
+- `background.NewManager` / `Manager.Spawn` / `Manager.OnAlert` / `Manager.PrependPendingAlerts` — `github.com/go-steer/core-agent/v3/pkg/agent/background`
 - `background.WithProvider` / `WithMaxConcurrent` / `WithDefaultBudgets` — manager options
-- `agent.WithBackgroundManager` — `github.com/go-steer/core-agent/v2/pkg/agent`
-- `mock.NewEcho` — `github.com/go-steer/core-agent/v2/pkg/models/mock`
+- `agent.WithBackgroundManager` — `github.com/go-steer/core-agent/v3/pkg/agent`
+- `mock.NewEcho` — `github.com/go-steer/core-agent/v3/pkg/models/mock`
 
 ## What you should see
 

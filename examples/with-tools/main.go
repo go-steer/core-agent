@@ -30,13 +30,13 @@ import (
 	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/mcp"
-	"github.com/go-steer/core-agent/v2/pkg/models"
-	_ "github.com/go-steer/core-agent/v2/pkg/models/anthropic"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	"github.com/go-steer/core-agent/v2/pkg/skills"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	_ "github.com/go-steer/core-agent/v3/pkg/models/anthropic"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/skills"
 )
 
 type addArgs struct {

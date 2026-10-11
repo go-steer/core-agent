@@ -465,9 +465,12 @@ Conventions worth knowing at agent prompt time:
 
 SemVer: minor bump (`vX.Y.0`) for additive features, patch (`vX.Y.Z`)
 for fixes only. Breaking changes go through a `vX+1.0.0` bump with a
-one-version deprecation period when feasible. Full mechanical recipe
-in `docs/release-process.md` — this section covers only what an agent
-authoring PRs needs to know.
+one-version deprecation period when feasible. A major bump renames the
+module path to `/vN` **before any `vN` tag, pre-releases included** — a
+tag cut first can never be `go install`ed (v2.0.0–v2.7.0-dev.4 still
+can't, #327); `verify-version-fallback` reads the major from `go.mod`.
+Full mechanical recipe in `docs/release-process.md` — this section
+covers only what an agent authoring PRs needs to know.
 
 Every merged PR that ships a user-visible change adds one bullet to
 `## [Unreleased]` in `CHANGELOG.md`, under the right `#### Feature` /

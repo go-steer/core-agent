@@ -80,7 +80,7 @@ func NewDurationInstrumenter(mp metric.MeterProvider) (*DurationInstrumenter, er
 	if mp == nil {
 		return nil, errors.New("tools: NewDurationInstrumenter requires a MeterProvider")
 	}
-	meter := mp.Meter("github.com/go-steer/core-agent/v2/pkg/tools")
+	meter := mp.Meter("github.com/go-steer/core-agent/v3/pkg/tools")
 	hist, err := meter.Float64Histogram(
 		MetricGenAIToolDuration,
 		metric.WithDescription("Duration of individual tool executions."),

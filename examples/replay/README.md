@@ -23,8 +23,8 @@ go run ./examples/replay
 
 ## Key APIs
 
-- `mock.NewScripted` — `github.com/go-steer/core-agent/v2/pkg/models/mock`
-- `agent.New` / `agent.Agent.Run` — `github.com/go-steer/core-agent/v2/pkg/agent`
+- `mock.NewScripted` — `github.com/go-steer/core-agent/v3/pkg/models/mock`
+- `agent.New` / `agent.Agent.Run` — `github.com/go-steer/core-agent/v3/pkg/agent`
 
 ## What you should see
 

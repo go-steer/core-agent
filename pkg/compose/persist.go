@@ -14,7 +14,7 @@
 
 package compose
 
-import "github.com/go-steer/core-agent/v2/pkg/config"
+import "github.com/go-steer/core-agent/v3/pkg/config"
 
 // The .agents/config.json persistence helpers moved out of compose
 // (#492): the pure config mutations live in pkg/config (built on

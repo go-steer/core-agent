@@ -21,7 +21,7 @@ import (
 
 	lipgloss "charm.land/lipgloss/v2"
 
-	"github.com/go-steer/core-agent/v2/internal/coretuiremote"
+	"github.com/go-steer/core-agent/v3/internal/coretuiremote"
 )
 
 // Column layout for the session picker's table.

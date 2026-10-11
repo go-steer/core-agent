@@ -17,9 +17,9 @@ package compose
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/modeltier"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/modeltier"
 )
 
 func TestBuildCompactor_DefaultsWhenConfigEmpty(t *testing.T) {

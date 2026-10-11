@@ -149,7 +149,7 @@ tar xzf "core-agent-tui_${TAG#v}_${OS}_${ARCH}.tar.gz"
 ./core-agent-tui --version
 
 # From source (Go 1.26+):
-go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest
+go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@latest
 ```
 
 The daemon binary (`core-agent`) is a separate download — see the [main install guide](/run/getting-started/) for both.

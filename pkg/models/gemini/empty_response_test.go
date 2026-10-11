@@ -24,7 +24,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 // TestErrEmptyResponse_WrapsTheSharedSentinel is the seam that lets a

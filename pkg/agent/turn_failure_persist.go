@@ -35,7 +35,7 @@ package agent
 import (
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // persistFailureRow queues a failure row and returns its event id, for

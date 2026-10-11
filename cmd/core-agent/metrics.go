@@ -21,8 +21,8 @@ package main
 import (
 	"sync"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // metricsOpts bundles the --metrics-* CLI flags. Kept separate from

@@ -17,9 +17,9 @@ package anthropic_test
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/models/anthropic"
-	"github.com/go-steer/core-agent/v2/pkg/pricing"
-	"github.com/go-steer/core-agent/v2/pkg/taskclass"
+	"github.com/go-steer/core-agent/v3/pkg/models/anthropic"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
+	"github.com/go-steer/core-agent/v3/pkg/taskclass"
 )
 
 // TestDefaultModel_MatchesFrontierTier pins DefaultModel to the

@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // pausingRegistrant is a stubRegistrant that carries the full v1.5.0

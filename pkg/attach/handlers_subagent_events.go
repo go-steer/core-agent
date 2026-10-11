@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-steer/core-agent/v2/internal/subagentlog"
+	"github.com/go-steer/core-agent/v3/internal/subagentlog"
 )
 
 // GET /sessions/.../agents/{name}/events — a subagent's inner turns.

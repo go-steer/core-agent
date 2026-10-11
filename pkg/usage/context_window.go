@@ -17,7 +17,7 @@ package usage
 import (
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/pricing"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
 )
 
 // ContextWindowSize returns the model's max input window from a

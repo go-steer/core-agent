@@ -24,8 +24,8 @@ import (
 	"github.com/glebarez/sqlite"
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/pkg/digest"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/digest"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // EventlogStore tests live in a _test package so we can import

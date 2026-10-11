@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // swrServer serves GET /sessions/{sid}/status and /usage, counts the

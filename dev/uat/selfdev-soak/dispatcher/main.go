@@ -48,8 +48,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // config is the parsed command line.

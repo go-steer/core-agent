@@ -25,7 +25,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/models/mock"
+	"github.com/go-steer/core-agent/v3/pkg/models/mock"
 )
 
 // fnCallThenDoneLLM drives exactly one subagent dispatch: its first

@@ -20,9 +20,9 @@ go run ./examples/with-subagent
 
 ## Key APIs
 
-- `agent.WithSubagents` / `agent.WithEventLog` / `agent.WithSession` — `github.com/go-steer/core-agent/v2/pkg/agent`
-- `mock.NewScripted` — `github.com/go-steer/core-agent/v2/pkg/models/mock`
-- `eventlog.Open` / `eventlog.WithSessionTree` — `github.com/go-steer/core-agent/v2/pkg/eventlog`
+- `agent.WithSubagents` / `agent.WithEventLog` / `agent.WithSession` — `github.com/go-steer/core-agent/v3/pkg/agent`
+- `mock.NewScripted` — `github.com/go-steer/core-agent/v3/pkg/models/mock`
+- `eventlog.Open` / `eventlog.WithSessionTree` — `github.com/go-steer/core-agent/v3/pkg/eventlog`
 
 ## What you should see
 

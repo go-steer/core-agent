@@ -110,7 +110,7 @@ func RegisterMetrics(mp metric.MeterProvider, srv *Server) (metric.Registration,
 	if srv == nil {
 		return nil, fmt.Errorf("attach.RegisterMetrics: nil Server")
 	}
-	meter := mp.Meter("github.com/go-steer/core-agent/v2/pkg/attach")
+	meter := mp.Meter("github.com/go-steer/core-agent/v3/pkg/attach")
 
 	sessions, err := meter.Int64ObservableGauge(
 		MetricAttachSessionsActive,

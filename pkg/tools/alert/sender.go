@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // Sender delivers to ONE pre-registered alert target on behalf of the

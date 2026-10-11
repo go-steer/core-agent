@@ -42,7 +42,7 @@ rather than a request in the persona. See [the enforcement table in
   `TARGET_NS`.
 - `gcloud`, `kubectl`, `kustomize`, `docker`, `jq`, `python3`, `openssl`.
 - `core-agent-tui` on your `PATH` for the attach step:
-  `go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest`.
+  `go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@latest`.
 - Workload Identity Federation enabled on the cluster, and permission to run
   `./scripts/grant-iam.sh`: `resourcemanager.projects.setIamPolicy` (the five
   project roles), `iam.serviceAccounts.setIamPolicy` on the node service

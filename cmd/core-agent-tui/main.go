@@ -54,9 +54,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
-	"github.com/go-steer/core-agent/v2/internal/coretuiremote"
-	"github.com/go-steer/core-agent/v2/internal/version"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/internal/coretuiremote"
+	"github.com/go-steer/core-agent/v3/internal/version"
 )
 
 func main() {

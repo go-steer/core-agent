@@ -23,10 +23,10 @@ go run ./examples/autonomous
 
 ## Key APIs
 
-- `autonomous.Run` / `autonomous.WithMaxTurns` — `github.com/go-steer/core-agent/v2/pkg/agent/autonomous`
+- `autonomous.Run` / `autonomous.WithMaxTurns` — `github.com/go-steer/core-agent/v3/pkg/agent/autonomous`
 - `autonomous.RunResult` — reason / turns / done detail / final text / duration
-- `mock.NewScripted` — `github.com/go-steer/core-agent/v2/pkg/models/mock`
-- `agent.New` / `agent.WithTools` — `github.com/go-steer/core-agent/v2/pkg/agent`
+- `mock.NewScripted` — `github.com/go-steer/core-agent/v3/pkg/models/mock`
+- `agent.New` / `agent.WithTools` — `github.com/go-steer/core-agent/v3/pkg/agent`
 
 ## What you should see
 

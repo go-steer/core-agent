@@ -28,8 +28,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // AttachGuardrails implements attach.GuardrailProvider. Projects the

@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 )
 
 // Which classes carry the requirement is the whole design decision, so

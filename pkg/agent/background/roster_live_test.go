@@ -27,8 +27,8 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // stepLLM answers its Nth model call with steps[N]; calls past the end

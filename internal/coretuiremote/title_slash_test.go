@@ -23,8 +23,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // titleServer records what the /title endpoint was actually sent, so

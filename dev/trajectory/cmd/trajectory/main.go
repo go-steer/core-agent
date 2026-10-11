@@ -36,7 +36,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/dev/trajectory"
+	"github.com/go-steer/core-agent/v3/dev/trajectory"
 )
 
 func main() {

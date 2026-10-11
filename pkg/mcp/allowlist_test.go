@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // composedNames runs the shipped wrap over the in-memory annotated

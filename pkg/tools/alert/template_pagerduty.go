@@ -20,7 +20,7 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // PagerDuty Events v2 limits and defaults.

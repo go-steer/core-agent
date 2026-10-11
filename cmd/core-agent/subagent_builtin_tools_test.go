@@ -17,7 +17,7 @@ package main
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // A subagent that declares its own model block replaces the parent's

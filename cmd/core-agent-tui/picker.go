@@ -24,7 +24,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
 )
 
 // pickerModel is the session-picker screen. Lists hub-local sessions

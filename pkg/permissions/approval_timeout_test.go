@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // blockingPrompter never answers. It reports the context it was handed

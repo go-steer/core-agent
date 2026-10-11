@@ -25,7 +25,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 const (

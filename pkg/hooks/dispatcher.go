@@ -26,7 +26,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // CommandGate is the subset of *permissions.Gate the dispatcher needs

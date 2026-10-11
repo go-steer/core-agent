@@ -22,8 +22,8 @@ import (
 
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // AutonomousStatus describes the lifecycle state of a run started

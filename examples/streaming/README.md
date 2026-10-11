@@ -28,10 +28,10 @@ repo?" → `bash`) to see the formatter work.
 
 ## Key APIs
 
-- `runner.WriteEvents` / `runner.WithColor` / `runner.IsTerminal` — `github.com/go-steer/core-agent/v2/pkg/runner`
-- `tools.Build` + `tools.Default` — `github.com/go-steer/core-agent/v2/pkg/tools`
-- `permissions.FromConfig` / `permissions.ModeYolo` — `github.com/go-steer/core-agent/v2/pkg/permissions`
-- `agent.New` / `agent.WithTools` — `github.com/go-steer/core-agent/v2/pkg/agent`
+- `runner.WriteEvents` / `runner.WithColor` / `runner.IsTerminal` — `github.com/go-steer/core-agent/v3/pkg/runner`
+- `tools.Build` + `tools.Default` — `github.com/go-steer/core-agent/v3/pkg/tools`
+- `permissions.FromConfig` / `permissions.ModeYolo` — `github.com/go-steer/core-agent/v3/pkg/permissions`
+- `agent.New` / `agent.WithTools` — `github.com/go-steer/core-agent/v3/pkg/agent`
 
 ## What you should see
 

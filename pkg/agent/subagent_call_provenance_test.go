@@ -23,7 +23,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // callToolWith is callTool with arguments, which is what makes a

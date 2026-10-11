@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // checkpointOpts bundles the task-boundary-checkpoint CLI flags so

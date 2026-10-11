@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // ApprovalLog is one entry in the gate's per-session approval audit.

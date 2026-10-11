@@ -25,7 +25,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // interruptibleRegistrant extends eventfulRegistrant with an

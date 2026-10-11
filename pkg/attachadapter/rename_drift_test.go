@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/internal/testutil"
+	"github.com/go-steer/core-agent/v3/internal/testutil"
 )
 
 // #388 phase 4 moved nine provider options off *agent.Agent and into

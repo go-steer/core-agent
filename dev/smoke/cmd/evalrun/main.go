@@ -42,7 +42,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/evals"
+	"github.com/go-steer/core-agent/v3/internal/evals"
 )
 
 func main() {

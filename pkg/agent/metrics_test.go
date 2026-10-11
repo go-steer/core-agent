@@ -23,8 +23,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/models/mock"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/models/mock"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 func invocationPoints(t *testing.T, rm metricdata.ResourceMetrics) []metricdata.HistogramDataPoint[float64] {

@@ -30,9 +30,9 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/attachadapter"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // subagentLogAdapter builds the in-process TUI adapter over an agent

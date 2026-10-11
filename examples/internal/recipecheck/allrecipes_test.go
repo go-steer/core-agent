@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/examples/internal/recipecheck"
+	"github.com/go-steer/core-agent/v3/examples/internal/recipecheck"
 )
 
 // examplesDir is the examples/ tree, relative to this package.

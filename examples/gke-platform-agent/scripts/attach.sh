@@ -51,7 +51,7 @@ if [[ ! -f "${RIG_STATE_DIR}/demo-tokens.env" ]]; then
 fi
 source "${RIG_STATE_DIR}/demo-tokens.env"
 
-command -v core-agent-tui >/dev/null || { echo "✗ core-agent-tui not on PATH (go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest)"; exit 1; }
+command -v core-agent-tui >/dev/null || { echo "✗ core-agent-tui not on PATH (go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@latest)"; exit 1; }
 
 LOCAL_PORT="${LOCAL_PORT:-7778}"
 BASE_URL="http://127.0.0.1:${LOCAL_PORT}"

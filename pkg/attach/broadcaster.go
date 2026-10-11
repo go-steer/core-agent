@@ -25,8 +25,8 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v2/internal/version"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/internal/version"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // Frame is one item the SSE stream emits. Two shapes carried in

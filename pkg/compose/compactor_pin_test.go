@@ -18,11 +18,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models/mock"
-	"github.com/go-steer/core-agent/v2/pkg/modeltier"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models/mock"
+	"github.com/go-steer/core-agent/v3/pkg/modeltier"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // #1226. An operator's compaction.threshold sat BELOW the substrate

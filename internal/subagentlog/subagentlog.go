@@ -46,7 +46,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 const (

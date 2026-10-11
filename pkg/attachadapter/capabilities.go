@@ -18,11 +18,11 @@ import (
 	"context"
 	"errors"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/digest"
-	corebuiltins "github.com/go-steer/core-agent/v2/pkg/tools"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/digest"
+	corebuiltins "github.com/go-steer/core-agent/v3/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // builtinToolNameSet caches the canonical built-in names for source

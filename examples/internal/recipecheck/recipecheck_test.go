@@ -20,9 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/examples/internal/recipecheck"
-	"github.com/go-steer/core-agent/v2/pkg/digest"
-	"github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v3/examples/internal/recipecheck"
+	"github.com/go-steer/core-agent/v3/pkg/digest"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // fixture writes a synthetic recipe: a config.json, an optional mcp.json,

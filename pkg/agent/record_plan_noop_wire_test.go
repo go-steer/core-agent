@@ -37,9 +37,9 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	"github.com/go-steer/core-agent/v2/pkg/tools"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // planTurnCtx is gateToolCtx with a caller-chosen invocation ID, which

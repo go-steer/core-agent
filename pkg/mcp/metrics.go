@@ -46,7 +46,7 @@ func RegisterMetrics(mp metric.MeterProvider, servers []*Server) (metric.Registr
 	if mp == nil {
 		return nil, fmt.Errorf("mcp.RegisterMetrics: nil MeterProvider")
 	}
-	meter := mp.Meter("github.com/go-steer/core-agent/v2/pkg/mcp")
+	meter := mp.Meter("github.com/go-steer/core-agent/v3/pkg/mcp")
 
 	status, err := meter.Int64ObservableGauge(
 		MetricServerStatus,

@@ -26,7 +26,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 )
 
 // gateLLM blocks inside GenerateContent until release is closed, so a test

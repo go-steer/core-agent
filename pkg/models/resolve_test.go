@@ -18,16 +18,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 
 	// Register the real provider constructors so Resolve routes the
 	// same way a production binary does. anthropic registers both
 	// "anthropic" and "anthropic-vertex"; mock registers "echo" and
 	// "scripted". No credentials are needed — the tests below stop at
 	// the constructors' own validation errors.
-	_ "github.com/go-steer/core-agent/v2/pkg/models/anthropic"
-	_ "github.com/go-steer/core-agent/v2/pkg/models/mock"
+	_ "github.com/go-steer/core-agent/v3/pkg/models/anthropic"
+	_ "github.com/go-steer/core-agent/v3/pkg/models/mock"
 )
 
 // providerEnvVars is every env var Resolve / autoDetectProvider (and

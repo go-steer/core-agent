@@ -26,13 +26,13 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
-	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // subagentDoneToolDescription replaces the autonomous driver's default

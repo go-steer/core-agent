@@ -43,9 +43,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/agent/background"
-	"github.com/go-steer/core-agent/v2/pkg/models/mock"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent/background"
+	"github.com/go-steer/core-agent/v3/pkg/models/mock"
 )
 
 // parentScript records the parent model's three LLM round-trips:

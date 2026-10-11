@@ -22,7 +22,7 @@
 //
 // Import it for its side effect, as with the other backends:
 //
-//	import _ "github.com/go-steer/core-agent/v2/pkg/models/profiles"
+//	import _ "github.com/go-steer/core-agent/v3/pkg/models/profiles"
 package profiles
 
 import (
@@ -39,9 +39,9 @@ import (
 	"github.com/go-steer/core-models/profile"
 	coreusage "github.com/go-steer/core-models/usage"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 func init() {

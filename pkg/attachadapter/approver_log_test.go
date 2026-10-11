@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/testutil"
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/internal/testutil"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 type allowingApprover struct{}

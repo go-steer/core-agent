@@ -18,8 +18,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/pricing"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // #930. An autonomous loop is the longest-lived billing path in the

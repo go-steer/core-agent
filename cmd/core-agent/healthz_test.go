@@ -21,8 +21,8 @@ import (
 
 	"github.com/glebarez/sqlite"
 
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
-	"github.com/go-steer/core-agent/v2/pkg/runner"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/runner"
 )
 
 // TestDaemonHealthChecksNilHandle: no handle, no check. Registering a

@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // TestSubagentsToCoreTui_CarriesWake is the attach-mode half of #1283:

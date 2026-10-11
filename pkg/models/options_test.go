@@ -18,9 +18,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 
-	_ "github.com/go-steer/core-agent/v2/pkg/models/anthropic"
+	_ "github.com/go-steer/core-agent/v3/pkg/models/anthropic"
 )
 
 // TestNew_RoutesPerProviderOptions pins the #492 programmatic path:

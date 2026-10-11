@@ -22,7 +22,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // ErrCredentialFile is the sentinel wrapped by every refusal of a call

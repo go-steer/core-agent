@@ -22,7 +22,7 @@ import (
 
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // Workspace is the project root every case's gate is scoped to. Paths in

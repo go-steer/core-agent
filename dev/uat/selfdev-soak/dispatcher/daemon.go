@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // daemonClient is the dispatcher's view of the core-agent daemon: create

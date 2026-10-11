@@ -29,7 +29,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 // #1247. The agent marks its models.PriorSuccess after a served model

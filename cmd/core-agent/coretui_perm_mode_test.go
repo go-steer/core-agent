@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
+	"github.com/go-steer/core-agent/v3/pkg/attachadapter"
 )
 
 // TestCoreAgentAdapter_ModeChipFollowsModelSwap pins the target of the

@@ -138,11 +138,11 @@ Three ways to get it — pick one:
 # rewrite — Go's SIVE rule requires the /v2 suffix once major ≥ 2).
 # Pre-v2.7.0 tags stay uninstallable via `go install`; source
 # builds + container images were never affected.
-go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.9.0
+go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@v2.9.0
 
 # Option 2: install from main (latest development; may include
 # post-v2.9.0 changes).
-go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@main
+go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@main
 
 # Option 3: pull the published container image and extract the binary
 docker pull ghcr.io/go-steer/core-agent-tui:2.9.0

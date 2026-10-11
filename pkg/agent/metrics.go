@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // Agent-level metrics (#338 Phase 3). Names and attributes match
@@ -55,7 +55,7 @@ const (
 
 // meterName is the instrumentation scope for all pkg/agent
 // instruments, per the module-path convention (see pkg/usage).
-const meterName = "github.com/go-steer/core-agent/v2/pkg/agent"
+const meterName = "github.com/go-steer/core-agent/v3/pkg/agent"
 
 // core_agent.* instruments for agent-lifecycle state (#338 Phase 3).
 const (

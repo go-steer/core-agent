@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/examples/internal/recipecheck"
+	"github.com/go-steer/core-agent/v3/examples/internal/recipecheck"
 )
 
 // releasedForTest is a fixed release set, so the synthetic cases below

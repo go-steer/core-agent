@@ -30,7 +30,7 @@ import (
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/digest"
+	"github.com/go-steer/core-agent/v3/pkg/digest"
 )
 
 // stubToolCtx is a minimal adkagent.Context implementation for digest_wrap

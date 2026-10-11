@@ -40,14 +40,14 @@ import (
 	"os"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models"
-	_ "github.com/go-steer/core-agent/v2/pkg/models/anthropic"
-	_ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	"github.com/go-steer/core-agent/v2/pkg/runner"
-	"github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	_ "github.com/go-steer/core-agent/v3/pkg/models/anthropic"
+	_ "github.com/go-steer/core-agent/v3/pkg/models/gemini"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/runner"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 func main() {

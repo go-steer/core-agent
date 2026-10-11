@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 func TestAddSessionCostBudget_RaisesTheCeiling(t *testing.T) {

@@ -23,7 +23,7 @@ import (
 
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 func TestSplitFunctionResponse_NoError(t *testing.T) {

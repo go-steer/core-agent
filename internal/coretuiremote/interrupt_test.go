@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
 )
 
 // TestAdapter_Interrupt_ForwardsToRemoteEndpoint pins the happy-path

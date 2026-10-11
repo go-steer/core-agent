@@ -21,7 +21,7 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // rateLimiter is a per-target token bucket guarding against pathological

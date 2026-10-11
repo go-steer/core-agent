@@ -18,7 +18,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/examples/internal/smokeset"
+	"github.com/go-steer/core-agent/v3/examples/internal/smokeset"
 )
 
 // examplesDir is the examples/ tree, relative to this package.

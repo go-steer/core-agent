@@ -17,7 +17,7 @@ package anthropic
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 // TestProviderImplementsSmallModelDefaulter is a compile-time sanity

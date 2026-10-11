@@ -38,7 +38,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/agentenv"
+	"github.com/go-steer/core-agent/v3/pkg/agentenv"
 )
 
 // MCPFileName is the project-local MCP config file inside .agents/.

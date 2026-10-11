@@ -11,7 +11,7 @@ Upstream is `google-adk` (Python): one agent per directory, launched as separate
 the verdict through a **stdout grep for `"success: True"`**.
 
 This example ports **the generator + checker pair** — the load-bearing half — to
-Go, with `github.com/go-steer/core-agent/v2` as an ordinary library dependency.
+Go, with `github.com/go-steer/core-agent/v3` as an ordinary library dependency.
 
 **The prompts are copied from upstream unedited.** Everything under `prompts/`
 is the original text with its original placeholders. If the port were unfaithful,

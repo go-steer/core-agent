@@ -29,9 +29,9 @@ import (
 
 	"github.com/go-steer/core-models/profile"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // fakeServer is an OpenAI Chat Completions endpoint answering every

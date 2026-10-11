@@ -25,7 +25,7 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 )
 
 // wakeProvider hands back a fresh stand-in LLM for any model ID so

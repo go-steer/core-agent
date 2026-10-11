@@ -11,21 +11,21 @@ title: Library API
 
 | Import path | Purpose |
 |---|---|
-| `github.com/go-steer/core-agent/agent` | Multi-turn agent wrapping ADK's `llmagent + runner`. |
-| `github.com/go-steer/core-agent/instruction` | `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` fallback loader. |
-| `github.com/go-steer/core-agent/config` | `.agents/config.json` schema, discovery, atomic persist. |
-| `github.com/go-steer/core-agent/permissions` | Ask / allow / yolo gate; bash denylist; path scope. |
-| `github.com/go-steer/core-agent/tools` | `GateToolset` wrapper bridging permissions to ADK toolsets. |
-| `github.com/go-steer/core-agent/mcp` | MCP server lifecycle from `.agents/mcp.json`. |
-| `github.com/go-steer/core-agent/skills` | `SKILL.md` discovery → ADK `skilltoolset`. |
-| `github.com/go-steer/core-agent/models` | `Provider` interface + registry / `Resolve()`. |
-| `github.com/go-steer/core-agent/pkg/models/gemini` | Gemini API + Vertex AI provider. |
-| `github.com/go-steer/core-agent/pkg/models/anthropic` | Anthropic / Claude provider (first-party + Vertex). |
-| `github.com/go-steer/core-agent/telemetry` | [OpenTelemetry](/concepts/otel/) exporter setup. |
-| `github.com/go-steer/core-agent/usage` | Per-turn token + cost tracker. |
-| `github.com/go-steer/core-agent/session` | Transcript persistence (`.agents/sessions/`). |
-| `github.com/go-steer/core-agent/runner` | Headless (one-shot) + REPL (multi-turn) drivers; `WakeLoop` for attach-only daemons. |
-| `github.com/go-steer/core-agent/pkg/compose` | The bundled binary's reusable wiring: substrate builders, multi-session construction, grant persistence, formatters. |
+| `github.com/go-steer/core-agent/v3/pkg/agent` | Multi-turn agent wrapping ADK's `llmagent + runner`. |
+| `github.com/go-steer/core-agent/v3/pkg/instruction` | `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` fallback loader. |
+| `github.com/go-steer/core-agent/v3/pkg/config` | `.agents/config.json` schema, discovery, atomic persist. |
+| `github.com/go-steer/core-agent/v3/pkg/permissions` | Ask / allow / yolo gate; bash denylist; path scope. |
+| `github.com/go-steer/core-agent/v3/pkg/tools` | `GateToolset` wrapper bridging permissions to ADK toolsets. |
+| `github.com/go-steer/core-agent/v3/pkg/mcp` | MCP server lifecycle from `.agents/mcp.json`. |
+| `github.com/go-steer/core-agent/v3/pkg/skills` | `SKILL.md` discovery → ADK `skilltoolset`. |
+| `github.com/go-steer/core-agent/v3/pkg/models` | `Provider` interface + registry / `Resolve()`. |
+| `github.com/go-steer/core-agent/v3/pkg/models/gemini` | Gemini API + Vertex AI provider. |
+| `github.com/go-steer/core-agent/v3/pkg/models/anthropic` | Anthropic / Claude provider (first-party + Vertex). |
+| `github.com/go-steer/core-agent/v3/pkg/telemetry` | [OpenTelemetry](/concepts/otel/) exporter setup. |
+| `github.com/go-steer/core-agent/v3/pkg/usage` | Per-turn token + cost tracker. |
+| `github.com/go-steer/core-agent/v3/pkg/session` | Transcript persistence (`.agents/sessions/`). |
+| `github.com/go-steer/core-agent/v3/pkg/runner` | Headless (one-shot) + REPL (multi-turn) drivers; `WakeLoop` for attach-only daemons. |
+| `github.com/go-steer/core-agent/v3/pkg/compose` | The bundled binary's reusable wiring: substrate builders, multi-session construction, grant persistence, formatters. |
 
 ---
 
@@ -41,10 +41,10 @@ import (
     "fmt"
     "log"
 
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/config"
-    "github.com/go-steer/core-agent/v2/pkg/models"
-    _ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/config"
+    "github.com/go-steer/core-agent/v3/pkg/models"
+    _ "github.com/go-steer/core-agent/v3/pkg/models/gemini"
 )
 
 func main() {
@@ -192,7 +192,7 @@ A few API-relevant specifics:
 Wire them up in your binary:
 
 ```go
-import "github.com/go-steer/core-agent/v2/pkg/tools"
+import "github.com/go-steer/core-agent/v3/pkg/tools"
 
 reg, err := tools.Build(cfg, gate, tools.Default())
 if err != nil { /* ... */ }
@@ -230,8 +230,8 @@ The bundled `cmd/core-agent` enables the full set by default. `--no-builtin-tool
 ```go
 import (
     "os"
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/runner"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/runner"
 )
 
 a, _ := agent.New(m)
@@ -277,7 +277,7 @@ When events carry Gemini `GroundingMetadata` (set by `GoogleSearch` / `URLContex
 `recording.NewRecorder(inner, w io.Writer)` wraps any `model.LLM` and appends each turn (request + response stream) to `w` as a single JSONL line in the shared `recording.RecordedTurn` shape. The wrapper is transparent — callers see the inner LLM's responses unchanged — and the writer's lifecycle is the caller's responsibility.
 
 ```go
-import "github.com/go-steer/core-agent/v2/pkg/recording"
+import "github.com/go-steer/core-agent/v3/pkg/recording"
 
 f, err := os.Create("session.jsonl")
 if err != nil { /* ... */ }
@@ -304,8 +304,8 @@ The recorder lives in `recording/` (not `models/mock/`) because it's production 
 ```go
 import (
     "github.com/glebarez/sqlite"
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/eventlog"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 handle, err := eventlog.Open(ctx, sqlite.Open("sessions.db"))
@@ -364,7 +364,7 @@ WAL mode is enabled by default for SQLite (`PRAGMA journal_mode=WAL`) so concurr
 Wrap the handle's `Service` with `gemini.GroundingProjection(...)` to project Gemini `GoogleSearch` activity (queries + grounded URLs) into the eventlog as queryable `gemini/google_search`-authored rows. Synthetic events inherit the parent event's branch + invocation ID and are deduplicated; their `Content.Role` is empty so ADK's content processor doesn't reinject them as conversation history on subsequent turns.
 
 ```go
-import "github.com/go-steer/core-agent/v2/pkg/models/gemini"
+import "github.com/go-steer/core-agent/v3/pkg/models/gemini"
 
 handle, _ := eventlog.Open(ctx, sqlite.Open("sessions.db"))
 handle.Service = gemini.GroundingProjection(handle.Service)
@@ -388,8 +388,8 @@ The lock lives in its own `agent_run_lock` table in the same database; callers d
 ```go
 import (
     adktool "google.golang.org/adk/v2/tool"
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 )
 
 build := func(extras []adktool.Tool) (*agent.Agent, error) {
@@ -483,9 +483,9 @@ When the agent is wired with `WithEventLog`, `autonomous.Run` emits a checkpoint
 ```go
 import (
     "github.com/glebarez/sqlite"
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
-    "github.com/go-steer/core-agent/v2/pkg/eventlog"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
+    "github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 handle, _ := eventlog.Open(ctx, sqlite.Open("/path/to/sessions.db"))
@@ -832,11 +832,11 @@ The CLI's declarative roster reaches the same three dimensions through a per-sub
 
 ```go
 import (
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/agent/background"
-    "github.com/go-steer/core-agent/v2/pkg/models/gemini"
-    "github.com/go-steer/core-agent/v2/pkg/permissions"
-    "github.com/go-steer/core-agent/v2/pkg/tools"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/agent/background"
+    "github.com/go-steer/core-agent/v3/pkg/models/gemini"
+    "github.com/go-steer/core-agent/v3/pkg/permissions"
+    "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 provider, _ := gemini.NewVertex(project, location)
@@ -1069,8 +1069,8 @@ import (
     "context"
 
     adkmodel "google.golang.org/adk/v2/model"
-    "github.com/go-steer/core-agent/v2/pkg/config"
-    "github.com/go-steer/core-agent/v2/pkg/models"
+    "github.com/go-steer/core-agent/v3/pkg/config"
+    "github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 func init() {

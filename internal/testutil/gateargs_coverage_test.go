@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/internal/testutil"
+	"github.com/go-steer/core-agent/v3/internal/testutil"
 )
 
 // plainGateChecks are the Check* forms that hold no call arguments. In

@@ -14,7 +14,7 @@
 
 package mcp
 
-import "github.com/go-steer/core-agent/v2/pkg/childenv"
+import "github.com/go-steer/core-agent/v3/pkg/childenv"
 
 // osEnviron is the parent environment a stdio server starts from: the
 // daemon's, minus its own credentials (#1157). An MCP server is

@@ -20,7 +20,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 func TestRegister_DefaultsToEmptyACL(t *testing.T) {

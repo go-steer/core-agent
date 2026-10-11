@@ -33,7 +33,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/imagepin"
+	"github.com/go-steer/core-agent/v3/internal/imagepin"
 )
 
 // appendSummary writes the markdown report to path.

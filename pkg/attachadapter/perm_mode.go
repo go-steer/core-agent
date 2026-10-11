@@ -17,8 +17,8 @@ package attachadapter
 import (
 	"fmt"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 var _ attach.PermModeController = (*Adapter)(nil)

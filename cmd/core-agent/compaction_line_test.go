@@ -18,9 +18,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/compose"
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/compose"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 func ptr(v float64) *float64 { return &v }

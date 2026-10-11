@@ -21,7 +21,7 @@
 // Deprecated: use pkg/transcript.
 package session
 
-import "github.com/go-steer/core-agent/v2/pkg/transcript"
+import "github.com/go-steer/core-agent/v3/pkg/transcript"
 
 // SchemaVersion is the on-disk schema version for transcripts.
 //

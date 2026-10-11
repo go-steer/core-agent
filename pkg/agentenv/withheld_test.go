@@ -17,7 +17,7 @@ package agentenv
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // #1157: `${env:NAME}` splices a value into text the model reads —

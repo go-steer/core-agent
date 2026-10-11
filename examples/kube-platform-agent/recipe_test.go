@@ -42,11 +42,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/go-steer/core-agent/v2/examples/internal/recipecheck"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/instruction"
-	"github.com/go-steer/core-agent/v2/pkg/mcp"
-	"github.com/go-steer/core-agent/v2/pkg/skills"
+	"github.com/go-steer/core-agent/v3/examples/internal/recipecheck"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/instruction"
+	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	"github.com/go-steer/core-agent/v3/pkg/skills"
 )
 
 // The recipe's project root is this package's directory; the loader reads

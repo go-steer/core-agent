@@ -79,9 +79,9 @@ ENV CGO_ENABLED=0 \
 
 RUN go build \
     -ldflags "-s -w \
-        -X github.com/go-steer/core-agent/internal/version.Version=${VERSION} \
-        -X github.com/go-steer/core-agent/internal/version.Commit=${COMMIT} \
-        -X github.com/go-steer/core-agent/internal/version.Date=${BUILD_DATE}" \
+        -X github.com/go-steer/core-agent/v3/internal/version.Version=${VERSION} \
+        -X github.com/go-steer/core-agent/v3/internal/version.Commit=${COMMIT} \
+        -X github.com/go-steer/core-agent/v3/internal/version.Date=${BUILD_DATE}" \
     -trimpath \
     -o /out/core-agent \
     ./cmd/core-agent

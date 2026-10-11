@@ -17,9 +17,9 @@ package peer
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/internal/testutil"
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/internal/testutil"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // The rationale for the ban list lives with the list itself, in

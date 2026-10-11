@@ -181,7 +181,7 @@ func RegisterMetrics(mp metric.MeterProvider, tp TrackerProvider, opts ...Regist
 		opt(&ro)
 	}
 
-	meter := mp.Meter("github.com/go-steer/core-agent/v2/pkg/usage")
+	meter := mp.Meter("github.com/go-steer/core-agent/v3/pkg/usage")
 
 	tokens, err := meter.Int64ObservableCounter(
 		MetricGenAITokenUsage,

@@ -22,7 +22,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // Resolver interpolates ${env:NAME} in strings using an env-var lookup,

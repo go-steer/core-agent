@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/internal/testutil"
+	"github.com/go-steer/core-agent/v3/internal/testutil"
 )
 
 // sweepCall is what makes a package swept. The convention is to put it

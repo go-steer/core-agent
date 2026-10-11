@@ -26,7 +26,7 @@ import (
 	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/digest"
+	"github.com/go-steer/core-agent/v3/pkg/digest"
 )
 
 // surveyTool is a stand-in for a built-in whose response size the

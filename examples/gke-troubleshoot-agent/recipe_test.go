@@ -40,11 +40,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/go-steer/core-agent/v2/internal/imagepin"
+	"github.com/go-steer/core-agent/v3/internal/imagepin"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/mcp"
-	"github.com/go-steer/core-agent/v2/pkg/skills"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	"github.com/go-steer/core-agent/v3/pkg/skills"
 )
 
 // The recipe's agents dir is the ConfigMap-mounted tree under deploy/base.

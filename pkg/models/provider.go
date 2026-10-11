@@ -36,7 +36,7 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // Provider constructs concrete model.LLM instances on demand. A Provider
@@ -157,7 +157,7 @@ func Resolve(cfg *config.Config) (Provider, error) {
 	c, ok := registry[name]
 	if !ok && cfg.IsProfileProvider(name) {
 		if profileConstructor == nil {
-			return nil, fmt.Errorf("models: %q is a provider profile, but profile support is not linked in; import github.com/go-steer/core-agent/v2/pkg/models/profiles", name)
+			return nil, fmt.Errorf("models: %q is a provider profile, but profile support is not linked in; import github.com/go-steer/core-agent/v3/pkg/models/profiles", name)
 		}
 		c, ok = profileConstructor, true
 	}

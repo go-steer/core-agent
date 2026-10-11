@@ -20,10 +20,10 @@ from the repo root.
 
 ## Key APIs
 
-- `agent.New` / `agent.WithInstruction` — `github.com/go-steer/core-agent/v2/pkg/agent`
+- `agent.New` / `agent.WithInstruction` — `github.com/go-steer/core-agent/v3/pkg/agent`
 - `agent.Agent.Run` — returns an `iter.Seq2[*Event, error]` you range over
-- `models.Resolve` — `github.com/go-steer/core-agent/v2/pkg/models`
-- `config.DefaultConfig` — `github.com/go-steer/core-agent/v2/pkg/config`
+- `models.Resolve` — `github.com/go-steer/core-agent/v3/pkg/models`
+- `config.DefaultConfig` — `github.com/go-steer/core-agent/v3/pkg/config`
 - blank import of `pkg/models/gemini` to register the provider
 
 ## What you should see

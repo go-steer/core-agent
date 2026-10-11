@@ -52,7 +52,7 @@ package agent
 import (
 	"log"
 
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // emitGuardrailTrip reports a trip: to the log always, and to the attach

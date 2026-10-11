@@ -38,6 +38,41 @@ MAJOR="${BASH_REMATCH[1]}"
 MINOR="${BASH_REMATCH[2]}"
 EXPECTED="v${MAJOR}.$((MINOR + 1)).0-dev"
 
+# A major bump is declared by the module path, not by the fallback: Go's
+# SIVE rule makes the /vN suffix the thing that decides whether a vN tag
+# can be `go install`ed at all, so it is the single source of truth here.
+# When go.mod's suffix is ahead of the latest release's major, the next
+# target is vN.0.0-dev. Tying the two together fails both halves of the
+# #327 mistake: a /v3 path with a v2.x fallback, and a v3 fallback (and
+# so, soon, a v3 tag) on a path still ending in /v2.
+#
+# No go.mod (the self-dev dispatcher runs this check in a stripped copy
+# with only the tags and version.go): nothing declares a major bump, so
+# the MINOR+1 rule stands and the module-path checks below are skipped.
+# A go.mod that exists but yields no module path is an error, never a
+# skip: failing open here is the #327 half this check exists to catch.
+MODULE_PATH=""
+if [[ -f go.mod ]]; then
+    MODULE_PATH=$(awk '$1 == "module" { p = $2; gsub(/"/, "", p); print p; exit }' go.mod)
+    if [[ -z "$MODULE_PATH" ]]; then
+        echo "verify-version-fallback: go.mod has no parsable module directive" >&2
+        exit 1
+    fi
+fi
+if [[ -n "$MODULE_PATH" ]]; then
+    MODULE_MAJOR=1 # no suffix: v0/v1
+    if [[ "$MODULE_PATH" =~ /v([0-9]+)$ ]]; then
+        MODULE_MAJOR="${BASH_REMATCH[1]}"
+    fi
+    if (( MAJOR >= 2 && MODULE_MAJOR < MAJOR )); then
+        echo "verify-version-fallback: module path ${MODULE_PATH} is behind the latest release ${LATEST_RELEASE}; a v${MAJOR} tag needs /v${MAJOR}" >&2
+        exit 1
+    fi
+    if (( MODULE_MAJOR > MAJOR )); then
+        EXPECTED="v${MODULE_MAJOR}.0.0-dev"
+    fi
+fi
+
 # Read the current fallback from source. Pin to the first
 # `Version = "..."` in the file so a future const near it can't
 # accidentally shadow the match.
@@ -62,6 +97,43 @@ target version so plain \`go install\` / \`go build\` (no ldflag
 injection) reports a sensible --version.
 EOF
     exit 1
+fi
+
+# The module path also has to be the one every build and every install
+# instruction names. Both of these drifted silently before: Go ignores an
+# -X flag for a symbol that does not exist, so extras/scion/Dockerfile
+# reported the fallback version for months after #327; and the release
+# notes footer printed a suffix-less `go install` that could never
+# resolve. Skipped with no go.mod, like the major check above.
+if [[ -n "$MODULE_PATH" ]]; then
+    bad=0
+    for f in Dockerfile .goreleaser.yml extras/scion/Dockerfile; do
+        [[ -f "$f" ]] || continue
+        while IFS= read -r p; do
+            if [[ "$p" != "${MODULE_PATH}" ]]; then
+                echo "verify-version-fallback: ${f} injects -X ${p}/internal/version.*, but the module is ${MODULE_PATH}" >&2
+                bad=1
+            fi
+        done < <(grep -oE -- '-X [^ =]+/internal/version\.' "$f" | sed -E 's#^-X ##; s#/internal/version\.$##' | sort -u)
+    done
+    # Live install/import paths under cmd/ pkg/ internal/ must carry the
+    # current suffix. History is exempt: past CHANGELOG entries, design
+    # docs under docs/*.md, the A7 grader's recorded fixtures, and
+    # docs-lint's own bad-example fixtures.
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        stale=$(git grep -nE 'github\.com/go-steer/core-agent(/v[0-9]+)?/(cmd|pkg|internal)/' -- . \
+                    ':!CHANGELOG.md' ':!docs/*.md' ':!dev/uat/selfdev-soak/testdata' \
+                    ':!dev/uat/selfdev-soak/grade_a7_selftest.py' ':!dev/tools/docs-lint' \
+                | grep -vF "${MODULE_PATH}/" || true)
+        if [[ -n "$stale" ]]; then
+            echo "verify-version-fallback: these name a module path other than ${MODULE_PATH}:" >&2
+            echo "$stale" | head -20 >&2
+            bad=1
+        fi
+    fi
+    if (( bad )); then
+        exit 1
+    fi
 fi
 
 echo "verify-version-fallback: OK (${ACTUAL} matches next-target after ${LATEST_RELEASE})"

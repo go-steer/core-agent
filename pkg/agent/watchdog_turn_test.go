@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // Turn-boundary wiring (#655). NoNewStateSignal scopes "already seen"

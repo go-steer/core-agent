@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/session"
-	"github.com/go-steer/core-agent/v2/pkg/transcript"
+	"github.com/go-steer/core-agent/v3/pkg/session"
+	"github.com/go-steer/core-agent/v3/pkg/transcript"
 )
 
 // pkg/session is the deprecated former name of pkg/transcript (#492).

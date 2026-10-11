@@ -18,7 +18,7 @@ import (
 	"errors"
 	"testing"
 
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 func TestManager_ResolveScheduler(t *testing.T) {

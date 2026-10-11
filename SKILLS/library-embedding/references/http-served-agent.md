@@ -48,12 +48,12 @@ import (
     "github.com/glebarez/sqlite"
     "github.com/google/uuid"
 
-    "github.com/go-steer/core-agent/v2/pkg/agent"
-    "github.com/go-steer/core-agent/v2/pkg/eventlog"
-    "github.com/go-steer/core-agent/v2/pkg/models"
-    _ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
-    "github.com/go-steer/core-agent/v2/pkg/permissions"
-    "github.com/go-steer/core-agent/v2/pkg/tools"
+    "github.com/go-steer/core-agent/v3/pkg/agent"
+    "github.com/go-steer/core-agent/v3/pkg/eventlog"
+    "github.com/go-steer/core-agent/v3/pkg/models"
+    _ "github.com/go-steer/core-agent/v3/pkg/models/gemini"
+    "github.com/go-steer/core-agent/v3/pkg/permissions"
+    "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // ---------- web prompter (gated tool calls flow through here) ----------

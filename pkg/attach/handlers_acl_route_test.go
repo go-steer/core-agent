@@ -24,7 +24,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // aclRouteFixture wires handlers + registry + mux with the ACL routes

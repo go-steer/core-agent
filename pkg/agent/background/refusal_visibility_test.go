@@ -35,8 +35,8 @@ import (
 	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
-	"github.com/go-steer/core-agent/v2/pkg/watchdog"
+	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // refusalToolCtx is a minimal adkagent.Context for driving a registered

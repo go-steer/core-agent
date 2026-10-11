@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // Per-caller rate limiting for the COST-BEARING attach endpoints

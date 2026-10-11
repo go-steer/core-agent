@@ -21,7 +21,7 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 func TestGrep_RequiresPattern(t *testing.T) {

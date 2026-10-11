@@ -25,8 +25,8 @@ registration, eventlog, attach mode, etc.).
 1. **Install `core-agent`** (one binary, no other deps):
 
    ```bash
-   go install github.com/go-steer/core-agent/cmd/core-agent@latest
-   go install github.com/go-steer/core-agent/cmd/core-agent-tui@latest   # optional, for remote attach
+   go install github.com/go-steer/core-agent/v3/cmd/core-agent@latest
+   go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@latest   # optional, for remote attach
    ```
 
 2. **Google Cloud auth** for the GKE MCP server (Application Default Credentials):

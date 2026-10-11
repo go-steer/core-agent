@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/tools/alert"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/tools/alert"
 )
 
 // The T2 rig's contract with the daemon, pinned from the sender's side:

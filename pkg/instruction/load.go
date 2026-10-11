@@ -46,7 +46,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // maxFileBytes caps how much of any single memory file is loaded.

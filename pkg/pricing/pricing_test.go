@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/pkg/taskclass"
+	"github.com/go-steer/core-agent/v3/pkg/taskclass"
 )
 
 // TestLookup_BuiltinOnly verifies the zero-config path: empty Options

@@ -43,7 +43,7 @@ const (
 	StopReasonErrorFallback = "error"
 )
 
-const meterName = "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+const meterName = "github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 
 func newRunsCounter(mp metric.MeterProvider) (metric.Int64Counter, error) {
 	return mp.Meter(meterName).Int64Counter(

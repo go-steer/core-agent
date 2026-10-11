@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // hookRecorder captures every schedule-hook call in order.

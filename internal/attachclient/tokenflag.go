@@ -45,7 +45,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/childenv"
+	"github.com/go-steer/core-agent/v3/pkg/childenv"
 )
 
 // looksLikeEnvName reports whether s has the shape of a shell

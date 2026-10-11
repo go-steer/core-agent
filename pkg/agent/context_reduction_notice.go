@@ -19,7 +19,7 @@
 package agent
 
 import (
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // recordContextReductionFailure writes the durable row for an automatic

@@ -17,7 +17,7 @@ package compose
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 func TestBuildAttachOptions_TranslatesEveryConfigField(t *testing.T) {

@@ -22,7 +22,7 @@ import (
 
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 // #1206. A retry that did not rescue its call reaches the turn-error

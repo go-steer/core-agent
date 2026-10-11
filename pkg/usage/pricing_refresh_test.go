@@ -17,7 +17,7 @@ package usage
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/pricing"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
 )
 
 // These tests install a process-global catalog, so none of them are

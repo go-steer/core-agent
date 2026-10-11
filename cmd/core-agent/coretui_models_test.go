@@ -20,9 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/modeltier"
-	"github.com/go-steer/core-agent/v2/pkg/pricing"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/modeltier"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // TestAvailableModelIDs_AllPriced closes the direction

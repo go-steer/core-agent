@@ -25,9 +25,9 @@
 // Release process (see docs/release-process.md):
 //
 //	go build -ldflags "\
-//	  -X github.com/go-steer/core-agent/v2/internal/version.Version=v2.2.0 \
-//	  -X github.com/go-steer/core-agent/v2/internal/version.Commit=$(git rev-parse HEAD) \
-//	  -X github.com/go-steer/core-agent/v2/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+//	  -X github.com/go-steer/core-agent/v3/internal/version.Version=v2.2.0 \
+//	  -X github.com/go-steer/core-agent/v3/internal/version.Commit=$(git rev-parse HEAD) \
+//	  -X github.com/go-steer/core-agent/v3/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
 //	" ./cmd/core-agent ./cmd/core-agent-tui
 //
 // After cutting a tag, bump Version below to the next minor + "-dev"
@@ -56,7 +56,7 @@ var (
 	// v2.4→v2.5→v2.6 (skipped bumps produced stale --version output
 	// on go-installed binaries during the v2.7.0-dev.N demo drive)
 	// can't happen again silently.
-	Version = "v2.10.0-dev"
+	Version = "v3.0.0-dev"
 
 	// Commit is the git SHA the binary was built from. Defaults to
 	// "none" so the debug.BuildInfo fallback can detect that nothing

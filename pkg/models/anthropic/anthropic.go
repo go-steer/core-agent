@@ -35,8 +35,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	adkmodel "google.golang.org/adk/v2/model"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 // DefaultModel is used when LLMRequest.Model is empty. We follow the

@@ -228,7 +228,7 @@ To attach (operator running locally):
   # TUI itself (no proxy hop, no per-request token-mint quota).
   # Requires ADC: gcloud auth application-default login
   # Requires TUI binary >= v2.4.0 (or built from main today):
-  #   go install github.com/go-steer/core-agent/cmd/core-agent-tui@main
+  #   go install github.com/go-steer/core-agent/v3/cmd/core-agent-tui@main
   export ATTACH_TOKEN="\$(gcloud secrets versions access latest \\
     --secret=core-agent-attach-token --project=$PROJECT_ID)"
   SERVICE_URL="\$(gcloud run services describe $SERVICE_NAME \\

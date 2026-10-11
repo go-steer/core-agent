@@ -17,9 +17,9 @@ package pricing_test
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/modeltier"
-	"github.com/go-steer/core-agent/v2/pkg/pricing"
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/modeltier"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // TestBuiltinModelsKnownToCompanionTables pins the invariant that the

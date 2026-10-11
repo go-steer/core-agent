@@ -14,7 +14,7 @@
 
 package main
 
-import "github.com/go-steer/core-agent/v2/pkg/agentenv"
+import "github.com/go-steer/core-agent/v3/pkg/agentenv"
 
 // newEnvInterpolator builds the ${env:VAR} interpolator threaded into
 // every content loader in the process, together with the tracker that

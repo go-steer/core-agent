@@ -72,8 +72,8 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // Registrant is the subset of *agent.Agent the registry needs. Defined

@@ -121,7 +121,7 @@ To override from config, use the provider-neutral [`model.builtin_tools`](#confi
 To override from the library:
 
 ```go
-import "github.com/go-steer/core-agent/v2/pkg/models/gemini"
+import "github.com/go-steer/core-agent/v3/pkg/models/gemini"
 
 // Turn one off:
 provider, _ := gemini.NewAPIKey(key, gemini.WithURLContext(false))
@@ -510,7 +510,7 @@ To enable from config, use the provider-neutral [`model.builtin_tools`](#configu
 To enable from the library:
 
 ```go
-import "github.com/go-steer/core-agent/v2/pkg/models/anthropic"
+import "github.com/go-steer/core-agent/v3/pkg/models/anthropic"
 
 provider, _ := anthropic.New(key, anthropic.WithWebSearch(true))
 
@@ -720,8 +720,8 @@ Register your implementation in an `init()` and import the package for its side 
 package myprovider
 
 import (
-    "github.com/go-steer/core-agent/v2/pkg/config"
-    "github.com/go-steer/core-agent/v2/pkg/models"
+    "github.com/go-steer/core-agent/v3/pkg/config"
+    "github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 func init() {

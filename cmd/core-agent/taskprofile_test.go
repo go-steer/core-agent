@@ -21,9 +21,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/taskclass"
-	"github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/taskclass"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 func TestResolveProfileDisables(t *testing.T) {

@@ -17,8 +17,8 @@ package agent
 import (
 	"context"
 
-	"github.com/go-steer/core-agent/v2/pkg/auth"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // EventlogMetadataExtractor returns an eventlog.MetadataExtractor

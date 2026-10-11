@@ -21,9 +21,9 @@ import (
 
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v2/internal/testutil"
-	"github.com/go-steer/core-agent/v2/pkg/agent"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/internal/testutil"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // A goal a person wrote (WithOperatorGoal) governs the whole run, so it

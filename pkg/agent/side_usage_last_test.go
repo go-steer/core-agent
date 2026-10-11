@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // #1191. Tracker.Last() stands for the conversation: the context gauge

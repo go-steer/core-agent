@@ -20,7 +20,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // AttachOptions is the resolved attach-listener configuration a host

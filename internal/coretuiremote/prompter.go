@@ -27,8 +27,8 @@ import (
 	coretui "github.com/go-steer/core-tui/tui"
 	"golang.org/x/mod/semver"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
-	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
 // denyReasonProtocol is the first attach protocol whose

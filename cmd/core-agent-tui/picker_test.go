@@ -27,7 +27,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/google/uuid"
 
-	"github.com/go-steer/core-agent/v2/internal/attachclient"
+	"github.com/go-steer/core-agent/v3/internal/attachclient"
 )
 
 // keyPress builds a KeyPressMsg for a printable rune ('j', 'k', 'q', …).

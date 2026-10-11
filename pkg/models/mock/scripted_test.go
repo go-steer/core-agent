@@ -26,7 +26,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/recording"
+	"github.com/go-steer/core-agent/v3/pkg/recording"
 )
 
 func TestScripted_PlaysTurnsInOrder(t *testing.T) {

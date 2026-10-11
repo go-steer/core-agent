@@ -26,8 +26,8 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
 
 // openTestEventLog returns a Handle backed by a fresh on-disk SQLite

@@ -18,7 +18,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/taskclass"
+	"github.com/go-steer/core-agent/v3/pkg/taskclass"
 )
 
 func TestResolve_KnownClasses(t *testing.T) {

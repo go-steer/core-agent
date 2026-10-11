@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // TestToolInfos_NamesTheToolsNotTheSkills is the distinction the

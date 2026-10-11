@@ -29,8 +29,8 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v2/internal/subagentlog"
-	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v3/internal/subagentlog"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
 // REST-response conformance tests (#536). The SSE event shapes have

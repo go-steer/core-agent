@@ -17,7 +17,7 @@ package main
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 )
 
 // The approval-notify wiring (#647) is constructed alongside the prompt

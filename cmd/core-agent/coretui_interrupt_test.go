@@ -27,7 +27,7 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 )
 
 // blockingLLM parks inside GenerateContent until its context is

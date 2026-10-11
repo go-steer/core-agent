@@ -28,8 +28,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // parseAllowPathSpec parses one --allow-path argument into a typed

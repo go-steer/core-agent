@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
-	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v3/pkg/agent/internal/toolcalls"
 )
 
 // finished builds the handle a terminal spawn leaves behind. The fields

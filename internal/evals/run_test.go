@@ -53,6 +53,17 @@ fi
 if [ "$STUB_MODE" = "mute" ]; then
   exit 0
 fi
+if [ "$STUB_MODE" = "stall" ]; then
+  echo "I cannot reach the cluster; delegating to a subagent."
+  exec sleep 30
+fi
+if [ "$STUB_MODE" = "stall-leak" ]; then
+  # A subagent's result comes back as a tool-result line on stderr; this
+  # one guessed the planted facts before the deadline cut the parent off.
+  echo "I cannot reach the cluster; delegating to a subagent."
+  echo "← spawn_agent(result=\"probably ledger-writer: manifest unknown\")" >&2
+  exec sleep 30
+fi
 if [ "$STUB_MODE" != "blind" ]; then
   kubectl get pods --all-namespaces >/dev/null 2>&1
   echo "the ledger-writer deployment is stuck; the registry says manifest unknown"
@@ -177,6 +188,50 @@ func TestRunnerBaselineScoresZeroAndHolds(t *testing.T) {
 	}
 	if byName["named-it"].Vacuous || byName["named-it"].Passed {
 		t.Fatalf("the answer check should be an informative failure: %+v", byName["named-it"])
+	}
+}
+
+// A baseline that works until the deadline — the live shape is a model
+// delegating to subagents that cannot reach the cluster either — is
+// graded, not discarded: the runner marks the timeout as its own, and
+// BaselineHolds accepts a zero from a run that produced output.
+func TestRunnerBaselineThatRunsOutOfTimeStillHolds(t *testing.T) {
+	c, f, agent := runHarness(t)
+	t.Setenv("STUB_MODE", "stall")
+	r := &Runner{Binary: agent, Timeout: 2 * time.Second}
+
+	res, err := r.Run(context.Background(), c, f, TierNoAccess)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.RunError == "" || !res.TimedOut {
+		t.Fatalf("RunError=%q TimedOut=%v, want the runner's deadline recorded as a timeout", res.RunError, res.TimedOut)
+	}
+	if err := BaselineHolds(res); err != nil {
+		t.Fatalf("a baseline that answered before the deadline must hold: %v", err)
+	}
+}
+
+// The other half of accepting a cut-off baseline: what it never got to
+// write in its answer may already sit in stderr, where subagent results
+// land. Its answer checks read both, so a guess made there still scores
+// and the baseline still breaks — the exception never makes the self-test
+// looser.
+func TestRunnerTimedOutBaselineIsGradedOnStderrToo(t *testing.T) {
+	c, f, agent := runHarness(t)
+	t.Setenv("STUB_MODE", "stall-leak")
+	r := &Runner{Binary: agent, Timeout: 2 * time.Second}
+
+	res, err := r.Run(context.Background(), c, f, TierNoAccess)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.TimedOut {
+		t.Fatalf("TimedOut=false (RunError=%q); the case under test is a timeout", res.RunError)
+	}
+	err = BaselineHolds(res)
+	if err == nil || !strings.Contains(err.Error(), "measure vocabulary") {
+		t.Fatalf("a timed-out baseline whose subagent guessed the facts must break, got %v", err)
 	}
 }
 

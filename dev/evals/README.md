@@ -192,6 +192,16 @@ The first live run of this harness died at startup on a flag collision
 and scored a clean zero. Without (2) it would have been reported as a
 sound baseline.
 
+(2) has one exception: a baseline the runner's own deadline stopped
+*after the model had produced output*. With no way to reach the world,
+a model can spend its whole budget on the one lever it has left,
+delegating with `spawn_agent` to subagents that cannot look either, and
+that run did measure the case. A crash, a non-zero exit, or a timeout
+with nothing on stdout is still rejected. Because the cut-off run never
+wrote a final answer, its answer checks read stdout plus stderr, where
+subagent results land. That makes the baseline stricter, never looser.
+The board marks such a run, since its zero is a lower bound.
+
 ## Adding a case
 
 No Go. A case is a JSON file, its world is a JSON file, and the shim

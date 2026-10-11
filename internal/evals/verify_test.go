@@ -196,6 +196,48 @@ func TestBaselineHolds(t *testing.T) {
 		}
 	})
 
+	// The live shape: with no way to reach the cluster, the model spent
+	// the whole budget delegating to subagents that could not look
+	// either. It ran, it answered, nothing scored — a measurement, not a
+	// crash.
+	t.Run("a baseline that worked until the deadline holds", func(t *testing.T) {
+		r := Result{Tier: TierNoAccess, TimedOut: true,
+			RunError: "agent did not finish within 4m0s: context deadline exceeded",
+			Answer:   "asst › I can't reach the cluster, so I'll delegate to a subagent.",
+			Checks:   []CheckResult{informativeFail}}
+		if err := BaselineHolds(r); err != nil {
+			t.Fatalf("want a worked-until-the-deadline baseline to hold, got %v", err)
+		}
+	})
+
+	// The exception must not reopen the hole the crash rule closes.
+	t.Run("a timeout that never produced output does not hold", func(t *testing.T) {
+		r := Result{Tier: TierNoAccess, TimedOut: true,
+			RunError: "agent did not finish within 4m0s: context deadline exceeded",
+			Answer:   "  \n", Checks: []CheckResult{informativeFail}}
+		err := BaselineHolds(r)
+		if err == nil || !strings.Contains(err.Error(), "did not run to completion") {
+			t.Fatalf("want a did-not-run error for a silent timeout, got %v", err)
+		}
+	})
+	t.Run("a crash with output still does not hold", func(t *testing.T) {
+		r := Result{Tier: TierNoAccess, RunError: "exit status 1: provider 500",
+			Answer: "asst › starting", Checks: []CheckResult{informativeFail}}
+		err := BaselineHolds(r)
+		if err == nil || !strings.Contains(err.Error(), "did not run to completion") {
+			t.Fatalf("want a did-not-run error for a crash, got %v", err)
+		}
+	})
+	t.Run("a timed-out baseline that scored still breaks it", func(t *testing.T) {
+		r := Result{Tier: TierNoAccess, TimedOut: true,
+			RunError: "agent did not finish within 4m0s: context deadline exceeded",
+			Answer:   "asst › guessing", Checks: []CheckResult{{Name: "named-it", Passed: true}}}
+		err := BaselineHolds(r)
+		if err == nil || !strings.Contains(err.Error(), "measure vocabulary") {
+			t.Fatalf("a timeout must not excuse a scoring check, got %v", err)
+		}
+	})
+
 	// A baseline in which every check observed nothing has measured the
 	// absence of a measurement, not a measurement of absence.
 	t.Run("an entirely vacuous baseline does not hold", func(t *testing.T) {

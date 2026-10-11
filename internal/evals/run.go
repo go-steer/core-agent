@@ -17,6 +17,7 @@ package evals
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -126,6 +127,7 @@ func (r *Runner) Run(ctx context.Context, c *Case, f *Fixture, tier Tier) (Resul
 		// checks say X and the process also exited non-zero" is more
 		// use than a bare exit code. The verdict can never be a pass.
 		res.RunError = summarizeExit(art.ExitErr, art.Stderr)
+		res.TimedOut = errors.Is(art.ExitErr, context.DeadlineExceeded)
 	}
 
 	// Preconditions first, and against stderr rather than the graded
@@ -138,8 +140,15 @@ func (r *Runner) Run(ctx context.Context, c *Case, f *Fixture, tier Tier) (Resul
 		res.Preconditions = append(res.Preconditions, pc.Verify(startup))
 	}
 
+	// A baseline cut off by the deadline never wrote its final answer,
+	// and what its subagents returned went to stderr as tool-result
+	// lines. Grading stdout alone would give a lower bound on what it
+	// knew, and BaselineHolds now accepts such a run — so its answer
+	// checks read stderr too. That only makes the baseline stricter,
+	// which is the safe direction for a self-test.
+	widen := tier == TierNoAccess && res.TimedOut
 	for _, ck := range bound.Checks {
-		res.Checks = append(res.Checks, ck.Verify(sourceFor(ck, world, art)))
+		res.Checks = append(res.Checks, ck.Verify(sourceFor(ck, world, art, widen)))
 	}
 	// An unmet precondition is the other result a reader needs the world
 	// for, and for a sharper reason than vacuity: the question is what
@@ -166,13 +175,16 @@ func (r *Runner) Run(ctx context.Context, c *Case, f *Fixture, tier Tier) (Resul
 	return res, nil
 }
 
-func sourceFor(ck Check, world *World, art RunArtifacts) Source {
+func sourceFor(ck Check, world *World, art RunArtifacts, widenAnswer bool) Source {
 	if name, ok := ck.WitnessName(); ok {
 		text, present := world.ReadWitness(name)
 		return Source{Text: text, Present: present}
 	}
 	// The answer is always "present" even when empty: the process ran
 	// and said nothing, which is a finding rather than an absence.
+	if widenAnswer {
+		return Source{Text: art.Stdout + "\n" + art.Stderr, Present: true}
+	}
 	return Source{Text: art.Stdout, Present: true}
 }
 

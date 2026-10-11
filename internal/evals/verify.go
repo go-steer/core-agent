@@ -178,8 +178,9 @@ type Result struct {
 	// (#1061).
 	Preconditions []CheckResult `json:"preconditions,omitempty"`
 
-	// Answer is the agent's final output, kept so a failing run can be
-	// read without re-running it.
+	// Answer is the agent's output, kept so a failing run can be read
+	// without re-running it. For a run the deadline stopped it is
+	// partial: whatever the model had written by then.
 	Answer string `json:"answer,omitempty"`
 
 	// RunError is set when the agent process itself failed. The checks
@@ -187,6 +188,11 @@ type Result struct {
 	// report than a bare exit code — but the verdict can never be a
 	// pass.
 	RunError string `json:"run_error,omitempty"`
+
+	// TimedOut is set when RunError is the runner's own deadline rather
+	// than the process failing. BaselineHolds reads it: a no-access run
+	// that worked until the deadline is a measurement, a crash is not.
+	TimedOut bool `json:"timed_out,omitempty"`
 }
 
 // Score is the number of informative passes.
@@ -273,7 +279,16 @@ func BaselineHolds(r Result) error {
 	if r.Tier != TierNoAccess {
 		return fmt.Errorf("evals: BaselineHolds wants a %s result, got %s", TierNoAccess, r.Tier)
 	}
-	if r.RunError != "" {
+	// One exception, and a narrow one: the baseline ran out of time while
+	// working. With nothing to reach the cluster through, a model may
+	// spend the whole budget on the one lever it has left — delegating to
+	// subagents that are just as unable to look — and that run did
+	// measure the case: the model tried, answered what it could, and the
+	// checks below decide whether any of it scored. It counts only when
+	// the model produced output before the deadline; a timeout with
+	// nothing on stdout is a process that hung before it started, which
+	// is the crash case again.
+	if r.RunError != "" && !workedUntilDeadline(r) {
 		return fmt.Errorf(
 			"evals: case %s: the no-access baseline did not run to completion (%s) — a process that died scores zero for a reason that says nothing about the checks, so this is not evidence that they need tools",
 			r.CaseID, r.RunError)
@@ -356,6 +371,13 @@ func (rep Report) Verdict() Verdict {
 		return VerdictIndeterminate
 	}
 	return worst
+}
+
+// workedUntilDeadline reports whether a run's failure is the runner's
+// deadline stopping a model that had already produced output — the one
+// incomplete baseline BaselineHolds will grade.
+func workedUntilDeadline(r Result) bool {
+	return r.TimedOut && strings.TrimSpace(r.Answer) != ""
 }
 
 func quoteAll(xs []string) string {

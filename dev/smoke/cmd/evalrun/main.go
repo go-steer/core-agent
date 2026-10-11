@@ -257,6 +257,13 @@ func printResult(r evals.Result) {
 	if r.RunError != "" {
 		fmt.Printf("  agent process: %s\n", r.RunError)
 	}
+	if r.Tier == evals.TierNoAccess && r.TimedOut {
+		// BaselineHolds may still accept this run, and a reader should
+		// know the zero is the weaker kind: the model was cut off, so
+		// the checks saw what it had written by then (stdout and the
+		// subagent results on stderr), not a final answer.
+		fmt.Printf("  note: the baseline was stopped by the deadline; its answer checks read the partial output plus stderr, so a zero here is a lower bound\n")
+	}
 	fmt.Printf("  score %d/%d, verdict %s\n\n", r.Score(), len(r.Checks), r.Verdict())
 }
 

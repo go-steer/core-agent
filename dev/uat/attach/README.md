@@ -92,15 +92,16 @@ In a third shell, inject a message:
 
 - The `tail` shell shows a new `user` event with your message and
   a model `model` event with the echo provider's reply.
-- The agent pane (`tmux attach -t core-agent-uat`) shows the same
-  exchange via the REPL renderer.
-- Both views agree — broadcaster and REPL are seeing the same
-  stream out of the eventlog.
+- The reply arrives without anyone touching the agent. Every agent
+  this script starts is an attach-only daemon (`--no-repl`), so its
+  wake loop takes the turn, and the agent pane
+  (`tmux attach -t core-agent-uat`) shows only the daemon's log.
 
 ### A2. Wake-on-event seam
 
-`run.sh solo` runs in REPL mode (no scheduler), so `/wake` is a
-no-op there. To exercise it properly run the scheduler UAT
+`run.sh solo` has no scheduler, so a `/wake` with nothing queued
+does nothing visible: the wake loop looks, finds no input, and goes
+back to waiting. To exercise it properly run the scheduler UAT
 (`dev/uat/scheduled-monitor/`) with `--attach-listen=:7777` and
 inject during a sleep — or, lightweight, just confirm
 `POST /sessions/<sid>/wake` returns 204:
@@ -139,7 +140,7 @@ ATTACH_TOKEN="${ATTACH_TOKEN}" /tmp/core-agent-uat/bin/core-agent \
     --provider=echo --session-db \
     --session-db-path=/tmp/core-agent-uat/db/ro.db \
     --attach-listen=:7777 --attach-token=ATTACH_TOKEN \
-    --attach-readonly
+    --attach-readonly --no-repl
 ```
 
 From another shell:
@@ -159,7 +160,7 @@ ATTACH_TOKEN="${ATTACH_TOKEN}" /tmp/core-agent-uat/bin/core-agent \
     --provider=echo --session-db \
     --session-db-path=/tmp/core-agent-uat/db/uds.db \
     --attach-unix-socket=/tmp/core-agent-uat/sock/agent.sock \
-    --attach-token=ATTACH_TOKEN
+    --attach-token=ATTACH_TOKEN --no-repl
 
 # In another shell:
 ./run.sh ls   "unix:///tmp/core-agent-uat/sock/agent.sock"
@@ -290,7 +291,7 @@ cp dev/uat/attach/fixtures/peer-config.json \
     POD_IP=127.0.0.1 HOSTNAME_OVERRIDE=config-peer-pod \
     ATTACH_TOKEN="${ATTACH_TOKEN}" \
     /tmp/core-agent-uat/bin/core-agent \
-        --session-db --session-db-path=/tmp/core-agent-uat/db/config-peer.db)
+        --session-db --session-db-path=/tmp/core-agent-uat/db/config-peer.db --no-repl)
 ```
 
 In another shell:
@@ -479,6 +480,7 @@ The TUI binary builds the first time you run `./run.sh tui` (caches at `/tmp/cor
 
 - Use ↑/↓ (or j/k) to navigate.
 - Hit Enter to attach to a session — the screen swaps to the chat view.
+  A standalone hub has exactly one session, `default`; pick that.
 - Header now shows the session identity + endpoint URL.
 - Footer shows the usage panel: `/help · echo · in 0 · out 0 · $—`.
 
@@ -487,6 +489,9 @@ The TUI binary builds the first time you run `./run.sh tui` (caches at `/tmp/cor
 - Type "what is 2+2?" + Enter.
 - **Verify:** your text appears as a user bubble (`user │ what is 2+2?`).
 - A model response streams in below as an asst bubble (`asst │ ...`). Echo provider replies trivially; that's expected.
+- If the spinner just runs and no reply comes, the hub is not running `--no-repl` (an old `run.sh`, or a hub
+  started by hand). Its embedded TUI is holding the session, and the message waits in its inbox.
+  go-steer/core-tui#379 covers the spinner never stopping.
 - The usage panel updates with token counts (echo provider may report 0; with `MODEL=vertex` you'll see real numbers).
 
 ### E4. Slash commands
@@ -540,7 +545,7 @@ ATTACH_TOKEN="${ATTACH_TOKEN}" /tmp/core-agent-uat/bin/core-agent \
     --provider=echo --session-db \
     --session-db-path=/tmp/core-agent-uat/db/ro.db \
     --attach-listen=:7777 --attach-token=ATTACH_TOKEN \
-    --attach-readonly &
+    --attach-readonly --no-repl &
 sleep 2
 ./run.sh tui http://localhost:7777
 ```

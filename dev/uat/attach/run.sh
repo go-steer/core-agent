@@ -85,9 +85,16 @@ tmux_new_window() {
     tmux new-window -t "${SESS}" -n "${name}" "bash -lc '${cmd//\'/\'\\\'\'}; echo; echo \"[${name} exited — press enter to close]\"; read'"
 }
 
-# Each agent runs in REPL mode (no -p) so it stays alive for
-# attach/inject. echo provider replies trivially; the live-tail
-# value is observing the event stream, not the model output.
+# Each agent runs as an attach-only daemon (--no-repl): the operator
+# drives it over the attach API — curl, ./run.sh inject, core-agent-tui —
+# never from its own tmux window. It used to run in REPL mode, from
+# when a TTY meant a line REPL whose loop picked up an inject. A TTY
+# now means the embedded TUI, and an idle embedded TUI does not start
+# a turn on a wake (go-steer/core-tui#375). So every message sent from
+# core-agent-tui sat in the inbox and its spinner ran forever (Session
+# E, 2026-10-13). --no-repl hands the session to the daemon's wake
+# loop, which takes the turn. The echo provider replies trivially; the
+# live-tail value is observing the event stream, not the model output.
 spawn_agent() {
     local name="$1"; shift
     local extra_flags="$*"
@@ -99,7 +106,7 @@ spawn_agent() {
     # is an accident of one variable's value, not a property (#1116/D3).
     printf '{"version": 1}\n' > "${agent_dir}/.agents/config.json"
     local db="${UAT_ROOT}/db/${name}.db"
-    local cmd="cd ${agent_dir} && ATTACH_TOKEN='${ATTACH_TOKEN}' '${BIN}' -c '${agent_dir}/.agents/config.json' --provider=${MODEL_PROVIDER} --session-db --session-db-path='${db}' --attach-token=ATTACH_TOKEN ${extra_flags}"
+    local cmd="cd ${agent_dir} && ATTACH_TOKEN='${ATTACH_TOKEN}' '${BIN}' -c '${agent_dir}/.agents/config.json' --provider=${MODEL_PROVIDER} --session-db --session-db-path='${db}' --attach-token=ATTACH_TOKEN --no-repl ${extra_flags}"
     log "spawn ${name}: ${extra_flags}"
     tmux_new_window "${name}" "${cmd}"
 }

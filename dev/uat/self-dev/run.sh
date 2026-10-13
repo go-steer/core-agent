@@ -1957,6 +1957,16 @@ GO
     local rc=0
     rig_worktree "$2" "$1" || { echo checkout; return; }
     cp "${ORACLE_SRC}" "$2/${ORACLE_PKG}/${ORACLE_FILE}" || { drop_worktree "$2"; echo checkout; return; }
+    # The oracles are written against this checkout's ADK, which is v2
+    # since #1291. A replay compiles the T1 oracle into its pinned base,
+    # which predates that move, so the import has to follow the tree it
+    # lands in: on a v1 tree it named a module the base does not require,
+    # and A15 read "setup failed" at both ends instead of fail/pass. The
+    # model API the T1 oracle uses has the same shape in both majors.
+    if ! grep -qE '^[[:space:]]*(require[[:space:]]+)?google\.golang\.org/adk/v2[[:space:]]' "$2/go.mod"; then
+      sed 's#"google.golang.org/adk/v2/#"google.golang.org/adk/#' "${ORACLE_SRC}" >"$2/${ORACLE_PKG}/${ORACLE_FILE}" ||
+        { drop_worktree "$2"; echo checkout; return; }
+    fi
     (cd "$2" && go test -count=1 -timeout 5m -run "^${ORACLE_TEST}\$" "./${ORACLE_PKG}") >"$3" 2>&1 || rc=$?
     drop_worktree "$2"
     if [[ ${rc} -eq 0 ]]; then echo pass

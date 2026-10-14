@@ -453,8 +453,9 @@ type Agent struct {
 	// turnCeilingStreak counts turns that ended in a per-turn trip, back
 	// to back, and is what escalates to a session halt. One turn that
 	// finishes inside its bound clears the streak.
-	turnCeilingTripped bool
-	turnCeilingStreak  int
+	turnCeilingTripped       bool
+	turnCeilingStreak        int
+	turnPreflightReservedUSD float64
 
 	// Durable guardrail state (#643). pendingOutOfBandEvents queues
 	// trip/reset rows for a window with no turn in flight;
@@ -1656,6 +1657,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// provider's retry policy. Always installed, even nil, so a Run
 	// nested under another agent's turn never reads that agent's.
 	runCtx = models.WithPriorSuccess(runCtx, a.priorSuccess)
+	runCtx = withCostPreflight(runCtx, a.preflightCostCeilingRequest)
 	// And the auto-mode approver's view of this turn (#1175): the
 	// operator's task, the turn's earlier calls, the bill and the
 	// audit. Only with an approver wired; without it the gate never
@@ -2023,6 +2025,8 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		// above. Shadow any record inherited from a caller's turn, so a
 		// bare 400 here is never retried (#1247).
 		runCtx = models.WithPriorSuccess(runCtx, nil)
+		a.snapshotTurnStartCost()
+		runCtx = withCostPreflight(runCtx, a.preflightCostCeilingRequest)
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {

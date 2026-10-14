@@ -23,6 +23,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
@@ -38,6 +39,10 @@ const (
 	tokensPerCent3  = 100_000 // $0.03 of input on pricedModel
 	costPerTurnUSD3 = 0.03
 )
+
+type pricedFnCallThenDoneLLM struct{ *fnCallThenDoneLLM }
+
+func (pricedFnCallThenDoneLLM) Name() string { return pricedModel }
 
 // runBoundedDelegation is runParentDelegating with a budget on the
 // subagent, returning the tool result the parent's model saw. The result
@@ -125,11 +130,10 @@ func TestSubagentTool_TurnBudgetStopsTheDelegation(t *testing.T) {
 	}
 }
 
-// TestSubagentTool_CostBudgetStopsTheDelegation is the cap that could not
-// exist before #849: the synchronous door had no cost signal at all, so
-// there was nothing to compare a dollar limit against. It accumulates
-// across turns rather than tripping on one, which is the case that
-// matters — a runaway is many affordable turns.
+// TestSubagentTool_CostBudgetStopsTheDelegation also pins the preflight
+// arm: after one affordable turn, the next request's estimated input
+// would exceed the remaining delegation budget and is refused before
+// the provider is called.
 func TestSubagentTool_CostBudgetStopsTheDelegation(t *testing.T) {
 	t.Parallel()
 	h := newTestEventLog(t)
@@ -142,14 +146,15 @@ func TestSubagentTool_CostBudgetStopsTheDelegation(t *testing.T) {
 		t.Fatalf("fixture model %q prices at %v/turn; the cost cap cannot be exercised", pricedModel, c)
 	}
 
-	child, err := New(&meteredLLM{
+	model := &meteredLLM{
 		name: pricedModel,
 		script: [][]*adkmodel.LLMResponse{
 			{callTool("ping", tokensPerCent3, 0)},
 			{callTool("ping", tokensPerCent3, 0)},
 			{usedText("finally done", tokensPerCent3, 0)},
 		},
-	},
+	}
+	child, err := New(model,
 		WithName("child"),
 		WithEventLog(h),
 		WithSession("u", "child"),
@@ -162,8 +167,14 @@ func TestSubagentTool_CostBudgetStopsTheDelegation(t *testing.T) {
 	}
 	got := runBoundedDelegation(t, child, h, tracker)
 
-	if tot := tracker.Totals(); tot.Turns != 2 {
-		t.Errorf("turns = %d, want 2 (one turn is under the cap, two are over)", tot.Turns)
+	if tot := tracker.Totals(); tot.Turns != 1 {
+		t.Errorf("turns = %d, want 1 (the second request is refused before it is billed)", tot.Turns)
+	}
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("provider calls = %d, want 1 (the over-budget second request must be refused before it is sent)", calls)
 	}
 	if !strings.Contains(got, "cost budget of") {
 		t.Errorf("result does not name the cap that stopped it:\n%s", got)
@@ -171,6 +182,81 @@ func TestSubagentTool_CostBudgetStopsTheDelegation(t *testing.T) {
 	if strings.Contains(got, "finally done") {
 		t.Errorf("delegation ran past its cost cap:\n%s", got)
 	}
+}
+
+func TestSubagentTool_CostBudgetRefusesAnUnpricedModel(t *testing.T) {
+	t.Parallel()
+	h := newTestEventLog(t)
+	tracker := usage.NewTracker()
+	model := &meteredLLM{
+		name:   "self-hosted-no-price",
+		script: [][]*adkmodel.LLMResponse{{usedText("should not run", 100, 10)}},
+	}
+	child, err := New(model,
+		WithName("child"),
+		WithEventLog(h),
+		WithSession("u", "child"),
+		WithSubagentBudgets(SubagentBudgets{MaxCostUSD: 0.25}),
+	)
+	if err != nil {
+		t.Fatalf("New child: %v", err)
+	}
+
+	got := runBoundedDelegation(t, child, h, tracker)
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("provider calls = %d, want 0 when the model has no price and a cost budget is active", calls)
+	}
+	if !strings.Contains(got, "no price") {
+		t.Errorf("partial result should explain why the unpriced model was refused:\n%s", got)
+	}
+	if turns := tracker.Totals().Turns; turns != 0 {
+		t.Errorf("billed turns = %d, want 0 for a refused unpriced request", turns)
+	}
+}
+
+func TestSubagentTool_ParentTurnCeilingPreflightsChildRequest(t *testing.T) {
+	t.Parallel()
+	h := newTestEventLog(t)
+	model := &meteredLLM{
+		name:   pricedModel,
+		script: [][]*adkmodel.LLMResponse{{usedText("should not run", 100, 10)}},
+	}
+	child, err := New(model,
+		WithName("child"),
+		WithEventLog(h),
+		WithSession("u", "parent-ceiling-child"),
+		WithInstruction(strings.Repeat("x", 900_000)),
+		WithSubagentBudgets(SubagentBudgets{MaxCostUSD: 1}),
+	)
+	if err != nil {
+		t.Fatalf("New child: %v", err)
+	}
+	parent, err := New(pricedFnCallThenDoneLLM{&fnCallThenDoneLLM{target: child.AgentName()}},
+		WithName("parent"),
+		WithEventLog(h),
+		WithSession("u", "parent-ceiling"),
+		WithUsageTracker(usage.NewTracker()),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.01}),
+		WithSubagents([]*Agent{child}),
+	)
+	if err != nil {
+		t.Fatalf("New parent: %v", err)
+	}
+	var rec terminalRecorder
+	rec.attachTo(parent)
+	for range parent.Run(context.Background(), "go") {
+	}
+
+	model.mu.Lock()
+	calls := model.calls
+	model.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("child provider calls = %d, want 0 when its estimated input alone exceeds the parent's per-turn ceiling", calls)
+	}
+	assertOneTrip(t, &rec, attach.GuardrailCostCeiling, true)
 }
 
 // TestSubagentTool_WallclockBudgetStopsTheDelegation. Wall-clock is the

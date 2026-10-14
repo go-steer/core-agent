@@ -456,6 +456,9 @@ type Agent struct {
 	turnCeilingTripped       bool
 	turnCeilingStreak        int
 	turnPreflightReservedUSD float64
+	turnPreflightEstimates   []costPreflightEstimate
+	turnPreflightBaseTurns   map[string]int
+	turnPreflightSettled     map[string]int
 
 	// Durable guardrail state (#643). pendingOutOfBandEvents queues
 	// trip/reset rows for a window with no turn in flight;

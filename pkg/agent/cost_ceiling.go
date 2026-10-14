@@ -116,6 +116,11 @@ type costCeilingError struct {
 	reason string
 }
 
+type costPreflightEstimate struct {
+	model string
+	usd   float64
+}
+
 func (e *costCeilingError) Error() string { return e.reason }
 
 // AsTurnError reports a ceiling refusal as the cost_ceiling kind
@@ -570,6 +575,12 @@ func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest) (func(), e
 		reason := fmt.Sprintf("per-turn cost ceiling cannot be estimated safely: %s. The request was refused before it was sent. "+turnCutNoNextTurn, err)
 		return nil, a.tripCostCeilingBeforeRequest(turnCost, 0, ceiling.MaxTurnUSD, reason)
 	}
+	turns := a.tracker.All()
+	turnCost := trackerTurnCost(turns) - turnStart
+	if turnCost < 0 {
+		turnCost = 0
+	}
+	modelTurns := trackerModelTurnCounts(turns)
 	a.mu.Lock()
 	if a.costCeilingExceeded || a.turnCeilingTripped {
 		a.mu.Unlock()
@@ -580,8 +591,13 @@ func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest) (func(), e
 		a.mu.Unlock()
 		return nil, nil
 	}
-	turnCost := a.tracker.Totals().CostUSD - a.turnStartCost
-	projected := turnCost + a.turnPreflightReservedUSD + inputCost
+	a.settlePreflightEstimates(modelTurns)
+	pendingEstimate := 0.0
+	for _, estimate := range a.turnPreflightEstimates {
+		pendingEstimate += estimate.usd
+	}
+	reservedUSD := a.turnPreflightReservedUSD
+	projected := turnCost + pendingEstimate + reservedUSD + inputCost
 	if projected < ceiling.MaxTurnUSD {
 		a.turnPreflightReservedUSD += inputCost
 		a.mu.Unlock()
@@ -593,16 +609,55 @@ func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest) (func(), e
 				if a.turnPreflightReservedUSD < 0 {
 					a.turnPreflightReservedUSD = 0
 				}
+				a.turnPreflightEstimates = append(a.turnPreflightEstimates, costPreflightEstimate{model: modelName, usd: inputCost})
 				a.mu.Unlock()
 			})
 		}, nil
 	}
 	a.mu.Unlock()
 	reason := fmt.Sprintf(
-		"per-turn cost ceiling exceeded before the model call: current turn cost $%.4f plus estimated input cost $%.4f is $%.4f, ceiling is $%.4f. The request was refused; output tokens remain unknowable, so the bound is still a floor for output spend. "+turnCutNoNextTurn,
-		turnCost, inputCost, projected, ceiling.MaxTurnUSD,
+		"per-turn cost ceiling exceeded before the model call: current turn cost $%.4f plus $%.4f in unsettled input estimates, $%.4f reserved for concurrent calls, and $%.4f estimated input cost is $%.4f, ceiling is $%.4f. The request was refused; output tokens remain unknowable, so the bound is still a floor for output spend. "+turnCutNoNextTurn,
+		turnCost, pendingEstimate, reservedUSD, inputCost, projected, ceiling.MaxTurnUSD,
 	)
 	return nil, a.tripCostCeilingBeforeRequest(turnCost, inputCost, ceiling.MaxTurnUSD, reason)
+}
+
+func trackerTurnCost(turns []usage.Turn) float64 {
+	var cost float64
+	for _, turn := range turns {
+		cost += turn.CostUSD
+	}
+	return cost
+}
+
+func trackerModelTurnCounts(turns []usage.Turn) map[string]int {
+	counts := make(map[string]int)
+	for _, turn := range turns {
+		if !turn.Side {
+			counts[turn.Model]++
+		}
+	}
+	return counts
+}
+
+// settlePreflightEstimates drops estimates for completed model calls once
+// their usage appears in the tracker. It matches the newest estimates first
+// because tracker appends can interleave with older, harness-settled calls.
+func (a *Agent) settlePreflightEstimates(modelTurns map[string]int) {
+	remaining := make([]costPreflightEstimate, 0, len(a.turnPreflightEstimates))
+	for i := len(a.turnPreflightEstimates) - 1; i >= 0; i-- {
+		estimate := a.turnPreflightEstimates[i]
+		settled := modelTurns[estimate.model] - a.turnPreflightBaseTurns[estimate.model]
+		if settled > a.turnPreflightSettled[estimate.model] {
+			a.turnPreflightSettled[estimate.model]++
+			continue
+		}
+		remaining = append(remaining, estimate)
+	}
+	for i, j := 0, len(remaining)-1; i < j; i, j = i+1, j-1 {
+		remaining[i], remaining[j] = remaining[j], remaining[i]
+	}
+	a.turnPreflightEstimates = remaining
 }
 
 func (a *Agent) tripCostCeilingBeforeRequest(turnCost, inputCost, ceiling float64, reason string) error {
@@ -672,11 +727,15 @@ func (a *Agent) snapshotTurnStartCost() {
 	if a == nil || a.tracker == nil || !a.CostCeilingLimits().active() {
 		return
 	}
-	cost := a.tracker.Totals().CostUSD
+	turns := a.tracker.All()
+	cost := trackerTurnCost(turns)
 	a.mu.Lock()
 	a.turnStartCost = cost
 	a.turnStartCostSet = true
 	a.turnPreflightReservedUSD = 0
+	a.turnPreflightEstimates = nil
+	a.turnPreflightBaseTurns = trackerModelTurnCounts(turns)
+	a.turnPreflightSettled = make(map[string]int)
 	if !a.turnCeilingTripped {
 		a.turnCeilingStreak = 0
 	}

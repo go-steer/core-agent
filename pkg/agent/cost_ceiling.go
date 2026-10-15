@@ -58,21 +58,28 @@
 //
 // Limitations:
 //
-//   - The bound is a floor, not a cap. Even the in-turn tap only fires
-//     between events, so a turn overshoots its ceiling by whatever the
-//     model call in flight goes on to cost; the boundary passes
-//     overshoot by a whole turn when the tap cannot see the spend (a
-//     harness that appends the main-model cost after the stream drains).
+//   - A per-turn request is refused when its estimated input cost would
+//     meet or exceed the remaining ceiling. The estimate uses the last
+//     measured input plus pending tool-result growth, or a serialized
+//     request estimate when no measurement exists; an observed cached
+//     prefix uses its cache-read rate. This remains a floor, not a hard
+//     cap: output tokens are unknowable before the call, and input
+//     estimates are not provider tokenization.
 //   - Subtask costs (Mechanism-B agentic_* wrappers) are included in
 //     the totals via usage.Tracker — they share the same accumulator.
 
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sync"
+
+	adkmodel "google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // CostCeiling configures the per-turn / per-session spend caps
@@ -107,6 +114,11 @@ func (c CostCeiling) active() bool {
 // the spend that triggered it.
 type costCeilingError struct {
 	reason string
+}
+
+type costPreflightEstimate struct {
+	model string
+	usd   float64
 }
 
 func (e *costCeilingError) Error() string { return e.reason }
@@ -392,7 +404,10 @@ func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) bool {
 	// not, the tap would otherwise re-trip on every remaining event of
 	// a turn whose cost is already over the bound.
 	case !turnTripped && turnStartSet && ceiling.MaxTurnUSD > 0 && turnCost >= ceiling.MaxTurnUSD:
-		streak := a.recordTurnCeilingTrip()
+		streak, tripped := a.recordTurnCeilingTrip()
+		if !tripped {
+			return false
+		}
 		if streak >= maxConsecutiveTurnCeilingTrips {
 			reason = fmt.Sprintf(
 				"per-turn cost ceiling halted the session: %d turns in a row each hit the $%.4f per-turn ceiling (the last cost $%.4f). Every one was inside its own bound, so no per-session ceiling caught the pattern. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
@@ -460,14 +475,18 @@ func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) bool {
 const maxConsecutiveTurnCeilingTrips = 3
 
 // recordTurnCeilingTrip latches this turn as tripped and returns the
-// resulting consecutive-trip count. Called exactly once per turn, from
-// the per-turn arm above, under the latch that arm checks first.
-func (a *Agent) recordTurnCeilingTrip() int {
+// resulting consecutive-trip count. Only the caller that sets the latch
+// owns the trip's side effects; parallel checks for the same turn observe
+// the existing count without advancing the streak again.
+func (a *Agent) recordTurnCeilingTrip() (int, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.turnCeilingTripped {
+		return a.turnCeilingStreak, false
+	}
 	a.turnCeilingTripped = true
 	a.turnCeilingStreak++
-	return a.turnCeilingStreak
+	return a.turnCeilingStreak, true
 }
 
 // enforceCostCeilingInTurn is the in-turn arm of the cost ceiling
@@ -526,6 +545,143 @@ func (a *Agent) enforceCostCeilingInTurn() {
 	}
 }
 
+func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest) (func(), error) {
+	if a == nil || a.tracker == nil {
+		return nil, nil
+	}
+	a.mu.Lock()
+	ceiling := a.costCeiling
+	turnStart, turnStartSet := a.turnStartCost, a.turnStartCostSet
+	turnTripped, halted := a.turnCeilingTripped, a.costCeilingExceeded
+	a.mu.Unlock()
+	if halted {
+		return nil, context.Canceled
+	}
+	if ceiling.MaxTurnUSD <= 0 || !turnStartSet {
+		return nil, nil
+	}
+	if turnTripped {
+		return nil, context.Canceled
+	}
+
+	modelName := a.modelName
+	if req != nil && req.Model != "" {
+		modelName = req.Model
+	}
+	price := usage.PriceFor(modelName, nil)
+	inputCost, err := estimateInputCost(req, modelName, a.tracker, nil, price)
+	if err != nil {
+		turnCost := a.tracker.Totals().CostUSD - turnStart
+		reason := fmt.Sprintf("per-turn cost ceiling cannot be estimated safely: %s. The request was refused before it was sent. "+turnCutNoNextTurn, err)
+		return nil, a.tripCostCeilingBeforeRequest(turnCost, 0, ceiling.MaxTurnUSD, reason)
+	}
+	turns := a.tracker.All()
+	turnCost := trackerTurnCost(turns) - turnStart
+	if turnCost < 0 {
+		turnCost = 0
+	}
+	modelTurns := trackerModelTurnCounts(turns)
+	a.mu.Lock()
+	if a.costCeilingExceeded || a.turnCeilingTripped {
+		a.mu.Unlock()
+		return nil, context.Canceled
+	}
+	ceiling = a.costCeiling
+	if ceiling.MaxTurnUSD <= 0 || !a.turnStartCostSet {
+		a.mu.Unlock()
+		return nil, nil
+	}
+	a.settlePreflightEstimates(modelTurns)
+	pendingEstimate := 0.0
+	for _, estimate := range a.turnPreflightEstimates {
+		pendingEstimate += estimate.usd
+	}
+	reservedUSD := a.turnPreflightReservedUSD
+	projected := turnCost + pendingEstimate + reservedUSD + inputCost
+	if projected < ceiling.MaxTurnUSD {
+		a.turnPreflightReservedUSD += inputCost
+		a.mu.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				a.mu.Lock()
+				a.turnPreflightReservedUSD -= inputCost
+				if a.turnPreflightReservedUSD < 0 {
+					a.turnPreflightReservedUSD = 0
+				}
+				a.turnPreflightEstimates = append(a.turnPreflightEstimates, costPreflightEstimate{model: modelName, usd: inputCost})
+				a.mu.Unlock()
+			})
+		}, nil
+	}
+	a.mu.Unlock()
+	reason := fmt.Sprintf(
+		"per-turn cost ceiling exceeded before the model call: current turn cost $%.4f plus $%.4f in unsettled input estimates, $%.4f reserved for concurrent calls, and $%.4f estimated input cost is $%.4f, ceiling is $%.4f. The request was refused; output tokens remain unknowable, so the bound is still a floor for output spend. "+turnCutNoNextTurn,
+		turnCost, pendingEstimate, reservedUSD, inputCost, projected, ceiling.MaxTurnUSD,
+	)
+	return nil, a.tripCostCeilingBeforeRequest(turnCost, inputCost, ceiling.MaxTurnUSD, reason)
+}
+
+func trackerTurnCost(turns []usage.Turn) float64 {
+	var cost float64
+	for _, turn := range turns {
+		cost += turn.CostUSD
+	}
+	return cost
+}
+
+func trackerModelTurnCounts(turns []usage.Turn) map[string]int {
+	counts := make(map[string]int)
+	for _, turn := range turns {
+		if !turn.Side {
+			counts[turn.Model]++
+		}
+	}
+	return counts
+}
+
+// settlePreflightEstimates drops estimates for completed model calls once
+// their usage appears in the tracker. It matches the newest estimates first
+// because tracker appends can interleave with older, harness-settled calls.
+func (a *Agent) settlePreflightEstimates(modelTurns map[string]int) {
+	remaining := make([]costPreflightEstimate, 0, len(a.turnPreflightEstimates))
+	for i := len(a.turnPreflightEstimates) - 1; i >= 0; i-- {
+		estimate := a.turnPreflightEstimates[i]
+		settled := modelTurns[estimate.model] - a.turnPreflightBaseTurns[estimate.model]
+		if settled > a.turnPreflightSettled[estimate.model] {
+			a.turnPreflightSettled[estimate.model]++
+			continue
+		}
+		remaining = append(remaining, estimate)
+	}
+	for i, j := 0, len(remaining)-1; i < j; i, j = i+1, j-1 {
+		remaining[i], remaining[j] = remaining[j], remaining[i]
+	}
+	a.turnPreflightEstimates = remaining
+}
+
+func (a *Agent) tripCostCeilingBeforeRequest(turnCost, inputCost, ceiling float64, reason string) error {
+	streak, tripped := a.recordTurnCeilingTrip()
+	if !tripped {
+		return context.Canceled
+	}
+	halted := streak >= maxConsecutiveTurnCeilingTrips
+	if halted {
+		reason = fmt.Sprintf(
+			"per-turn cost ceiling halted the session: %d turns in a row each hit the $%.4f per-turn ceiling (the last request was refused after $%.4f was spent with an estimated $%.4f input cost; reason: %s). Every one was inside its own bound, so no per-session ceiling caught the pattern. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
+			streak, ceiling, turnCost, inputCost, reason,
+		)
+		a.mu.Lock()
+		a.costCeilingExceeded = true
+		a.costCeilingReason = reason
+		a.mu.Unlock()
+	}
+	a.emitGuardrailTrip(attach.GuardrailCostCeiling, reason, true, halted)
+	a.markGuardrailHalt(attach.TurnErrorCostCeiling)
+	a.Interrupt()
+	return context.Canceled
+}
+
 // costCeilingReached reports whether a configured ceiling is already
 // met: the session halted, this turn already tripped, or the spend at
 // or over either bound. It decides nothing and trips nothing; the
@@ -571,10 +727,15 @@ func (a *Agent) snapshotTurnStartCost() {
 	if a == nil || a.tracker == nil || !a.CostCeilingLimits().active() {
 		return
 	}
-	cost := a.tracker.Totals().CostUSD
+	turns := a.tracker.All()
+	cost := trackerTurnCost(turns)
 	a.mu.Lock()
 	a.turnStartCost = cost
 	a.turnStartCostSet = true
+	a.turnPreflightReservedUSD = 0
+	a.turnPreflightEstimates = nil
+	a.turnPreflightBaseTurns = trackerModelTurnCounts(turns)
+	a.turnPreflightSettled = make(map[string]int)
 	if !a.turnCeilingTripped {
 		a.turnCeilingStreak = 0
 	}

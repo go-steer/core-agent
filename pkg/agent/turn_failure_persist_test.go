@@ -559,7 +559,7 @@ func TestTurnFailure_PerTurnRowNeverRestoresAsHalt(t *testing.T) {
 		t.Fatalf("precondition: %d trip rows", n)
 	}
 
-	second, err := New(oneShotLLM{}, WithEventLog(h), WithSession("u", "s-1258-restore"),
+	second, err := New(pricedOneShotLLM{}, WithEventLog(h), WithSession("u", "s-1258-restore"),
 		WithUsageTracker(usage.NewTracker()),
 		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.05, MaxSessionUSD: 100}))
 	if err != nil {

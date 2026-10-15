@@ -108,6 +108,23 @@ func (l *roleSanitizingLLM) GenerateContent(ctx context.Context, req *adkmodel.L
 			req = &cp
 		}
 	}
+	if check := costPreflightFromContext(ctx); check != nil {
+		return func(yield func(*adkmodel.LLMResponse, error) bool) {
+			release, err := check(req)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if release != nil {
+				defer release()
+			}
+			for response, err := range l.inner.GenerateContent(ctx, req, stream) {
+				if !yield(response, err) {
+					return
+				}
+			}
+		}
+	}
 	return l.inner.GenerateContent(ctx, req, stream)
 }
 

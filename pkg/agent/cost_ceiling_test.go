@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -288,6 +289,114 @@ func TestMaybeEnforceCostCeiling_PerTurn_OnlyTripsOncePerTurn(t *testing.T) {
 	}
 }
 
+func TestTripCostCeilingBeforeRequest_ParallelRefusalsCountOnce(t *testing.T) {
+	t.Parallel()
+
+	const callers = 32
+	a := &Agent{}
+	var rec terminalRecorder
+	rec.attachTo(a)
+	start := make(chan struct{})
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := range callers {
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[i] = a.tripCostCeilingBeforeRequest(0, 0.01, 0.01, "preflight refused")
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("caller %d error = %v, want context.Canceled", i, err)
+		}
+	}
+	if got := len(rec.guardrailTrips()); got != 1 {
+		t.Errorf("guardrail trips = %d, want exactly one", got)
+	}
+	a.mu.Lock()
+	streak, tripped, halted := a.turnCeilingStreak, a.turnCeilingTripped, a.costCeilingExceeded
+	a.mu.Unlock()
+	if streak != 1 || !tripped || halted {
+		t.Errorf("turn state = (streak %d, tripped %v, halted %v), want (1, true, false)", streak, tripped, halted)
+	}
+}
+
+func TestPreflightCostCeilingRequest_ReservesBudgetAcrossConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	const callers = 2
+	tracker := usage.NewTracker()
+	request := &adkmodel.LLMRequest{
+		Model: pricedModel,
+		Contents: []*genai.Content{
+			genai.NewContentFromText(strings.Repeat("x", 300_000), genai.RoleUser),
+		},
+	}
+	price := usage.PriceFor(pricedModel, nil)
+	inputCost, err := estimateInputCost(request, pricedModel, tracker, nil, price)
+	if err != nil {
+		t.Fatalf("estimate request cost: %v", err)
+	}
+	if inputCost <= 0 {
+		t.Fatalf("estimated request cost = %v, want positive", inputCost)
+	}
+	a := &Agent{
+		tracker:     tracker,
+		modelName:   pricedModel,
+		costCeiling: CostCeiling{MaxTurnUSD: inputCost * 1.5},
+	}
+	var rec terminalRecorder
+	rec.attachTo(a)
+	a.snapshotTurnStartCost()
+
+	start := make(chan struct{})
+	errs := make([]error, callers)
+	releases := make([]func(), callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := range callers {
+		go func() {
+			defer wg.Done()
+			<-start
+			releases[i], errs[i] = a.preflightCostCeilingRequest(request)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	allowed := 0
+	for i, err := range errs {
+		if err == nil {
+			allowed++
+			if releases[i] == nil {
+				t.Errorf("caller %d passed preflight without a reservation release", i)
+			}
+			releases[i]()
+			continue
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("caller %d error = %v, want context.Canceled", i, err)
+		}
+	}
+	if allowed != 1 {
+		t.Errorf("allowed concurrent calls = %d, want exactly one", allowed)
+	}
+	if got := len(rec.guardrailTrips()); got != 1 {
+		t.Errorf("guardrail trips = %d, want exactly one", got)
+	}
+	a.mu.Lock()
+	reserved := a.turnPreflightReservedUSD
+	a.mu.Unlock()
+	if reserved != 0 {
+		t.Errorf("reserved input cost after release = %v, want 0", reserved)
+	}
+}
+
 func TestMaybeEnforceCostCeiling_PerTurn_DoesNotTripUnderCap(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
@@ -372,6 +481,10 @@ func (oneShotLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ b
 	}
 }
 
+type pricedOneShotLLM struct{ oneShotLLM }
+
+func (pricedOneShotLLM) Name() string { return pricedModel }
+
 // TestRun_CostCeiling_SettlesAfterHarnessAppend is the #362 regression.
 // In harness-driven deployments the harness appends a turn's main-model
 // cost AFTER that turn's post-turn hook runs, so the hook's per-turn
@@ -395,7 +508,7 @@ func TestRun_CostCeiling_SettlesAfterHarnessAppend(t *testing.T) {
 	t.Parallel()
 
 	tr := usage.NewTracker()
-	a, err := New(oneShotLLM{},
+	a, err := New(pricedOneShotLLM{},
 		WithSession("u-cc", "s-cc"),
 		WithUsageTracker(tr),
 		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.10}),
@@ -419,8 +532,9 @@ func TestRun_CostCeiling_SettlesAfterHarnessAppend(t *testing.T) {
 	}
 
 	// Harness appends turn 1's main-model cost AFTER the cleanup hook:
-	// $0.15, over the $0.10 per-turn cap.
-	tr.Append("oneshot", 1_500_000, 0, usage.Pricing{InputPerMTok: 0.10})
+	// $0.15, over the $0.10 per-turn cap. Its next-turn input estimate
+	// remains below the cap so this test isolates settle-time accounting.
+	tr.Append(pricedModel, 150_000, 0, usage.Pricing{InputPerMTok: 1.0})
 
 	// Turn 2: settle-time enforcement at the top of Run now sees turn 1's
 	// full cost and reports the trip. Before the fix, turn 1's cost fell
@@ -508,7 +622,7 @@ type burnLoopLLM struct {
 	calls int
 }
 
-func (*burnLoopLLM) Name() string { return "burn-loop" }
+func (*burnLoopLLM) Name() string { return pricedModel }
 func (l *burnLoopLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		if err := ctx.Err(); err != nil {
@@ -533,6 +647,174 @@ func (l *burnLoopLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMReques
 			},
 			TurnComplete: true,
 		}, nil)
+	}
+}
+
+type toolThenDoneCostLLM struct {
+	mu          sync.Mutex
+	inputCosts  []float64
+	inputTokens []int32
+}
+
+func (*toolThenDoneCostLLM) Name() string { return pricedModel }
+
+func (l *toolThenDoneCostLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		inputCost, err := estimateInputCost(req, pricedModel, nil, nil, usage.PriceFor(pricedModel, nil))
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		l.mu.Lock()
+		call := len(l.inputCosts)
+		l.inputCosts = append(l.inputCosts, inputCost)
+		var inputTokens int32
+		if call < len(l.inputTokens) {
+			inputTokens = l.inputTokens[call]
+		}
+		l.mu.Unlock()
+
+		content := &genai.Content{Role: genai.RoleModel}
+		if call == 0 {
+			content.Parts = []*genai.Part{{FunctionCall: &genai.FunctionCall{
+				ID:   "cost-ceiling-tool",
+				Name: "todo",
+				Args: map[string]any{"action": "list"},
+			}}}
+		} else {
+			content.Parts = []*genai.Part{{Text: "done"}}
+		}
+		yield(&adkmodel.LLMResponse{
+			Content: content,
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount: inputTokens,
+			},
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+func (l *toolThenDoneCostLLM) estimates() []float64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]float64(nil), l.inputCosts...)
+}
+
+func (l *toolThenDoneCostLLM) callCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.inputCosts)
+}
+
+func runCostCeilingToolThenDone(t *testing.T, llm *toolThenDoneCostLLM, ceiling float64, settleInline bool) (*Agent, *usage.Tracker, *terminalRecorder, error) {
+	t.Helper()
+	tracker := usage.NewTracker()
+	agent, err := New(llm,
+		WithName("cost-preflight-test"),
+		WithSession("u-cost-preflight-test", "s-cost-preflight-test"),
+		WithUsageTracker(tracker),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: ceiling}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	var rec terminalRecorder
+	rec.attachTo(agent)
+	var tap usage.TurnTap
+	var deferred []usage.TurnUsage
+	var runErr error
+	for ev, err := range agent.Run(context.Background(), "continue") {
+		if err != nil {
+			runErr = err
+		}
+		tap.Observe(ev)
+		if u, ok := tap.Commit(ev); ok {
+			if settleInline {
+				tracker.AppendUsage(llm.Name(), u, usage.PriceFor(llm.Name(), nil))
+			} else {
+				deferred = append(deferred, u)
+			}
+		}
+	}
+	for _, u := range deferred {
+		tracker.AppendUsage(llm.Name(), u, usage.PriceFor(llm.Name(), nil))
+	}
+	return agent, tracker, &rec, runErr
+}
+
+func TestSettlePreflightEstimates_PrefersNewestRequest(t *testing.T) {
+	a := &Agent{
+		turnPreflightEstimates: []costPreflightEstimate{
+			{model: pricedModel, usd: 0.01},
+			{model: pricedModel, usd: 0.02},
+		},
+		turnPreflightBaseTurns: map[string]int{pricedModel: 0},
+		turnPreflightSettled:   make(map[string]int),
+	}
+
+	a.settlePreflightEstimates(map[string]int{pricedModel: 1})
+	if len(a.turnPreflightEstimates) != 1 || a.turnPreflightEstimates[0].usd != 0.01 {
+		t.Errorf("unsettled estimates = %v, want only the older $0.01 estimate", a.turnPreflightEstimates)
+	}
+}
+
+func TestRun_CostCeiling_RetainsEstimatesUntilHarnessSettlement(t *testing.T) {
+	t.Parallel()
+
+	baselineLLM := &toolThenDoneCostLLM{}
+	if _, _, _, err := runCostCeilingToolThenDone(t, baselineLLM, 0, false); err != nil {
+		t.Fatalf("baseline Run: %v", err)
+	}
+	costs := baselineLLM.estimates()
+	if len(costs) != 2 || costs[0] <= 0 || costs[1] <= 0 {
+		t.Fatalf("baseline request estimates = %v, want two positive estimates", costs)
+	}
+	minCost := math.Min(costs[0], costs[1])
+	maxCost := math.Max(costs[0], costs[1])
+	ceiling := maxCost + minCost/2
+	if costs[0]+costs[1] < ceiling {
+		t.Fatalf("request estimates %v do not exceed selected ceiling %.8f", costs, ceiling)
+	}
+
+	llm := &toolThenDoneCostLLM{inputTokens: []int32{100, 100}}
+	_, _, rec, runErr := runCostCeilingToolThenDone(t, llm, ceiling, false)
+	if llm.callCount() != 1 {
+		t.Errorf("provider calls = %d, want the second request refused before dispatch", llm.callCount())
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Errorf("Run error = %v, want the per-turn guardrail cancellation", runErr)
+	}
+	assertOneTrip(t, rec, attach.GuardrailCostCeiling, true)
+}
+
+func TestRun_CostCeiling_DoesNotDoubleCountInlineSettledEstimate(t *testing.T) {
+	t.Parallel()
+
+	baselineLLM := &toolThenDoneCostLLM{}
+	if _, _, _, err := runCostCeilingToolThenDone(t, baselineLLM, 0, false); err != nil {
+		t.Fatalf("baseline Run: %v", err)
+	}
+	costs := baselineLLM.estimates()
+	if len(costs) != 2 || costs[0] <= 0 || costs[1] <= 0 {
+		t.Fatalf("baseline request estimates = %v, want two positive estimates", costs)
+	}
+	price := usage.PriceFor(pricedModel, nil)
+	if price.InputPerMTok <= 0 {
+		t.Fatalf("test model %q has no input price: %+v", pricedModel, price)
+	}
+	firstTokens := int32(math.Ceil(costs[0] * 1.5 * 1_000_000 / price.InputPerMTok))
+	firstSpend := price.CostUSD(int(firstTokens), 0)
+	ceiling := firstSpend + costs[1] + math.Min(costs[0], costs[1])/2
+	if firstSpend < costs[0] || firstSpend+costs[0]+costs[1] <= ceiling {
+		t.Fatalf("test costs do not distinguish replacement from double-counting: estimates=%v actual-first=%.8f ceiling=%.8f", costs, firstSpend, ceiling)
+	}
+
+	llm := &toolThenDoneCostLLM{inputTokens: []int32{firstTokens, 100}}
+	if _, _, _, err := runCostCeilingToolThenDone(t, llm, ceiling, true); err != nil {
+		t.Fatalf("Run with inline tracker settlement: %v", err)
+	}
+	if llm.callCount() != 2 {
+		t.Errorf("provider calls = %d, want both requests: tracked spend plus the second estimate is below the ceiling", llm.callCount())
 	}
 }
 
@@ -617,5 +899,148 @@ func TestRun_CostCeiling_HaltsAnIntraTurnBurn(t *testing.T) {
 	// ceiling is crossed, not that it stops on an exact call.
 	if calls > 10 {
 		t.Errorf("loop ran %d model calls past a ceiling crossed at ~5: enforcement is still waiting for a turn boundary", calls)
+	}
+}
+
+type countedCostLLM struct {
+	name     string
+	response *adkmodel.LLMResponse
+	calls    int
+	mu       sync.Mutex
+}
+
+func (l *countedCostLLM) Name() string { return l.name }
+
+func (l *countedCostLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	l.mu.Lock()
+	l.calls++
+	l.mu.Unlock()
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(l.response, nil)
+	}
+}
+
+func (l *countedCostLLM) callCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls
+}
+
+func TestRun_CostCeiling_PreflightsInputBeforeCallingModel(t *testing.T) {
+	t.Parallel()
+
+	modelName := pricedModel
+	price := usage.PriceFor(modelName, nil)
+	if price.Unpriced || price.InputPerMTok <= 0 {
+		t.Fatalf("test model %q has no input price: %+v", modelName, price)
+	}
+	const inputTokens = 100_000
+	estimatedCost := price.CostUSD(inputTokens, 0)
+	tr := usage.NewTracker()
+	llm := &countedCostLLM{
+		name: modelName,
+		response: &adkmodel.LLMResponse{
+			Content: genai.NewContentFromText("done", genai.RoleModel),
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount: inputTokens,
+			},
+			TurnComplete: true,
+		},
+	}
+	a, err := New(llm,
+		WithSession("u-preflight", "s-preflight"),
+		WithInstruction(strings.Repeat("x", 900_000)),
+		WithUsageTracker(tr),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: estimatedCost / 2}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	var rec terminalRecorder
+	rec.attachTo(a)
+
+	var runErr error
+	for _, err := range a.Run(context.Background(), "continue") {
+		if err != nil {
+			runErr = err
+		}
+	}
+	if llm.callCount() != 0 {
+		t.Errorf("provider calls = %d, want 0 when estimated input alone exceeds the per-turn ceiling", llm.callCount())
+	}
+	if !errors.Is(runErr, context.Canceled) {
+		t.Errorf("Run error = %v, want the existing per-turn guardrail cancellation", runErr)
+	}
+	assertOneTrip(t, &rec, attach.GuardrailCostCeiling, true)
+	if halted, _ := a.CostCeilingTripped(); halted {
+		t.Error("one per-turn preflight trip must not halt the session")
+	}
+}
+
+func TestRun_CostCeiling_RefusesAnUnpricedModel(t *testing.T) {
+	t.Parallel()
+	llm := &countedCostLLM{
+		name: "self-hosted-no-price",
+		response: &adkmodel.LLMResponse{
+			Content:      genai.NewContentFromText("done", genai.RoleModel),
+			TurnComplete: true,
+		},
+	}
+	a, err := New(llm,
+		WithSession("u-unpriced-preflight", "s-unpriced-preflight"),
+		WithUsageTracker(usage.NewTracker()),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.25}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	var rec terminalRecorder
+	rec.attachTo(a)
+	for range a.Run(context.Background(), "continue") {
+	}
+	if llm.callCount() != 0 {
+		t.Errorf("provider calls = %d, want 0 when the model has no price and a per-turn ceiling is active", llm.callCount())
+	}
+	trips := rec.guardrailTrips()
+	if len(trips) != 1 || !strings.Contains(trips[0].Reason, "no price") {
+		t.Errorf("guardrail trips = %+v, want one trip explaining the missing price", trips)
+	}
+}
+
+func TestRun_CostCeiling_PricesObservedCachedPrefixAtReadRate(t *testing.T) {
+	t.Parallel()
+
+	modelName := pricedModel
+	price := usage.PriceFor(modelName, nil)
+	if price.Unpriced || price.CachedInputPerMTok >= price.InputPerMTok {
+		t.Fatalf("test model %q does not have a cheaper cache-read rate: %+v", modelName, price)
+	}
+	const inputTokens, cachedTokens = 100_000, 90_000
+	uncachedEstimate := price.CostUSD(inputTokens, 0)
+	cachedEstimate := price.CostUSDWithCache(inputTokens-cachedTokens, cachedTokens, 0)
+	tr := usage.NewTracker()
+	tr.AppendUsage(modelName, usage.TurnUsage{
+		InputTokens:       inputTokens,
+		CachedInputTokens: cachedTokens,
+	}, price)
+	llm := &countedCostLLM{
+		name: modelName,
+		response: &adkmodel.LLMResponse{
+			Content:      genai.NewContentFromText("done", genai.RoleModel),
+			TurnComplete: true,
+		},
+	}
+	a, err := New(llm,
+		WithSession("u-cache-preflight", "s-cache-preflight"),
+		WithUsageTracker(tr),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: (uncachedEstimate + cachedEstimate) / 2}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	for range a.Run(context.Background(), "continue") {
+	}
+	if llm.callCount() != 1 {
+		t.Errorf("provider calls = %d, want 1: observed cached-prefix pricing should keep the estimate below the ceiling (cached=$%.4f uncached=$%.4f)", llm.callCount(), cachedEstimate, uncachedEstimate)
 	}
 }

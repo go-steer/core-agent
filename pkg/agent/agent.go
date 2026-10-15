@@ -1012,16 +1012,17 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	if model == nil {
 		return nil, fmt.Errorf("agent: model is required")
 	}
-	// Strip role-less / invalid-role Content from every request before it
-	// reaches the provider (#614). Wrapped here so the ONE model value is
-	// sanitized on both the main-turn runner (llmagent below) and the
-	// internal summarizer/side-question paths (a.model). Outermost of any
-	// provider wrapper. See rolesanitize.go.
-	model = newRoleSanitizingLLM(model)
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(&o)
 	}
+	// Strip role-less / invalid-role Content from every request before it
+	// reaches the provider (#614). Wrapped here so the ONE model value is
+	// sanitized on both the main-turn runner (llmagent below) and the
+	// internal summarizer/side-question paths (a.model). Outermost of any
+	// provider wrapper. See rolesanitize.go. After the options, because
+	// the wrapper carries the billing backend to the cost preflight.
+	model = newRoleSanitizingLLM(model, o.billingBackend)
 
 	// Resolve subagents into tools. Done after all options are
 	// applied so each subagent tool captures the parent's final

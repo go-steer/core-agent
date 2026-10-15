@@ -28,11 +28,11 @@ func TestWithCostPreflight_ComposesParentCheck(t *testing.T) {
 	t.Parallel()
 
 	var calls []string
-	ctx := withCostPreflight(context.Background(), func(*adkmodel.LLMRequest) (func(), error) {
+	ctx := withCostPreflight(context.Background(), func(*adkmodel.LLMRequest, string) (func(), error) {
 		calls = append(calls, "parent")
 		return func() { calls = append(calls, "release parent") }, nil
 	})
-	ctx = withCostPreflight(ctx, func(*adkmodel.LLMRequest) (func(), error) {
+	ctx = withCostPreflight(ctx, func(*adkmodel.LLMRequest, string) (func(), error) {
 		calls = append(calls, "child")
 		return func() { calls = append(calls, "release child") }, nil
 	})
@@ -40,7 +40,7 @@ func TestWithCostPreflight_ComposesParentCheck(t *testing.T) {
 	if check == nil {
 		t.Fatal("composed context has no cost preflight")
 	}
-	release, err := check(&adkmodel.LLMRequest{})
+	release, err := check(&adkmodel.LLMRequest{}, "")
 	if err != nil {
 		t.Fatalf("composed check: %v", err)
 	}
@@ -58,14 +58,14 @@ func TestWithCostPreflight_ChildFailureReleasesParentReservation(t *testing.T) {
 
 	parentReleased := false
 	childErr := errors.New("child budget exhausted")
-	ctx := withCostPreflight(context.Background(), func(*adkmodel.LLMRequest) (func(), error) {
+	ctx := withCostPreflight(context.Background(), func(*adkmodel.LLMRequest, string) (func(), error) {
 		return func() { parentReleased = true }, nil
 	})
-	ctx = withCostPreflight(ctx, func(*adkmodel.LLMRequest) (func(), error) {
+	ctx = withCostPreflight(ctx, func(*adkmodel.LLMRequest, string) (func(), error) {
 		return nil, childErr
 	})
 
-	release, err := costPreflightFromContext(ctx)(&adkmodel.LLMRequest{})
+	release, err := costPreflightFromContext(ctx)(&adkmodel.LLMRequest{}, "")
 	if !errors.Is(err, childErr) {
 		t.Fatalf("composed check error = %v, want %v", err, childErr)
 	}

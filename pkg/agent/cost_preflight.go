@@ -28,7 +28,11 @@ import (
 
 type costPreflightContextKey struct{}
 
-type costPreflightCheck func(*adkmodel.LLMRequest) (func(), error)
+// costPreflightCheck screens one model request before it is sent.
+// backend is the billing backend of the agent whose model is making the
+// request, which may differ from the agent that installed the check: a
+// parent's per-turn ceiling also screens its subagents' requests.
+type costPreflightCheck func(req *adkmodel.LLMRequest, backend string) (func(), error)
 
 func withCostPreflight(ctx context.Context, check costPreflightCheck) context.Context {
 	if check == nil {
@@ -36,12 +40,12 @@ func withCostPreflight(ctx context.Context, check costPreflightCheck) context.Co
 	}
 	if parent := costPreflightFromContext(ctx); parent != nil {
 		child := check
-		check = func(req *adkmodel.LLMRequest) (func(), error) {
-			parentRelease, err := parent(req)
+		check = func(req *adkmodel.LLMRequest, backend string) (func(), error) {
+			parentRelease, err := parent(req, backend)
 			if err != nil {
 				return nil, err
 			}
-			childRelease, err := child(req)
+			childRelease, err := child(req, backend)
 			if err != nil {
 				if parentRelease != nil {
 					parentRelease()

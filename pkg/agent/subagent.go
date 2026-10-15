@@ -472,7 +472,7 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 			price = opts.Inner.price(innerModelName)
 		)
 		if opts.Budgets.MaxCostUSD > 0 {
-			runCtx = withCostPreflight(runCtx, func(req *adkmodel.LLMRequest) (func(), error) {
+			runCtx = withCostPreflight(runCtx, func(req *adkmodel.LLMRequest, _ string) (func(), error) {
 				inputCost, err := estimateInputCost(req, innerModelName, nil, &history, price)
 				if err != nil {
 					return nil, err

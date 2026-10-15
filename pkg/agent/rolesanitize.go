@@ -55,17 +55,23 @@ import (
 // role Gemini would reject from each request before delegating.
 type roleSanitizingLLM struct {
 	inner adkmodel.LLM
+	// backend is the billing backend of the agent that owns this model
+	// (WithBillingBackend; "" is the process backend). It travels with
+	// each request to the cost preflight, so a check installed by an
+	// ancestor agent prices a subagent's request on the subagent's own
+	// backend rather than its own.
+	backend string
 }
 
 // newRoleSanitizingLLM wraps inner so every GenerateContent request has
 // its Contents filtered to valid genai roles. Returns inner unchanged
 // when it is nil (agent.New rejects a nil model before this is called;
 // the guard keeps the wrapper safe for direct/test use).
-func newRoleSanitizingLLM(inner adkmodel.LLM) adkmodel.LLM {
+func newRoleSanitizingLLM(inner adkmodel.LLM, backend string) adkmodel.LLM {
 	if inner == nil {
 		return nil
 	}
-	return &roleSanitizingLLM{inner: inner}
+	return &roleSanitizingLLM{inner: inner, backend: backend}
 }
 
 // Name delegates to the wrapped model — the sanitizer is transparent to
@@ -86,7 +92,7 @@ func (l *roleSanitizingLLM) WithoutBuiltins() adkmodel.LLM {
 	if !ok {
 		return l
 	}
-	return newRoleSanitizingLLM(u.WithoutBuiltins())
+	return newRoleSanitizingLLM(u.WithoutBuiltins(), l.backend)
 }
 
 // GenerateContent filters invalid-role Content out of req.Contents, then
@@ -110,7 +116,7 @@ func (l *roleSanitizingLLM) GenerateContent(ctx context.Context, req *adkmodel.L
 	}
 	if check := costPreflightFromContext(ctx); check != nil {
 		return func(yield func(*adkmodel.LLMResponse, error) bool) {
-			release, err := check(req)
+			release, err := check(req, l.backend)
 			if err != nil {
 				yield(nil, err)
 				return

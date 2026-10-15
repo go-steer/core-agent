@@ -44,6 +44,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 #### Bug or Regression
 
 - **Cost ceilings now reject a request before sending it when estimated input alone would exhaust the per-turn or subagent budget.** The estimate uses the latest measured input and pending tool-result growth, with a serialized-request fallback; a previously observed cache prefix uses its cache-read price. A model without a configured price is refused while a cost budget is active. The existing per-turn guardrail event and partial-subagent result report the refusal. Output-token spend remains unknowable until the provider responds, so the estimate is still a floor rather than a hard cap. ([#1299](https://github.com/go-steer/core-agent/issues/1299))
+- **The cost preflight prices a request on the backend that bills it.** The per-turn check priced every request on the process backend, and a parent's check also screens its subagents' requests. Under a per-turn ceiling, a subagent on another provider (an OpenAI model under a Gemini parent, say) read as unpriced and was refused before it was sent. Each agent's model now carries its billing backend to the check, so a request is priced where its tokens are billed.
 
 #### Other (Cleanup)
 

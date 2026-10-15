@@ -71,7 +71,7 @@ func TestSanitizeContentRoles(t *testing.T) {
 func TestRoleSanitizingLLM_DropsInvalidRoleContentDoesNotMutateCaller(t *testing.T) {
 	t.Parallel()
 	capture := &captureLLM{response: "ok"}
-	llm := newRoleSanitizingLLM(capture)
+	llm := newRoleSanitizingLLM(capture, "")
 
 	orig := []*genai.Content{
 		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hi"}}},
@@ -108,7 +108,7 @@ func TestRoleSanitizingLLM_EmptyContentsGetThePlaceholder(t *testing.T) {
 			t.Parallel()
 			capture := &captureLLM{response: "ok"}
 			req := &adkmodel.LLMRequest{Contents: contents}
-			for range newRoleSanitizingLLM(capture).GenerateContent(context.Background(), req, false) {
+			for range newRoleSanitizingLLM(capture, "").GenerateContent(context.Background(), req, false) {
 			}
 			if len(req.Contents) != len(contents) {
 				t.Errorf("caller req.Contents len = %d, want %d (must not be mutated)", len(req.Contents), len(contents))

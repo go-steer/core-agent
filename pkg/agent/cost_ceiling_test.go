@@ -363,7 +363,7 @@ func TestPreflightCostCeilingRequest_ReservesBudgetAcrossConcurrentCalls(t *test
 		go func() {
 			defer wg.Done()
 			<-start
-			releases[i], errs[i] = a.preflightCostCeilingRequest(request)
+			releases[i], errs[i] = a.preflightCostCeilingRequest(request, "")
 		}()
 	}
 	close(start)

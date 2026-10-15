@@ -545,7 +545,7 @@ func (a *Agent) enforceCostCeilingInTurn() {
 	}
 }
 
-func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest) (func(), error) {
+func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest, backend string) (func(), error) {
 	if a == nil || a.tracker == nil {
 		return nil, nil
 	}
@@ -568,7 +568,9 @@ func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest) (func(), e
 	if req != nil && req.Model != "" {
 		modelName = req.Model
 	}
-	price := usage.PriceFor(modelName, nil)
+	// Priced on the requesting model's backend, not a's: this check also
+	// screens subagents' requests, and one on another provider bills there.
+	price := usage.PriceOn(backend, modelName)
 	inputCost, err := estimateInputCost(req, modelName, a.tracker, nil, price)
 	if err != nil {
 		turnCost := a.tracker.Totals().CostUSD - turnStart

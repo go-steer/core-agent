@@ -85,6 +85,11 @@ const (
 	DefaultRefreshSource       = cm.DefaultRefreshSource
 	DefaultRefreshInterval     = cm.DefaultRefreshInterval
 	DefaultMaxRefreshBodyBytes = cm.DefaultMaxRefreshBodyBytes
+	// ExternalFormat is the ExternalSource.Format a refresh writes. A
+	// cache in an older format (written by core-models v0.13.2 or
+	// earlier) is re-qualified on load and refetched in full on the next
+	// refresh.
+	ExternalFormat = cm.ExternalFormat
 )
 
 // NewCatalog reads every configured source and returns the merged catalog.

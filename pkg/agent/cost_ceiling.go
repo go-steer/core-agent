@@ -610,6 +610,10 @@ func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightReleas
 	// Priced on the requesting model's backend, not a's: this check also
 	// screens subagents' requests, and one on another provider bills there.
 	price := usage.PriceOn(backend, modelName)
+	if price.Unpriced {
+		a.warnUnpricedOnce(modelName, backend)
+		return nil, nil
+	}
 	// This agent's measured conversation describes only its own
 	// requests; a subagent's carries its own context.
 	var history *usage.Tracker

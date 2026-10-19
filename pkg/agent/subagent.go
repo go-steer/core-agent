@@ -472,6 +472,13 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		)
 		if opts.Budgets.MaxCostUSD > 0 {
 			runCtx = withCostPreflight(runCtx, func(call preflightCall) (preflightRelease, error) {
+				if price.Unpriced {
+					// Startup refuses a budget on an unpriced model; one
+					// that still arrives is skipped, never refused
+					// (warnUnpricedOnce says why).
+					opts.Inner.warnUnpricedOnce(innerModelName, opts.Inner.BillingBackend())
+					return nil, nil
+				}
 				inputCost, err := estimateInputCost(call.req, innerModelName, nil, &history, price)
 				if err != nil {
 					return nil, err

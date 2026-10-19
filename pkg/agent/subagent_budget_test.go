@@ -184,13 +184,20 @@ func TestSubagentTool_CostBudgetStopsTheDelegation(t *testing.T) {
 	}
 }
 
-func TestSubagentTool_CostBudgetRefusesAnUnpricedModel(t *testing.T) {
-	t.Parallel()
+// A delegation budget on an unpriced model is refused at startup
+// (cmd/core-agent). One that still reaches the runner is skipped and
+// warned about, never refused: the budget cannot price the request, and
+// refusing it would end a delegation the operator configured for a
+// reason no budget can fix.
+//
+// Not parallel: it captures the process-global logger.
+func TestSubagentTool_CostBudgetSkipsAndWarnsForAnUnpricedModel(t *testing.T) {
+	logs := captureAgentLog(t)
 	h := newTestEventLog(t)
 	tracker := usage.NewTracker()
 	model := &meteredLLM{
 		name:   "self-hosted-no-price",
-		script: [][]*adkmodel.LLMResponse{{usedText("should not run", 100, 10)}},
+		script: [][]*adkmodel.LLMResponse{{usedText("the delegation ran", 100, 10)}},
 	}
 	child, err := New(model,
 		WithName("child"),
@@ -206,14 +213,14 @@ func TestSubagentTool_CostBudgetRefusesAnUnpricedModel(t *testing.T) {
 	model.mu.Lock()
 	calls := model.calls
 	model.mu.Unlock()
-	if calls != 0 {
-		t.Errorf("provider calls = %d, want 0 when the model has no price and a cost budget is active", calls)
+	if calls != 1 {
+		t.Errorf("provider calls = %d, want 1: an unpriced model is not screened, so the delegation runs", calls)
 	}
-	if !strings.Contains(got, "no price") {
-		t.Errorf("partial result should explain why the unpriced model was refused:\n%s", got)
+	if !strings.Contains(got, "the delegation ran") || strings.Contains(got, "would be exceeded") {
+		t.Errorf("result should be the delegation's own answer, not a refusal:\n%s", got)
 	}
-	if turns := tracker.Totals().Turns; turns != 0 {
-		t.Errorf("billed turns = %d, want 0 for a refused unpriced request", turns)
+	if n := strings.Count(logs.String(), "has no price"); n != 1 {
+		t.Errorf("unpriced warnings = %d, want exactly one:\n%s", n, logs.String())
 	}
 }
 

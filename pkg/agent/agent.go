@@ -464,8 +464,10 @@ type Agent struct {
 	turnPreflightSettled     map[string]int
 	// preflightOwner marks this agent's own model calls to the cost
 	// preflight (preflightCall.owner); set by New, shared with the
-	// role-sanitizing wrapper.
+	// role-sanitizing wrapper. unpricedWarned is warnUnpricedOnce's
+	// once-per-model record, keyed "<backend>/<model>".
 	preflightOwner *preflightOwner
+	unpricedWarned map[string]bool
 
 	// Durable guardrail state (#643). pendingOutOfBandEvents queues
 	// trip/reset rows for a window with no turn in flight;

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 
 	adkmodel "google.golang.org/adk/v2/model"
@@ -212,10 +213,11 @@ func estimateSerializedRequestTokens(req *adkmodel.LLMRequest) (int, bool) {
 	return usage.EstimateTokensFromBytes(len(encoded)), true
 }
 
+// estimateInputCost prices a request's estimated input. Callers check
+// price.Unpriced first: an unpriced model is not screened at all (see
+// warnUnpricedOnce), because a refusal per request would trip the turn
+// for a configuration problem no reset can fix.
 func estimateInputCost(req *adkmodel.LLMRequest, model string, tracker *usage.Tracker, history *requestUsageHistory, price usage.Pricing) (float64, error) {
-	if price.Unpriced {
-		return 0, &costPreflightError{reason: fmt.Sprintf("model %q has no price; refusing the request while a cost budget is active", model)}
-	}
 	tokens, cached, ok := estimateRequestInput(req, model, tracker, history)
 	if !ok {
 		return 0, &costPreflightError{reason: fmt.Sprintf("could not estimate input tokens for model %q; refusing the request while a cost budget is active", model)}
@@ -226,4 +228,47 @@ func estimateInputCost(req *adkmodel.LLMRequest, model string, tracker *usage.Tr
 func isCostPreflightError(err error) bool {
 	var target *costPreflightError
 	return errors.As(err, &target)
+}
+
+// warnUnpricedOnce logs, once per model and backend for this agent, that
+// a cost ceiling cannot screen a model nobody prices.
+//
+// The ceiling checks skip such a request rather than refuse it. Pricing
+// is a property of the configuration, not of a turn, so the place to
+// stop it is where the operator configured it: startup refuses an
+// operator-set ceiling over an unpriced model, and so do /model and a
+// runtime spawn. A model that still arrives here got past those doors.
+// Refusing it per request, as this check first did, tripped the turn at
+// $0 spent and advanced the guardrail streak, and three such turns
+// halted a session that no reset could revive while the model stayed
+// unpriced. It never counts toward the streak.
+func (a *Agent) warnUnpricedOnce(model, backend string) {
+	if a == nil {
+		return
+	}
+	key := backend + "/" + model
+	a.mu.Lock()
+	if a.unpricedWarned[key] {
+		a.mu.Unlock()
+		return
+	}
+	if a.unpricedWarned == nil {
+		a.unpricedWarned = make(map[string]bool)
+	}
+	a.unpricedWarned[key] = true
+	a.mu.Unlock()
+	log.Printf("agent:%s %s", a.logSessionSuffix(), unpricedCeilingWarning(model, backend))
+}
+
+// unpricedCeilingWarning is the runtime half of the unpriced-model
+// message. It names the same remedies as the startup refusal in
+// cmd/core-agent (checkCeilingPricing), so an operator sees one story.
+func unpricedCeilingWarning(model, backend string) string {
+	where := ""
+	if backend != "" {
+		where = fmt.Sprintf(" on backend %q", backend)
+	}
+	return fmt.Sprintf("cost ceiling: model %q%s has no price, so the ceiling cannot screen its requests and counts its calls as $0. "+
+		"Declare models[].rates for it (zero rates price a self-hosted model at $0), set model.pricing, or drop the ceiling",
+		model, where)
 }

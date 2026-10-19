@@ -977,8 +977,17 @@ func TestRun_CostCeiling_PreflightsInputBeforeCallingModel(t *testing.T) {
 	}
 }
 
-func TestRun_CostCeiling_RefusesAnUnpricedModel(t *testing.T) {
-	t.Parallel()
+// An unpriced model under a per-turn ceiling is skipped and warned about,
+// never refused. Refusing it per request tripped the turn at $0 spent and
+// advanced the guardrail streak, and three such turns halted a session
+// that no reset could revive while the model stayed unpriced. Startup and
+// the runtime model doors are where an operator-set ceiling over an
+// unpriced model is refused (cmd/core-agent); a model that still arrives
+// here runs, and the operator is told once.
+//
+// Not parallel: it captures the process-global logger.
+func TestRun_CostCeiling_SkipsAndWarnsOnceForAnUnpricedModel(t *testing.T) {
+	logs := captureAgentLog(t)
 	llm := &countedCostLLM{
 		name: "self-hosted-no-price",
 		response: &adkmodel.LLMResponse{
@@ -996,14 +1005,25 @@ func TestRun_CostCeiling_RefusesAnUnpricedModel(t *testing.T) {
 	}
 	var rec terminalRecorder
 	rec.attachTo(a)
-	for range a.Run(context.Background(), "continue") {
+	for range 3 {
+		for range a.Run(context.Background(), "continue") {
+		}
 	}
-	if llm.callCount() != 0 {
-		t.Errorf("provider calls = %d, want 0 when the model has no price and a per-turn ceiling is active", llm.callCount())
+	if llm.callCount() != 3 {
+		t.Errorf("provider calls = %d, want 3: an unpriced model is not screened, so every turn runs", llm.callCount())
 	}
-	trips := rec.guardrailTrips()
-	if len(trips) != 1 || !strings.Contains(trips[0].Reason, "no price") {
-		t.Errorf("guardrail trips = %+v, want one trip explaining the missing price", trips)
+	if trips := rec.guardrailTrips(); len(trips) != 0 {
+		t.Errorf("guardrail trips = %+v, want none: an unpriced model must never count toward the streak", trips)
+	}
+	if halted, reason := a.CostCeilingTripped(); halted {
+		t.Errorf("three turns on an unpriced model halted the session: %q", reason)
+	}
+	got := logs.String()
+	if n := strings.Count(got, "has no price"); n != 1 {
+		t.Errorf("unpriced warnings = %d, want exactly one across three turns:\n%s", n, got)
+	}
+	if !strings.Contains(got, "models[].rates") || !strings.Contains(got, "model.pricing") {
+		t.Errorf("warning must name the remedies (models[].rates, model.pricing):\n%s", got)
 	}
 }
 

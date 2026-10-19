@@ -334,7 +334,7 @@ func TestNoOperatorLineCanShipWithoutASessionID(t *testing.T) {
 	// Adding or removing an operator line means updating this number,
 	// deliberately: it is one line of churn in exchange for the count
 	// being evidence rather than a floor.
-	const operatorOutputCalls = 13
+	const operatorOutputCalls = 14
 	if checked != operatorOutputCalls {
 		t.Errorf("scanned %d operator-output calls in pkg/agent, want %d.\n"+
 			"If you added or removed a line, update the constant. If you did "+

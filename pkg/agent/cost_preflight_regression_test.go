@@ -158,3 +158,48 @@ func TestPreflight_AnotherAgentsRequestIsNotPricedAtThisAgentsWindow(t *testing.
 		t.Error("the agent's own request was not priced at its measured 400K window")
 	}
 }
+
+// A background subagent's goroutine keeps the spawning turn's context
+// values (background/spawn.go, contextWithoutCancel), so it inherits that
+// turn's cost check. Once the turn is over, the check must not screen it.
+// One request used to emit a trip on the idle parent, latch
+// turnCeilingTripped and advance the streak.
+func TestPreflight_EndsWithItsTurn(t *testing.T) {
+	t.Parallel()
+	parent, _, rec := preflightTestAgent(0.05)
+	parent.snapshotTurnStartCost()
+	check, endTurn := parent.turnPreflight()
+	turnCtx := withCostPreflight(context.Background(), check)
+	bgCtx := context.WithoutCancel(turnCtx) // what the background goroutine gets
+
+	// A request in flight across the turn's end: it passed the check
+	// while the turn was live, and is released after it ended.
+	inFlight, err := costPreflightFromContext(turnCtx)(preflightCall{req: smallPreflightRequest()})
+	if err != nil {
+		t.Fatalf("in-turn request: %v", err)
+	}
+	endTurn()
+
+	if _, err := costPreflightFromContext(bgCtx)(preflightCall{req: bigPreflightRequest(800_000)}); err != nil {
+		t.Errorf("a background request after the turn ended was refused by that turn's ceiling: %v", err)
+	}
+	if trips := rec.guardrailTrips(); len(trips) != 0 {
+		t.Errorf("guardrail trips = %+v, want none: the turn the ceiling belongs to is over", trips)
+	}
+	parent.mu.Lock()
+	streak, latched := parent.turnCeilingStreak, parent.turnCeilingTripped
+	parent.mu.Unlock()
+	if streak != 0 || latched {
+		t.Errorf("parent streak = %d, latched = %v; want 0, false", streak, latched)
+	}
+
+	// The next turn starts with clean books, and the late release must
+	// not write the ended turn's estimate into them.
+	parent.snapshotTurnStartCost()
+	if inFlight != nil {
+		inFlight(true)
+	}
+	if n, usd := retainedEstimates(parent); n != 0 {
+		t.Errorf("a release after the turn ended left %d estimate(s) ($%.6f) in the next turn's books", n, usd)
+	}
+}

@@ -75,6 +75,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
@@ -541,6 +542,45 @@ func (a *Agent) enforceCostCeilingInTurn() {
 		a.markGuardrailHalt(attach.TurnErrorCostCeiling)
 		a.Interrupt()
 	}
+}
+
+// turnPreflight returns a's per-turn cost check bound to the turn that
+// installs it, and the func that ends that binding.
+//
+// The check reaches every model call made under the turn's context,
+// including a background subagent's: background/spawn.go starts the
+// subagent's goroutine from contextWithoutCancel(ctx), which keeps the
+// context's values on purpose. While the spawning turn is live that is
+// right, because the subagent bills into this agent's tracker and its
+// spend already counts toward the turn after the fact. Once the turn is
+// over it is wrong: one background request then tripped the idle
+// parent's per-turn ceiling, latched turnCeilingTripped and advanced the
+// streak, and a parent already in a later turn had that unrelated turn
+// cut. Binding the check to its turn keeps the first and drops the
+// second, without guessing at the background boundary which calls
+// should count.
+//
+// The release is bound too: a request still in flight when the turn
+// ends must not leave its estimate in the next turn's books, which
+// snapshotTurnStartCost has already reset.
+func (a *Agent) turnPreflight() (costPreflightCheck, func()) {
+	var ended atomic.Bool
+	check := func(call preflightCall) (preflightRelease, error) {
+		if ended.Load() {
+			return nil, nil
+		}
+		release, err := a.preflightCostCeilingRequest(call)
+		if release == nil {
+			return nil, err
+		}
+		return func(produced bool) {
+			if ended.Load() {
+				return
+			}
+			release(produced)
+		}, err
+	}
+	return check, func() { ended.Store(true) }
 }
 
 func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightRelease, error) {

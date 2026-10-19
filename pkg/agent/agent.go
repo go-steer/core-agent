@@ -1705,7 +1705,8 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// provider's retry policy. Always installed, even nil, so a Run
 	// nested under another agent's turn never reads that agent's.
 	runCtx = models.WithPriorSuccess(runCtx, a.priorSuccess)
-	runCtx = withCostPreflight(runCtx, a.preflightCostCeilingRequest)
+	preflight, endPreflight := a.turnPreflight()
+	runCtx = withCostPreflight(runCtx, preflight)
 	// And the auto-mode approver's view of this turn (#1175): the
 	// operator's task, the turn's earlier calls, the bill and the
 	// audit. Only with an approver wired; without it the gate never
@@ -1851,6 +1852,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// fully drained, so nothing still depends on runCtx (#359).
 		cancel()
 		a.clearCancelInFlight(cancelGen)
+		// The turn is over: its cost check must not screen calls made
+		// under its context from here on (a background subagent's).
+		endPreflight()
 		// Close the turn span here, in the same window as the cancel:
 		// the event stream has fully drained, so every child span ADK
 		// and the tool layer opened is already closed. The post-turn
@@ -2074,7 +2078,9 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		// bare 400 here is never retried (#1247).
 		runCtx = models.WithPriorSuccess(runCtx, nil)
 		a.snapshotTurnStartCost()
-		runCtx = withCostPreflight(runCtx, a.preflightCostCeilingRequest)
+		preflight, endPreflight := a.turnPreflight()
+		defer endPreflight()
+		runCtx = withCostPreflight(runCtx, preflight)
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {

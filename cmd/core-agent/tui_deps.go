@@ -44,18 +44,22 @@ type tuiDeps struct {
 	// agent-construction site wraps around the agent (#388 phase 4);
 	// AttachReg is non-nil when attach-mode is enabled and receives
 	// the adapter registration. Both flow through buildAttachedAgent.
-	AdapterOpts   []attachadapter.Option
-	AttachReg     *attach.SessionRegistry
-	Provider      models.Provider
-	Gate          *permissions.Gate
-	Tracker       *usage.Tracker
-	Memory        instruction.Loaded
-	MCPServers    []*mcp.Server
-	LoadedSkills  skills.Skills
-	AgentsDir     string
-	CoreHome      string
-	HomeAgentsDir string
-	ProjectRoot   string
+	AdapterOpts []attachadapter.Option
+	AttachReg   *attach.SessionRegistry
+	Provider    models.Provider
+	// CheckModelPricing vets the model /model is about to switch to
+	// against the process's cost ceilings (ceilingPricing.door) and
+	// refuses one they cannot price. nil checks nothing.
+	CheckModelPricing func(modelID, backend string) error
+	Gate              *permissions.Gate
+	Tracker           *usage.Tracker
+	Memory            instruction.Loaded
+	MCPServers        []*mcp.Server
+	LoadedSkills      skills.Skills
+	AgentsDir         string
+	CoreHome          string
+	HomeAgentsDir     string
+	ProjectRoot       string
 	// ContentRoots are the resolved external content roots (config
 	// content_roots + --agents-content-dir), passed so the /reload path
 	// re-walks the same trusted scopes the startup load used — otherwise

@@ -119,6 +119,9 @@ type Manager struct {
 	// smallModelID backs the "small" model override; empty means the
 	// small tier isn't configured and "small" spawns are rejected.
 	smallModelID string
+	// spawnPricing vets the model a spawn is about to run on against the
+	// host's cost ceilings (WithSpawnPricingCheck); nil checks nothing.
+	spawnPricing func(modelID, backend string) error
 	// syncWaitTimeout bounds how long a synchronous spawn (spawn_agent
 	// {wait: true}, #626/D5) may hold the parent turn open before the tool
 	// returns a partial/timeout result. Distinct from — and typically
@@ -560,6 +563,7 @@ type bgMgrConfig struct {
 	templates        []SubagentTemplate
 	allowAdhoc       bool
 	smallModelID     string
+	spawnPricing     func(modelID, backend string) error
 	syncWaitTimeout  time.Duration
 	parallelWrites   string
 }
@@ -671,6 +675,21 @@ func WithSmallModelID(id string) ManagerOption {
 	return func(c *bgMgrConfig) { c.smallModelID = id }
 }
 
+// WithSpawnPricingCheck vets the model each spawn is about to run on,
+// with the backend that will bill it, before anything is reserved or
+// built. A non-nil error refuses the spawn and is returned to the caller
+// as-is (the parent's model sees it as the tool result).
+//
+// It is the runtime door of the host's unpriced-model policy: an
+// ad-hoc spawn may name any model, and "small" downshifts to the small
+// tier, so a model the host vetted at startup is not the only one a
+// spawn can reach. The host owns the policy because only it knows where
+// its ceilings came from (operator-set, or an unattended default that
+// only warns); the manager just asks.
+func WithSpawnPricingCheck(check func(modelID, backend string) error) ManagerOption {
+	return func(c *bgMgrConfig) { c.spawnPricing = check }
+}
+
 // WithSyncWaitTimeout bounds how long a synchronous spawn (spawn_agent
 // {wait: true}, #626) holds the parent turn open before returning a
 // partial/timeout result. The subagent keeps running in the background
@@ -737,6 +756,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		templates:        make(map[string]SubagentTemplate),
 		allowAdhoc:       cfg.allowAdhoc,
 		smallModelID:     cfg.smallModelID,
+		spawnPricing:     cfg.spawnPricing,
 		syncWaitTimeout:  cfg.syncWaitTimeout,
 		instanceSeq:      make(map[string]int),
 		agents:           make(map[string]*Handle),

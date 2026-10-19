@@ -220,6 +220,14 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 // identity-checked rollback on a pre-launch model error (#488/#502), and
 // the shouldAlert suppression of a stale incarnation's terminal alert.
 func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSpawn) (*Handle, error) {
+	// The model must be one the host's cost ceilings can price
+	// (WithSpawnPricingCheck). Asked before the lock: it is the host's
+	// code, and it may print.
+	if m.spawnPricing != nil {
+		if err := m.spawnPricing(rs.priceModelID, rs.priceBackend); err != nil {
+			return nil, err
+		}
+	}
 	// Validation + caps + parent presence are all checked under the
 	// manager lock so a burst of concurrent launches can't all pass the
 	// cap check before any registers a handle.

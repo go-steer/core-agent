@@ -103,6 +103,10 @@ func resolveSyncWaitTimeout(flagVal string, cfg *config.Config) (time.Duration, 
 type sessionBackgroundRecipe struct {
 	provider     models.Provider
 	smallModelID string
+	// spawnPricing is the daemon's unpriced-model check for spawns
+	// (background.WithSpawnPricingCheck); a per-session manager must
+	// refuse what the daemon's own would.
+	spawnPricing func(modelID, backend string) error
 	allowAdhoc   bool
 	syncWait     time.Duration
 	// parallelWrites is safety.parallel_subagent_writes, carried here
@@ -233,6 +237,7 @@ func (r sessionBackgroundRecipe) factory() compose.SessionBackgroundFactory {
 			background.WithCatalog(base),
 			background.WithAllowAdhoc(r.allowAdhoc),
 			background.WithSmallModelID(r.smallModelID),
+			background.WithSpawnPricingCheck(r.spawnPricing),
 			background.WithSyncWaitTimeout(r.syncWait),
 			background.WithParallelWritePolicy(r.parallelWrites),
 		)

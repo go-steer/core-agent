@@ -44,6 +44,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/instruction"
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/pricing"
 	"github.com/go-steer/core-agent/v3/pkg/skills"
@@ -1121,6 +1122,14 @@ func (a *coreAgentAdapter) AvailableModels() []coretui.ModelInfo {
 // /model swap silently downgrades those slash commands to "not
 // wired").
 func (a *coreAgentAdapter) SwitchModel(modelID string) (coretui.Agent, error) {
+	// A model the cost ceilings cannot price is refused here, the same
+	// as at startup: switching to it would leave the ceilings counting
+	// $0 for every call.
+	if a.deps.CheckModelPricing != nil {
+		if err := a.deps.CheckModelPricing(modelID, models.BackendOf(a.deps.Provider)); err != nil {
+			return nil, err
+		}
+	}
 	newLLM, err := a.deps.Provider.Model(context.Background(), modelID)
 	if err != nil {
 		return nil, err

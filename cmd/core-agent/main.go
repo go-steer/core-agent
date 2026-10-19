@@ -32,6 +32,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1424,6 +1425,19 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// WithBackgroundManager; the agent's pre-turn alert drain
 	// surfaces background reports to the parent's model.
 	var bgMgr *background.Manager
+	// ceilingPolicy is the unpriced-model policy (ceilingPricing),
+	// resolved with the cost ceilings several hundred lines below. The
+	// background managers are built here, before it exists, so they take
+	// a getter and read it late (the agentRef pitfall in AGENTS.md): a
+	// spawn only happens during a turn, long after it is set. Until then
+	// it is nil and checks nothing.
+	var ceilingPolicy atomic.Pointer[ceilingPricing]
+	spawnPricingCheck := func(modelID, backend string) error {
+		if p := ceilingPolicy.Load(); p != nil {
+			return p.door("background spawn: model", modelID, backend)
+		}
+		return nil
+	}
 	// bgRecipe carries the same recipe down to every multi-session
 	// session so each gets its OWN manager (#637). Stays zero (and so
 	// inert) under --no-background-agents.
@@ -1454,6 +1468,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			background.WithCatalog(builtinTools),
 			background.WithAllowAdhoc(allowAdhoc),
 			background.WithSmallModelID(bgSmallModel),
+			background.WithSpawnPricingCheck(spawnPricingCheck),
 			// A synchronous spawn (spawn_agent {wait: true}) holds the
 			// parent turn open, so cap it tighter than the async
 			// fire-and-continue wall-clock; on timeout the subagent keeps
@@ -1481,6 +1496,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		bgRecipe = sessionBackgroundRecipe{
 			provider:       provider,
 			smallModelID:   bgSmallModel,
+			spawnPricing:   spawnPricingCheck,
 			allowAdhoc:     allowAdhoc,
 			syncWait:       syncWait,
 			parallelWrites: cfg.Safety.ParallelSubagentWrites,
@@ -1954,14 +1970,20 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	if cfg.Agent.MaxTurnCostUSD != nil {
 		ceiling.MaxTurnUSD = *cfg.Agent.MaxTurnCostUSD
 	}
-	// A cost ceiling on an unpriced provider-profile model can never
-	// trip; see checkProfileCeiling.
-	if warn, err := checkProfileCeiling(cfg, ceiling, guard.SessionCostSource, usage.PriceFor(cfg.Model.Name, cfg).Unpriced); err != nil {
+	// A cost ceiling or a subagent budget over an unpriced model can
+	// never trip; see ceilingPricing. Vetted here for every model the
+	// configuration names, then installed for the doors that pick a
+	// model later (/model, a background spawn).
+	pricingPolicy := ceilingPricing{ceiling: ceiling, sessionSource: guard.SessionCostSource}
+	warns, err := pricingPolicy.checkStartup(startupCeilingModels(cfg, subagentTemplates, bgRecipe.smallModelID))
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
-	} else if warn != "" {
-		send(warn)
 	}
+	for _, w := range warns {
+		send(w)
+	}
+	ceilingPolicy.Store(&pricingPolicy)
 	if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
 		opts = append(opts, agent.WithCostCeiling(ceiling))
 		// 0 means "no ceiling", so print that rather than "$0.0000",
@@ -2788,12 +2810,15 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// internal/tui/ tree are gone. Slim build (no_tui) still
 		// stubs launchTUIv2 to no-op + REPL fall-through.
 		didRun, code, err := launchTUIv2(ctx, tuiDeps{
-			Cfg:           cfg,
-			Model:         m,
-			AgentOpts:     opts,
-			AdapterOpts:   adapterOpts,
-			AttachReg:     attachRegistry,
-			Provider:      provider,
+			Cfg:         cfg,
+			Model:       m,
+			AgentOpts:   opts,
+			AdapterOpts: adapterOpts,
+			AttachReg:   attachRegistry,
+			Provider:    provider,
+			CheckModelPricing: func(modelID, backend string) error {
+				return pricingPolicy.door("model", modelID, backend)
+			},
 			Gate:          gate,
 			Tracker:       tracker,
 			Memory:        loaded,

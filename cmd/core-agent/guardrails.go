@@ -15,12 +15,16 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent/background"
 	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // DefaultUnattendedSessionCostUSD is the session spend ceiling applied
@@ -191,25 +195,125 @@ func resolveGuardrails(in guardrailInputs) (guardrailResolution, error) {
 	return res, nil
 }
 
-// checkProfileCeiling vets a cost ceiling against a provider-profile
-// model that has no price. The catalog covers Gemini and Claude, and a
-// self-hosted model is priced only if its profile declares rates;
-// unpriced, every call costs $0 to the ceiling and it can never trip —
-// a ceiling in name only, worse than none because the operator believes
-// they have one.
+// ceilingPricing decides whether a cost ceiling can price a model: at
+// startup, and at each door that picks a model later (/model, a
+// background spawn). An unpriced model costs $0 to every ceiling, so the
+// ceiling can never trip on it — a ceiling in name only, worse than none
+// because the operator believes they have one.
 //
-// A ceiling the operator asked for (either flag, or config) is refused
-// with err. The unattended default, which nobody asked for, is not: it
-// returns a warning to print and the run goes ahead, since refusing it
-// would fail every unattended run on a self-hosted model.
-func checkProfileCeiling(cfg *config.Config, ceiling agent.CostCeiling, sessionSource string, unpriced bool) (warn string, err error) {
-	if !unpriced || (ceiling.MaxTurnUSD <= 0 && ceiling.MaxSessionUSD <= 0) || !cfg.IsProfileProvider(cfg.Model.Provider) {
+// The policy (decided 2026-10-19, for #1299/#1327):
+//   - A ceiling the operator asked for (either flag, or config) over an
+//     unpriced model is refused, on every provider: the catalog prices
+//     Gemini, Claude, OpenAI and xAI per backend, and a self-hosted model
+//     is priced only if its profile declares rates.
+//   - The unattended default session ceiling, which nobody asked for,
+//     only warns: refusing it would fail every unattended run on a
+//     self-hosted model.
+//   - A subagent's own budgets.max_cost_usd on an unpriced model is
+//     always refused. Somebody wrote that budget down, and it cannot hold.
+//
+// Pricing is a property of the configuration, so this is where it is
+// refused. A model that still reaches a ceiling at runtime is skipped
+// and warned about by pkg/agent (warnUnpricedOnce), never refused per
+// request. The remedies named here and there are the same.
+type ceilingPricing struct {
+	ceiling       agent.CostCeiling
+	sessionSource string
+}
+
+// operatorSet reports whether any active ceiling is one the operator
+// asked for, as opposed to only the unattended default.
+func (p ceilingPricing) operatorSet() bool {
+	return p.ceiling.MaxTurnUSD > 0 || (p.ceiling.MaxSessionUSD > 0 && p.sessionSource != sourceCostUnattendedDefault)
+}
+
+// check vets one model. who names it in the message ("model",
+// `subagent "cluster"`). budget is that subagent's own max_cost_usd, 0
+// for none. A refusal comes back as err; a warning to print as warn.
+func (p ceilingPricing) check(who, model, backend string, budget float64) (warn string, err error) {
+	if model == "" || !usage.PriceOn(backend, model).Unpriced {
 		return "", nil
 	}
-	why := fmt.Sprintf("provider profile %q: model %q has no price — no pricing layer has a rate for it and the profile declares none — so the cost ceiling counts its calls as $0 and can never trip. Declare models[].rates for it in the profile, or set model.pricing",
-		cfg.Model.Provider, cfg.Model.Name)
-	if ceiling.MaxTurnUSD > 0 || sessionSource != sourceCostUnattendedDefault {
+	why := unpricedCeilingWhy(who, model, backend)
+	if budget > 0 {
+		return "", fmt.Errorf("%s budgets.max_cost_usd ($%.2f) cannot hold: %s; or drop the budget", who, budget, why)
+	}
+	if p.ceiling.MaxTurnUSD <= 0 && p.ceiling.MaxSessionUSD <= 0 {
+		return "", nil
+	}
+	if p.operatorSet() {
 		return "", fmt.Errorf("%s; or drop the ceiling", why)
 	}
-	return fmt.Sprintf("WARNING: %s. The unattended default session ceiling ($%.2f) is NOT protecting this run.", why, ceiling.MaxSessionUSD), nil
+	return fmt.Sprintf("WARNING: %s. The unattended default session ceiling ($%.2f) is NOT protecting this run.", why, p.ceiling.MaxSessionUSD), nil
+}
+
+// unpricedCeilingWhy is the reason both halves of the policy give. It
+// names the remedies in the same words as pkg/agent's runtime warning.
+func unpricedCeilingWhy(who, model, backend string) string {
+	where := ""
+	if backend != "" {
+		where = fmt.Sprintf(" on backend %q", backend)
+	}
+	return fmt.Sprintf("%s %q%s has no price — no pricing layer has a rate for it — so the cost ceiling counts its calls as $0 and can never trip. "+
+		"Declare models[].rates for it in its provider profile (zero rates price a self-hosted model at $0), or set model.pricing",
+		who, model, where)
+}
+
+// ceilingModel is one model a ceiling or budget has to price at startup.
+type ceilingModel struct {
+	who, model, backend string
+	budget              float64
+}
+
+// startupCeilingModels lists every model the configured ceilings reach:
+// the main model, each declared subagent's (both doors share one
+// template), and the background small tier a spawn may downshift to.
+func startupCeilingModels(cfg *config.Config, templates []background.SubagentTemplate, smallModel string) []ceilingModel {
+	mainBackend := usage.BackendFor(cfg)
+	out := []ceilingModel{{who: "model", model: cfg.Model.Name, backend: mainBackend}}
+	for _, t := range templates {
+		out = append(out, ceilingModel{
+			who:     fmt.Sprintf("subagent %q: model", t.Name),
+			model:   t.ModelID,
+			backend: t.Backend,
+			budget:  t.Budgets.MaxCost,
+		})
+	}
+	if smallModel != "" && smallModel != cfg.Model.Name {
+		out = append(out, ceilingModel{who: "background small-tier model", model: smallModel, backend: mainBackend})
+	}
+	return out
+}
+
+// checkStartup runs check over every model the ceilings reach. All
+// refusals are reported at once, so a config with three unpriced
+// subagents needs one fix, not three restarts.
+func (p ceilingPricing) checkStartup(ms []ceilingModel) (warns []string, err error) {
+	var errs []error
+	for _, m := range ms {
+		w, e := p.check(m.who, m.model, m.backend, m.budget)
+		if e != nil {
+			errs = append(errs, e)
+		} else if w != "" {
+			warns = append(warns, w)
+		}
+	}
+	return warns, errors.Join(errs...)
+}
+
+// door is check for a model picked after startup — /model, a background
+// spawn — under the ceilings this process runs with. A warning is
+// printed to stderr and the model is allowed; only a refusal stops it.
+//
+// It applies the ceiling rule only, never the budget rule. Every
+// background spawn inherits the manager's default MaxCost, which no
+// operator wrote, so the budget rule here would refuse every spawn on
+// a self-hosted model with no ceiling configured at all. Budgets an
+// operator declared are vetted at startup (startupCeilingModels).
+func (p ceilingPricing) door(who, model, backend string) error {
+	warn, err := p.check(who, model, backend, 0)
+	if warn != "" {
+		fmt.Fprintf(os.Stderr, "core-agent: %s\n", warn)
+	}
+	return err
 }

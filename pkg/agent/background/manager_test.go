@@ -110,6 +110,37 @@ func TestSpawn_ParentRequired(t *testing.T) {
 	}
 }
 
+// The spawn door of the host's unpriced-model policy: the check sees the
+// model and backend the spawn would bill on, and its refusal stops the
+// spawn before a slot is reserved or a model is built.
+func TestSpawn_PricingCheckRefusesBeforeLaunch(t *testing.T) {
+	t.Parallel()
+	prov := mock.NewEcho()
+	refusal := errors.New("cost ceiling: model has no price")
+	var gotModel, gotBackend string
+	mgr, err := NewManager(
+		WithProvider(prov, "echo"),
+		WithSpawnPricingCheck(func(modelID, backend string) error {
+			gotModel, gotBackend = modelID, backend
+			return refusal
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	newTestParent(t, mgr)
+	h, err := mgr.Spawn(context.Background(), "", Spec{Name: "x", SystemPrompt: "go", Goal: "go", ModelID: "house/model"})
+	if !errors.Is(err, refusal) || h != nil {
+		t.Fatalf("Spawn = (%v, %v), want the pricing check's refusal and no handle", h, err)
+	}
+	if gotModel != "house/model" || gotBackend != models.BackendOf(prov) {
+		t.Errorf("check asked about (%q, %q), want the spawn's model on the provider's backend %q", gotModel, gotBackend, models.BackendOf(prov))
+	}
+	if n := len(mgr.ListSubagents()); n != 0 {
+		t.Errorf("a refused spawn left %d subagent(s) registered", n)
+	}
+}
+
 func TestSpawn_RejectsInvalidName(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)

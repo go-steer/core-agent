@@ -17,10 +17,12 @@
 package main
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 
 	"github.com/go-steer/core-agent/v3/pkg/attachadapter"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 // TestCoreAgentAdapter_ModeChipFollowsModelSwap pins the target of the
@@ -47,6 +49,28 @@ func TestCoreAgentAdapter_ModeChipFollowsModelSwap(t *testing.T) {
 	}
 	if got := child.permModeAdapter(); got != child.attachAd {
 		t.Error("the /model successor's chip does not write through its own agent")
+	}
+}
+
+// TestCoreAgentAdapter_SwitchModelRefusesWhatTheCeilingCannotPrice is
+// the /model door of the unpriced-model policy: a model the process's
+// cost ceilings cannot price is refused before anything is built, with
+// the check's own error, and asked about on the provider's backend.
+func TestCoreAgentAdapter_SwitchModelRefusesWhatTheCeilingCannotPrice(t *testing.T) {
+	t.Parallel()
+	ad, _ := wakeAdapter(t)
+	refusal := errors.New("cost ceiling: model has no price")
+	var gotModel, gotBackend string
+	ad.deps.CheckModelPricing = func(modelID, backend string) error {
+		gotModel, gotBackend = modelID, backend
+		return refusal
+	}
+	next, err := ad.SwitchModel("house/model")
+	if !errors.Is(err, refusal) || next != nil {
+		t.Fatalf("SwitchModel = (%v, %v), want the pricing check's refusal and no new agent", next, err)
+	}
+	if gotModel != "house/model" || gotBackend != models.BackendOf(ad.deps.Provider) {
+		t.Errorf("check asked about (%q, %q), want the requested model on the provider's backend %q", gotModel, gotBackend, models.BackendOf(ad.deps.Provider))
 	}
 }
 

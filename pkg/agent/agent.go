@@ -462,6 +462,16 @@ type Agent struct {
 	turnPreflightEstimates   []costPreflightEstimate
 	turnPreflightBaseTurns   map[string]int
 	turnPreflightSettled     map[string]int
+	// turnPreflightGen names the turn whose cost check is live:
+	// turnPreflight bumps it when it binds a turn and again when that
+	// turn ends. A check or release carrying another generation belongs
+	// to a turn that is over and leaves the books above alone; it is
+	// read under mu with them, so the next turn's reset cannot slip in
+	// between the test and the write.
+	turnPreflightGen uint64
+	// testPreflightBeforeReserve runs between pricing a request and
+	// reserving its estimate. Nil outside tests.
+	testPreflightBeforeReserve func()
 	// preflightOwner marks this agent's own model calls to the cost
 	// preflight (preflightCall.owner); set by New, shared with the
 	// role-sanitizing wrapper. unpricedWarned is warnUnpricedOnce's

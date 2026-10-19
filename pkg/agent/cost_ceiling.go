@@ -84,7 +84,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
@@ -572,32 +571,51 @@ func (a *Agent) enforceCostCeilingInTurn() {
 // The release is bound too: a request still in flight when the turn
 // ends must not leave its estimate in the next turn's books, which
 // snapshotTurnStartCost has already reset.
+//
+// The binding is a generation (turnPreflightGen) checked under a.mu in
+// the same critical section that reserves or releases, not a flag read
+// before it: with a flag, the next turn's reset could land between the
+// read and the reservation, and the ended turn's request then reserved
+// into the new turn's books with a release that would never retire it.
 func (a *Agent) turnPreflight() (costPreflightCheck, func()) {
-	var ended atomic.Bool
+	a.mu.Lock()
+	a.turnPreflightGen++
+	gen := a.turnPreflightGen
+	a.mu.Unlock()
 	check := func(call preflightCall) (preflightRelease, error) {
-		if ended.Load() {
-			return nil, nil
-		}
-		release, err := a.preflightCostCeilingRequest(call)
-		if release == nil {
-			return nil, err
-		}
-		return func(produced bool) {
-			if ended.Load() {
-				return
-			}
-			release(produced)
-		}, err
+		return a.preflightTurnRequest(call, gen)
 	}
-	return check, func() { ended.Store(true) }
+	return check, func() {
+		a.mu.Lock()
+		if a.turnPreflightGen == gen {
+			a.turnPreflightGen++
+		}
+		a.mu.Unlock()
+	}
 }
 
+// preflightCostCeilingRequest screens call against whatever turn is
+// live, bound to none.
 func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightRelease, error) {
+	return a.preflightTurnRequest(call, 0)
+}
+
+// preflightTurnRequest screens call for the turn turnPreflight bound as
+// gen; a call from any other turn passes unscreened. gen 0 is no
+// binding.
+func (a *Agent) preflightTurnRequest(call preflightCall, gen uint64) (preflightRelease, error) {
 	if a == nil || a.tracker == nil {
 		return nil, nil
 	}
+	// live reports whether gen's turn is still the one these books
+	// belong to. Call with a.mu held.
+	live := func() bool { return gen == 0 || a.turnPreflightGen == gen }
 	req, backend := call.req, call.backend
 	a.mu.Lock()
+	if !live() {
+		a.mu.Unlock()
+		return nil, nil
+	}
 	ceiling := a.costCeiling
 	turnStart, turnStartSet := a.turnStartCost, a.turnStartCostSet
 	turnTripped, halted := a.turnCeilingTripped, a.costCeilingExceeded
@@ -631,6 +649,12 @@ func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightReleas
 	}
 	inputCost, err := estimateInputCost(req, modelName, history, nil, price)
 	if err != nil {
+		a.mu.Lock()
+		stillLive := live()
+		a.mu.Unlock()
+		if !stillLive {
+			return nil, nil
+		}
 		turnCost := a.tracker.Totals().CostUSD - turnStart
 		reason := fmt.Sprintf("per-turn cost ceiling cannot be estimated safely: %s. The request was refused before it was sent. "+turnCutNoNextTurn, err)
 		return nil, a.tripCostCeilingBeforeRequest(turnCost, 0, ceiling.MaxTurnUSD, reason)
@@ -641,7 +665,14 @@ func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightReleas
 		turnCost = 0
 	}
 	modelTurns := trackerModelTurnCounts(turns)
+	if a.testPreflightBeforeReserve != nil {
+		a.testPreflightBeforeReserve()
+	}
 	a.mu.Lock()
+	if !live() {
+		a.mu.Unlock()
+		return nil, nil
+	}
 	if a.costCeilingExceeded || a.turnCeilingTripped {
 		a.mu.Unlock()
 		return nil, context.Canceled
@@ -665,6 +696,10 @@ func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightReleas
 		return func(produced bool) {
 			once.Do(func() {
 				a.mu.Lock()
+				defer a.mu.Unlock()
+				if !live() {
+					return // the books it reserved in were reset with its turn
+				}
 				a.turnPreflightReservedUSD -= inputCost
 				if a.turnPreflightReservedUSD < 0 {
 					a.turnPreflightReservedUSD = 0
@@ -675,7 +710,6 @@ func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightReleas
 				if produced {
 					a.turnPreflightEstimates = append(a.turnPreflightEstimates, costPreflightEstimate{model: modelName, usd: inputCost})
 				}
-				a.mu.Unlock()
 			})
 		}, nil
 	}

@@ -203,3 +203,42 @@ func TestPreflight_EndsWithItsTurn(t *testing.T) {
 		t.Errorf("a release after the turn ended left %d estimate(s) ($%.6f) in the next turn's books", n, usd)
 	}
 }
+
+// The turn's end and the next turn's reset can land while a request is
+// between the check that its turn is live and the reservation. Checked
+// with a flag read before the reservation, the ended turn's request then
+// reserved into the new turn's books, and its release, seeing the turn
+// over, never took the reservation back: the new turn carried a phantom
+// spend all the way to its end.
+func TestPreflight_TurnEndingMidCheckLeavesTheNextTurnsBooksAlone(t *testing.T) {
+	t.Parallel()
+	a, _, rec := preflightTestAgent(1.0)
+	a.snapshotTurnStartCost()
+	check, endTurn := a.turnPreflight()
+	a.testPreflightBeforeReserve = func() {
+		a.testPreflightBeforeReserve = nil
+		endTurn()
+		a.snapshotTurnStartCost()
+		_, _ = a.turnPreflight() // the next turn binds its own check
+	}
+
+	release, err := check(preflightCall{req: smallPreflightRequest()})
+	if err != nil {
+		t.Fatalf("a request from the ended turn was refused: %v", err)
+	}
+	if release != nil {
+		release(true)
+	}
+	a.mu.Lock()
+	reserved := a.turnPreflightReservedUSD
+	a.mu.Unlock()
+	if reserved != 0 {
+		t.Errorf("the next turn's books hold $%.6f reserved by the ended turn's request, which nothing will release", reserved)
+	}
+	if n, usd := retainedEstimates(a); n != 0 {
+		t.Errorf("the next turn's books hold %d estimate(s) ($%.6f) from the ended turn", n, usd)
+	}
+	if trips := rec.guardrailTrips(); len(trips) != 0 {
+		t.Errorf("guardrail trips = %+v, want none", trips)
+	}
+}

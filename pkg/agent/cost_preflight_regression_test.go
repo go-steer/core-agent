@@ -92,7 +92,7 @@ func TestPreflight_FailedRequestLeavesNoEstimate(t *testing.T) {
 	a, _, _ := preflightTestAgent(1.0)
 	a.snapshotTurnStartCost()
 	ctx := withCostPreflight(context.Background(), a.preflightCostCeilingRequest)
-	for range newRoleSanitizingLLM(failingPreflightLLM{}, "").GenerateContent(ctx, smallPreflightRequest(), false) {
+	for range newRoleSanitizingLLM(failingPreflightLLM{}, "", nil).GenerateContent(ctx, smallPreflightRequest(), false) {
 	}
 	if n, usd := retainedEstimates(a); n != 0 {
 		t.Errorf("a failed request (no usage) left %d retained estimate(s) ($%.6f)", n, usd)
@@ -117,7 +117,7 @@ func TestPreflight_SideCallsAreNotScreened(t *testing.T) {
 		screened++
 		return nil, nil
 	})
-	model := newRoleSanitizingLLM(failingPreflightLLM{}, "")
+	model := newRoleSanitizingLLM(failingPreflightLLM{}, "", nil)
 	for range model.GenerateContent(models.AsSideCall(ctx, "summarizer"), smallPreflightRequest(), false) {
 	}
 	if screened != 0 {
@@ -127,5 +127,34 @@ func TestPreflight_SideCallsAreNotScreened(t *testing.T) {
 	}
 	if screened != 1 {
 		t.Errorf("the agent's own call was screened %d time(s), want 1: only side calls skip the check", screened)
+	}
+}
+
+// A request from another agent (a same-model subagent screened by its
+// parent's check) carries its own context. Pricing it at the parent's
+// measured window refused a ~10-token request after a 400K-token turn and
+// cut the turn at a $0.10 ceiling.
+func TestPreflight_AnotherAgentsRequestIsNotPricedAtThisAgentsWindow(t *testing.T) {
+	t.Parallel()
+	a, tr, rec := preflightTestAgent(0.10)
+	a.preflightOwner = &preflightOwner{}
+	tr.AppendUsage(pricedModel, usage.TurnUsage{InputTokens: 400_000, OutputTokens: 100}, usage.PriceFor(pricedModel, nil))
+	a.snapshotTurnStartCost()
+
+	child := &preflightOwner{}
+	release, err := a.preflightCostCeilingRequest(preflightCall{req: smallPreflightRequest(), owner: child})
+	if err != nil {
+		t.Fatalf("a small subagent request was refused at the parent's 400K window: %v", err)
+	}
+	release(true)
+	if trips := rec.guardrailTrips(); len(trips) != 0 {
+		t.Errorf("guardrail trips = %+v, want none", trips)
+	}
+
+	// The agent's own next request still continues the 400K conversation,
+	// so it is priced at that window and refused: the history still
+	// applies where it is true.
+	if _, err := a.preflightCostCeilingRequest(preflightCall{req: smallPreflightRequest(), owner: a.preflightOwner}); err == nil {
+		t.Error("the agent's own request was not priced at its measured 400K window")
 	}
 }

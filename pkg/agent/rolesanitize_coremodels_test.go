@@ -105,7 +105,7 @@ func TestEmptyRequestThroughTheCoreModelsFacades(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Model: %v", err)
 		}
-		drainModel(t, newRoleSanitizingLLM(m, ""))
+		drainModel(t, newRoleSanitizingLLM(m, "", nil))
 		if role, text := firstText(last(), "contents"); role != "user" || text != emptyContentsPlaceholder {
 			t.Errorf("first content = %q %q, want the user placeholder", role, text)
 		}
@@ -139,7 +139,7 @@ data: {"type":"message_stop"}
 		if err != nil {
 			t.Fatalf("Model: %v", err)
 		}
-		drainModel(t, newRoleSanitizingLLM(m, ""))
+		drainModel(t, newRoleSanitizingLLM(m, "", nil))
 		if role, text := firstText(last(), "messages"); role != "user" || text != emptyContentsPlaceholder {
 			t.Errorf("first message = %q %q, want the user placeholder", role, text)
 		}

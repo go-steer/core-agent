@@ -462,6 +462,10 @@ type Agent struct {
 	turnPreflightEstimates   []costPreflightEstimate
 	turnPreflightBaseTurns   map[string]int
 	turnPreflightSettled     map[string]int
+	// preflightOwner marks this agent's own model calls to the cost
+	// preflight (preflightCall.owner); set by New, shared with the
+	// role-sanitizing wrapper.
+	preflightOwner *preflightOwner
 
 	// Durable guardrail state (#643). pendingOutOfBandEvents queues
 	// trip/reset rows for a window with no turn in flight;
@@ -1022,7 +1026,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	// internal summarizer/side-question paths (a.model). Outermost of any
 	// provider wrapper. See rolesanitize.go. After the options, because
 	// the wrapper carries the billing backend to the cost preflight.
-	model = newRoleSanitizingLLM(model, o.billingBackend)
+	owner := &preflightOwner{}
+	model = newRoleSanitizingLLM(model, o.billingBackend, owner)
 
 	// Resolve subagents into tools. Done after all options are
 	// applied so each subagent tool captures the parent's final
@@ -1195,6 +1200,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 
 	a := &Agent{
 		inner:                inner,
+		preflightOwner:       owner,
 		runner:               r,
 		sessionService:       svc,
 		eventLog:             o.eventLog,

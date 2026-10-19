@@ -570,7 +570,13 @@ func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightReleas
 	// Priced on the requesting model's backend, not a's: this check also
 	// screens subagents' requests, and one on another provider bills there.
 	price := usage.PriceOn(backend, modelName)
-	inputCost, err := estimateInputCost(req, modelName, a.tracker, nil, price)
+	// This agent's measured conversation describes only its own
+	// requests; a subagent's carries its own context.
+	var history *usage.Tracker
+	if call.owner == a.preflightOwner {
+		history = a.tracker
+	}
+	inputCost, err := estimateInputCost(req, modelName, history, nil, price)
 	if err != nil {
 		turnCost := a.tracker.Totals().CostUSD - turnStart
 		reason := fmt.Sprintf("per-turn cost ceiling cannot be estimated safely: %s. The request was refused before it was sent. "+turnCutNoNextTurn, err)

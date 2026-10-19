@@ -28,6 +28,11 @@ import (
 
 type costPreflightContextKey struct{}
 
+// preflightOwner identifies the agent whose model a request comes from,
+// by pointer identity. The byte keeps two owners at two addresses: Go may
+// give distinct zero-size values the same one.
+type preflightOwner struct{ _ byte }
+
 // preflightCall is one model request as the cost checks screening it see
 // it. A check installed by a parent agent also screens its subagents'
 // requests through the context chain, so the requester is not always the
@@ -37,6 +42,11 @@ type preflightCall struct {
 	// backend is the requesting agent's billing backend; a subagent on
 	// another provider bills there, not on the checking agent's backend.
 	backend string
+	// owner is the requesting agent. A check may use its own measured
+	// conversation only for its own requests: a subagent's request
+	// carries the subagent's conversation, not the parent's. nil from a
+	// wrapper built outside agent.New.
+	owner *preflightOwner
 }
 
 // preflightRelease ends a passed check's reservation. produced reports
@@ -138,6 +148,12 @@ func (h *requestUsageHistory) estimate(model string) (tokens, cached int, ok boo
 // estimateRequestInput returns the larger of the previous measured
 // conversation size (plus its unmeasured tail) and a byte-based estimate
 // of this request. Observed cache reads are priced at the cache-read rate.
+//
+// tracker and history must describe the conversation this request
+// continues. A check screening another agent's request passes neither:
+// that request carries its own, usually much smaller, context, and
+// pricing it at the checking agent's window refused a 25-token request
+// after a 400K-token turn.
 func estimateRequestInput(req *adkmodel.LLMRequest, model string, tracker *usage.Tracker, history *requestUsageHistory) (tokens, cached int, ok bool) {
 	if req == nil {
 		return 0, 0, false

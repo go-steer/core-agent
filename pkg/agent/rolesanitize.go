@@ -63,17 +63,21 @@ type roleSanitizingLLM struct {
 	// ancestor agent prices a subagent's request on the subagent's own
 	// backend rather than its own.
 	backend string
+	// owner identifies the agent this model belongs to, so the cost
+	// preflight can tell its own requests from a subagent's (see
+	// preflightCall.owner). nil outside agent.New.
+	owner *preflightOwner
 }
 
 // newRoleSanitizingLLM wraps inner so every GenerateContent request has
 // its Contents filtered to valid genai roles. Returns inner unchanged
 // when it is nil (agent.New rejects a nil model before this is called;
 // the guard keeps the wrapper safe for direct/test use).
-func newRoleSanitizingLLM(inner adkmodel.LLM, backend string) adkmodel.LLM {
+func newRoleSanitizingLLM(inner adkmodel.LLM, backend string, owner *preflightOwner) adkmodel.LLM {
 	if inner == nil {
 		return nil
 	}
-	return &roleSanitizingLLM{inner: inner, backend: backend}
+	return &roleSanitizingLLM{inner: inner, backend: backend, owner: owner}
 }
 
 // Name delegates to the wrapped model — the sanitizer is transparent to
@@ -94,7 +98,7 @@ func (l *roleSanitizingLLM) WithoutBuiltins() adkmodel.LLM {
 	if !ok {
 		return l
 	}
-	return newRoleSanitizingLLM(u.WithoutBuiltins(), l.backend)
+	return newRoleSanitizingLLM(u.WithoutBuiltins(), l.backend, l.owner)
 }
 
 // GenerateContent filters invalid-role Content out of req.Contents, then
@@ -136,7 +140,7 @@ func (l *roleSanitizingLLM) GenerateContent(ctx context.Context, req *adkmodel.L
 // never come.
 func (l *roleSanitizingLLM) screened(ctx context.Context, check costPreflightCheck, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
-		release, err := check(preflightCall{req: req, backend: l.backend})
+		release, err := check(preflightCall{req: req, backend: l.backend, owner: l.owner})
 		if err != nil {
 			yield(nil, err)
 			return

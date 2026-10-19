@@ -470,8 +470,10 @@ type Agent struct {
 	// between the test and the write.
 	turnPreflightGen uint64
 	// testPreflightBeforeReserve runs between pricing a request and
-	// reserving its estimate. Nil outside tests.
+	// reserving its estimate, testPreflightBeforeTrip between refusing
+	// one and recording the trip. Nil outside tests.
 	testPreflightBeforeReserve func()
+	testPreflightBeforeTrip    func()
 	// preflightOwner marks this agent's own model calls to the cost
 	// preflight (preflightCall.owner); set by New, shared with the
 	// role-sanitizing wrapper. unpricedWarned is warnUnpricedOnce's

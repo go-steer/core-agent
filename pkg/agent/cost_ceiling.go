@@ -411,7 +411,7 @@ func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) bool {
 	// not, the tap would otherwise re-trip on every remaining event of
 	// a turn whose cost is already over the bound.
 	case !turnTripped && turnStartSet && ceiling.MaxTurnUSD > 0 && turnCost >= ceiling.MaxTurnUSD:
-		streak, tripped := a.recordTurnCeilingTrip()
+		streak, tripped, _ := a.recordTurnCeilingTrip(0)
 		if !tripped {
 			return false
 		}
@@ -485,15 +485,26 @@ const maxConsecutiveTurnCeilingTrips = 3
 // resulting consecutive-trip count. Only the caller that sets the latch
 // owns the trip's side effects; parallel checks for the same turn observe
 // the existing count without advancing the streak again.
-func (a *Agent) recordTurnCeilingTrip() (int, bool) {
+//
+// gen is the preflight turn the trip belongs to (turnPreflight), 0 for
+// whatever turn is live. A trip for a turn that has since ended is
+// stale: it latches nothing, and stale reports it so the caller skips
+// the trip's side effects, the Interrupt above all, which would cut the
+// turn now running. Checked here, under the lock that sets the latch,
+// because a refusal decided under an earlier hold of a.mu can be
+// overtaken by the turn's end before it gets here.
+func (a *Agent) recordTurnCeilingTrip(gen uint64) (streak int, tripped, stale bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if gen != 0 && a.turnPreflightGen != gen {
+		return a.turnCeilingStreak, false, true
+	}
 	if a.turnCeilingTripped {
-		return a.turnCeilingStreak, false
+		return a.turnCeilingStreak, false, false
 	}
 	a.turnCeilingTripped = true
 	a.turnCeilingStreak++
-	return a.turnCeilingStreak, true
+	return a.turnCeilingStreak, true, false
 }
 
 // enforceCostCeilingInTurn is the in-turn arm of the cost ceiling
@@ -649,15 +660,9 @@ func (a *Agent) preflightTurnRequest(call preflightCall, gen uint64) (preflightR
 	}
 	inputCost, err := estimateInputCost(req, modelName, history, nil, price)
 	if err != nil {
-		a.mu.Lock()
-		stillLive := live()
-		a.mu.Unlock()
-		if !stillLive {
-			return nil, nil
-		}
 		turnCost := a.tracker.Totals().CostUSD - turnStart
 		reason := fmt.Sprintf("per-turn cost ceiling cannot be estimated safely: %s. The request was refused before it was sent. "+turnCutNoNextTurn, err)
-		return nil, a.tripCostCeilingBeforeRequest(turnCost, 0, ceiling.MaxTurnUSD, reason)
+		return nil, a.tripCostCeilingBeforeRequest(gen, turnCost, 0, ceiling.MaxTurnUSD, reason)
 	}
 	turns := a.tracker.All()
 	turnCost := trackerTurnCost(turns) - turnStart
@@ -718,7 +723,7 @@ func (a *Agent) preflightTurnRequest(call preflightCall, gen uint64) (preflightR
 		"per-turn cost ceiling exceeded before the model call: current turn cost $%.4f plus $%.4f in unsettled input estimates, $%.4f reserved for concurrent calls, and $%.4f estimated input cost is $%.4f, ceiling is $%.4f. The request was refused; output tokens remain unknowable, so the bound is still a floor for output spend. "+turnCutNoNextTurn,
 		turnCost, pendingEstimate, reservedUSD, inputCost, projected, ceiling.MaxTurnUSD,
 	)
-	return nil, a.tripCostCeilingBeforeRequest(turnCost, inputCost, ceiling.MaxTurnUSD, reason)
+	return nil, a.tripCostCeilingBeforeRequest(gen, turnCost, inputCost, ceiling.MaxTurnUSD, reason)
 }
 
 func trackerTurnCost(turns []usage.Turn) float64 {
@@ -759,8 +764,18 @@ func (a *Agent) settlePreflightEstimates(modelTurns map[string]int) {
 	a.turnPreflightEstimates = remaining
 }
 
-func (a *Agent) tripCostCeilingBeforeRequest(turnCost, inputCost, ceiling float64, reason string) error {
-	streak, tripped := a.recordTurnCeilingTrip()
+// tripCostCeilingBeforeRequest trips the per-turn ceiling for a request
+// refused before it was sent, for the preflight turn gen. A refusal whose
+// turn ended first is no refusal at all: the request passes unscreened,
+// like any other call from a turn that is over (nil error).
+func (a *Agent) tripCostCeilingBeforeRequest(gen uint64, turnCost, inputCost, ceiling float64, reason string) error {
+	if a.testPreflightBeforeTrip != nil {
+		a.testPreflightBeforeTrip()
+	}
+	streak, tripped, stale := a.recordTurnCeilingTrip(gen)
+	if stale {
+		return nil
+	}
 	if !tripped {
 		return context.Canceled
 	}

@@ -304,7 +304,7 @@ func TestTripCostCeilingBeforeRequest_ParallelRefusalsCountOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			errs[i] = a.tripCostCeilingBeforeRequest(0, 0.01, 0.01, "preflight refused")
+			errs[i] = a.tripCostCeilingBeforeRequest(0, 0, 0.01, 0.01, "preflight refused")
 		}()
 	}
 	close(start)

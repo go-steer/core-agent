@@ -206,6 +206,48 @@ func TestPreflight_EndsWithItsTurn(t *testing.T) {
 	}
 }
 
+// A refusal is decided under a.mu and tripped after it is released, so
+// the turn can end in between. The trip used to re-take the lock without
+// asking whose turn it was: the ended turn's refused request latched
+// turnCeilingTripped and advanced the streak on the next turn, and its
+// Interrupt cut that turn.
+func TestPreflight_TurnEndingBeforeTheTripLeavesTheNextTurnAlone(t *testing.T) {
+	t.Parallel()
+	a, _, rec := preflightTestAgent(0.000001)
+	a.snapshotTurnStartCost()
+	check, endTurn := a.turnPreflight()
+	nextCtx, cancelNext := context.WithCancel(context.Background())
+	defer cancelNext()
+	refused := false
+	a.testPreflightBeforeTrip = func() {
+		a.testPreflightBeforeTrip = nil
+		refused = true
+		endTurn()
+		a.snapshotTurnStartCost()
+		_, _ = a.turnPreflight()
+		a.setCancelInFlight(cancelNext) // the next turn is running
+	}
+
+	if _, err := check(preflightCall{req: bigPreflightRequest(400_000)}); err != nil {
+		t.Errorf("the ended turn's refusal reached its caller after the turn was over: %v", err)
+	}
+	if !refused {
+		t.Fatal("the request was never refused; this test would prove nothing")
+	}
+	if trips := rec.guardrailTrips(); len(trips) != 0 {
+		t.Errorf("guardrail trips = %+v, want none: the turn the refusal belonged to is over", trips)
+	}
+	a.mu.Lock()
+	streak, latched := a.turnCeilingStreak, a.turnCeilingTripped
+	a.mu.Unlock()
+	if streak != 0 || latched {
+		t.Errorf("next turn's streak = %d, latched = %v; want 0, false", streak, latched)
+	}
+	if nextCtx.Err() != nil {
+		t.Error("the ended turn's trip interrupted the next turn")
+	}
+}
+
 // The turn's end and the next turn's reset can land while a request is
 // between the check that its turn is live and the reservation. Checked
 // with a flag read before the reservation, the ended turn's request then

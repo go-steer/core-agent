@@ -237,7 +237,7 @@ Checking in-turn is what makes this a backstop rather than a receipt. A runaway 
 Checking after each call still lets one request that is over budget by itself through: a turn was once cut at $1.19 against a $0.25 bound because the request that crossed it carried ~791K input tokens. Since [#1299](https://github.com/go-steer/core-agent/issues/1299) the per-turn ceiling (and a subagent's `budgets.max_cost_usd`) also **estimates each request's input cost before sending it**, and refuses the request with the same per-turn trip when that estimate alone would reach the bound.
 
 - **What the estimate counts:** the conversation's last measured input plus the tool results added since. With no measurement yet, the serialized request is used instead. A prompt prefix the provider has already cached is priced at the cache-read rate.
-- **Whose requests it screens:** a turn's check covers the requests made under that turn, including a subagent's. A subagent's request is priced on its own billing backend and from its own context, never at the parent's conversation size.
+- **Whose requests it screens:** a turn's check covers the requests made under that turn, including a subagent's. A subagent's request is priced on its own billing backend and from its own context, never at the parent's conversation size. A subagent's own budget prices a nested subagent's request the same way.
 - **Side calls aren't screened:** the summarizer, session title, auto-mode approver, agentic subtasks and MCP digests. Their spend still counts toward the turn afterwards.
 - **It ends with its turn:** a background subagent that keeps running after the turn that spawned it is no longer screened by that turn's ceiling.
 - **It's still a floor:** output tokens can't be known before the call, so a turn can still end above its bound by the output of its last request.
@@ -247,7 +247,7 @@ Checking after each call still lets one request that is over budget by itself th
 A ceiling can only count what it can price. A model with no price in any pricing layer counts every call as $0, so a ceiling over it can never trip. That's a ceiling in name only, and worse than none, because you believe you have one. core-agent refuses that configuration where you set it:
 
 - **At startup,** an operator-set ceiling (either flag, or the config fields) over an unpriced model is a config error, on every provider. That covers the main model, each declared subagent's model, and the background small tier. The unattended default session ceiling only prints a warning, since you never asked for it.
-- **A subagent's `budgets.max_cost_usd` on an unpriced model** is always refused.
+- **A subagent budget an operator wrote, on an unpriced model,** is refused: a declared subagent's `budgets.max_cost_usd` at startup, and a `max_cost_usd` an attach client passes when it spawns a subagent. The default background budget, and one the parent's model picks in `spawn_agent`, are not refused, since every spawn carries the default. Instead core-agent warns once per model that the budget can't stop the subagent.
 - **`/model` and background spawns** refuse an unpriced model under an operator-set ceiling by the same rules.
 
 The fix is any one of:

@@ -17,11 +17,14 @@ package main
 import (
 	"flag"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/background"
+	"github.com/go-steer/core-agent/v3/pkg/compose"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/pricing"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
@@ -402,19 +405,61 @@ func TestCeilingPricing_StartupReachesSubagentsAndTheSmallTier(t *testing.T) {
 	}
 }
 
-// The remedy every refusal names — "zero rates price a self-hosted model
-// at $0" — must be true: a declared row of zeros is a price (found), not
-// the absence of one. If the catalog ever started skipping zero rows,
-// the advice would send operators to a fix that does nothing.
-func TestCeilingPricing_ZeroDeclaredRatesArePriced(t *testing.T) {
-	cat, err := pricing.NewCatalog(pricing.Options{
-		Declared: map[string]pricing.ModelRates{"vllm/" + unpricedTestModel: {}},
-	})
-	if err != nil {
-		t.Fatalf("NewCatalog: %v", err)
+// TestCeilingPricing_ZeroRatesEscapeHatchIsModelPricing pins the remedy
+// both halves of the unpriced-model policy name, through the real
+// config loader. A self-hosted model nobody pays per token for is
+// priced at $0 by zero rates in model.pricing. Zero rates in a profile's
+// models[].rates are not a way out: core-models rejects them at load,
+// so a message that suggested them sent the operator to a config that
+// does not start.
+func TestCeilingPricing_ZeroRatesEscapeHatchIsModelPricing(t *testing.T) {
+	t.Parallel()
+	load := func(t *testing.T, body string) (*config.Config, error) {
+		t.Helper()
+		agents := filepath.Join(t.TempDir(), ".agents")
+		if err := os.MkdirAll(agents, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(agents, config.ConfigFileName), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return config.Load(agents)
 	}
-	if _, _, found := cat.LookupForWithSource("vllm", unpricedTestModel); !found {
-		t.Error("a declared all-zero rate row reads as unpriced; the remedy the ceiling messages name would not work")
+	profile := func(rates string) string {
+		return `{"name":"house-vllm","extends":"vllm","base_url":"http://10.0.0.2:8000/v1",` +
+			`"models":[{"id":"` + unpricedTestModel + `"` + rates + `}]}`
+	}
+
+	t.Run("model.pricing zero rates are priced", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := load(t, `{"version":1,"model":{"name":"`+unpricedTestModel+`","provider":"house-vllm",`+
+			`"pricing":{"`+unpricedTestModel+`":{"input_per_mtok":0,"output_per_mtok":0}}},"providers":[`+profile("")+`]}`)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		cat, err := pricing.NewCatalog(pricing.Options{
+			CfgOverride: compose.CfgToCatalogOverride(cfg.Model.Pricing),
+			Declared:    usage.DeclaredRates(cfg),
+		})
+		if err != nil {
+			t.Fatalf("NewCatalog: %v", err)
+		}
+		if _, _, found := cat.LookupForWithSource(usage.BackendFor(cfg), unpricedTestModel); !found {
+			t.Error("zero rates in model.pricing read as unpriced; the remedy the ceiling messages name would not work")
+		}
+	})
+
+	t.Run("profile zero rates are rejected at load", func(t *testing.T) {
+		t.Parallel()
+		_, err := load(t, `{"version":1,"model":{"name":"`+unpricedTestModel+`","provider":"house-vllm"},"providers":[`+
+			profile(`,"rates":{"input_per_mtok":0,"output_per_mtok":0}`)+`]}`)
+		if err == nil || !strings.Contains(err.Error(), "leave rates out instead") {
+			t.Fatalf("Load with all-zero profile rates = %v, want core-models' rejection", err)
+		}
+	})
+
+	if msg := unpricedCeilingWhy("model", unpricedTestModel, "vllm"); !strings.Contains(msg, "model.pricing") || strings.Contains(msg, "zero rates price") {
+		t.Errorf("the remedy must point a $0 model at model.pricing, not at zero profile rates:\n%s", msg)
 	}
 }
 

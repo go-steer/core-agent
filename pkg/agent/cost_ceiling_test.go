@@ -1022,8 +1022,8 @@ func TestRun_CostCeiling_SkipsAndWarnsOnceForAnUnpricedModel(t *testing.T) {
 	if n := strings.Count(got, "has no price"); n != 1 {
 		t.Errorf("unpriced warnings = %d, want exactly one across three turns:\n%s", n, got)
 	}
-	if !strings.Contains(got, "models[].rates") || !strings.Contains(got, "model.pricing") {
-		t.Errorf("warning must name the remedies (models[].rates, model.pricing):\n%s", got)
+	if !strings.Contains(got, "models[].rates") || !strings.Contains(got, "model.pricing") || strings.Contains(got, "zero rates price") {
+		t.Errorf("warning must name the remedies (model.pricing for $0, real models[].rates), never zero profile rates, which core-models rejects:\n%s", got)
 	}
 }
 

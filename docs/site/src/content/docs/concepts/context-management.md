@@ -251,9 +251,9 @@ A ceiling can only count what it can price. A model with no price in any pricing
 - **`/model` and background spawns** refuse an unpriced model under an operator-set ceiling by the same rules.
 
 The fix is any one of:
-- declare `models[].rates` for the model in its [provider profile](/concepts/providers/) (all-zero rates price a self-hosted model you don't pay per token for at $0, which is not the same as unpriced);
-- set `model.pricing`;
-- drop the ceiling.
+- set `model.pricing` for the model (zero rates are fine there for a self-hosted model you don't pay per token for: $0 is a price, which is not the same as unpriced);
+- declare real `models[].rates` for it in its [provider profile](/concepts/providers/) (all-zero profile rates are rejected when the profile loads, so a $0 model goes in `model.pricing`);
+- drop the ceiling or budget.
 
 A model that still reaches a ceiling at runtime is skipped by the pre-request check, not refused: the agent logs it once and carries on, and it never counts toward the three-trips halt. Refusing it per request would cut turns at $0 spent until the session halted for good, since no reset can price a model.
 

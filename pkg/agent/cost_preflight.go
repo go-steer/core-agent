@@ -262,13 +262,16 @@ func (a *Agent) warnUnpricedOnce(model, backend string) {
 
 // unpricedCeilingWarning is the runtime half of the unpriced-model
 // message. It names the same remedies as the startup refusal in
-// cmd/core-agent (checkCeilingPricing), so an operator sees one story.
+// cmd/core-agent (unpricedCeilingWhy), so an operator sees one story.
+// The $0 remedy is model.pricing: core-models rejects all-zero
+// models[].rates when it loads a profile.
 func unpricedCeilingWarning(model, backend string) string {
 	where := ""
 	if backend != "" {
 		where = fmt.Sprintf(" on backend %q", backend)
 	}
 	return fmt.Sprintf("cost ceiling: model %q%s has no price, so the ceiling cannot screen its requests and counts its calls as $0. "+
-		"Declare models[].rates for it (zero rates price a self-hosted model at $0), set model.pricing, or drop the ceiling",
+		"Set model.pricing for it (zero rates are fine there for a self-hosted model you don't pay per token for), "+
+		"declare real models[].rates in its provider profile, or drop the ceiling",
 		model, where)
 }

@@ -205,7 +205,9 @@ func resolveGuardrails(in guardrailInputs) (guardrailResolution, error) {
 //   - A ceiling the operator asked for (either flag, or config) over an
 //     unpriced model is refused, on every provider: the catalog prices
 //     Gemini, Claude, OpenAI and xAI per backend, and a self-hosted model
-//     is priced only if its profile declares rates.
+//     is priced only by model.pricing (zero rates price it at $0) or
+//     by real rates declared in its profile (core-models rejects
+//     all-zero profile rates at load).
 //   - The unattended default session ceiling, which nobody asked for,
 //     only warns: refusing it would fail every unattended run on a
 //     self-hosted model.
@@ -255,7 +257,8 @@ func unpricedCeilingWhy(who, model, backend string) string {
 		where = fmt.Sprintf(" on backend %q", backend)
 	}
 	return fmt.Sprintf("%s %q%s has no price — no pricing layer has a rate for it — so the cost ceiling counts its calls as $0 and can never trip. "+
-		"Declare models[].rates for it in its provider profile (zero rates price a self-hosted model at $0), or set model.pricing",
+		"Set model.pricing for it (zero rates are fine there for a self-hosted model you don't pay per token for), "+
+		"or declare real models[].rates in its provider profile",
 		who, model, where)
 }
 

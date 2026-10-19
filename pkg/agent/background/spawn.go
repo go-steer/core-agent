@@ -133,6 +133,9 @@ type resolvedSpawn struct {
 	buildModel   func(context.Context) (adkmodel.LLM, error)
 	priceModelID string
 	priceBackend string
+	// maxCostExplicit reports that an operator wrote budgets.MaxCost
+	// (SpawnPricing.MaxCostExplicit).
+	maxCostExplicit bool
 	// maxDepth caps the subagent's OWN nesting (0 = substrate default).
 	maxDepth int
 	// budgets + scheduler bound and pace the run.
@@ -159,6 +162,12 @@ type resolvedSpawn struct {
 // parent. Once the goroutine is running, terminal errors land on the
 // handle (h.Err()) and a corresponding Alert is pushed.
 func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*Handle, error) {
+	return m.spawn(ctx, parentBranch, false, spec)
+}
+
+// spawn is Spawn; maxCostExplicit reports that an operator, not a
+// default or the parent's model, wrote spec.Budgets.MaxCost.
+func (m *Manager) spawn(ctx context.Context, parentBranch string, maxCostExplicit bool, spec Spec) (*Handle, error) {
 	if err := validateSpec(spec); err != nil {
 		return nil, err
 	}
@@ -197,17 +206,18 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		specName = spec.Name
 	}
 	return m.launch(ctx, parentBranch, resolvedSpawn{
-		name:         spec.Name,
-		specName:     specName,
-		goal:         spec.Goal,
-		instrOpts:    instrOpts,
-		tools:        tools,
-		buildModel:   func(c context.Context) (adkmodel.LLM, error) { return m.provider.Model(c, resolvedModelID) },
-		priceModelID: resolvedModelID,
-		priceBackend: models.BackendOf(m.provider),
-		budgets:      mergeBudgets(m.defaultBudgets, spec.Budgets),
-		scheduler:    sched,
-		mode:         spec.Mode,
+		name:            spec.Name,
+		specName:        specName,
+		goal:            spec.Goal,
+		instrOpts:       instrOpts,
+		tools:           tools,
+		buildModel:      func(c context.Context) (adkmodel.LLM, error) { return m.provider.Model(c, resolvedModelID) },
+		priceModelID:    resolvedModelID,
+		priceBackend:    models.BackendOf(m.provider),
+		maxCostExplicit: maxCostExplicit && spec.Budgets.MaxCost > 0,
+		budgets:         mergeBudgets(m.defaultBudgets, spec.Budgets),
+		scheduler:       sched,
+		mode:            spec.Mode,
 	})
 }
 
@@ -220,11 +230,16 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 // identity-checked rollback on a pre-launch model error (#488/#502), and
 // the shouldAlert suppression of a stale incarnation's terminal alert.
 func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSpawn) (*Handle, error) {
-	// The model must be one the host's cost ceilings can price
-	// (WithSpawnPricingCheck). Asked before the lock: it is the host's
-	// code, and it may print.
+	// The model must be one the host's cost ceilings, and the spawn's own
+	// budget, can price (WithSpawnPricingCheck). Asked before the lock:
+	// it is the host's code, and it may print.
 	if m.spawnPricing != nil {
-		if err := m.spawnPricing(rs.priceModelID, rs.priceBackend); err != nil {
+		if err := m.spawnPricing(SpawnPricing{
+			ModelID:         rs.priceModelID,
+			Backend:         rs.priceBackend,
+			MaxCost:         rs.budgets.MaxCost,
+			MaxCostExplicit: rs.maxCostExplicit,
+		}); err != nil {
 			return nil, err
 		}
 	}

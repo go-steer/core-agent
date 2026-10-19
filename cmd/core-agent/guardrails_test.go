@@ -473,3 +473,48 @@ func TestCeilingPricing_DoorWarnsOrRefuses(t *testing.T) {
 		t.Errorf("under only the unattended default a door must warn, not refuse: %v", err)
 	}
 }
+
+// TestCeilingPricing_SpawnDoorVetsTheSpawnsBudget: with no ceiling at
+// all, a spawn on an unpriced model still runs under a dollar budget,
+// and that budget counts the subagent's calls as $0, so it can never
+// stop it. One an operator wrote (an attach caller's max_cost_usd) is
+// refused, as a declared subagent's is at startup. The manager default
+// and a budget the parent's model chose warn once per model instead:
+// every spawn carries the default, so refusing would refuse every spawn
+// on a self-hosted model.
+func TestCeilingPricing_SpawnDoorVetsTheSpawnsBudget(t *testing.T) {
+	t.Parallel()
+	none := ceilingPricing{sessionSource: sourceCostUnset}
+	spawn := func(model string, budget float64, explicit bool) background.SpawnPricing {
+		return background.SpawnPricing{ModelID: model, Backend: "vllm", MaxCost: budget, MaxCostExplicit: explicit}
+	}
+
+	var warned warnOnce
+	if _, err := none.spawnDoor(spawn(unpricedTestModel, 2.5, true), &warned); err == nil ||
+		!strings.Contains(err.Error(), "budgets.max_cost_usd ($2.50) cannot hold") || !strings.Contains(err.Error(), "model.pricing") {
+		t.Errorf("an attach caller's explicit budget on an unpriced model: err = %v, want a refusal naming the remedy", err)
+	}
+
+	warns, err := none.spawnDoor(spawn(unpricedTestModel, 1.0, false), &warned)
+	if err != nil {
+		t.Fatalf("the manager's default budget on an unpriced model was refused: %v", err)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "budgets.max_cost_usd ($1.00)") || !strings.Contains(warns[0], "cannot stop it") {
+		t.Errorf("default budget warnings = %q, want one saying the budget cannot stop the subagent", warns)
+	}
+	if warns, err := none.spawnDoor(spawn(unpricedTestModel, 3, false), &warned); err != nil || len(warns) != 0 {
+		t.Errorf("a second spawn on the same model (model-written budget) = (%q, %v), want allowed and no repeat warning", warns, err)
+	}
+	var fresh warnOnce
+	if warns, err := none.spawnDoor(spawn(unpricedTestModel, 3, false), &fresh); err != nil || len(warns) != 1 {
+		t.Errorf("a model-written budget on an unpriced model = (%q, %v), want allowed with one warning", warns, err)
+	}
+
+	if warns, err := none.spawnDoor(spawn(pricedTestModel, 2.5, true), &fresh); err != nil || len(warns) != 0 {
+		t.Errorf("an explicit budget on a priced model = (%q, %v), want allowed silently", warns, err)
+	}
+	turn := ceilingPricing{ceiling: agent.CostCeiling{MaxTurnUSD: 1}, sessionSource: sourceCostFlag}
+	if _, err := turn.spawnDoor(spawn(unpricedTestModel, 1.0, false), &fresh); err == nil {
+		t.Error("an operator ceiling no longer refuses a spawn on an unpriced model")
+	}
+}

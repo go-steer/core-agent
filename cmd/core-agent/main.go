@@ -1432,11 +1432,17 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// spawn only happens during a turn, long after it is set. Until then
 	// it is nil and checks nothing.
 	var ceilingPolicy atomic.Pointer[ceilingPricing]
-	spawnPricingCheck := func(modelID, backend string) error {
-		if p := ceilingPolicy.Load(); p != nil {
-			return p.door("background spawn: model", modelID, backend)
+	var spawnBudgetWarned warnOnce
+	spawnPricingCheck := func(s background.SpawnPricing) error {
+		p := ceilingPolicy.Load()
+		if p == nil {
+			return nil
 		}
-		return nil
+		warns, err := p.spawnDoor(s, &spawnBudgetWarned)
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "core-agent: %s\n", w)
+		}
+		return err
 	}
 	// bgRecipe carries the same recipe down to every multi-session
 	// session so each gets its OWN manager (#637). Stays zero (and so

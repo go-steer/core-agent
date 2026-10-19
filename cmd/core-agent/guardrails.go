@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/background"
@@ -211,8 +212,11 @@ func resolveGuardrails(in guardrailInputs) (guardrailResolution, error) {
 //   - The unattended default session ceiling, which nobody asked for,
 //     only warns: refusing it would fail every unattended run on a
 //     self-hosted model.
-//   - A subagent's own budgets.max_cost_usd on an unpriced model is
-//     always refused. Somebody wrote that budget down, and it cannot hold.
+//   - A subagent budget an operator wrote on an unpriced model is
+//     refused: a declared subagent's budgets.max_cost_usd at startup, and
+//     an attach caller's max_cost_usd at the spawn door. Somebody wrote
+//     that budget down, and it cannot hold. The manager's default budget
+//     and one the parent's model chose only warn (spawnDoor).
 //
 // Pricing is a property of the configuration, so this is where it is
 // refused. A model that still reaches a ceiling at runtime is skipped
@@ -256,11 +260,14 @@ func unpricedCeilingWhy(who, model, backend string) string {
 	if backend != "" {
 		where = fmt.Sprintf(" on backend %q", backend)
 	}
-	return fmt.Sprintf("%s %q%s has no price — no pricing layer has a rate for it — so the cost ceiling counts its calls as $0 and can never trip. "+
-		"Set model.pricing for it (zero rates are fine there for a self-hosted model you don't pay per token for), "+
-		"or declare real models[].rates in its provider profile",
-		who, model, where)
+	return fmt.Sprintf("%s %q%s has no price — no pricing layer has a rate for it — so the cost ceiling counts its calls as $0 and can never trip. %s",
+		who, model, where, unpricedRemedy)
 }
+
+// unpricedRemedy names the fixes for an unpriced model, short of
+// dropping the ceiling or budget that needs the price.
+const unpricedRemedy = "Set model.pricing for it (zero rates are fine there for a self-hosted model you don't pay per token for), " +
+	"or declare real models[].rates in its provider profile"
 
 // ceilingModel is one model a ceiling or budget has to price at startup.
 type ceilingModel struct {
@@ -308,15 +315,75 @@ func (p ceilingPricing) checkStartup(ms []ceilingModel) (warns []string, err err
 // spawn — under the ceilings this process runs with. A warning is
 // printed to stderr and the model is allowed; only a refusal stops it.
 //
-// It applies the ceiling rule only, never the budget rule. Every
-// background spawn inherits the manager's default MaxCost, which no
-// operator wrote, so the budget rule here would refuse every spawn on
-// a self-hosted model with no ceiling configured at all. Budgets an
-// operator declared are vetted at startup (startupCeilingModels).
+// It applies the ceiling rule only; a background spawn's budget goes
+// through spawnDoor.
 func (p ceilingPricing) door(who, model, backend string) error {
 	warn, err := p.check(who, model, backend, 0)
 	if warn != "" {
 		fmt.Fprintf(os.Stderr, "core-agent: %s\n", warn)
 	}
 	return err
+}
+
+const spawnDoorWho = "background spawn: model"
+
+// spawnDoor is door for a background spawn, which also brings the
+// subagent's own budget (background.WithSpawnPricingCheck).
+//
+// A budget an operator wrote — an attach caller's max_cost_usd, or a
+// declared subagent's own budget after a "small" downshift — gets the
+// budget rule, as at startup: it cannot hold, so it is refused. The
+// manager's default MaxCost and a budget the parent's model chose only
+// warn, once per model per process (warned): every spawn carries the
+// default, which no operator wrote, so refusing it would refuse every
+// spawn on a self-hosted model with no ceiling configured at all.
+//
+// Like check, it returns its warnings rather than printing them.
+func (p ceilingPricing) spawnDoor(s background.SpawnPricing, warned *warnOnce) (warns []string, err error) {
+	budget := 0.0
+	if s.MaxCostExplicit {
+		budget = s.MaxCost
+	}
+	warn, err := p.check(spawnDoorWho, s.ModelID, s.Backend, budget)
+	if err != nil {
+		return nil, err
+	}
+	if warn != "" {
+		warns = append(warns, warn)
+	}
+	if !s.MaxCostExplicit && s.MaxCost > 0 && s.ModelID != "" && usage.PriceOn(s.Backend, s.ModelID).Unpriced && warned.first(s.Backend+"/"+s.ModelID) {
+		warns = append(warns, unpricedBudgetWarning(s))
+	}
+	return warns, nil
+}
+
+// unpricedBudgetWarning is spawnDoor's warning for a default or
+// model-written budget on an unpriced model.
+func unpricedBudgetWarning(s background.SpawnPricing) string {
+	where := ""
+	if s.Backend != "" {
+		where = fmt.Sprintf(" on backend %q", s.Backend)
+	}
+	return fmt.Sprintf("WARNING: %s %q%s has no price, so a background subagent's budgets.max_cost_usd ($%.2f) counts its calls as $0 and cannot stop it. %s. (Warned once per model.)",
+		spawnDoorWho, s.ModelID, where, s.MaxCost, unpricedRemedy)
+}
+
+// warnOnce reports the first time it sees each key. The zero value is
+// ready to use.
+type warnOnce struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func (w *warnOnce) first(key string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen[key] {
+		return false
+	}
+	if w.seen == nil {
+		w.seen = map[string]bool{}
+	}
+	w.seen[key] = true
+	return true
 }

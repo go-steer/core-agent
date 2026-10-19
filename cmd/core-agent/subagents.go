@@ -106,7 +106,7 @@ type sessionBackgroundRecipe struct {
 	// spawnPricing is the daemon's unpriced-model check for spawns
 	// (background.WithSpawnPricingCheck); a per-session manager must
 	// refuse what the daemon's own would.
-	spawnPricing func(modelID, backend string) error
+	spawnPricing func(background.SpawnPricing) error
 	allowAdhoc   bool
 	syncWait     time.Duration
 	// parallelWrites is safety.parallel_subagent_writes, carried here

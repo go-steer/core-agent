@@ -324,10 +324,13 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 		buildModel:   buildModel,
 		priceModelID: priceModelID,
 		priceBackend: priceBackend,
-		maxDepth:     tmpl.MaxDepth,
-		budgets:      tightenBudgets(mergeBudgets(m.defaultBudgets, tmpl.Budgets), ov.Budgets),
-		scheduler:    sched,
-		mode:         tmpl.Mode,
+		// The configured budget is the operator's; a "small" downshift
+		// can put it on a model startup never priced it against.
+		maxCostExplicit: tmpl.Budgets.MaxCost > 0,
+		maxDepth:        tmpl.MaxDepth,
+		budgets:         tightenBudgets(mergeBudgets(m.defaultBudgets, tmpl.Budgets), ov.Budgets),
+		scheduler:       sched,
+		mode:            tmpl.Mode,
 	})
 }
 

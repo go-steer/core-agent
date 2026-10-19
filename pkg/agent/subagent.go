@@ -472,14 +472,32 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		)
 		if opts.Budgets.MaxCostUSD > 0 {
 			runCtx = withCostPreflight(runCtx, func(call preflightCall) (preflightRelease, error) {
-				if price.Unpriced {
+				// The budget screens every request under the delegation,
+				// a nested delegation's too. Only the subagent's own
+				// continue the conversation history measures, on its
+				// model; any other request is priced on its own model and
+				// backend from its own size, as the per-turn check does
+				// (preflightCostCeilingRequest).
+				reqModel, reqPrice, reqHistory := innerModelName, price, &history
+				if call.owner != opts.Inner.preflightOwner {
+					reqHistory = nil
+					if call.req != nil && call.req.Model != "" {
+						reqModel = call.req.Model
+					}
+					reqPrice = usage.PriceOn(call.backend, reqModel)
+				}
+				if reqPrice.Unpriced {
 					// Startup refuses a budget on an unpriced model; one
 					// that still arrives is skipped, never refused
 					// (warnUnpricedOnce says why).
-					opts.Inner.warnUnpricedOnce(innerModelName, opts.Inner.BillingBackend())
+					backend := opts.Inner.BillingBackend()
+					if reqHistory == nil {
+						backend = call.backend
+					}
+					opts.Inner.warnUnpricedOnce(reqModel, backend)
 					return nil, nil
 				}
-				inputCost, err := estimateInputCost(call.req, innerModelName, nil, &history, price)
+				inputCost, err := estimateInputCost(call.req, reqModel, nil, reqHistory, reqPrice)
 				if err != nil {
 					return nil, err
 				}

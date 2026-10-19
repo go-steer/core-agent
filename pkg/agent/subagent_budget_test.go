@@ -224,6 +224,61 @@ func TestSubagentTool_CostBudgetSkipsAndWarnsForAnUnpricedModel(t *testing.T) {
 	}
 }
 
+// A delegation's cost budget screens every request under it, including
+// a nested delegation's. Only the subagent's own requests continue the
+// conversation it measured; a grandchild's carries its own small context.
+// Pricing the grandchild's request at the child's 400K window refused a
+// request of a few tokens, and the nested delegation never ran.
+func TestSubagentTool_CostBudgetPricesANestedDelegationFromItsOwnContext(t *testing.T) {
+	t.Parallel()
+	const window = 400_000
+	price := usage.PriceFor(pricedModel, nil)
+	windowCost := price.CostUSD(window, 0)
+	h := newTestEventLog(t)
+
+	grandchildModel := &meteredLLM{
+		name:   pricedModel,
+		script: [][]*adkmodel.LLMResponse{{usedText("grandchild answered", 20, 5)}},
+	}
+	grandchild, err := New(grandchildModel,
+		WithName("grandchild"),
+		WithEventLog(h),
+		WithSession("u", "nested-grandchild"),
+	)
+	if err != nil {
+		t.Fatalf("New grandchild: %v", err)
+	}
+	delegate := callTool(grandchild.AgentName(), window, 10)
+	delegate.Content.Parts[0].FunctionCall.Args = map[string]any{"request": "look it up"}
+	childModel := &meteredLLM{
+		name: pricedModel,
+		script: [][]*adkmodel.LLMResponse{
+			{delegate},
+			{usedText("child done", window, 10)},
+		},
+	}
+	child, err := New(childModel,
+		WithName("child"),
+		WithEventLog(h),
+		WithSession("u", "nested-child"),
+		WithSubagents([]*Agent{grandchild}),
+		// Room for the child's measured call plus a small request, not
+		// for a second request at the child's window.
+		WithSubagentBudgets(SubagentBudgets{MaxCostUSD: windowCost * 1.5}),
+	)
+	if err != nil {
+		t.Fatalf("New child: %v", err)
+	}
+
+	got := runBoundedDelegation(t, child, h, usage.NewTracker())
+	grandchildModel.mu.Lock()
+	calls := grandchildModel.calls
+	grandchildModel.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("grandchild provider calls = %d, want 1: its request was priced at the child's %d-token window and refused by the child's $%.4f budget\nresult: %s", calls, window, windowCost*1.5, got)
+	}
+}
+
 func TestSubagentTool_ParentTurnCeilingPreflightsChildRequest(t *testing.T) {
 	t.Parallel()
 	h := newTestEventLog(t)

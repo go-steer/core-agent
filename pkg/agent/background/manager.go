@@ -514,6 +514,12 @@ type Spec struct {
 	// say WHICH configured subagent is running — the self-spawn guard
 	// matches on it (#732).
 	Ref string
+	// curatedMaxCost is set by resolvePredefinedSpec when Budgets.MaxCost
+	// descends from the operator-curated spec's own budget (tightening
+	// can lower it, never raise it), so the spawn pricing check treats it
+	// as explicit (SpawnPricing.MaxCostExplicit), as it does a declarative
+	// template's. Unexported: a library caller's own Spec cannot claim it.
+	curatedMaxCost bool
 }
 
 // Mode distinguishes the two things "background subagent" has always
@@ -703,9 +709,10 @@ type SpawnPricing struct {
 	// merged in; 0 for none.
 	MaxCost float64
 	// MaxCostExplicit reports that an operator wrote MaxCost: an attach
-	// caller's max_cost_usd (SpawnSubagent), or a declarative subagent's
-	// configured budget. A manager default or a budget the parent's model
-	// chose in a spawn_agent call is not.
+	// caller's max_cost_usd (SpawnSubagent), a declarative subagent's
+	// configured budget, or a predefined spec's own (WithPredefinedSpecs).
+	// A manager default or a budget the parent's model chose in a
+	// spawn_agent call is not.
 	MaxCostExplicit bool
 }
 

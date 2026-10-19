@@ -330,8 +330,9 @@ const spawnDoorWho = "background spawn: model"
 // spawnDoor is door for a background spawn, which also brings the
 // subagent's own budget (background.WithSpawnPricingCheck).
 //
-// A budget an operator wrote — an attach caller's max_cost_usd, or a
-// declared subagent's own budget after a "small" downshift — gets the
+// A budget an operator wrote — an attach caller's max_cost_usd, a
+// declared subagent's own budget after a "small" downshift, or a
+// library host's predefined spec's (background.WithPredefinedSpecs) — gets the
 // budget rule, as at startup: it cannot hold, so it is refused. The
 // manager's default MaxCost and a budget the parent's model chose only
 // warn, once per model per process (warned): every spawn carries the

@@ -145,10 +145,10 @@ func TestSpawn_PricingCheckRefusesBeforeLaunch(t *testing.T) {
 // TestSpawn_PricingCheckIsToldWhoWroteTheBudget pins what the host's
 // unpriced-model policy needs from each door: the budget a spawn runs
 // under, and whether an operator wrote it. An attach caller's
-// max_cost_usd and a declared subagent's configured budget are explicit,
-// so the host refuses them on a model nobody prices; the manager default
-// and a budget the parent's model chose in spawn_agent are not, so the
-// host only warns. If every door reported explicit=false, an operator's
+// max_cost_usd, a declared subagent's configured budget and a predefined
+// spec's own budget (even tightened) are explicit, so the host refuses
+// them on a model nobody prices; the manager default and a budget the
+// parent's model chose in spawn_agent are not, so the host only warns. If every door reported explicit=false, an operator's
 // budget would be silently counted at $0.
 func TestSpawn_PricingCheckIsToldWhoWroteTheBudget(t *testing.T) {
 	t.Parallel()
@@ -162,6 +162,10 @@ func TestSpawn_PricingCheckIsToldWhoWroteTheBudget(t *testing.T) {
 		WithSubagentTemplates([]SubagentTemplate{
 			{Name: "budgeted", ModelFactory: echoFactory, ModelID: "m", Budgets: Budgets{MaxCost: 0.5}},
 			{Name: "plain", ModelFactory: echoFactory, ModelID: "m"},
+		}),
+		WithPredefinedSpecs([]Spec{
+			{Name: "curated", SystemPrompt: "go", Budgets: Budgets{MaxCost: 0.4}},
+			{Name: "uncurated", SystemPrompt: "go"},
 		}),
 		WithSpawnPricingCheck(func(s SpawnPricing) error {
 			got = append(got, s)
@@ -202,6 +206,18 @@ func TestSpawn_PricingCheckIsToldWhoWroteTheBudget(t *testing.T) {
 			_, err := mgr.SpawnTemplate(ctx, "", "plain", RefOverrides{Goal: "go"}, "")
 			return err
 		}, SpawnPricing{ModelID: "m", MaxCost: 1.0}},
+		{"predefined spec with its own budget", func() error {
+			_, err := mgr.SpawnRef(ctx, "", "curated", "go", RefOverrides{}, "")
+			return err
+		}, SpawnPricing{MaxCost: 0.4, MaxCostExplicit: true}},
+		{"predefined spec's budget tightened by the model", func() error {
+			_, err := mgr.SpawnRef(ctx, "", "curated", "go", RefOverrides{Budgets: Budgets{MaxCost: 0.2}}, "")
+			return err
+		}, SpawnPricing{MaxCost: 0.2, MaxCostExplicit: true}},
+		{"predefined spec with no budget, model-written", func() error {
+			_, err := mgr.SpawnRef(ctx, "", "uncurated", "go", RefOverrides{Budgets: Budgets{MaxCost: 3}}, "")
+			return err
+		}, SpawnPricing{MaxCost: 3}},
 	}
 	for i, step := range steps {
 		if err := step.spawn(); !errors.Is(err, refusal) {

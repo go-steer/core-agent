@@ -214,7 +214,7 @@ func (m *Manager) spawn(ctx context.Context, parentBranch string, maxCostExplici
 		buildModel:      func(c context.Context) (adkmodel.LLM, error) { return m.provider.Model(c, resolvedModelID) },
 		priceModelID:    resolvedModelID,
 		priceBackend:    models.BackendOf(m.provider),
-		maxCostExplicit: maxCostExplicit && spec.Budgets.MaxCost > 0,
+		maxCostExplicit: (maxCostExplicit || spec.curatedMaxCost) && spec.Budgets.MaxCost > 0,
 		budgets:         mergeBudgets(m.defaultBudgets, spec.Budgets),
 		scheduler:       sched,
 		mode:            spec.Mode,

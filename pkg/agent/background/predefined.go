@@ -207,6 +207,7 @@ func (m *Manager) resolvePredefinedSpec(name string, ov RefOverrides) (Spec, err
 
 	// Budgets: tighten only.
 	spec.Budgets = tightenBudgets(base.Budgets, ov.Budgets)
+	spec.curatedMaxCost = base.Budgets.MaxCost > 0
 
 	return spec, nil
 }

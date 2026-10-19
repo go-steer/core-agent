@@ -356,14 +356,14 @@ func TestPreflightCostCeilingRequest_ReservesBudgetAcrossConcurrentCalls(t *test
 
 	start := make(chan struct{})
 	errs := make([]error, callers)
-	releases := make([]func(), callers)
+	releases := make([]preflightRelease, callers)
 	var wg sync.WaitGroup
 	wg.Add(callers)
 	for i := range callers {
 		go func() {
 			defer wg.Done()
 			<-start
-			releases[i], errs[i] = a.preflightCostCeilingRequest(request, "")
+			releases[i], errs[i] = a.preflightCostCeilingRequest(preflightCall{req: request})
 		}()
 	}
 	close(start)
@@ -376,7 +376,7 @@ func TestPreflightCostCeilingRequest_ReservesBudgetAcrossConcurrentCalls(t *test
 			if releases[i] == nil {
 				t.Errorf("caller %d passed preflight without a reservation release", i)
 			}
-			releases[i]()
+			releases[i](true)
 			continue
 		}
 		if !errors.Is(err, context.Canceled) {

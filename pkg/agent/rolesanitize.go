@@ -49,6 +49,8 @@ import (
 
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
 // roleSanitizingLLM decorates an adkmodel.LLM, stripping Content whose
@@ -114,24 +116,44 @@ func (l *roleSanitizingLLM) GenerateContent(ctx context.Context, req *adkmodel.L
 			req = &cp
 		}
 	}
-	if check := costPreflightFromContext(ctx); check != nil {
-		return func(yield func(*adkmodel.LLMResponse, error) bool) {
-			release, err := check(req, l.backend)
-			if err != nil {
-				yield(nil, err)
+	// A side call (the summarizer, the session title, the approver, an
+	// agentic subtask, an MCP digest) is not screened. These are calls
+	// the agent needs to keep working, refusing one would cut the turn
+	// for the wrong reason, and their spend still counts toward the turn
+	// after the fact. Screening them also left estimates nothing settled:
+	// they record through AppendSideUsage, which settlement does not
+	// count, so their cost was counted twice for the rest of the turn.
+	if check := costPreflightFromContext(ctx); check != nil && models.SideCallName(ctx) == "" {
+		return l.screened(ctx, check, req, stream)
+	}
+	return l.inner.GenerateContent(ctx, req, stream)
+}
+
+// screened runs req past check, then streams the provider's answer. The
+// release reports whether a usage-bearing response arrived: a request
+// that errored or produced nothing has no usage on its way to a tracker,
+// so its estimate is dropped rather than kept for a settlement that will
+// never come.
+func (l *roleSanitizingLLM) screened(ctx context.Context, check costPreflightCheck, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		release, err := check(preflightCall{req: req, backend: l.backend})
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		produced := false
+		if release != nil {
+			defer func() { release(produced) }()
+		}
+		for response, err := range l.inner.GenerateContent(ctx, req, stream) {
+			if err == nil && response != nil && !response.Partial && response.UsageMetadata != nil {
+				produced = true
+			}
+			if !yield(response, err) {
 				return
-			}
-			if release != nil {
-				defer release()
-			}
-			for response, err := range l.inner.GenerateContent(ctx, req, stream) {
-				if !yield(response, err) {
-					return
-				}
 			}
 		}
 	}
-	return l.inner.GenerateContent(ctx, req, stream)
 }
 
 // emptyContentsPlaceholder is the user turn a request with no contents is

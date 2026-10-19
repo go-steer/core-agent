@@ -76,8 +76,6 @@ import (
 	"fmt"
 	"sync"
 
-	adkmodel "google.golang.org/adk/v2/model"
-
 	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
@@ -545,10 +543,11 @@ func (a *Agent) enforceCostCeilingInTurn() {
 	}
 }
 
-func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest, backend string) (func(), error) {
+func (a *Agent) preflightCostCeilingRequest(call preflightCall) (preflightRelease, error) {
 	if a == nil || a.tracker == nil {
 		return nil, nil
 	}
+	req, backend := call.req, call.backend
 	a.mu.Lock()
 	ceiling := a.costCeiling
 	turnStart, turnStartSet := a.turnStartCost, a.turnStartCostSet
@@ -604,14 +603,19 @@ func (a *Agent) preflightCostCeilingRequest(req *adkmodel.LLMRequest, backend st
 		a.turnPreflightReservedUSD += inputCost
 		a.mu.Unlock()
 		var once sync.Once
-		return func() {
+		return func(produced bool) {
 			once.Do(func() {
 				a.mu.Lock()
 				a.turnPreflightReservedUSD -= inputCost
 				if a.turnPreflightReservedUSD < 0 {
 					a.turnPreflightReservedUSD = 0
 				}
-				a.turnPreflightEstimates = append(a.turnPreflightEstimates, costPreflightEstimate{model: modelName, usd: inputCost})
+				// Kept only for a request whose usage is on its way to
+				// the tracker; settlement retires it when that usage
+				// lands. Anything else would never be settled.
+				if produced {
+					a.turnPreflightEstimates = append(a.turnPreflightEstimates, costPreflightEstimate{model: modelName, usd: inputCost})
+				}
 				a.mu.Unlock()
 			})
 		}, nil

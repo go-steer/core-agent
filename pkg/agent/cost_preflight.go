@@ -28,11 +28,27 @@ import (
 
 type costPreflightContextKey struct{}
 
+// preflightCall is one model request as the cost checks screening it see
+// it. A check installed by a parent agent also screens its subagents'
+// requests through the context chain, so the requester is not always the
+// agent that installed the check.
+type preflightCall struct {
+	req *adkmodel.LLMRequest
+	// backend is the requesting agent's billing backend; a subagent on
+	// another provider bills there, not on the checking agent's backend.
+	backend string
+}
+
+// preflightRelease ends a passed check's reservation. produced reports
+// whether the request yielded a response carrying usage. Only then will
+// that usage reach a tracker and settle the estimate a check keeps for
+// it, so a request that errored, was refused by a later check, or
+// produced nothing must not leave an estimate behind for usage that will
+// never arrive.
+type preflightRelease func(produced bool)
+
 // costPreflightCheck screens one model request before it is sent.
-// backend is the billing backend of the agent whose model is making the
-// request, which may differ from the agent that installed the check: a
-// parent's per-turn ceiling also screens its subagents' requests.
-type costPreflightCheck func(req *adkmodel.LLMRequest, backend string) (func(), error)
+type costPreflightCheck func(call preflightCall) (preflightRelease, error)
 
 func withCostPreflight(ctx context.Context, check costPreflightCheck) context.Context {
 	if check == nil {
@@ -40,24 +56,26 @@ func withCostPreflight(ctx context.Context, check costPreflightCheck) context.Co
 	}
 	if parent := costPreflightFromContext(ctx); parent != nil {
 		child := check
-		check = func(req *adkmodel.LLMRequest, backend string) (func(), error) {
-			parentRelease, err := parent(req, backend)
+		check = func(call preflightCall) (preflightRelease, error) {
+			parentRelease, err := parent(call)
 			if err != nil {
 				return nil, err
 			}
-			childRelease, err := child(req, backend)
+			childRelease, err := child(call)
 			if err != nil {
+				// The request is never sent, so nothing will settle
+				// the parent's estimate.
 				if parentRelease != nil {
-					parentRelease()
+					parentRelease(false)
 				}
 				return nil, err
 			}
-			return func() {
+			return func(produced bool) {
 				if childRelease != nil {
-					childRelease()
+					childRelease(produced)
 				}
 				if parentRelease != nil {
-					parentRelease()
+					parentRelease(produced)
 				}
 			}, nil
 		}

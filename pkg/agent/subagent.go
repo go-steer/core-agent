@@ -24,7 +24,6 @@ import (
 
 	"github.com/google/uuid"
 	adkagent "google.golang.org/adk/v2/agent"
-	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
@@ -472,8 +471,8 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 			price = opts.Inner.price(innerModelName)
 		)
 		if opts.Budgets.MaxCostUSD > 0 {
-			runCtx = withCostPreflight(runCtx, func(req *adkmodel.LLMRequest, _ string) (func(), error) {
-				inputCost, err := estimateInputCost(req, innerModelName, nil, &history, price)
+			runCtx = withCostPreflight(runCtx, func(call preflightCall) (preflightRelease, error) {
+				inputCost, err := estimateInputCost(call.req, innerModelName, nil, &history, price)
 				if err != nil {
 					return nil, err
 				}
@@ -490,7 +489,10 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 				reservedUSD += inputCost
 				costMu.Unlock()
 				var once sync.Once
-				return func() {
+				// The delegation keeps no retained estimates: settled
+				// spend is added from the runner's events below, so the
+				// release only frees the reservation.
+				return func(bool) {
 					once.Do(func() {
 						costMu.Lock()
 						reservedUSD -= inputCost

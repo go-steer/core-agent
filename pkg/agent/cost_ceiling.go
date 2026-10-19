@@ -59,12 +59,21 @@
 // Limitations:
 //
 //   - A per-turn request is refused when its estimated input cost would
-//     meet or exceed the remaining ceiling. The estimate uses the last
-//     measured input plus pending tool-result growth, or a serialized
-//     request estimate when no measurement exists; an observed cached
-//     prefix uses its cache-read rate. This remains a floor, not a hard
-//     cap: output tokens are unknowable before the call, and input
-//     estimates are not provider tokenization.
+//     meet or exceed the remaining ceiling (#1299). The estimate uses
+//     the last measured input plus pending tool-result growth, or a
+//     serialized request estimate when no measurement exists; an
+//     observed cached prefix uses its cache-read rate. Only the agent's
+//     own requests are priced at its measured window; a subagent's is
+//     priced from its own request and on its own backend. Side calls
+//     are not screened, the check ends with its turn (turnPreflight),
+//     and an estimate is kept only for a request that produced usage.
+//     This remains a floor, not a hard cap: output tokens are unknowable
+//     before the call, and input estimates are not provider
+//     tokenization.
+//   - An unpriced model is not screened at all: refused where it is
+//     configured (cmd/core-agent's ceilingPricing — startup, /model, a
+//     spawn), and at runtime skipped with one warning (warnUnpricedOnce),
+//     never counted toward the streak.
 //   - Subtask costs (Mechanism-B agentic_* wrappers) are included in
 //     the totals via usage.Tracker — they share the same accumulator.
 

@@ -232,6 +232,31 @@ Two bounds, both optional, both off by default:
 
 Checking in-turn is what makes this a backstop rather than a receipt. A runaway is a loop *inside* one turn — model, tool, model, tool — and the tracker grows on every model call within it. Through v2.9.0-dev.0 enforcement ran only at turn boundaries (the post-turn hook, plus [#362](https://github.com/go-steer/core-agent/issues/362)'s settle-time re-check at the top of the *next* turn), so a single runaway turn was capped only after it had finished spending, and a turn that never terminated was never capped at all. Note the consequence: crossing a ceiling now kills the turn in progress and discards its partial answer, the same as an operator `/interrupt`. That is the intended trade for a bound whose whole job is to stop spending.
 
+#### Before the call, too (since v3.0)
+
+Checking after each call still lets one request that is over budget by itself through: a turn was once cut at $1.19 against a $0.25 bound because the request that crossed it carried ~791K input tokens. Since [#1299](https://github.com/go-steer/core-agent/issues/1299) the per-turn ceiling (and a subagent's `budgets.max_cost_usd`) also **estimates each request's input cost before sending it**, and refuses the request with the same per-turn trip when that estimate alone would reach the bound.
+
+- **What the estimate counts:** the conversation's last measured input plus the tool results added since. With no measurement yet, the serialized request is used instead. A prompt prefix the provider has already cached is priced at the cache-read rate.
+- **Whose requests it screens:** a turn's check covers the requests made under that turn, including a subagent's. A subagent's request is priced on its own billing backend and from its own context, never at the parent's conversation size.
+- **Side calls aren't screened:** the summarizer, session title, auto-mode approver, agentic subtasks and MCP digests. Their spend still counts toward the turn afterwards.
+- **It ends with its turn:** a background subagent that keeps running after the turn that spawned it is no longer screened by that turn's ceiling.
+- **It's still a floor:** output tokens can't be known before the call, so a turn can still end above its bound by the output of its last request.
+
+#### A model nobody prices
+
+A ceiling can only count what it can price. A model with no price in any pricing layer counts every call as $0, so a ceiling over it can never trip. That's a ceiling in name only, and worse than none, because you believe you have one. core-agent refuses that configuration where you set it:
+
+- **At startup,** an operator-set ceiling (either flag, or the config fields) over an unpriced model is a config error, on every provider. That covers the main model, each declared subagent's model, and the background small tier. The unattended default session ceiling only prints a warning, since you never asked for it.
+- **A subagent's `budgets.max_cost_usd` on an unpriced model** is always refused.
+- **`/model` and background spawns** refuse an unpriced model under an operator-set ceiling by the same rules.
+
+The fix is any one of:
+- declare `models[].rates` for the model in its [provider profile](/concepts/providers/) (all-zero rates price a self-hosted model you don't pay per token for at $0, which is not the same as unpriced);
+- set `model.pricing`;
+- drop the ceiling.
+
+A model that still reaches a ceiling at runtime is skipped by the pre-request check, not refused: the agent logs it once and carries on, and it never counts toward the three-trips halt. Refusing it per request would cut turns at $0 spent until the session halted for good, since no reset can price a model.
+
 #### The two bounds stop different things
 
 The names are the contract. `--max-session-cost-usd` bounds a session, so tripping it halts the session. `--max-turn-cost-usd` bounds a turn, so tripping it ends that turn — one expensive turn in an eight-hour unattended run is not a reason to end the run, and until [#1049](https://github.com/go-steer/core-agent/issues/1049) it was: the per-turn trip set the same session-wide flag, wrote the same durable halt row, and so survived a pod roll as a permanent stop that no amount of restarting cleared.

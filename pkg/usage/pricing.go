@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-steer/core-models/profile"
+
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/pricing"
 )
@@ -55,6 +57,19 @@ type Pricing struct {
 	// model in Totals, per-model breakdowns, and the
 	// core_agent.session.cost_usd metric — see #368.
 	Unpriced bool
+	// LongContext, when set, is the model's above-threshold price
+	// (Gemini's 200K, Claude Sonnet 4.5's 200K on Vertex AI, OpenAI's
+	// 272K). A turn whose whole prompt is over the threshold bills every
+	// token at it, output included — see pricing.Rates.At. Nil for a
+	// model with one price at every size.
+	LongContext *pricing.LongContext
+	// Backend is the backend the rate was looked up for, as BackendFor
+	// or PriceOn's caller named it: "" when none was known, which
+	// prices from the bare rows. Tracker copies it onto each Turn, so a
+	// later re-pricing of the turn (the /usage savings reference) asks
+	// the same backend the ledger did, even for a subagent whose
+	// provider isn't its parent's.
+	Backend string
 }
 
 // IsZero reports whether the rates carry no useful pricing.
@@ -72,6 +87,46 @@ func (p Pricing) IsZero() bool { return p.InputPerMTok == 0 && p.OutputPerMTok =
 // Stored as atomic.Pointer so PR B's daily refresh can swap the
 // catalog atomically without locking every per-turn cost lookup.
 var globalCatalog atomic.Pointer[pricing.Catalog]
+
+// globalBackend is the backend PriceFor prices against when its caller
+// can't name one: a nil cfg, or a cfg whose model.provider is empty
+// (auto-detected). cmd/core-agent installs it with SetBackend once the
+// provider is resolved. Empty means "unknown", which prices from the
+// bare rows exactly as before backends existed.
+var globalBackend atomic.Pointer[string]
+
+// SetBackend installs the backend PriceFor uses when its caller names
+// none — a core-models backend name ("gemini", "vertex", "anthropic",
+// "anthropic-vertex", "openai", "xai", "vertex-maas", or a profile's
+// own), as BackendFor returns it.
+func SetBackend(backend string) { globalBackend.Store(&backend) }
+
+// BackendFor returns the backend that bills cfg's model: a provider
+// profile's backend name (profile.Profile.BackendName, extends applied),
+// or the core provider's own name, which is already the core-models
+// backend name. An empty model.provider (auto-detection) falls back to
+// the backend installed with SetBackend, and a nil cfg likewise.
+//
+// The backend matters for rows the bare table can't express: OpenAI's
+// and xAI's models (priced only as "openai/…" and "xai/…"), Vertex AI
+// partner models, and Claude Sonnet 4.5's long-context rate on Vertex.
+// For every other model the qualified and bare rows agree.
+func BackendFor(cfg *config.Config) string {
+	if cfg == nil || cfg.Model.Provider == "" {
+		if b := globalBackend.Load(); b != nil {
+			return *b
+		}
+		return ""
+	}
+	name := cfg.Model.Provider
+	if p, ok := cfg.Profile(name); ok {
+		if x, err := profile.Expand(p); err == nil {
+			p = x
+		}
+		return p.BackendName()
+	}
+	return name
+}
 
 // SetCatalog installs the catalog PriceFor consults. Safe to call
 // from any goroutine; lookups in flight see either the old or new
@@ -105,46 +160,72 @@ func KnownModelsCount() int {
 // The cfg override path (used only when no globalCatalog is installed)
 // reports source SourceCfgOverride when the model resolves through it.
 func PriceForWithSource(modelID string, cfg *config.Config) (Pricing, string) {
+	backend := BackendFor(cfg)
 	if c := globalCatalog.Load(); c != nil {
-		r, src, found := c.LookupWithSource(modelID)
-		return ratesToPricing(r, found), src
+		r, src, found := c.LookupForWithSource(backend, modelID)
+		return ratesToPricing(r, found, backend), src
 	}
 	c, _ := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToOverride(cfg),
-		Declared:    declaredRates(cfg),
+		Declared:    DeclaredRates(cfg),
 	})
-	r, src, found := c.LookupWithSource(modelID)
-	return ratesToPricing(r, found), src
+	r, src, found := c.LookupForWithSource(backend, modelID)
+	return ratesToPricing(r, found, backend), src
 }
 
-// PriceFor returns the Pricing for modelID. Resolution chain (first
-// exact match wins; longest-prefix fallback at the end):
+// PriceFor returns the Pricing for modelID as billed by cfg's backend
+// (BackendFor). Resolution chain (first exact match wins; longest-prefix
+// fallback at the end), each layer consulting "<backend>/<model>" before
+// the bare id — see pricing.Catalog.LookupFor:
 //
 //  1. cfg.Model.Pricing[modelID]                — operator override
 //  2. .agents/pricing.json models[modelID]      — project file
 //  3. ~/.core-agent/pricing.json                — user file (manual + external)
-//  4. compiled-in builtin                       — fallback
-//  5. longest-prefix match across (1)..(4)      — suffix variants
-//  6. Pricing{}                                  — rate unknown
+//  4. compiled-in builtin                       — core-models' shared table
+//  5. provider profiles' declared rates         — models no catalog covers
+//  6. longest-prefix match, layer by layer      — suffix variants
+//  7. Pricing{}                                 — rate unknown
 //
 // cfg is consulted via the catalog (if installed via SetCatalog) or
 // via an on-the-fly lookup when no catalog is installed. The
 // no-catalog path covers tests + library use that doesn't go
 // through cmd/core-agent's startup.
 func PriceFor(modelID string, cfg *config.Config) Pricing {
+	backend := BackendFor(cfg)
 	if c := globalCatalog.Load(); c != nil {
-		r, found := c.Lookup(modelID)
-		return ratesToPricing(r, found)
+		r, found := c.LookupFor(backend, modelID)
+		return ratesToPricing(r, found, backend)
 	}
 	// Catalog not installed (test / library). Build a one-shot
 	// catalog from cfg + builtin so the answer is consistent with
 	// what SetCatalog'd consumers would get.
 	c, _ := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToOverride(cfg),
-		Declared:    declaredRates(cfg),
+		Declared:    DeclaredRates(cfg),
 	})
-	r, found := c.Lookup(modelID)
-	return ratesToPricing(r, found)
+	r, found := c.LookupFor(backend, modelID)
+	return ratesToPricing(r, found, backend)
+}
+
+// PriceOn returns the Pricing for modelID as billed by backend, for a
+// cost site that knows which provider served the call but has no cfg
+// naming it: a subagent declared on a provider other than its
+// parent's, whose spend PriceFor(model, nil) would otherwise price at
+// the process backend (SetBackend). An empty backend is exactly
+// PriceFor(modelID, nil).
+//
+// With no catalog installed (tests, library use) there are no
+// declared rates to consult, so it prices from the builtin table.
+func PriceOn(backend, modelID string) Pricing {
+	if backend == "" {
+		return PriceFor(modelID, nil)
+	}
+	c := globalCatalog.Load()
+	if c == nil {
+		c, _ = pricing.NewCatalog(pricing.Options{})
+	}
+	r, found := c.LookupFor(backend, modelID)
+	return ratesToPricing(r, found, backend)
 }
 
 // PriceForRefreshed re-resolves modelID against the process-wide
@@ -189,7 +270,7 @@ func PriceForRefreshed(modelID string, fallback Pricing) Pricing {
 // lockstep as new rate fields land. found is the catalog lookup's
 // found flag; !found marks the result Unpriced so downstream cost
 // aggregation can tell "rate unknown" apart from "genuinely free".
-func ratesToPricing(r pricing.Rates, found bool) Pricing {
+func ratesToPricing(r pricing.Rates, found bool, backend string) Pricing {
 	return Pricing{
 		InputPerMTok:                r.InputPerMTok,
 		CachedInputPerMTok:          r.CachedInputPerMTok,
@@ -198,6 +279,21 @@ func ratesToPricing(r pricing.Rates, found bool) Pricing {
 		OutputPerMTok:               r.OutputPerMTok,
 		UpdatedAt:                   r.UpdatedAt,
 		Unpriced:                    !found,
+		LongContext:                 r.LongContext,
+		Backend:                     backend,
+	}
+}
+
+// rates is the inverse of ratesToPricing, for the cost arithmetic,
+// which pricing.Rates defines once for both products.
+func (p Pricing) rates() pricing.Rates {
+	return pricing.Rates{
+		InputPerMTok:                p.InputPerMTok,
+		CachedInputPerMTok:          p.CachedInputPerMTok,
+		CacheCreationInputPerMTok:   p.CacheCreationInputPerMTok,
+		CacheCreation1hInputPerMTok: p.CacheCreation1hInputPerMTok,
+		OutputPerMTok:               p.OutputPerMTok,
+		LongContext:                 p.LongContext,
 	}
 }
 
@@ -210,13 +306,36 @@ func cfgToOverride(cfg *config.Config) map[string]pricing.ModelRates {
 	return pricingMapToRates(cfg.Model.Pricing)
 }
 
-// declaredRates is the provider profiles' declared rates, for the
-// catalog's lowest layer — see pricing.Options.Declared.
-func declaredRates(cfg *config.Config) map[string]pricing.ModelRates {
+// DeclaredRates is the provider profiles' declared rates, for the
+// catalog's lowest layer (pricing.Options.Declared).
+//
+// Each rate is keyed twice. "<backend>/<model>" (pricing.DeclaredFromProfiles)
+// is the one LookupFor reaches when the caller knows the backend, so two
+// profiles that declare different prices for one model id each get
+// their own. The bare id (config.Config.ProfileRates, first profile
+// wins) is kept for lookups that can't name a backend — a subagent
+// priced with a nil cfg on a daemon whose backend is another profile's —
+// which priced from it before backends existed and would otherwise
+// turn unpriced, and be refused outright under a cost ceiling.
+func DeclaredRates(cfg *config.Config) map[string]pricing.ModelRates {
 	if cfg == nil {
 		return nil
 	}
-	return pricingMapToRates(cfg.ProfileRates())
+	out := pricingMapToRates(cfg.ProfileRates())
+	expanded := make([]profile.Profile, 0, len(cfg.Providers))
+	for _, p := range cfg.Providers {
+		if x, err := profile.Expand(p); err == nil {
+			p = x
+		}
+		expanded = append(expanded, p)
+	}
+	for k, v := range pricing.DeclaredFromProfiles(expanded) {
+		if out == nil {
+			out = map[string]pricing.ModelRates{}
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func pricingMapToRates(m config.PricingMap) map[string]pricing.ModelRates {
@@ -240,9 +359,7 @@ func pricingMapToRates(m config.PricingMap) map[string]pricing.ModelRates {
 // Treats every input token as uncached — see CostUSDWithCache for the
 // cached-vs-uncached split.
 func (p Pricing) CostUSD(inputTokens, outputTokens int) float64 {
-	const million = 1_000_000.0
-	return (float64(inputTokens)/million)*p.InputPerMTok +
-		(float64(outputTokens)/million)*p.OutputPerMTok
+	return p.CostUSDWithCacheTTLs(inputTokens, 0, 0, 0, outputTokens)
 }
 
 // CostUSDWithCache returns the dollar cost with cache-hit tokens billed
@@ -319,30 +436,10 @@ func (p Pricing) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, ca
 //
 // An unknown 1-hour rate falls back to the 5-minute rate rather than to
 // base input: the nearer neighbour is the better estimate for a catalog
-// row that is missing a field. Mirrors pricing.Rates.CostUSDWithCacheTTLs.
+// row that is missing a field. A prompt (all three input buckets) over
+// the model's LongContext threshold bills every bucket and the output at
+// the long-context rates. The arithmetic is pricing.Rates.CostUSDWithCacheTTLs,
+// shared with mast, so the two products can't price one turn two ways.
 func (p Pricing) CostUSDWithCacheTTLs(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens int) float64 {
-	const million = 1_000_000.0
-	readRate := p.CachedInputPerMTok
-	if readRate == 0 {
-		readRate = p.InputPerMTok
-	}
-	writeRate := p.CacheCreationInputPerMTok
-	if writeRate == 0 {
-		writeRate = p.InputPerMTok
-	}
-	write1hRate := p.CacheCreation1hInputPerMTok
-	if write1hRate == 0 {
-		write1hRate = writeRate
-	}
-	if cacheWrite1hTokens < 0 {
-		cacheWrite1hTokens = 0
-	}
-	if cacheWrite1hTokens > cacheWriteTokens {
-		cacheWrite1hTokens = cacheWriteTokens
-	}
-	return (float64(uncachedInputTokens)/million)*p.InputPerMTok +
-		(float64(cacheReadTokens)/million)*readRate +
-		(float64(cacheWriteTokens-cacheWrite1hTokens)/million)*writeRate +
-		(float64(cacheWrite1hTokens)/million)*write1hRate +
-		(float64(outputTokens)/million)*p.OutputPerMTok
+	return p.rates().CostUSDWithCacheTTLs(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens)
 }

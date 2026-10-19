@@ -32,13 +32,14 @@ permissions:
 
 jobs:
   review-gate:
-    # Bot exemption (adversarial-review finding): pricing-regen opens
-    # weekly automated PRs that touch pkg/pricing/builtin.go; once
+    # Bot exemption (adversarial-review finding): lookout-pin-check
+    # opens weekly automated PRs that touch Go files (pricing-regen did
+    # too, until the price table moved to go-steer/core-models); once
     # review-gate is a required check, an unexempted bot PR would sit
     # at "Expected" forever. A skipped job satisfies branch
     # protection, so bot PRs merge normally.
     #
-    # go-steer-bot[bot] is the GitHub App pricing-regen authenticates
+    # go-steer-bot[bot] is the GitHub App those jobs authenticate
     # as; the org forbids GITHUB_TOKEN from opening PRs, and
     # GITHUB_TOKEN PRs never trigger required checks anyway. Adding a
     # bot here is a deliberate act: it lets that identity land Go

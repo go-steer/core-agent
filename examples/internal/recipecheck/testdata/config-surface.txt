@@ -138,6 +138,7 @@ providers[].capabilities.streaming
 providers[].dialect
 providers[].extends
 providers[].extra_body
+providers[].metrics
 providers[].metrics_url
 providers[].models[].capabilities.forced_tool_choice
 providers[].models[].capabilities.parallel_tool_calls

@@ -64,7 +64,7 @@
 // to 1. An exit-code convention would make "GitHub timed out"
 // indistinguishable from "upstream shipped v0.22.0", and the weekly job
 // would open a pull request every time the network hiccuped. Same
-// reasoning, same shape, as dev/regen-builtin-pricing.
+// reasoning, same shape, as core-models' dev/regen-builtin-pricing.
 //
 // # Two questions, two gates
 //

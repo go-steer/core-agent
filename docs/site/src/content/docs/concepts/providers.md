@@ -531,7 +531,7 @@ The same options apply to `anthropic.NewVertex(...)`. Other Anthropic server-sid
 - The current default model is `claude-opus-5-5`. Override per-call with `--model` or `cfg.Model.Name`.
 - Claude 5-generation models (`claude-sonnet-5`, `claude-opus-5`, `claude-fable-5`) are fully supported as of v2.8: thinking-default tool loops round-trip correctly (thinking blocks are replayed with signatures intact), builtin pricing ships for all three, and they appear in the TUI's `/model` picker.
 - The Claude 5.5 models are the tier defaults: `claude-opus-5-5` (frontier and `DefaultModel`), `claude-sonnet-5-5` (mid) and `claude-haiku-5-5` (small, and the `--agentic-small-model` default). Haiku 5.5's list price steps with prompt length ($0.10/$0.50 per MTok up to 100,000 prompt tokens, $0.50/$2.50 above), and the builtin catalog carries one flat rate per model, so cost reporting and the `max_*_cost_usd` ceilings under-count calls past 100K prompt tokens on it by up to 5×. Pin `claude-haiku-4-5` with `--agentic-small-model` if that matters for your budget.
-- Builtin pricing ships for every chat/tool-calling Claude model in the LiteLLM catalog, including the cache read and cache write rates, so `usage.Tracker.Append` records real cost for Claude turns out of the box. Override per-model via `cfg.Model.Pricing`; a model with no builtin entry still resolves by longest-prefix match (`claude-opus-4-7-1m` picks up `claude-opus-4-7`'s rates) and only falls through to zero cost if nothing matches at all.
+- Builtin pricing ships for every chat/tool-calling Claude model in the LiteLLM catalog, including the cache read and cache write rates and, where one applies, the long-context rate (Claude Sonnet 4.5 on Vertex AI above 200K prompt tokens), so `usage.Tracker.Append` records real cost for Claude turns out of the box. Override per-model via `cfg.Model.Pricing`; a model with no builtin entry still resolves by longest-prefix match (`claude-opus-4-7-1m` picks up `claude-opus-4-7`'s rates) and only falls through to zero cost if nothing matches at all.
 
 ---
 
@@ -584,11 +584,13 @@ ANTHROPIC_VERTEX_PROJECT_ID=my-gcp-project \
 
 Models outside Gemini and Claude are reached through **provider profiles**, built in the shared [`go-steer/core-models`](https://github.com/go-steer/core-models) library that mast uses too. A profile names a server, its wire format, its credential and what it can do; `--provider <profile>` selects one exactly like a built-in backend.
 
-core-models ships five built-in profiles:
+core-models ships seven built-in profiles:
 
 | Profile | For | Needs |
 |---|---|---|
 | `vertex-maas` | Vertex AI partner and open models (GLM, Kimi, Qwen, gpt-oss, Gemma, …) | `GOOGLE_CLOUD_PROJECT`, Application Default Credentials; `GOOGLE_CLOUD_LOCATION` (default `global`) |
+| `openai` | OpenAI, on the Responses API | `OPENAI_API_KEY` |
+| `xai` | xAI, on Chat Completions (a profile that extends it with `"dialect": "openai-responses"` uses xAI's Responses API) | `XAI_API_KEY` |
 | `vllm` | a vLLM server | `base_url` |
 | `sglang` | an SGLang server | `base_url` |
 | `ollama` | a local Ollama | — (defaults to `http://localhost:11434/v1`) |
@@ -623,9 +625,9 @@ core-agent --provider house-vllm          # runs the profile's mid tier
 
 - **No model named, the profile picks.** With no `--model` and no `model.name`, core-agent runs the profile's tier for the task class (`mid` without `--task`) and says so at startup. A profile with no such tier is a config error naming the fix.
 - **`small` tier is the agentic small model.** A profile's `tiers.small` is the default `--agentic-small-model`; without one, agentic subtasks inherit the parent's model.
-- **Function tools only.** The `openai-chat` wire format carries no server-side built-ins, so a `model.builtin_tools` that turns one on is refused at startup rather than silently dropped.
+- **Function tools only.** The OpenAI wire formats (`openai-chat`, `openai-responses`) carry no server-side built-ins here, so a `model.builtin_tools` that turns one on is refused at startup rather than silently dropped.
 - **Usage parity.** Prompt, output, cache-read, cache-write and reasoning tokens are carried into the same per-turn usage record the other backends feed, so `/stats`, metrics and cost work unchanged. Which fields a server actually reports varies; core-models' [tested models](https://github.com/go-steer/core-models/blob/main/docs/site/src/content/docs/reference/tested-models.md) page lists them per server.
-- **Pricing.** The built-in table covers Gemini and Claude. Price anything else with `model.pricing`, `.agents/pricing.json`, or `rates` on the profile's model, the lowest-precedence layer. A cost ceiling (`--max-turn-cost-usd`, `--max-session-cost-usd`, or their config fields) on a profile model with **no** price is refused at startup, because every call would count as $0 and the ceiling could never trip; the unattended default session ceiling is not refused but prints a warning.
+- **Pricing.** The built-in table is core-models' shared catalog, the same one mast bills from. It covers Gemini and Claude, and prices OpenAI, xAI and Vertex AI partner models under their backend (a row keyed `openai/<model>`, `xai/<model>` or `vertex-maas/<model>`), so `--provider openai` or `--provider vertex-maas` prices out of the box. Price anything else with `model.pricing`, `.agents/pricing.json`, or `rates` on the profile's model, the lowest-precedence layer. A cost ceiling (`--max-turn-cost-usd`, `--max-session-cost-usd`, or their config fields) on a profile model with **no** price is refused at startup, because every call would count as $0 and the ceiling could never trip; the unattended default session ceiling is not refused but prints a warning.
 - **Not auto-detected.** Auto-detection only ever picks the four built-in backends; a profile is always an explicit choice.
 - **Self-hosting.** core-models keeps a [GKE vLLM fixture](https://github.com/go-steer/core-models/tree/main/deploy/gke-vllm) for running models on your own GPUs.
 

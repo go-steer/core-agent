@@ -267,7 +267,7 @@ func (ad *Adapter) AttachUsage() attach.UsageInfo {
 	var overallUncachedRef float64
 	perModelUncachedRef := make(map[string]float64, len(byModel))
 	for i, t := range turns {
-		p := usage.PriceFor(t.Model, nil)
+		p := usage.PriceOn(t.Backend, t.Model)
 		// Thoughts go in the output argument, because the reference is
 		// the same turn with the cache turned off and not a cheaper turn:
 		// CostUSDForTurn bills them at the output rate (#927), so leaving

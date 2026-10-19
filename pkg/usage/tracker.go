@@ -64,6 +64,11 @@ type Turn struct {
 	// turns and digest-summarizer calls (#1191). It counts in Totals
 	// and TotalsByModel, and Last skips it.
 	Side bool
+	// Backend is the backend the turn was priced on (Pricing.Backend):
+	// "" when none was known. Re-pricing the turn must ask the same
+	// backend, or a subagent's turn on another provider re-prices at
+	// the parent's rate.
+	Backend string
 }
 
 // TurnUsage is the per-call token breakdown a provider adapter hands
@@ -360,6 +365,7 @@ func (t *Tracker) AppendUsage(model string, u TurnUsage, p Pricing) Turn {
 		CostUSD:                  cost,
 		At:                       time.Now(),
 		Unpriced:                 p.Unpriced,
+		Backend:                  p.Backend,
 	}
 	t.mu.Lock()
 	t.turns = append(t.turns, turn)
@@ -414,6 +420,7 @@ func (t *Tracker) AppendSideUsage(model string, u TurnUsage, p Pricing) Turn {
 		CostUSD:                  p.CostUSDForTurn(u),
 		At:                       time.Now(),
 		Unpriced:                 p.Unpriced,
+		Backend:                  p.Backend,
 		Side:                     true,
 	}
 	t.mu.Lock()

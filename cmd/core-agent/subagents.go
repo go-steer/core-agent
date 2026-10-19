@@ -440,7 +440,11 @@ func buildDeclaredSubagents(
 			}
 		}
 
-		sub, err := assembleSubagent(spec, llm, userInstruction, subTools, subToolsets.sets)
+		// The backend that bills the subagent's model: its own provider's,
+		// which differs from the parent's when spec.Model names another
+		// provider. Both doors price on it.
+		backend := models.BackendOf(subProvider)
+		sub, err := assembleSubagent(spec, llm, backend, userInstruction, subTools, subToolsets.sets)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
@@ -459,6 +463,7 @@ func buildDeclaredSubagents(
 			Description:  spec.Description,
 			ModelFactory: func(c context.Context) (adkmodel.LLM, error) { return p.Model(c, mn) },
 			ModelID:      mn,
+			Backend:      backend,
 			Instruction:  userInstruction,
 			Tools:        subTools,
 			Toolsets:     subToolsets.sets,
@@ -491,9 +496,10 @@ func buildDeclaredSubagents(
 
 // assembleSubagent builds the *agent.Agent from a resolved model, persona,
 // and tool surface — the common tail shared by the inline and rooted paths.
-func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset) (*agent.Agent, error) {
+func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset) (*agent.Agent, error) {
 	opts := []agent.Option{
 		agent.WithName(spec.Name),
+		agent.WithBillingBackend(backend),
 		agent.WithDescription(spec.Description),
 		// A declarative subagent is invoked as a tool with no human
 		// reading its output in real time — run it headless, like

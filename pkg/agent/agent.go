@@ -355,11 +355,14 @@ type Agent struct {
 	// wrapped as a subagent tool (set via WithSubagentBudgets). Read by
 	// a parent's WithSubagents resolution; zero = unbounded.
 	subagentBudgets SubagentBudgets
-	inbox           *inbox
-	wake            *wakeSignal
-	tracker         *usage.Tracker
-	compactor       Compactor
-	checkpointer    Checkpointer
+	// billingBackend is the backend that bills this agent's model
+	// (WithBillingBackend); "" means the process backend.
+	billingBackend string
+	inbox          *inbox
+	wake           *wakeSignal
+	tracker        *usage.Tracker
+	compactor      Compactor
+	checkpointer   Checkpointer
 
 	// Session title (see session_title.go). titleModel is the cheap-tier
 	// model titling prefers, nil to use the parent's. titleAttempted is
@@ -589,7 +592,12 @@ type options struct {
 	// wrapped as a subagent tool (WithSubagentBudgets). Like
 	// subagentMaxDepth, it is read by the PARENT at construction and is
 	// inert when this agent runs as a parent.
-	subagentBudgets  SubagentBudgets
+	subagentBudgets SubagentBudgets
+	// billingBackend prices this agent's own model calls
+	// (WithBillingBackend). "" falls back to the process backend
+	// usage.SetBackend installed, which is right whenever the agent
+	// runs on the daemon's provider.
+	billingBackend   string
 	bgMgr            SubagentManager
 	gate             *permissions.Gate
 	tracker          *usage.Tracker
@@ -791,6 +799,21 @@ func WithSubagentMaxDepth(n int) Option {
 // subagent is reached through.
 func WithSubagentBudgets(b SubagentBudgets) Option {
 	return func(o *options) { o.subagentBudgets = b }
+}
+
+// WithBillingBackend names the backend that bills this agent's model
+// ("anthropic-vertex", "openai", a profile's backend; see
+// models.BackendOf). Its spend, and a parent's roll-up of it when the
+// agent is wrapped as a subagent tool, is priced on that backend's
+// rows instead of the process backend's. A declarative subagent on a
+// provider other than its parent's needs it: Claude on Vertex AI is
+// priced differently from Claude on Anthropic's API, and OpenAI or xAI
+// models have no bare rows at all.
+//
+// Empty (the default) keeps the process backend, which is right for an
+// agent on the daemon's own provider.
+func WithBillingBackend(backend string) Option {
+	return func(o *options) { o.billingBackend = backend }
 }
 
 // WithBackgroundManager attaches a BackgroundAgentManager to the
@@ -1188,6 +1211,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		subagentToolNames:    o.subagentToolNames,
 		subagentMaxDepth:     o.subagentMaxDepth,
 		subagentBudgets:      o.subagentBudgets,
+		billingBackend:       o.billingBackend,
 		invocationHist:       invocationHist,
 		toolInstrumenter:     toolInstrumenter,
 		metricAgentName:      cmp.Or(o.metricAgentName, o.name),
@@ -1252,6 +1276,20 @@ func (a *Agent) DelegationBudgets() SubagentBudgets {
 		return SubagentBudgets{}
 	}
 	return a.subagentBudgets
+}
+
+// BillingBackend returns the backend this agent's model calls are
+// priced on (WithBillingBackend); "" means the process backend.
+func (a *Agent) BillingBackend() string {
+	if a == nil {
+		return ""
+	}
+	return a.billingBackend
+}
+
+// price returns the rate for modelName on this agent's billing backend.
+func (a *Agent) price(modelName string) usage.Pricing {
+	return usage.PriceOn(a.BillingBackend(), modelName)
 }
 
 // SubagentNames returns the resolved tool names of the declarative

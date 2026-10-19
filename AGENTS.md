@@ -43,8 +43,11 @@ pkg/
                       model.LLM adapter, api.anthropic.com + Vertex),
                       profiles/ (provider profiles via core-models:
                       vLLM, SGLang, Ollama, OpenAI-compatible,
-                      Vertex AI MaaS — new providers go there, not
-                      here; see docs/model-support-design.md).
+                      Vertex AI MaaS, OpenAI, xAI — new providers go
+                      there, not here; see docs/model-support-design.md).
+  pricing/            Re-exports core-models' shared price catalog
+                      (table, layers, refresh); rates are fixed upstream
+                      in go-steer/core-models, then the pin is bumped.
   usage/              Per-turn token + cost tracker.
   modeltier/,         Model-tier + task-class routing tables.
   taskclass/
@@ -57,7 +60,7 @@ pkg/
   recording/
   telemetry/          OpenTelemetry + Prometheus setup.
   runner/             Headless (one-shot) + REPL (multi-turn) drivers.
-internal/             pricing catalog, attach client, core-tui remote
+internal/             attach client, core-tui remote
                       adapter, web UI, vertex cache, version, testutil.
 cmd/core-agent/       Reference CLI binary (default in-process TUI).
 cmd/core-agent-tui/   Standalone TUI binary (spawn-and-attach).
@@ -342,7 +345,7 @@ Conventions worth knowing at agent prompt time:
   plus the
   `review-gate` **required** CI check (Go-touching PRs fail without
   the section; docs-only PRs and PRs authored by `go-steer-bot[bot]`
-  — the weekly `pricing-regen` and `lookout-pin-check` jobs — exempt).
+  — the weekly `lookout-pin-check` job — exempt).
   Optionally, copy `dev/claude/settings-review-gate.json` to your
   local `.claude/settings.json` for a Claude Code hook that blocks
   `gh pr create` at the terminal before CI ever sees it. Evidence it
@@ -502,7 +505,8 @@ do NOT hand-carve**:
   don't repeat that.
 
 Both scripts run release-time preflight guards (pricing catalog
-freshness), edit `CHANGELOG.md` in place, print the git commands to
+freshness: `dev/tools/verify-pricing-fresh` checks the pinned
+core-models table against LiteLLM), edit `CHANGELOG.md` in place, print the git commands to
 finish the cut, and do NOT commit / tag / push themselves.
 
 The README doesn't hard-code a "current release" pin any more — the

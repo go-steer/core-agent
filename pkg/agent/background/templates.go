@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
@@ -69,6 +70,11 @@ type SubagentTemplate struct {
 	ModelFactory func(context.Context) (adkmodel.LLM, error)
 	// ModelID labels the template's model for /usage pricing attribution.
 	ModelID string
+	// Backend is the backend that bills ModelID (models.BackendOf on the
+	// template's provider), so a subagent declared on a provider other
+	// than its parent's is priced on its own rows. Empty prices on the
+	// process backend, as before.
+	Backend string
 	// Instruction is the fully-resolved persona, installed as layer 4
 	// (user memory) exactly like the synchronous declarative path.
 	Instruction string
@@ -283,7 +289,7 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 	// manager's provider — the small tier is defined relative to the
 	// manager, not the template's (possibly different) provider.
 	buildModel := tmpl.ModelFactory
-	priceModelID := tmpl.ModelID
+	priceModelID, priceBackend := tmpl.ModelID, tmpl.Backend
 	switch strings.TrimSpace(ov.Model) {
 	case "", "inherit":
 		// Keep the template's configured model.
@@ -292,7 +298,7 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 			return nil, ErrNoSmallModel
 		}
 		buildModel = func(c context.Context) (adkmodel.LLM, error) { return prov.Model(c, small) }
-		priceModelID = small
+		priceModelID, priceBackend = small, models.BackendOf(prov)
 	default:
 		return nil, fmt.Errorf("%w: got %q (configure a dedicated subagent spec for a specific model)", ErrModelNotOverridable, ov.Model)
 	}
@@ -317,6 +323,7 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 		toolsetTools: tmpl.ToolsetTools,
 		buildModel:   buildModel,
 		priceModelID: priceModelID,
+		priceBackend: priceBackend,
 		maxDepth:     tmpl.MaxDepth,
 		budgets:      tightenBudgets(mergeBudgets(m.defaultBudgets, tmpl.Budgets), ov.Budgets),
 		scheduler:    sched,

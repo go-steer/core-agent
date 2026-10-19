@@ -7,6 +7,14 @@ a community-maintained external source, and explicit "rate unknown"
 signaling when nothing resolves. Stops shipping silent `$0` lies for
 the increasingly-common case of fine-tuned or new model variants.
 
+> **Status:** built, then extracted (core-models v0.13.1 bump). The catalog, its
+> layers, the LiteLLM refresh and the generated built-in table now live
+> in [go-steer/core-models](https://github.com/go-steer/core-models)'
+> `pricing` package, shared with mast, which also added per-backend rows
+> (`Catalog.LookupFor`) and long-context rates. `pkg/pricing` re-exports
+> it. The design below is the history of how the layers came to be;
+> the paths it names under `pkg/pricing/` no longer exist here.
+
 ## Why this doc exists
 
 Today's pricing has three problems UAT surfaced:

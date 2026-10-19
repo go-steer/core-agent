@@ -146,3 +146,26 @@ func TestResolveMCPSmallModel(t *testing.T) {
 		})
 	}
 }
+
+type stubProviderWithBackend struct {
+	stubProvider
+	backend string
+}
+
+func (s stubProviderWithBackend) Backend() string { return s.backend }
+
+// BackendOf names the backend the price catalog keys rows on: a
+// profile's own backend when the provider reports one, else the
+// provider's name, which for the core providers is the backend name.
+func TestBackendOf(t *testing.T) {
+	if got := models.BackendOf(nil); got != "" {
+		t.Errorf("BackendOf(nil) = %q, want empty", got)
+	}
+	if got := models.BackendOf(stubProvider{name: "anthropic-vertex"}); got != "anthropic-vertex" {
+		t.Errorf("core provider: BackendOf = %q, want anthropic-vertex", got)
+	}
+	p := stubProviderWithBackend{stubProvider: stubProvider{name: "house"}, backend: "vllm-pool"}
+	if got := models.BackendOf(p); got != "vllm-pool" {
+		t.Errorf("profile provider: BackendOf = %q, want its backend vllm-pool", got)
+	}
+}

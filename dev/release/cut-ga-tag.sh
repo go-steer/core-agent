@@ -76,14 +76,16 @@ echo "── Preflight: release guards ─────────────�
 # --check compares RATES only, ignoring the UpdatedAt stamps the
 # generator rewrites on every run, and writes nothing. See the same
 # guard in cut-dev-tag.sh — both scripts should reject the same drift.
-if [[ -d "dev/regen-builtin-pricing" ]]; then
-  PRICING_VERDICT="$(go run ./dev/regen-builtin-pricing --check)"
+if [[ -x "dev/tools/verify-pricing-fresh" ]]; then
+  PRICING_VERDICT="$(dev/tools/verify-pricing-fresh)"
   if [[ "$PRICING_VERDICT" == "drift=true" ]]; then
     echo "" >&2
-    echo "error: pkg/pricing/builtin.go carries rates that no longer match LiteLLM." >&2
+    echo "error: the price table core-agent pins (go-steer/core-models pricing/builtin.go)" >&2
+    echo "carries rates that no longer match LiteLLM." >&2
     echo "" >&2
-    echo "Remediation: run 'go run ./dev/regen-builtin-pricing', commit the diff" >&2
-    echo "(or discard if the drift is intentional), then re-run this script." >&2
+    echo "Remediation: bump github.com/go-steer/core-models to a release with the" >&2
+    echo "regenerated table (core-models' weekly pricing-regen opens that PR), then" >&2
+    echo "re-run this script." >&2
     exit 1
   fi
   if [[ "$PRICING_VERDICT" != "drift=false" ]]; then

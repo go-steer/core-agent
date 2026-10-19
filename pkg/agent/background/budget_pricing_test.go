@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	adkmodel "google.golang.org/adk/v2/model"
+
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
@@ -97,5 +99,71 @@ func TestSpawn_MaxCostBindsWithoutParentTracker(t *testing.T) {
 	}
 	if got := h.Status(); got != StatusDeferred {
 		t.Errorf("Status = %q, want %q", got, StatusDeferred)
+	}
+}
+
+// A declared template may run on a provider other than the manager's
+// (its spec.Model names another), and its spawns must be priced on that
+// provider's rows (SubagentTemplate.Backend). A "small" downshift runs
+// on the manager's provider, so it prices there. gpt-5-mini has rows
+// only under "openai/", which makes the backend visible: priced on the
+// manager's it would read as unpriced.
+func TestSpawnTemplate_PricesOnTheTemplatesBackend(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, model  string
+		wantBackend  string
+		wantUnpriced bool
+	}{
+		{"inherit", "", "openai", false},
+		{"small", "small", "usage", true}, // the manager's provider, by its name
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			prov := &usageProvider{name: "usage", in: 1000, out: 100}
+			mgr, err := NewManager(
+				WithProvider(prov, "parent-model"),
+				WithSmallModelID("gpt-5-mini"),
+				WithDefaultBudgets(Budgets{MaxTurns: 1}),
+			)
+			if err != nil {
+				t.Fatalf("NewManager: %v", err)
+			}
+			defer mgr.Close()
+			if err := mgr.SetSubagentTemplates([]SubagentTemplate{{
+				Name:         "coder",
+				Instruction:  "write code",
+				ModelFactory: func(c context.Context) (adkmodel.LLM, error) { return prov.Model(c, "gpt-5-mini") },
+				ModelID:      "gpt-5-mini",
+				Backend:      "openai",
+			}}); err != nil {
+				t.Fatalf("SetSubagentTemplates: %v", err)
+			}
+			parentLLM, _ := prov.Model(context.Background(), "parent-model")
+			tracker := usage.NewTracker()
+			if _, err := agent.New(parentLLM, agent.WithBackgroundManager(mgr), agent.WithUsageTracker(tracker)); err != nil {
+				t.Fatalf("agent.New: %v", err)
+			}
+
+			h, err := mgr.SpawnTemplate(context.Background(), "", "coder", RefOverrides{Goal: "go", Model: tc.model}, "")
+			if err != nil {
+				t.Fatalf("SpawnTemplate: %v", err)
+			}
+			select {
+			case <-h.Done():
+			case <-time.After(5 * time.Second):
+				t.Fatal("subagent goroutine didn't finish")
+			}
+			turns := tracker.All()
+			if len(turns) == 0 {
+				t.Fatal("no subagent turns reached the parent tracker")
+			}
+			for _, turn := range turns {
+				if turn.Backend != tc.wantBackend || turn.Unpriced != tc.wantUnpriced {
+					t.Errorf("turn %s: backend=%q unpriced=%v, want backend=%q unpriced=%v",
+						turn.Model, turn.Backend, turn.Unpriced, tc.wantBackend, tc.wantUnpriced)
+				}
+			}
+		})
 	}
 }

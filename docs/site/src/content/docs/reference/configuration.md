@@ -228,7 +228,7 @@ Selects the LLM backend.
 | `pricing.<model>.cache_creation_input_per_mtok` | float | — | USD per 1M cache-**write** tokens (the premium for establishing a cache entry — 1.25× input on Anthropic's 5-minute TTL). Unset bills writes at `input_per_mtok`. |
 | `pricing.<model>.output_per_mtok` | float | — | USD per 1M output tokens for `<model>`. |
 
-Pricing resolves through a layered chain: this `model.pricing` map → `.agents/pricing.json` (project-local) → `~/.core-agent/pricing.json` (user-global; auto-fetched + manual sections) → compiled-in fallback → longest-prefix match → "$—" (rate unknown).
+Pricing resolves through a layered chain: this `model.pricing` map → `.agents/pricing.json` (project-local) → `~/.core-agent/pricing.json` (user-global; auto-fetched + manual sections) → the compiled-in table → provider profiles' declared `rates` → longest-prefix match → "$—" (rate unknown). Each layer is consulted for `<backend>/<model>` before the bare model id, where the backend is the one serving the model (`gemini`, `vertex`, `anthropic`, `anthropic-vertex`, or a profile's): a rate can differ by backend, and OpenAI's and xAI's models are priced only that way. The compiled-in table is [core-models'](https://github.com/go-steer/core-models) shared catalog, regenerated weekly from LiteLLM; a model with a long-context price (Gemini Pro above 200K prompt tokens, for one) bills a turn over the threshold at that rate.
 
 Example:
 

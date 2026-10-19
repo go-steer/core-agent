@@ -60,11 +60,11 @@ const toolSavingsResponseKey = "savings"
 // `agentic_never: true`).
 //
 // Cost math for the agentic path resolves subagent pricing via the
-// process-installed catalog (`usage.PriceFor`). Nil `cfg` is
-// intentional: the layered catalog was installed at startup with
-// `usage.SetCatalog`, and the per-Agent value has no config handle.
-// PriceFor's nil-cfg path consults the global catalog, which is what
-// we want here.
+// process-installed catalog (`usage.SetCatalog`) on this agent's
+// billing backend (WithBillingBackend): the digest model is built from
+// the same provider as the agent it serves, so it bills on the same
+// rows. The per-Agent value has no config handle, so the backend, not
+// a cfg, names them.
 //
 // Called from the per-turn event-tap in Agent.Run (alongside
 // watchdog + onEvent observers) so multi-session, single-session, and
@@ -85,7 +85,7 @@ func (a *Agent) observeToolSavings(ev *session.Event) {
 		return
 	}
 	for _, p := range ev.Content.Parts {
-		rec, ok := extractSavingsRecord(p)
+		rec, ok := extractSavingsRecord(p, a.BillingBackend())
 		if !ok {
 			continue
 		}
@@ -134,7 +134,7 @@ func (a *Agent) chargeDigestSubagent(rec usage.DigestSavingsRecord) {
 	// report its input as the context fill, look the window up by the
 	// small digest model, and drop the #975 pending estimate. Its cost
 	// still lands in Totals, which is what the ceilings read.
-	a.tracker.AppendSideUsage(rec.SubagentModel, u, usage.PriceFor(rec.SubagentModel, nil))
+	a.tracker.AppendSideUsage(rec.SubagentModel, u, a.price(rec.SubagentModel))
 	a.recordSubtaskUsage(rec.SubagentInputTokens, rec.SubagentOutputTokens, rec.SubagentCostUSD)
 }
 
@@ -144,7 +144,8 @@ func (a *Agent) chargeDigestSubagent(rec usage.DigestSavingsRecord) {
 // on non-wrapped tools + built-ins.
 //
 // SubagentCostUSD resolves at extraction time against the layered
-// pricing catalog. Zero on structural / passthrough paths where
+// pricing catalog, on backend (the agent's billing backend; "" for the
+// process one). Zero on structural / passthrough paths where
 // SubagentModel is empty (which is the shipped default until the
 // operator opts in via `--mcp-agentic-wrap-llm`).
 //
@@ -152,7 +153,7 @@ func (a *Agent) chargeDigestSubagent(rec usage.DigestSavingsRecord) {
 // values arrive as float64 through JSON, int / int64 in-process.
 // Both accepted; unknown shapes are silently dropped so a malformed
 // sidecar can't crash the tap goroutine.
-func extractSavingsRecord(p *genai.Part) (usage.DigestSavingsRecord, bool) {
+func extractSavingsRecord(p *genai.Part, backend string) (usage.DigestSavingsRecord, bool) {
 	if p == nil || p.FunctionResponse == nil {
 		return usage.DigestSavingsRecord{}, false
 	}
@@ -193,7 +194,7 @@ func extractSavingsRecord(p *genai.Part) (usage.DigestSavingsRecord, bool) {
 		// (#263, #771). A sidecar from an older producer carries no
 		// buckets, which prices identically to the old behaviour —
 		// correctly, since a turn with no cache activity has none.
-		rec.SubagentCostUSD = usage.PriceFor(subModel, nil).CostUSDForTurn(rec.SubagentTurn())
+		rec.SubagentCostUSD = usage.PriceOn(backend, subModel).CostUSDForTurn(rec.SubagentTurn())
 	}
 	return rec, true
 }

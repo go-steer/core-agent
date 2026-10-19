@@ -116,6 +116,22 @@ func ResolveMCPSmallModel(p Provider, mcpSpecific, agenticGeneral string) string
 	return ResolveSmallModel(p, agenticGeneral)
 }
 
+// BackendOf returns the backend that bills p's tokens, the name the
+// shared price catalog keys "<backend>/<model>" rows on: a provider
+// profile's backend (profile.Profile.BackendName), or the core
+// provider's own name ("gemini", "vertex", "anthropic",
+// "anthropic-vertex"), which is already the core-models backend name.
+// cmd/core-agent hands it to usage.SetBackend.
+func BackendOf(p Provider) string {
+	if p == nil {
+		return ""
+	}
+	if b, ok := p.(interface{ Backend() string }); ok {
+		return b.Backend()
+	}
+	return p.Name()
+}
+
 // Constructor builds a Provider from validated config. Tests register
 // alternates via Register so resolution stays decoupled from the
 // imports of any single backend.

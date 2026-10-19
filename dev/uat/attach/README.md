@@ -351,8 +351,10 @@ not live in committed config.
 
 ## Session D — read-only state endpoints (~10 min, PR A: attach-tui-endpoints)
 
-**What you're validating:** the three new GET endpoints that feed the
-TUI's `/tools`, `/subagents`, `/status` slash commands. Pure
+**What you're validating:** three read-only GET endpoints:
+`/tools`, `/agents` and `/status`. The first two feed the TUI's
+`/tools` and `/subagents` slash commands. `/status` has no slash
+command in the current TUI, but the endpoint is still served. Pure
 read-only projections — `--attach-readonly` doesn't block them.
 
 ### D1. `/tools` — full tool catalog + per-tool gate state
@@ -455,61 +457,60 @@ This is implicit but worth knowing: an agent that doesn't implement the provider
 
 ---
 
-## Session E — TUI (~15 min, PR B: attach-tui binary)
+## Session E — TUI (~15 min)
 
-**What you're validating:** the new `core-agent-tui` binary as an end-to-end consumer of the attach-mode protocol. Tests the picker, chat rendering, slash commands, and the live usage panel.
+**What you're validating:** `core-agent-tui` as an end-to-end consumer of the attach-mode protocol: the picker, chat, slash commands and the usage readout. The TUI is built on go-steer/core-tui. This session was rewritten on 2026-10-19 against core-tui v0.31.0; the commands and keys of the older standalone TUI (`/status`, `/peers`, `/wake`, `/reconnect`, `/transcript`, `/theme dark`, Ctrl+E) are gone.
 
 ### E1. Build + launch
 
 ```bash
 ./run.sh clean
+./run.sh build
 ./run.sh hub                                  # standalone hub on :7777
 sleep 1
 ./run.sh tui http://localhost:7777
 ```
 
-The TUI binary builds the first time you run `./run.sh tui` (caches at `/tmp/core-agent-uat/bin/core-agent-tui`).
-
 **Verify on launch:**
 
-- Picker appears with the hub's local session(s) listed.
+- Picker appears with the hub's session listed.
 - Header reads `core-agent-tui  ●  http://localhost:7777  ·  session picker`.
 - Footer shows `↑/↓ navigate · Enter attach · r refresh · q quit`.
 
 ### E2. Picker + enter session
 
 - Use ↑/↓ (or j/k) to navigate.
-- Hit Enter to attach to a session — the screen swaps to the chat view.
-  A standalone hub has exactly one session, `default`; pick that.
-- Header now shows the session identity + endpoint URL.
-- Footer shows the usage panel: `/help · echo · in 0 · out 0 · $—`.
+- Hit Enter to attach. A standalone hub has exactly one session, `default`; pick that.
+- An `ℹ Attached to live session` line appears.
+- The header now carries the session and the usage readout, e.g.
+  `core-agent-tui · default · ◇ echo · … · default · 0 in · 0 out · $0.0000`.
+- The footer shows the keys: `enter submit · alt+enter newline · ctrl+c quit · ? for more`.
 
 ### E3. Inject a message via the input box
 
-- Type "what is 2+2?" + Enter.
-- **Verify:** your text appears as a user bubble (`user │ what is 2+2?`).
-- A model response streams in below as an asst bubble (`asst │ ...`). Echo provider replies trivially; that's expected.
+- Type `what is 2+2?` + Enter.
+- **Verify:** your text appears as `❯ what is 2+2?`, and the echo provider's reply appears below it within a second or two, with nobody touching the hub.
 - If the spinner just runs and no reply comes, the hub is not running `--no-repl` (an old `run.sh`, or a hub
   started by hand). Its embedded TUI is holding the session, and the message waits in its inbox.
   go-steer/core-tui#379 covers the spinner never stopping.
-- The usage panel updates with token counts (echo provider may report 0; with `MODEL=vertex` you'll see real numbers).
+- The header's usage readout updates (the echo provider may report 0 tokens; with `MODEL=vertex` you'll see real numbers).
 
 ### E4. Slash commands
 
-Run each and verify the modal output:
+Type `/` to see the palette. Run each of these; each should open its view or print a line, and none should say `unknown command`:
 
 ```
-/help        — prints the command list + keybindings
-/tools       — lists the agent's tools with source + gate state
-/status      — model name + state ("idle" in v1)
-/subagents   — "no background subagents running" (unless you've spawned any)
-/peers       — "no peers" (or the list, if attached to a hub)
-/transcript  — saves scrollback to /tmp/<sid>.md; verify the file
-/clear       — clears the local scrollback (server log unchanged)
-/theme dark  — re-renders existing model messages with the dark theme
-/wake        — POSTs /wake; replies "wake sent"
-/reconnect   — re-subscribes to the SSE stream from the current seq
+/help         — commands + keybindings (also `?`)
+/tools        — the agent's tools with source + gate state
+/subagents    — the roster (empty unless you've spawned any)
+/stats        — the session's usage
+/pricing      — the model's rate and where it came from
+/keys         — keybindings
+/theme        — lists themes; then `/theme gopher` (or google, gke, anthropic, gemini, openai, matrix, …)
+/clear        — clears the local scrollback (the server log is unchanged)
 ```
+
+`/transcripts` doesn't work in attach mode yet: the transcripts live on the daemon's machine (#1331).
 
 ### E5. Multi-session picker against a fleet
 
@@ -520,7 +521,7 @@ sleep 2
 ./run.sh tui http://localhost:7777
 ```
 
-**Verify:** the picker shows entries from the hub AND from each peer (Origin column shows `local` vs the peer name). Pick a peer session and confirm the TUI opens chat against that peer's endpoint.
+**Verify:** the picker shows entries from the hub AND from each peer (Origin column shows `local` vs the peer name). Pick a peer session and type; the reply comes from that peer.
 
 ### E6. Direct-jump shortcut URL
 
@@ -531,10 +532,10 @@ sleep 2
 
 **Verify:** the picker is skipped; the chat opens directly on that session.
 
-### E7. Theme switch + Editor handoff
+### E7. Theme switch
 
-- In a running TUI: `/theme dark` → all asst messages re-render with the dark glamour palette.
-- `Ctrl+E` opens `$EDITOR` (or `vi`) with the current input buffer; save + exit → the buffer becomes the new input.
+- In a running TUI: `/theme gopher`, then `/theme default`. **Verify:** existing messages re-render in the new palette, and an unknown name (`/theme nope`) falls back to default with a pointer to `/theme`.
+- There is no input-box `$EDITOR` handoff in the current TUI (the old Ctrl+E); go-steer/core-tui#380 tracks bringing it back.
 
 ### E8. Read-only listener
 
@@ -550,9 +551,9 @@ sleep 2
 ./run.sh tui http://localhost:7777
 ```
 
-**Verify:** picker + chat both work for reads; `/wake` and trying to inject return errors (server enforces 403). The TUI surfaces those as red `✗ inject failed: status 403` lines.
+**Verify:** the picker and chat work for reads; sending a message is refused by the server (403), and the TUI shows that as an error line rather than a spinner that never ends. Note the exact wording for the record.
 
-### E9. Reconnect mid-stream
+### E9. Hub restart mid-session
 
 While attached, in another shell:
 
@@ -562,11 +563,11 @@ sleep 5
 ./run.sh hub                                 # restart it
 ```
 
-In the TUI: type `/reconnect`. **Verify:** the stream re-subscribes from `?since=<lastSeq>`; you can keep injecting.
+There is no `/reconnect` command in the current TUI. **Observe and record:** does the TUI show the drop, and does it pick the stream back up on its own once the hub is back? If it doesn't recover, quit and re-run `./run.sh tui`; a session's history replays from the eventlog either way.
 
-### E10. /transcript round-trip
+### E10. Saved transcripts
 
-After some activity, `/transcript` then `cat /tmp/<sid>.md`. **Verify** markdown structure preserves user / asst / tool / system / error sections.
+`/transcripts` is the current command (the old `/transcript` that wrote `/tmp/<sid>.md` is gone). In attach mode it currently reports that it isn't wired (#1331). Check it in the embedded TUI instead: run `core-agent` in a terminal, have a short exchange, then `/transcripts`.
 
 ---
 
@@ -611,14 +612,14 @@ Removes the tmux session + `/tmp/core-agent-uat/`. Nothing leaks.
 | D5 empty-handler graceful | TUI-A | no 501 when provider not implemented |
 | E1 TUI build + launch   | TUI-B | binary builds and connects to hub |
 | E2 picker → chat         | TUI-B | session list, navigate, attach |
-| E3 inject via input      | TUI-B | user bubble + asst stream + usage panel update |
-| E4 slash commands        | TUI-B | v1 commands all functional |
+| E3 inject via input      | TUI-B | your message + echo reply + header usage readout update |
+| E4 slash commands        | TUI-B | core-tui's current commands all functional |
 | E5 fleet picker          | TUI-B | hub + peer sessions enumerated |
 | E6 direct-jump URL       | TUI-B | skip picker via /sessions/<sid> suffix |
-| E7 theme + editor handoff | TUI-B | glamour re-render + $EDITOR launch |
+| E7 theme switch          | TUI-B | palette re-render; unknown name falls back (editor handoff: core-tui#380) |
 | E8 read-only listener    | TUI-B | reads work, writes 403 with clear error line |
-| E9 reconnect             | TUI-B | /reconnect resumes from lastSeq |
-| E10 /transcript          | TUI-B | markdown round-trip |
+| E9 hub restart           | TUI-B | behaviour on a dropped stream (observed, no /reconnect) |
+| E10 /transcripts         | TUI-B | embedded TUI lists saved transcripts (attach mode: #1331) |
 
 Not covered here (deferred until needed):
 

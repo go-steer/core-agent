@@ -109,7 +109,7 @@ func TestBuildDeclaredSubagents_OwnModelAndIdentity(t *testing.T) {
 		}},
 	}
 
-	subs, _, _, err := buildDeclaredSubagents(
+	subs, templates, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
 		parentSurface{}, testDeps(),
 	)
@@ -129,6 +129,15 @@ func TestBuildDeclaredSubagents_OwnModelAndIdentity(t *testing.T) {
 	// Own model: scripted, NOT the parent's echo.
 	if got := sub.Model().Name(); got != "scripted" {
 		t.Errorf("subagent LLM = %q, want %q (its own model, not the parent's)", got, "scripted")
+	}
+	// And billed on its own provider's backend, through both doors:
+	// priced on the parent's, a subagent on another provider reads the
+	// wrong rows (or none, for OpenAI's and xAI's models).
+	if got := sub.BillingBackend(); got != mock.ProviderScripted {
+		t.Errorf("sync door billing backend = %q, want %q", got, mock.ProviderScripted)
+	}
+	if len(templates) != 1 || templates[0].Backend != mock.ProviderScripted {
+		t.Errorf("async template backend = %+v, want %q", templates, mock.ProviderScripted)
 	}
 }
 
@@ -156,6 +165,9 @@ func TestBuildDeclaredSubagents_InheritsParentModel(t *testing.T) {
 	}
 	if got := subs[0].Model().Name(); got != "echo" {
 		t.Errorf("inherited LLM = %q, want %q (parent's model)", got, "echo")
+	}
+	if got := subs[0].BillingBackend(); got != mock.ProviderEcho {
+		t.Errorf("inherited billing backend = %q, want the parent's %q", got, mock.ProviderEcho)
 	}
 }
 

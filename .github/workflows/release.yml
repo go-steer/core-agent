@@ -109,36 +109,33 @@ jobs:
       # and verifies what it installed.
       - uses: ./.github/actions/go-toolchain
 
-      # Pricing freshness guard: refuse to release if the tagged
-      # commit's pkg/pricing/builtin.go doesn't match what
-      # dev/regen-builtin-pricing would produce today. Motivation:
+      # Pricing freshness guard: refuse to release if the price table
+      # core-agent pins (go-steer/core-models pricing/builtin.go, at the
+      # version go.mod requires) no longer matches LiteLLM. Motivation:
       # #259 — hand-authored rates drifted 20-30x silently before the
-      # regen path landed. The weekly bot/pricing-regen workflow keeps
-      # main current; this guard makes sure a stale release can't slip
-      # out between weekly runs.
+      # regen path landed. core-models' weekly pricing-regen keeps its
+      # table current; this guard makes sure a release can't ship a pin
+      # that has fallen behind.
       #
       # Skipped on dry-run so operators can smoke-test the release
       # pipeline from a feature branch without keeping pricing fresh.
       # Also skipped in retroactive-tag mode: historical tags carry
-      # historical pricing on purpose, and pre-#259 tags don't even
-      # have the regen tool to invoke.
+      # historical pricing on purpose.
       - name: Guard — pricing catalog fresh
         if: ${{ !inputs.dry_run && inputs.tag == '' }}
         run: |
           set -euo pipefail
-          # --check compares RATES and ignores UpdatedAt stamps, so this
-          # no longer fires merely because the tag is being cut on a
-          # different day from the last regen. The verdict is on stdout
-          # (see the generator's --check note); a non-zero exit means
-          # the check itself failed and `set -e` stops the release.
-          verdict="$(go run ./dev/regen-builtin-pricing --check)"
+          # --check compares RATES and ignores UpdatedAt stamps. The
+          # verdict is on stdout; a non-zero exit means the check itself
+          # failed and `set -e` stops the release.
+          verdict="$(dev/tools/verify-pricing-fresh)"
           if [[ "$verdict" == "drift=true" ]]; then
-            echo "::error::pkg/pricing/builtin.go carries rates that no longer match LiteLLM (details above)."
+            echo "::error::the pinned core-models price table carries rates that no longer match LiteLLM (details above)."
             echo ""
             echo "Remediation:"
-            echo "  1. Merge the open auto-PR from bot/pricing-regen (if any), OR"
-            echo "  2. Run \`go run ./dev/regen-builtin-pricing\` locally, commit, push."
-            echo "  3. Retag and re-push the tag."
+            echo "  1. Bump github.com/go-steer/core-models to a release with the regenerated table"
+            echo "     (core-models' weekly pricing-regen opens that PR upstream)."
+            echo "  2. Retag and re-push the tag."
             exit 1
           fi
           if [[ "$verdict" != "drift=false" ]]; then

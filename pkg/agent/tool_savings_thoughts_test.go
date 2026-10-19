@@ -34,7 +34,7 @@ import (
 func recordFromSidecar(t *testing.T, sv map[string]any) usage.DigestSavingsRecord {
 	t.Helper()
 	ev := mkFuncResponseEvent("gke_get_pods", sv)
-	rec, ok := extractSavingsRecord(ev.Content.Parts[0])
+	rec, ok := extractSavingsRecord(ev.Content.Parts[0], "")
 	if !ok {
 		t.Fatal("sidecar not parsed")
 	}

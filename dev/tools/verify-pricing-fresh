@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Is the price table core-agent bills from still current with LiteLLM?
+#
+# The table lives in go-steer/core-models (pricing/builtin.go), which
+# regenerates it weekly. This runs core-models' own generator, at the
+# version go.mod pins, in --check mode against the pinned copy in the
+# module cache: it writes nothing and prints `drift=true|false` on
+# stdout (the per-model report goes to stderr). A non-zero exit means
+# the check itself failed to run.
+#
+# The release workflow and both tag-cut scripts call it, so a release
+# can't ship rates that drifted from LiteLLM (#259). Remediation for
+# drift is upstream: a core-models release with the regenerated table,
+# then a version bump here.
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+mod=github.com/go-steer/core-models
+version="$(go list -m -f '{{.Version}}' "$mod")"
+dir="$(go list -m -f '{{.Dir}}' "$mod")"
+if [[ -z "$version" || -z "$dir" ]]; then
+  echo "verify-pricing-fresh: cannot resolve $mod from go.mod" >&2
+  exit 2
+fi
+exec go run "$mod/dev/regen-builtin-pricing@$version" --check --out "$dir/pricing/builtin.go"

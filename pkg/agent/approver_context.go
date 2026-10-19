@@ -211,7 +211,7 @@ func (t *turnApprover) Bill(model string, meta *genai.GenerateContentResponseUsa
 	}
 	u := usage.TurnUsageFromMetadata(meta, nil)
 	if t.a.tracker != nil {
-		t.a.tracker.AppendSideUsage(model, u, usage.PriceFor(model, nil))
+		t.a.tracker.AppendSideUsage(model, u, t.a.price(model))
 	}
 	// And durably, so a restart does not hand the cost ceilings back
 	// the money the approver spent (#643).

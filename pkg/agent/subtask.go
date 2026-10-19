@@ -499,7 +499,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 			// SkipParentUsage only suppresses the roll-up into THIS
 			// agent's tracker, not the accounting itself.
 			modelName := subModel.Name()
-			pricing := usage.PriceFor(modelName, nil)
+			pricing := a.price(modelName)
 			if a.tracker != nil && !spec.SkipParentUsage {
 				// Side usage, not a conversation turn (#1191): it
 				// counts toward Totals and so the cost ceilings, but

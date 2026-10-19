@@ -29,7 +29,6 @@ on:
       - '.dockerignore'
       - '.github/workflows/release*.yml'
       - '.github/workflows/docs*.yml'
-      - '.github/workflows/pricing-regen.yml'
       # Docs-site sources — Astro/Starlight build lives outside this workflow.
       - 'docs/site/**'
       # License / config-only chores that can't affect Go.
@@ -50,7 +49,6 @@ on:
       - '.dockerignore'
       - '.github/workflows/release*.yml'
       - '.github/workflows/docs*.yml'
-      - '.github/workflows/pricing-regen.yml'
       # Docs-site sources — Astro/Starlight build lives outside this workflow.
       - 'docs/site/**'
       # License / config-only chores that can't affect Go.

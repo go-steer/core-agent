@@ -221,7 +221,7 @@ func TestSavings_ContradictoryBucketsCannotInventANegativeRemainder(t *testing.T
 func TestSavings_TheCacheBucketsReachTheRecordAtAll(t *testing.T) {
 	t.Parallel()
 	ev := mkFuncResponseEvent("gke_get_pods", cacheSidecar(10_000, 9_000, 500, 100))
-	rec, ok := extractSavingsRecord(ev.Content.Parts[0])
+	rec, ok := extractSavingsRecord(ev.Content.Parts[0], "")
 	if !ok {
 		t.Fatal("extractSavingsRecord found no sidecar")
 	}
@@ -286,7 +286,7 @@ func TestSavings_TheOneHourShareReachesTheRecord(t *testing.T) {
 	sidecar := cacheSidecar(10_000, 0, 500, 100)
 	sidecar["subagent_cache_creation_1h_input_tokens"] = float64(300)
 
-	rec, ok := extractSavingsRecord(mkFuncResponseEvent("gke_get_pods", sidecar).Content.Parts[0])
+	rec, ok := extractSavingsRecord(mkFuncResponseEvent("gke_get_pods", sidecar).Content.Parts[0], "")
 	if !ok {
 		t.Fatal("extractSavingsRecord found no sidecar")
 	}

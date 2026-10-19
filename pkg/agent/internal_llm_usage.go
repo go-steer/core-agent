@@ -68,5 +68,5 @@ func (a *Agent) recordInternalLLMUsage(promptTokens, completionTokens int, meta 
 	if turnUsage.OutputTokens == 0 {
 		turnUsage.OutputTokens = completionTokens
 	}
-	a.tracker.AppendUsage(modelName, turnUsage, usage.PriceFor(modelName, nil))
+	a.tracker.AppendUsage(modelName, turnUsage, a.price(modelName))
 }

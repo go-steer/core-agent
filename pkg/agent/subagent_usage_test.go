@@ -342,3 +342,50 @@ func keysOf(m map[string]usage.Totals) []string {
 	}
 	return out
 }
+
+// TestSubagentTool_PricesOnTheSubagentsOwnBackend: a declarative
+// subagent may run on a provider other than its parent's (spec.Model
+// naming another provider), and its spend must be priced on that
+// provider's rows. OpenAI's models are the sharpest case: they have no
+// bare rows in the shared table, so priced on the parent's backend the
+// delegation read as unpriced, and every ceiling read it as free.
+func TestSubagentTool_PricesOnTheSubagentsOwnBackend(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		backend      string
+		wantUnpriced bool
+	}{
+		{"own backend named", "openai", false},
+		// No backend: the process backend, which no test here installs,
+		// so the bare rows — where gpt-5-mini has none.
+		{"process backend", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestEventLog(t)
+			tracker := usage.NewTracker()
+			child, err := New(&meteredLLM{
+				name:   "gpt-5-mini",
+				script: [][]*adkmodel.LLMResponse{{usedText("child answer", 1000, 200)}},
+			}, WithName("child"), WithEventLog(h), WithSession("u", "child"), WithBillingBackend(tc.backend))
+			if err != nil {
+				t.Fatalf("New child: %v", err)
+			}
+			runParentDelegating(t, child, tracker, h)
+
+			turns := tracker.All()
+			if len(turns) != 1 {
+				t.Fatalf("turns = %d, want 1", len(turns))
+			}
+			got := turns[0]
+			if got.Unpriced != tc.wantUnpriced || got.Backend != tc.backend {
+				t.Errorf("delegated turn: unpriced=%v backend=%q, want unpriced=%v backend=%q",
+					got.Unpriced, got.Backend, tc.wantUnpriced, tc.backend)
+			}
+			if want := usage.PriceOn(tc.backend, "gpt-5-mini").CostUSDForTurn(usage.TurnUsage{InputTokens: 1000, OutputTokens: 200}); got.CostUSD != want {
+				t.Errorf("delegated turn cost = %v, want %v", got.CostUSD, want)
+			}
+		})
+	}
+}

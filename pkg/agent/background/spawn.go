@@ -30,6 +30,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
@@ -126,9 +127,12 @@ type resolvedSpawn struct {
 	toolsetTools []attach.ToolInfo
 	// buildModel builds a fresh LLM for this spawn. Called after the
 	// reservation so a Stop arriving during its (network) I/O still
-	// cancels cleanly (#366). priceModelID labels the model for /usage.
+	// cancels cleanly (#366). priceModelID labels the model for /usage,
+	// and priceBackend names the backend that bills it ("" = the
+	// process backend).
 	buildModel   func(context.Context) (adkmodel.LLM, error)
 	priceModelID string
+	priceBackend string
 	// maxDepth caps the subagent's OWN nesting (0 = substrate default).
 	maxDepth int
 	// budgets + scheduler bound and pace the run.
@@ -200,6 +204,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		tools:        tools,
 		buildModel:   func(c context.Context) (adkmodel.LLM, error) { return m.provider.Model(c, resolvedModelID) },
 		priceModelID: resolvedModelID,
+		priceBackend: models.BackendOf(m.provider),
 		budgets:      mergeBudgets(m.defaultBudgets, spec.Budgets),
 		scheduler:    sched,
 		mode:         spec.Mode,
@@ -353,7 +358,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	goal := rs.goal
 	sched := rs.scheduler
 	budgets := rs.budgets
-	priceModelID := rs.priceModelID
+	priceModelID, priceBackend := rs.priceModelID, rs.priceBackend
 	baseTools := rs.tools
 	toolsets := rs.toolsets
 	instrOpts := rs.instrOpts
@@ -484,8 +489,10 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// tracker so /usage + /stats reflect the actual session cost,
 		// not just the parent conversation. Pricing is looked up per
 		// the subagent's own model ID (may differ from parent when the
-		// manager was constructed with a cheaper flash-tier model), so
-		// the per-model attribution in /usage stays accurate.
+		// manager was constructed with a cheaper flash-tier model) and
+		// on its own backend (a declared template may run on another
+		// provider), so the per-model attribution in /usage stays
+		// accurate.
 		//
 		// Pricing goes on whether or not the parent has a tracker
 		// (#729). The driver computes the run's cost from it, and
@@ -494,7 +501,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// driver could never evaluate, because every turn priced out
 		// at exactly $0. A budget that silently doesn't apply is worse
 		// than no budget: the caller believes the delegation is bounded.
-		price := usage.PriceFor(priceModelID, nil)
+		price := usage.PriceOn(priceBackend, priceModelID)
 		if parent.Tracker() != nil {
 			opts = append(opts, autonomous.WithTracker(parent.Tracker(), price))
 		} else {

@@ -469,7 +469,7 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 			stopReason string
 			// price is fixed for the whole delegation: one subagent, one
 			// model. Looked up once so the per-turn path is arithmetic.
-			price = usage.PriceFor(innerModelName, nil)
+			price = opts.Inner.price(innerModelName)
 		)
 		if opts.Budgets.MaxCostUSD > 0 {
 			runCtx = withCostPreflight(runCtx, func(req *adkmodel.LLMRequest) (func(), error) {

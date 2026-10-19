@@ -47,7 +47,7 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name:    "unknown provider",
-			mutate:  func(c *Config) { c.Model.Provider = "openai" },
+			mutate:  func(c *Config) { c.Model.Provider = "no-such-provider" },
 			wantErr: "unknown model.provider",
 		},
 		{
@@ -219,7 +219,7 @@ func TestLoad_RejectsBadProvider(t *testing.T) {
 	if err := os.MkdirAll(agents, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"version":1,"model":{"name":"x","provider":"openai"}}`
+	body := `{"version":1,"model":{"name":"x","provider":"no-such-provider"}}`
 	if err := os.WriteFile(filepath.Join(agents, ConfigFileName), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

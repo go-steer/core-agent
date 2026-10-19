@@ -44,7 +44,7 @@ fi
 
 # Preflight: run the release-time guards that .github/workflows/release.yml
 # runs, BEFORE we carve the CHANGELOG. Motivation (2026-07-18 retag): the
-# v2.7.0-dev.4 tag got cut on a day when pkg/pricing/builtin.go was
+# v2.7.0-dev.4 tag got cut on a day when the builtin price table was
 # 3 days stale relative to LiteLLM's current catalog. The pricing-freshness
 # guard in release.yml rejected the build, forcing a retag. Running the
 # same guard here catches the drift locally in ~10s instead of a 4-minute
@@ -55,8 +55,9 @@ fi
 echo "── Preflight: release guards ────────────────────────────"
 
 # Guard 1: pricing catalog freshness. Same command release.yml runs.
-# Skips if the regen tool isn't present (pre-#259 checkouts) so
-# retroactive dev-tag operators aren't blocked.
+# The table and its generator live in go-steer/core-models; the guard
+# checks the version go.mod pins. Skips if the helper isn't present
+# (older checkouts) so retroactive dev-tag operators aren't blocked.
 #
 # --check compares RATES only: it ignores the UpdatedAt stamps the
 # generator rewrites on every run, so cutting a tag on a day you
@@ -64,14 +65,16 @@ echo "── Preflight: release guards ─────────────�
 # nothing, so this guard no longer dirties the worktree on its way
 # past. Verdict is on stdout; a non-zero exit means the check failed
 # to run, and `set -e` aborts the cut.
-if [[ -d "dev/regen-builtin-pricing" ]]; then
-  PRICING_VERDICT="$(go run ./dev/regen-builtin-pricing --check)"
+if [[ -x "dev/tools/verify-pricing-fresh" ]]; then
+  PRICING_VERDICT="$(dev/tools/verify-pricing-fresh)"
   if [[ "$PRICING_VERDICT" == "drift=true" ]]; then
     echo "" >&2
-    echo "error: pkg/pricing/builtin.go carries rates that no longer match LiteLLM." >&2
+    echo "error: the price table core-agent pins (go-steer/core-models pricing/builtin.go)" >&2
+    echo "carries rates that no longer match LiteLLM." >&2
     echo "" >&2
-    echo "Remediation: run 'go run ./dev/regen-builtin-pricing', commit the diff" >&2
-    echo "(or discard if the drift is intentional), then re-run this script." >&2
+    echo "Remediation: bump github.com/go-steer/core-models to a release with the" >&2
+    echo "regenerated table (core-models' weekly pricing-regen opens that PR), then" >&2
+    echo "re-run this script." >&2
     exit 1
   fi
   if [[ "$PRICING_VERDICT" != "drift=false" ]]; then

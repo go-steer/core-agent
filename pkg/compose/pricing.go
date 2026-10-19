@@ -94,7 +94,7 @@ func RebuildPricingCatalog(cfg *config.Config, agentsDir, coreHome string) error
 		CfgOverride: CfgToCatalogOverride(cfg.Model.Pricing),
 		AgentsDir:   agentsDir,
 		UserHome:    coreHome,
-		Declared:    CfgToCatalogOverride(cfg.ProfileRates()),
+		Declared:    usage.DeclaredRates(cfg),
 	})
 	if err != nil {
 		return err

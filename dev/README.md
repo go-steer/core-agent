@@ -239,20 +239,28 @@ branch protection is satisfied without running the full Go pipeline.
 
 ## Scheduled automation
 
-Two weekly jobs keep generated or externally-owned values from drifting
-silently. Both follow the same shape, and a third should copy it:
+A weekly job keeps an externally-owned value from drifting silently,
+and a new one should copy its shape:
 
 | Workflow | Schedule | Tool | Answers |
 |----------|----------|------|---------|
-| `pricing-regen.yml` | Mondays 09:07 UTC | `dev/regen-builtin-pricing` | have LiteLLM's rates or context windows moved? |
 | `lookout-pin-check.yml` | Tuesdays 06:23 UTC | `dev/lookout-pin-check` | is the recipe's pin of `ghcr.io/go-steer/lookout` still upstream's current release? |
+
+The built-in price table used to be the other one (`pricing-regen.yml`,
+`dev/regen-builtin-pricing`). It now lives in
+[go-steer/core-models](https://github.com/go-steer/core-models), which
+runs the same weekly regen for both core-agent and mast; core-agent
+takes the result by bumping its core-models pin.
+`dev/tools/verify-pricing-fresh` runs core-models' generator in
+`--check` mode against the pinned table, and the release guards call
+it.
 
 The shared conventions, each of which exists because of a specific
 failure:
 
 - **`--check` reports on stdout, not through the exit code.** Exactly
   `drift=true` or `drift=false`, and exit 0 either way. A non-zero exit
-  always means the tool broke. Both are invoked via `go run`, which
+  always means the tool broke. The tool is invoked via `go run`, which
   collapses every non-zero child status to 1 — so an exit-code
   convention would make a network hiccup indistinguishable from real
   drift, and the job would open a pull request on nothing.
@@ -266,11 +274,12 @@ failure:
   drift; gating the mint would leave the credentials unexercised until
   the one run that needs them.
 
-Run either locally the same way CI does:
+Run it locally the same way CI does, and the pricing check the same
+way the release guards do:
 
 ```
-go run ./dev/regen-builtin-pricing --check
 go run ./dev/lookout-pin-check --check
+dev/tools/verify-pricing-fresh
 ```
 
 `dev/lookout-pin-check` additionally takes `--releases=<file.json>` to

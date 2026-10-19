@@ -51,10 +51,9 @@ name: lookout-pin-check
 
 on:
   schedule:
-    # Tuesdays at 06:23 UTC. A different day and hour from
-    # pricing-regen (Mondays 09:07) so two auto-PR jobs never contend
-    # for the same App installation token, and a non-zero minute to stay
-    # out of GHA's minute-0 scheduling spike.
+    # Tuesdays at 06:23 UTC, a non-zero minute to stay out of GHA's
+    # minute-0 scheduling spike. (The day was picked to stay clear of
+    # pricing-regen, which has since moved to go-steer/core-models.)
     - cron: '23 6 * * 2'
   workflow_dispatch:
 

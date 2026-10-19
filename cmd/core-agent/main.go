@@ -807,6 +807,10 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
+	// Price against the backend that bills the tokens. Cost sites that
+	// can't name one (a nil cfg, an auto-detected provider) read it from
+	// here; see usage.BackendFor.
+	usage.SetBackend(models.BackendOf(provider))
 
 	// Vertex explicit context caching (#221 v1). The hooks may be
 	// installed before or after Model(): gemini.Provider's models read
@@ -1396,7 +1400,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		CfgOverride: compose.CfgToCatalogOverride(cfg.Model.Pricing),
 		AgentsDir:   agentsDir,
 		UserHome:    coreHome,
-		Declared:    compose.CfgToCatalogOverride(cfg.ProfileRates()),
+		Declared:    usage.DeclaredRates(cfg),
 	}); perr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: pricing: %v\n", perr)
 		// Non-fatal: missing/corrupt files fall back to builtin via

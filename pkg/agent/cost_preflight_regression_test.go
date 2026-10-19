@@ -105,11 +105,13 @@ func TestPreflight_FailedRequestLeavesNoEstimate(t *testing.T) {
 	}
 }
 
-// A side call (summarizer, session title, approver, agentic subtask, MCP
-// digest) is not screened. It records through AppendSideUsage, which
-// settlement does not count, so a screened side call's estimate stayed
-// pending all turn while its real cost was also counted: the same spend
-// twice.
+// A side call (summarizer, session title, /btw, approver, agentic
+// subtask, MCP digest) is not screened: refusing one would cut the turn
+// for a call the agent needs to keep working. The approver, subtasks and
+// digests also record through AppendSideUsage, which settlement does not
+// count, so a screened one's estimate stayed pending all turn while its
+// real cost was also counted: the same spend twice. (The summarizer,
+// title and /btw record through AppendUsage, which settlement counts.)
 func TestPreflight_SideCallsAreNotScreened(t *testing.T) {
 	t.Parallel()
 	screened := 0

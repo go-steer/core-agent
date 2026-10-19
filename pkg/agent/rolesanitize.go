@@ -120,13 +120,18 @@ func (l *roleSanitizingLLM) GenerateContent(ctx context.Context, req *adkmodel.L
 			req = &cp
 		}
 	}
-	// A side call (the summarizer, the session title, the approver, an
-	// agentic subtask, an MCP digest) is not screened. These are calls
-	// the agent needs to keep working, refusing one would cut the turn
-	// for the wrong reason, and their spend still counts toward the turn
-	// after the fact. Screening them also left estimates nothing settled:
-	// they record through AppendSideUsage, which settlement does not
-	// count, so their cost was counted twice for the rest of the turn.
+	// A side call (the summarizer, the session title, /btw, the
+	// approver, an agentic subtask, an MCP digest) is not screened.
+	// These are calls the agent needs to keep working, refusing one
+	// would cut the turn for the wrong reason, and their spend still
+	// counts toward the turn after the fact. For the approver, subtasks
+	// and digests there is a second reason: they record through
+	// AppendSideUsage, which settlement does not count, so a screened
+	// one left an estimate nothing settled and its cost was counted
+	// twice for the rest of the turn. The summarizer, the session title
+	// and /btw record through AppendUsage (recordInternalLLMUsage),
+	// which settlement does count; for them the first reason is the
+	// whole of it.
 	if check := costPreflightFromContext(ctx); check != nil && models.SideCallName(ctx) == "" {
 		return l.screened(ctx, check, req, stream)
 	}

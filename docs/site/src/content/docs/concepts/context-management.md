@@ -238,7 +238,7 @@ Checking after each call still lets one request that is over budget by itself th
 
 - **What the estimate counts:** the conversation's last measured input plus the tool results added since. With no measurement yet, the serialized request is used instead. A prompt prefix the provider has already cached is priced at the cache-read rate.
 - **Whose requests it screens:** a turn's check covers the requests made under that turn, including a subagent's. A subagent's request is priced on its own billing backend and from its own context, never at the parent's conversation size. A subagent's own budget prices a nested subagent's request the same way.
-- **Side calls aren't screened:** the summarizer, session title, auto-mode approver, agentic subtasks and MCP digests. Their spend still counts toward the turn afterwards.
+- **Side calls aren't screened:** the summarizer, session title, `/btw`, auto-mode approver, agentic subtasks and MCP digests. Their spend still counts toward the turn afterwards.
 - **It ends with its turn:** a background subagent that keeps running after the turn that spawned it is no longer screened by that turn's ceiling.
 - **It's still a floor:** output tokens can't be known before the call, so a turn can still end above its bound by the output of its last request.
 

@@ -16,7 +16,13 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.0.0-dev.3]._
+#### Feature
+
+- **Auto mode can refuse what it would hand to a person, and says why.** With `permissions.auto.escalation: "refuse"`, a call the approver may not judge, or passes on, is refused at once instead of waiting `approval_timeout` for a person. This is for a deployment where nobody answers prompts. In either mode the agent is now told why the approver didn't judge a call: for example, that a piped or chained bash command never matches an eligible pattern. It can then reshape the call. ([#1343](https://github.com/go-steer/core-agent/pull/1343))
+
+#### Bug or Regression
+
+- **A denied edit no longer blocks every other edit to the same file for the rest of the turn.** The turn-refusal memory keyed file-tool calls on their path alone, so one denied edit made a different edit to that file read as "an identical request". A denial is now keyed on the call's full arguments. A person who denies one edit in ask mode is asked about a different one. ([#1343](https://github.com/go-steer/core-agent/pull/1343))
 
 ## [3.0.0-dev.3] — 2026-10-20
 

@@ -270,13 +270,14 @@ overlay can't add only the soak's changes to `/.agents/config.json`. Instead,
 `config.soak.json` restates the committed recipe and changes only what the
 design calls for:
 
-- `model`: `anthropic-vertex` / `claude-sonnet-5` (decision 14).
+- `model`: `anthropic-vertex` / `claude-opus-5-5` (decision 14, amended 2026-10-20).
 - `permissions.mode: "auto"`, plus the `approval_*` fields and the `auto`
   block from the design's "The auto recipe" section. The approver is
   `claude-haiku-4-5`, eligibility is the `coding` preset plus the repo's
   presubmit and tool scripts, and `task_from` is `sa:selfdev-dispatcher`.
-- `agent.max_session_cost_usd: 25` (decision 14). The per-turn cap is $10,
-  as in the committed recipe. core-agent has no per-day cap setting, so the
+- `agent.max_session_cost_usd: 50` and `agent.max_turn_cost_usd: 50`
+  (decision 14, amended 2026-10-20: an A7 task on Opus can run as one long
+  turn, which $10 would cut). core-agent has no per-day cap setting, so the
   $50 daily cap is enforced outside this file
   ([#1275](https://github.com/go-steer/core-agent/issues/1275)).
 - `alerts.targets`: `maintainer-chat`, a `switchboard` target.
@@ -559,7 +560,7 @@ kubectl -n core-agent-selfdev logs deployment/core-agent-selfdev | grep -E 'mult
 ```
 
 The boot lines must show `multi-session auth: bearer_table`, `watchdog:
-enforce mode`, `cost ceiling: per-turn=$10.0000 per-session=$25.0000`, and
+enforce mode`, `cost ceiling: per-turn=$50.0000 per-session=$50.0000`, and
 no warning about plaintext rows. One warning is expected: `credential file
 /etc/core-agent-users/users.json is readable by the user this daemon runs
 as`. It fires for a fully hashed table too (hashed-bearer-tokens design,

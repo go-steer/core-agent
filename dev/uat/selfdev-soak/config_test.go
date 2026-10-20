@@ -39,9 +39,10 @@ const soakConfigPath = "config.soak.json"
 // what keeps the restatement from going stale.
 var soakOverrides = map[string]string{
 	"model.provider":             "Vertex Claude through the pod's Workload Identity",
-	"model.name":                 "decision 14: the worker is Claude Sonnet 5",
+	"model.name":                 "decision 14 (amended 2026-10-20): the worker is Claude Opus 5.5",
 	"permissions.mode":           "the soak runs auto (The auto recipe)",
-	"agent.max_session_cost_usd": "decision 14: the per-session cap is $25",
+	"agent.max_session_cost_usd": "decision 14 (amended 2026-10-20): the per-session cap is $50",
+	"agent.max_turn_cost_usd":    "decision 14 (amended 2026-10-20): $50, since an A7 task can run as one long turn on Opus",
 }
 
 // conversationPlaceholder is what config.soak.json ships in the
@@ -116,8 +117,8 @@ func TestSoakConfigValidates(t *testing.T) {
 // checkWorker pins decision 14's worker, reached through Vertex.
 func checkWorker(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	if cfg.Model.Provider != "anthropic-vertex" || cfg.Model.Name != "claude-sonnet-5" {
-		t.Errorf("model = %s/%s, want anthropic-vertex/claude-sonnet-5 (decision 14, over Workload Identity)", cfg.Model.Provider, cfg.Model.Name)
+	if cfg.Model.Provider != "anthropic-vertex" || cfg.Model.Name != "claude-opus-5-5" {
+		t.Errorf("model = %s/%s, want anthropic-vertex/claude-opus-5-5 (decision 14 as amended 2026-10-20, over Workload Identity)", cfg.Model.Provider, cfg.Model.Name)
 	}
 	if cfg.Safety.Watchdog != "enforce" {
 		t.Errorf("safety.watchdog = %q, want enforce", cfg.Safety.Watchdog)
@@ -174,7 +175,7 @@ func checkCaps(t *testing.T, cfg *config.Config) {
 		"max_turn_cost_usd":    cfg.Agent.MaxTurnCostUSD,
 		"max_session_cost_usd": cfg.Agent.MaxSessionCostUSD,
 	} {
-		want := map[string]float64{"max_turn_cost_usd": 10, "max_session_cost_usd": 25}[name]
+		want := map[string]float64{"max_turn_cost_usd": 50, "max_session_cost_usd": 50}[name]
 		switch {
 		case got == nil:
 			t.Errorf("agent.%s is unset, want %v (decision 14)", name, want)

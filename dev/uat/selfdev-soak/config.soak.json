@@ -2,7 +2,7 @@
   "version": 1,
   "model": {
     "provider": "anthropic-vertex",
-    "name": "claude-sonnet-5"
+    "name": "claude-opus-5-5"
   },
   "permissions": {
     "mode": "auto",
@@ -23,8 +23,8 @@
   "agent": {
     "display_name": "core-agent-selfdev",
     "max_steps": 300,
-    "max_turn_cost_usd": 10.0,
-    "max_session_cost_usd": 25.0
+    "max_turn_cost_usd": 50.0,
+    "max_session_cost_usd": 50.0
   },
   "tools": {
     "disable": ["alert"]

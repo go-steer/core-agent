@@ -181,7 +181,9 @@ spec:
             # enters the parent's context. For a long-running GKE
             # agent doing dense MCP read tools this is real savings
             # ($x cheaper per turn vs running everything through
-            # Pro). Provider cheap-tier default is gemini-3.5-flash-lite; this pin overrides it.
+            # Pro). The pin matches the provider's cheap-tier default,
+            # gemini-3.5-flash-lite, but stays explicit so a change to
+            # that default doesn't silently change this deployment.
             # Override via the AGENTIC_SMALL_MODEL env var (e.g., a
             # different Flash variant; or "" to disable routing and
             # let subtasks inherit the parent model).
@@ -218,7 +220,7 @@ spec:
             # vars). Set to "" to disable agentic routing entirely
             # (subtasks then run on the parent's model).
             - name: AGENTIC_SMALL_MODEL
-              value: "gemini-2.5-flash"
+              value: "gemini-3.5-flash-lite"
 
             # Bearer token for /attach-listen auth, sourced from
             # the Secret (never appears in pod spec or ConfigMap).

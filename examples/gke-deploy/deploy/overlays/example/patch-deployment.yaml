@@ -24,7 +24,7 @@
 # edit, no sync risk.
 #
 # AGENTIC_SMALL_MODEL is optional — the base defaults to
-# gemini-2.5-flash. Uncomment to override (e.g., a different
+# gemini-3.5-flash-lite. Uncomment to override (e.g., a different
 # region's Flash variant, or "" to disable cost routing).
 apiVersion: apps/v1
 kind: Deployment
@@ -42,4 +42,4 @@ spec:
               value: "REPLACE_WITH_YOUR_REGION"
             # Optional — override the agentic small-model default.
             # - name: AGENTIC_SMALL_MODEL
-            #   value: "gemini-2.5-flash"
+            #   value: "gemini-3.5-flash-lite"

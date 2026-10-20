@@ -869,6 +869,28 @@ type AutoApproverConfig struct {
 	// call that names it. A bash write outside mode "auto" is not
 	// covered, as it is not for .agents/config.json.
 	InstructionsFile string `json:"instructions_file,omitempty"`
+
+	// Escalation is what happens to a call auto would hand to a person:
+	// one the approver may not judge, or one it passed on. "person"
+	// (the default, also when empty) asks one, and the call waits up to
+	// approval_timeout. "refuse" refuses the call at once and tells the
+	// agent why, for a deployment where nobody answers prompts. Whether
+	// anybody will is a fact about the deployment, not something the
+	// gate can see: a daemon has a prompter whether or not a person is
+	// behind it.
+	Escalation string `json:"escalation,omitempty"`
+}
+
+// Values of AutoApproverConfig.Escalation.
+const (
+	AutoEscalationPerson = "person"
+	AutoEscalationRefuse = "refuse"
+)
+
+// RefusesEscalation reports whether permissions.auto.escalation is
+// "refuse". Nil-safe.
+func (a *AutoApproverConfig) RefusesEscalation() bool {
+	return a != nil && a.Escalation == AutoEscalationRefuse
 }
 
 // DefaultAutoApproverTimeout is the approver call bound when
@@ -936,6 +958,11 @@ func (a *AutoApproverConfig) validate() error {
 	}
 	if a.InstructionsFile != "" && strings.TrimSpace(a.InstructionsFile) == "" {
 		return fmt.Errorf("permissions.auto.instructions_file is blank; omit it, or name a file")
+	}
+	switch a.Escalation {
+	case "", AutoEscalationPerson, AutoEscalationRefuse:
+	default:
+		return fmt.Errorf("permissions.auto.escalation %q: want %q or %q", a.Escalation, AutoEscalationPerson, AutoEscalationRefuse)
 	}
 	return nil
 }

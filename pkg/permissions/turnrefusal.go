@@ -54,6 +54,8 @@ package permissions
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -77,21 +79,57 @@ const (
 	// gate with no prompter (#1175). Like an expiry, nobody is there to
 	// answer a retry; unlike one, no wall clock was spent.
 	refusedNoPerson
+
+	// refusedNoPersonAsked is a ModeAuto call that needed a person under
+	// permissions.auto.escalation "refuse". Nothing is pending, unlike an
+	// expiry: the repeat says so, and says a different call can still
+	// be judged, rather than telling the agent to end the turn.
+	refusedNoPersonAsked
 )
 
-// turnRefusalKey is the identity of a gated request for suppression
-// purposes. It is deliberately the same tool|detail pair the gate
-// already uses for session allow-grants (see sessionAllowed): the gate
-// has exactly one notion of "the same request", and a refusal must not
-// be allowed to disagree with an approval about what that means.
+// turnRefusalKeys returns a gated request's two identities for
+// suppression purposes. bare is the tool|detail pair the gate uses for
+// session allow-grants (see sessionAllowed). full adds a fingerprint of
+// the call's full arguments, for every tool but bash, when the gate
+// holds them; otherwise it equals bare.
+//
+// A denial is remembered under full, everything else under bare.
+//
+// A denial is a verdict on the call's content, by a person or the
+// approver, and only bash puts the whole call in its detail. For the
+// file tools the detail is the path, so the bare pair made one denied
+// edit refuse every other edit to that file for the rest of the turn:
+// in A7's second run the approver rightly denied a no-op edit (identical
+// old and new text), and the agent's real edit to the same file was then
+// refused as "an identical request". That is the "keyed on the request,
+// not the tool" rule above, applied to tools whose detail is a target.
+//
+// An expiry or a no-person refusal is not about the content: nobody is
+// there whatever the arguments say, and eligibility reads tool|detail.
+// Keying those on the arguments would let a reworded call wait out
+// another approval_timeout. Bash keeps the bare pair for a denial too:
+// its detail is already the full command, and adding the arguments
+// would let a changed timeout_seconds launder a refused command past
+// this memory. A request without Args has only the bare pair, which
+// errs toward refusing the repeat, this memory's existing direction.
 //
 // It is an exact match on purpose. pkg/watchdog canonicalizes
 // path-shaped arguments before comparing calls, which is right for a
 // loop detector — a false positive there costs a warning. Here a false
 // positive costs a call the operator would have approved, silently, so
 // the key errs toward asking again.
-func turnRefusalKey(toolName, detail string) string {
-	return toolName + "|" + detail
+func turnRefusalKeys(req PromptRequest) (bare, full string) {
+	bare = req.ToolName + "|" + req.Detail
+	if req.ToolName == "bash" || !hasArgs(req.Args) {
+		return bare, bare
+	}
+	sum := sha256.Sum256(req.Args)
+	return bare, bare + "|" + hex.EncodeToString(sum[:])
+}
+
+// isDenial reports whether kind is a verdict on the call's content.
+func (k refusalKind) isDenial() bool {
+	return k == refusedByDeny || k == refusedByApprover
 }
 
 // turnRefusal reports whether an identical request has already been
@@ -102,10 +140,14 @@ func turnRefusalKey(toolName, detail string) string {
 // one chokepoint through which a suppressed call passes, and counting
 // anywhere else would be two places that have to agree. The count is
 // what the agent reads to decide a turn is over (#1081).
-func (g *Gate) turnRefusal(toolName, detail string) (refusalKind, bool) {
+func (g *Gate) turnRefusal(req PromptRequest) (refusalKind, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	k, ok := g.turnRefusals[turnRefusalKey(toolName, detail)]
+	bare, full := turnRefusalKeys(req)
+	k, ok := g.turnRefusals[full]
+	if !ok {
+		k, ok = g.turnRefusals[bare]
+	}
 	if ok {
 		g.turnRefusalRepeats++
 	}
@@ -139,13 +181,18 @@ func (g *Gate) TurnRefusalRepeats(ctx context.Context) int {
 
 // rememberTurnRefusal arms the memory for this exact request. Called on
 // the deny and expiry paths only.
-func (g *Gate) rememberTurnRefusal(toolName, detail string, kind refusalKind) {
+func (g *Gate) rememberTurnRefusal(req PromptRequest, kind refusalKind) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.turnRefusals == nil {
 		g.turnRefusals = make(map[string]refusalKind)
 	}
-	g.turnRefusals[turnRefusalKey(toolName, detail)] = kind
+	bare, full := turnRefusalKeys(req)
+	if kind.isDenial() {
+		g.turnRefusals[full] = kind
+		return
+	}
+	g.turnRefusals[bare] = kind
 }
 
 // ObserveTurnStart clears the turn-scoped refusal memory. The agent
@@ -188,6 +235,9 @@ func repeatRefusalError(kind refusalKind, toolName, detail string) error {
 	case refusedNoPerson:
 		return fmt.Errorf("%s not attempted: an identical request earlier in this turn needed a person's approval and no person can be asked in this session, so this one was not put to the approver either (detail=%q). %s",
 			toolName, detail, expiryGuidance)
+	case refusedNoPersonAsked:
+		return fmt.Errorf("%s not attempted: an identical request earlier in this turn needed a person's approval, and this deployment asks no person, so this one was refused without asking anybody (detail=%q). %s",
+			toolName, detail, refusedGuidance)
 	case refusedByApprover:
 		return fmt.Errorf("%s not attempted: the approver model denied an identical request earlier in this turn, so this one was not put to the approver or to a person (detail=%q). %s",
 			toolName, detail, denyGuidance)

@@ -135,6 +135,20 @@ type PromptRequest struct {
 	// offer only once and deny (#1175 decision 11).
 	ApproverModel  string
 	ApproverReason string
+
+	// Ineligible is why ModeAuto's approver was not asked about this
+	// call, when the gate decided that in code (not on the eligible
+	// list, not one simple command, a path-scope prompt, ...). Empty
+	// outside ModeAuto and when the approver was asked. Unlike
+	// ApproverReason it is the gate's own text, not model output.
+	Ineligible string
+
+	// approverFailed is set when the approver was asked and produced no
+	// usable answer (an error, an unknown verdict, a deny without a
+	// reason). The call then goes to a person like a pass-on, but a
+	// refusal must not say the approver passed it on, and must not arm
+	// the turn's refusal memory: a retry may find the approver working.
+	approverFailed bool
 }
 
 // subagentSourceKey is the unexported context-value type used to

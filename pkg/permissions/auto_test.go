@@ -789,7 +789,7 @@ func TestAuto_EmptyArgsNeverReachApprover(t *testing.T) {
 type denyingSibling struct{ g *Gate }
 
 func (d *denyingSibling) Judge(_ context.Context, req ApproverRequest) (Verdict, error) {
-	d.g.rememberTurnRefusal(req.ToolName, req.Detail, refusedByApprover)
+	d.g.rememberTurnRefusal(PromptRequest{ToolName: req.ToolName, Detail: req.Detail, Args: req.Args}, refusedByApprover)
 	return allowVerdict, nil
 }
 

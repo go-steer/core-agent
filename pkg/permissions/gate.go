@@ -99,7 +99,41 @@ const (
 	denyGuidance = "This decision is final for this call — do not re-issue it. Choose a different approach, or end the turn and report the refusal."
 
 	expiryGuidance = "Nobody is attached to answer a retry either — do not re-issue this call. End the turn and report that the action is still pending approval."
+
+	// refusedGuidance follows a call refused under
+	// permissions.auto.escalation "refuse". Unlike an expiry, nothing
+	// is pending: the call was refused because of its shape or its
+	// content, and a different call can still be judged.
+	refusedGuidance = "This exact call will not run in this turn — do not re-issue it unchanged. If the same work can be done another way, do that; otherwise end the turn and report what needs a person."
 )
+
+// refusedEscalation is the error for a call refused under
+// permissions.auto.escalation "refuse".
+func refusedEscalation(req PromptRequest) error {
+	return fmt.Errorf("%w (tool=%s detail=%q).%s No person is asked in this deployment (permissions.auto.escalation is %q). %s",
+		ErrEscalationRefused, req.ToolName, req.Detail, whyAPerson(req), config.AutoEscalationRefuse, refusedGuidance)
+}
+
+// ErrEscalationRefused is the error for a call ModeAuto would have
+// handed to a person, refused instead because permissions.auto.escalation
+// is "refuse".
+var ErrEscalationRefused = errors.New("permissions: not run, because this call needs a person's approval")
+
+// whyAPerson is the sentence saying why req needed a person, or "" when
+// the gate holds no reason. Led by a space so callers can splice it.
+func whyAPerson(req PromptRequest) string {
+	switch {
+	case req.Ineligible != "":
+		return fmt.Sprintf(" The approver did not judge it: %s.", req.Ineligible)
+	case req.approverFailed:
+		return fmt.Sprintf(" The approver model %s could not decide it.", req.ApproverModel)
+	case req.ApproverModel != "" && req.ApproverReason != "":
+		return fmt.Sprintf(" The approver model %s passed it to a person, saying: %q.", req.ApproverModel, req.ApproverReason)
+	case req.ApproverModel != "":
+		return fmt.Sprintf(" The approver model %s passed it to a person.", req.ApproverModel)
+	}
+	return ""
+}
 
 // Gate is the central permission chokepoint consulted before each tool
 // call. It holds the configured policy, the path scope, the bash
@@ -264,6 +298,10 @@ type Gate struct {
 	autoEligible  *Policy
 	autoProtected []string
 	autoTaskFrom  map[string]struct{}
+	// autoRefuseEscalation refuses, at once and with the reason, a
+	// call ModeAuto would hand to a person
+	// (permissions.auto.escalation "refuse").
+	autoRefuseEscalation bool
 
 	// approverInstructions is the symlink-resolved path of the
 	// approver's instructions file, or "". Writes to it take the
@@ -424,6 +462,13 @@ type Options struct {
 	// The gate only holds it: the agent asks ApproverTaskSource when
 	// it decides what a turn's task is.
 	ApproverTaskFrom []string
+
+	// AutoRefuseEscalation makes ModeAuto refuse, at once, every call it
+	// would otherwise hand to the Prompter: one the Approver may not
+	// judge, and one it passed on. The refusal carries the reason. For
+	// a deployment where nobody answers prompts
+	// (permissions.auto.escalation "refuse").
+	AutoRefuseEscalation bool
 }
 
 // New builds a Gate from the supplied options. The Mode defaults to
@@ -467,6 +512,7 @@ func New(opts Options) *Gate {
 		autoProtected:        protectedMentions(opts.ApproverInstructionsFile),
 		approverInstructions: resolvedInstructionsPath(opts.ApproverInstructionsFile),
 		autoTaskFrom:         identitySet(opts.ApproverTaskFrom),
+		autoRefuseEscalation: opts.AutoRefuseEscalation,
 	}
 }
 
@@ -555,6 +601,9 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		Prompter:         prompter,
 		AutoEligible:     autoEligible,
 		ApproverTaskFrom: autoTaskFromConfig(cfg.Permissions.Auto),
+		// Read here like the rest of the auto block, so no host has to
+		// remember to wire it.
+		AutoRefuseEscalation: cfg.Permissions.Auto.RefusesEscalation(),
 		// PlanGateArmed, not the raw RequirePlanArtifact bool: advisory
 		// mode registers record_plan and persists the artifact but must
 		// never deny a mutating call on plan state.
@@ -740,6 +789,11 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		// sub-gate without it would give its session no task, and
 		// every eligible call there would escalate.
 		autoTaskFrom: template.autoTaskFrom,
+		// Daemon-wide like the rest of the approver's configuration. A
+		// sub-gate that dropped it would put back, for exactly the
+		// daemon's sessions, the wait for a person the operator said
+		// is not there.
+		autoRefuseEscalation: template.autoRefuseEscalation,
 	}
 }
 
@@ -1336,8 +1390,18 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	// the "nothing is remembered" rule above it — that rule exists so
 	// an approval cannot install a standing bypass, and this is the
 	// opposite direction.
-	if kind, refused := g.turnRefusal(toolName, detail); refused {
+	if kind, refused := g.turnRefusal(PromptRequest{ToolName: toolName, Detail: detail}); refused {
 		return repeatRefusalError(kind, toolName, detail)
+	}
+	if g.autoRefuseEscalation && g.Mode() == ModeAuto {
+		// This path never reaches Gate.prompt, so it needs its own copy
+		// of the escalation refusal: otherwise it would be the one call
+		// that still waits for a person the operator said is not there,
+		// and with no approval_timeout here, for good.
+		req := PromptRequest{Kind: PromptKindControlPlaneWrite, ToolName: toolName, Detail: detail,
+			Ineligible: "control-plane writes are never the approver's to grant"}
+		g.rememberTurnRefusal(req, refusedNoPersonAsked)
+		return refusedEscalation(req)
 	}
 	approval, err := askApproval(ctx, g.prompter, PromptRequest{
 		Kind:        PromptKindControlPlaneWrite,
@@ -1352,7 +1416,7 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 		return fmt.Errorf("permissions: %w", err)
 	}
 	if approval.Decision == DecisionDeny {
-		g.rememberTurnRefusal(toolName, detail, refusedByDeny)
+		g.rememberTurnRefusal(PromptRequest{ToolName: toolName, Detail: detail}, refusedByDeny)
 		return fmt.Errorf("%s denied by user: control-plane write to %s.%s %s", toolName, path, operatorReason(approval), denyGuidance)
 	}
 	// Any non-deny decision authorizes exactly this write. We record
@@ -1549,8 +1613,8 @@ func (g *Gate) askWithTimeout(ctx context.Context, req PromptRequest) (Approval,
 	}
 	if errors.Is(context.Cause(pctx), ErrPromptExpired) {
 		return Approval{Decision: DecisionDeny}, fmt.Errorf(
-			"%w after %s (tool=%s detail=%q); nobody answered on the approval channel. %s Operator: attach a client to /perms/stream, or set permissions.mode=\"allow\" with an explicit allowlist if this deployment should not be asking",
-			ErrPromptExpired, g.approvalTimeout, req.ToolName, req.Detail, expiryGuidance)
+			"%w after %s (tool=%s detail=%q); nobody answered on the approval channel.%s %s Operator: attach a client to /perms/stream, or set permissions.mode=\"allow\" with an explicit allowlist if this deployment should not be asking",
+			ErrPromptExpired, g.approvalTimeout, req.ToolName, req.Detail, whyAPerson(req), expiryGuidance)
 	}
 	return approval, err
 }
@@ -1569,7 +1633,7 @@ func (g *Gate) prompt(ctx context.Context, mode Mode, req PromptRequest) error {
 	// sessionAllowTools and the verb grants before it calls prompt, so
 	// a request the operator approved earlier short-circuits above and
 	// a refusal cannot shadow a standing grant.
-	if kind, refused := g.turnRefusal(req.ToolName, req.Detail); refused {
+	if kind, refused := g.turnRefusal(req); refused {
 		return repeatRefusalError(kind, req.ToolName, req.Detail)
 	}
 	// ModeAuto: the approver goes after the refusal check and before
@@ -1580,6 +1644,16 @@ func (g *Gate) prompt(ctx context.Context, mode Mode, req PromptRequest) error {
 		if handled, err := g.approverStep(ctx, &req); handled {
 			return err
 		}
+		if g.autoRefuseEscalation {
+			// Armed like the no-prompter refusal below: nobody will
+			// answer, so a retry in this turn can only reach the same
+			// answer. Not when the approver failed, though: that is not
+			// an answer, and a retry may find it working.
+			if !req.approverFailed {
+				g.rememberTurnRefusal(req, refusedNoPersonAsked)
+			}
+			return refusedEscalation(req)
+		}
 	}
 	if g.prompter == nil {
 		if mode == ModeAuto {
@@ -1588,7 +1662,7 @@ func (g *Gate) prompt(ctx context.Context, mode Mode, req PromptRequest) error {
 			// eligible call goes back to the approver, a paid model
 			// call, every time. Arming routes the repeat through
 			// turnRefusal, which also counts it for the #1081 cut.
-			g.rememberTurnRefusal(req.ToolName, req.Detail, refusedNoPerson)
+			g.rememberTurnRefusal(req, refusedNoPerson)
 			// The --yolo advice below is wrong here: the operator chose
 			// auto so that calls like this one reach a person.
 			return fmt.Errorf("%w (tool=%s detail=%q); this call needs a person's approval (the approver may not decide it, or passed it on), and no person can be asked in this session. %s", ErrNoPrompter, req.ToolName, req.Detail, expiryGuidance)
@@ -1610,7 +1684,7 @@ func (g *Gate) prompt(ctx context.Context, mode Mode, req PromptRequest) error {
 			// Only this sentinel arms — a prompter that failed for its
 			// own reasons (a closed broker, a cancelled turn) is not
 			// evidence about the request and must stay askable.
-			g.rememberTurnRefusal(req.ToolName, req.Detail, refusedByExpiry)
+			g.rememberTurnRefusal(req, refusedByExpiry)
 			return err
 		}
 		return fmt.Errorf("permissions: %w", err)
@@ -1727,7 +1801,7 @@ func (g *Gate) prompt(ctx context.Context, mode Mode, req PromptRequest) error {
 	default:
 		// The operator said no to this exact request. Nobody is asked
 		// about it again this turn.
-		g.rememberTurnRefusal(req.ToolName, req.Detail, refusedByDeny)
+		g.rememberTurnRefusal(req, refusedByDeny)
 		return fmt.Errorf("%s denied by user: %s.%s %s", req.ToolName, req.Detail, operatorReason(approval), denyGuidance)
 	}
 }

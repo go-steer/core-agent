@@ -261,6 +261,17 @@ func (g *Gate) approverIneligible(ctx context.Context, req PromptRequest) (strin
 		return "the gate does not hold this call's full arguments", nil
 	}
 	if g.autoEligible == nil || g.autoEligible.Match(req.ToolName, req.Detail) != OutcomeAllow {
+		if req.ToolName == "bash" {
+			// The shapes a prefix pattern never matches whatever the list
+			// holds (safecmd.go) get their own reasons, because they are
+			// the ones the agent can fix by reshaping the command.
+			if _, simple := parseSafeArgv(req.Detail); !simple {
+				return "it is not one simple literal command (it has a pipe, a redirection such as 2>&1, a chain with && or ;, a subshell, a $ or backtick expansion, or unbalanced quotes), and a prefix pattern never matches that; a pipe or chain can be run as separate commands", nil
+			}
+			if !bashSafeForAutoAllow(req.Detail) {
+				return "one of its arguments (such as find's -exec or -delete) keeps a prefix pattern from matching it", nil
+			}
+		}
 		return "the call is not on the approver's eligible list", nil
 	}
 	detail, args := strings.ToLower(req.Detail), strings.ToLower(string(req.Args))
@@ -290,6 +301,11 @@ func (g *Gate) approverIneligible(ctx context.Context, req PromptRequest) (strin
 func (g *Gate) approverStep(ctx context.Context, req *PromptRequest) (handled bool, err error) {
 	why, ac := g.approverIneligible(ctx, *req)
 	if why != "" {
+		// Kept on the request, so whatever happens next — a refusal
+		// under escalation "refuse", or a prompt that expires — can
+		// tell the agent why, and it can reshape the call if the
+		// reason is one it can act on.
+		req.Ineligible = why
 		return false, nil
 	}
 	v, jerr := judge(ctx, g.approver, ac, req)
@@ -313,7 +329,7 @@ func (g *Gate) approverStep(ctx context.Context, req *PromptRequest) (handled bo
 		// An identical call issued alongside this one may have been
 		// denied while the approver was deciding this one. Decision 9
 		// makes that deny final for the turn, so it wins.
-		if kind, refused := g.turnRefusal(req.ToolName, req.Detail); refused {
+		if kind, refused := g.turnRefusal(*req); refused {
 			return true, repeatRefusalError(kind, req.ToolName, req.Detail)
 		}
 		// Decision 5: once, and nothing remembered — no session, verb,
@@ -323,7 +339,7 @@ func (g *Gate) approverStep(ctx context.Context, req *PromptRequest) (handled bo
 	case VerdictDeny:
 		// Decision 9: final for the turn. Neither the approver nor a
 		// person is asked about this exact request again.
-		g.rememberTurnRefusal(req.ToolName, req.Detail, refusedByApprover)
+		g.rememberTurnRefusal(*req, refusedByApprover)
 		return true, fmt.Errorf("%s denied by the approver model %s: %s. The approver's reason: %q. %s",
 			req.ToolName, modelLabel(v.Model), req.Detail, v.Reason, denyGuidance)
 	}
@@ -333,6 +349,8 @@ func (g *Gate) approverStep(ctx context.Context, req *PromptRequest) (handled bo
 	req.ApproverModel = modelLabel(v.Model)
 	if audit.Err == "" {
 		req.ApproverReason = v.Reason
+	} else {
+		req.approverFailed = true
 	}
 	return false, nil
 }

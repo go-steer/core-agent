@@ -68,7 +68,7 @@ research + friction logs, or handover notes.
 - [`bidirectional-mcp-design.md`](bidirectional-mcp-design.md) — core-agent exposes itself as an MCP server (agent-as-tool default; tool-palette opt-in)
 - [`mcp-oauth-design.md`](mcp-oauth-design.md) — MCP Streamable HTTP transport + OAuth 2.0 client authentication
 - [`mcp-credential-resolution-design.md`](mcp-credential-resolution-design.md) — per-MCP-server credential resolution: pluggable providers + Auth Manager
-- [`code-mode-design.md`](code-mode-design.md) — Phase 1 in-process Go execution via Yaegi; project-symbol injection as the differentiator
+- [`code-mode-design.md`](code-mode-design.md) — **superseded**: Code Mode shipped out of tree as [gke-demos/kode-gopher](https://github.com/gke-demos/kode-gopher) (MCP + gVisor sandbox), and its Yaegi experiment rejected this doc's in-process interpreter. Kept as the original proposal.
 - [`tiered-tool-integration-design.md`](tiered-tool-integration-design.md) — tiered diagnostics: a small set of pre-built sensors (`k8s-sensors`) + long-tail LLM-authored Go via [kode-gopher](https://github.com/gke-demos/kode-gopher) (proposed, [#200](https://github.com/go-steer/core-agent/issues/200))
 
 ### Instructions, skills + discovery

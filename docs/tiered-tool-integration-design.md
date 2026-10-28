@@ -10,7 +10,7 @@ Two independent recent findings pushed us to reframe how the triage agent (and f
 
 **Finding 1 — the "distill telemetry at the edge" thesis is architecturally right.** An external proposal for a 24-binary sensor matrix (`ev-sifter`, `log-condenser`, `edge-tracer`, `node-pressure-sifter`, and 20 more) landed with sound reasoning: purpose-built binaries running on-cluster pre-process raw kubectl output / logs / metrics into structured JSON so the LLM never spends inference tokens parsing verbose telemetry. Token cost drops, decision latency drops, prompt-injection surface shrinks (structured JSON has a schema we control; raw log content is attacker-influenced), and behavior becomes deterministic (same input → same JSON → same LLM decision, unlike "same logs, LLM reads them differently each turn").
 
-**Finding 2 — kode-gopher (GKE Demos, pre-alpha) collapses the shipping-24-binaries burden.** It lets the LLM AUTHOR a diagnostic tool in Go — importing real `cloud.google.com/go/...` SDKs and `k8s.io/client-go` — and executes it in a sandbox pod via `sigs.k8s.io/agent-sandbox`. Credentials forward from the daemon's ADC. Compile-and-run path is 5–30s; an experimental Yaegi (Go interpreter) backend brings latency to ~700ms — fast enough for interactive triage. Exposed as an MCP stdio server (`execute_go_code`, `lookup_package_docs`).
+**Finding 2 — kode-gopher (GKE Demos, pre-alpha) collapses the shipping-24-binaries burden.** It lets the LLM AUTHOR a diagnostic tool in Go — importing real `cloud.google.com/go/...` SDKs and `k8s.io/client-go` — and executes it in a sandbox pod via `sigs.k8s.io/agent-sandbox`. Credentials forward from the daemon's ADC. Compile-and-run path is 5–30s; an experimental Yaegi (Go interpreter) backend brought latency to ~700ms — fast enough for interactive triage. *(2026-10-28: kode-gopher shelved Yaegi on 2026-09-24 after a differential corpus showed silent wrong output, so the ~700ms figure no longer applies. Its compiled path with precompiled SDKs measures about 4s end to end on GKE with gVisor.)* Exposed as an MCP stdio server (`execute_go_code`, `lookup_package_docs`).
 
 Together these two land differently than either does alone:
 
@@ -43,7 +43,7 @@ Also worth capturing (correcting an earlier over-conservative reading): `distrol
 
 **Tier 1 — pre-built, always-available.** Ships as a companion binary (`k8s-sensors`) — mirrors the `k8s-event-watcher` deployment shape. Exposes an MCP stdio server with N tools. Each tool has a stable schema; each is one `execve` away for the agent. Latency: single-digit ms.
 
-**Tier 2 — kode-gopher-generated, always-available.** Deploys `kode-gopher` as a second companion binary (also MCP stdio). Exposes `execute_go_code(code)` — the LLM writes a Go program that uses `cloud.google.com/go/...` + `client-go` + arbitrary third-party packages, kode-gopher sandbox-compiles-and-runs, returns JSON. Latency: ~700ms (Yaegi) or 5-30s (full compile) depending on Go feature usage.
+**Tier 2 — kode-gopher-generated, always-available.** Deploys `kode-gopher` as a second companion binary (also MCP stdio). Exposes `execute_go_code(code)` — the LLM writes a Go program that uses `cloud.google.com/go/...` + `client-go` + arbitrary third-party packages, kode-gopher sandbox-compiles-and-runs, returns JSON. Latency: about 4s end to end on GKE with gVisor, using precompiled SDKs. The ~700ms Yaegi path quoted at proposal time was shelved upstream.
 
 **Agent selection convention** (in the base AGENTS.md that every recipe consuming this pattern loads):
 

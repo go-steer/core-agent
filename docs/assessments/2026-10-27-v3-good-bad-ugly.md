@@ -552,7 +552,7 @@ core-agent plus the `builtin:coder` persona, and no doc says so.
 | Flake #520 | **Persists** (T4) |
 | Built-in sandbox #651 | **Persists** (U1) |
 | Shared-cwd multi-tenancy (08-12) | **Persists, untracked** (S4) |
-| Code Mode #654 | No code exists, and the issue is still open. Close it. |
+| Code Mode #654 | **Resolved out of tree** (2026-10-28 addendum): shipped as [gke-demos/kode-gopher](https://github.com/gke-demos/kode-gopher), an MCP server running compiled Go in gVisor pods. Its Yaegi experiment rejected the in-process design. #654 closed. |
 
 Twelve of the twenty-two rows are fixed outright. The ones that persist are the
 structural items (sandbox, `run()`, retention, tenancy, meta share), not bugs.

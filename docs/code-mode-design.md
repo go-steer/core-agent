@@ -1,5 +1,22 @@
 # Code Mode for core-agent: in-process Go execution (Phase 1)
 
+> **Status: superseded, 2026-10-28.** Code Mode shipped outside this repository,
+> as [gke-demos/kode-gopher](https://github.com/gke-demos/kode-gopher):
+> - It is an MCP server whose `execute_go_code` tool compiles the model's Go
+>   program against the real `cloud.google.com/go/...` SDKs and client-go.
+> - It runs the program in a gVisor sandbox pod on GKE.
+>
+> core-agent reaches it as an ordinary MCP server, so its calls pass through
+> `permissions.Gate` like any other tool without `readOnlyHint`.
+>
+> **This design's in-process interpreter approach was tested and rejected.**
+> kode-gopher's Yaegi runtime was shelved on 2026-09-24 (its `docs/plan.md`,
+> slice 6). A differential corpus of 32 idiomatic snippets failed 16 against real
+> Go, and 7 of those failures were silent wrong output. For example,
+> `json.Marshal` leaked unexported fields and ignored `MarshalJSON`.
+>
+> The text below is kept as the record of the original proposal. Closed by #654.
+
 Design doc for the first slice of "Code Mode" — a single
 `execute_go(code string)` tool, backed by an embedded Go interpreter,
 that lets the model write Go directly against the host process's

@@ -119,6 +119,7 @@ research + friction logs, or handover notes.
 
 ## Research + friction logs
 
+- [`contributor-pitfalls.md`](contributor-pitfalls.md) — the long form behind `AGENTS.md`: mechanics, incident history and worked examples for each rule it points to (#1384)
 - [`library-friction-log.md`](library-friction-log.md) — canonical per-library friction record (ADK Go, Charm, OTel, genai/Vertex, MCP SDK, gorm+sqlite, …)
 - [`agent-runtime-go-friction-log.md`](agent-runtime-go-friction-log.md) — deploying a Go agent to Google Cloud's Agent Engine / Agent Runtime
 - [`adk-skills-issue.md`](adk-skills-issue.md) — strict YAML unmarshaling of `SKILL.md` frontmatter vs. Claude Skills interop

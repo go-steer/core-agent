@@ -63,6 +63,11 @@ gh pr view <N> --json mergeStateStatus
 | `CLEAN` | ready |
 | `UNKNOWN` | recomputing; re-poll in ~20s |
 
+`CLEAN` with zero failed checks is not enough on a PR that touches Go.
+`ci-docs.yml`'s no-op jobs reuse the required check names, so confirm that
+the real `CI` run concluded `success` (`gh run list --branch <b>`) before an
+`--admin` merge (#1271).
+
 Straight after a push it is just registration lag — wait 30s before
 concluding anything. `main` moves faster than a full CI cycle, so a green PR
 can flip back to `BEHIND` before you look; do not chase it with repeated

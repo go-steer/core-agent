@@ -223,19 +223,21 @@ What it does **not** claim:
 
 Open a PR against `main` from a short-lived feature branch (e.g.
 `feat/m3-subagents`, `fix/mcp-leak`). CI runs on the PR; merging is
-gated on the four required status checks.
+gated on branch protection's required status checks. The live list:
 
-For this to actually gate merges, the repo's branch protection on
-`main` must require these checks (settings → branches → main):
+```bash
+gh api repos/go-steer/core-agent/branches/main/protection/required_status_checks --jq '.contexts[]'
+```
 
-- `test`
-- `lint`
-- `go mod tidy is clean`
-- `govulncheck`
+At v3.0.0 that is `test`, `lint`, `go mod tidy is clean`, `govulncheck`,
+`version fallback`, `review-gate`, `go toolchain` and `agent attribution`.
 
 Docs-only PRs (`**/*.md`) are handled by the companion `ci-docs.yml`
-workflow, which emits the same four check names trivially-green so
-branch protection is satisfied without running the full Go pipeline.
+workflow. It emits trivially-green `test`, `lint`, `go mod tidy is clean`
+and `govulncheck`, so branch protection is satisfied without running the full
+Go pipeline. The other four checks come from their own workflows and run for
+real on every PR. Because those no-op jobs reuse the required names, confirm
+the real `CI` run's conclusion before an `--admin` merge of a Go PR (#1271).
 
 ## Scheduled automation
 

@@ -6,7 +6,7 @@ By participating in this project you agree to abide by the [Code of Conduct](./C
 
 ## Reporting bugs and requesting features
 
-- **Bugs:** [open an issue](https://github.com/go-steer/core-agent/issues/new) and include your OS / Go version, the model + provider you're using (`gemini`, `vertex`, `anthropic`, `anthropic-vertex`), and the smallest set of steps that reproduces the problem. If the bug shows up under a specific provider, mention which acceptance test (`docs/acceptance-mN.md`) it relates to if any.
+- **Bugs:** [open an issue](https://github.com/go-steer/core-agent/issues/new) and include your OS / Go version, the model + provider you're using (`gemini`, `vertex`, `anthropic`, `anthropic-vertex`), and the smallest set of steps that reproduces the problem. If the bug shows up under a specific provider, say which one.
 - **Feature requests:** check the [CHANGELOG](./CHANGELOG.md) and [open issues](https://github.com/go-steer/core-agent/issues) first — your idea may already be planned or tracked. If not, file an issue with the use case (what you're trying to do) before the proposed solution.
 - **Questions / discussion:** [GitHub Discussions](https://github.com/go-steer/core-agent/discussions).
 
@@ -27,7 +27,7 @@ For substantive features, sketch the scope in the issue upfront — design decis
    dev/tools/ci
    ```
    This is the same script that runs in GitHub Actions — green locally means green remotely. See [`dev/README.md`](./dev/README.md) for the full layout and how to add new checks.
-4. Open the PR against `main`. CI runs on the PR; the four required status checks (`test`, `lint`, `go mod tidy is clean`, `govulncheck`) gate the merge. Docs-only PRs satisfy these checks via a companion no-op workflow without running the full Go pipeline.
+4. Open the PR against `main`. CI runs on the PR, and branch protection's required checks gate the merge. List them with `gh api repos/go-steer/core-agent/branches/main/protection/required_status_checks --jq '.contexts[]'`. On a docs-only PR, the companion `ci-docs.yml` workflow emits no-op passes for `test`, `lint`, `go mod tidy is clean` and `govulncheck` without running the full Go pipeline. The other required checks run for real.
 
 ### Commit messages — Conventional Commits
 
@@ -89,8 +89,8 @@ Every source file carries the full Apache 2.0 header attributed to Google LLC:
 ### Tests
 
 - Unit tests live next to the code (`*_test.go`).
-- Provider-gated tests (e.g. `models/anthropic/vertex_test.go`) skip cleanly when their creds aren't present, so the default test run needs no network and no API keys.
-- Acceptance test plans live in [`docs/`](./docs) — `acceptance-m1.md`, `acceptance-m2.md`, etc. Each milestone gets its own plan; the plan is written before the work starts and verified before tagging.
+- Provider-gated tests (e.g. `pkg/models/anthropic/vertex_test.go`) skip cleanly when their creds aren't present, so the default test run needs no network and no API keys.
+- Non-trivial work starts with a `docs/<feature>-design.md` that has a "Settled decisions" section and an "Out of scope" list, registered in `docs/README.md` (see `AGENTS.md`).
 - A new feature without a test is not done. A new bug fix without a regression test makes it easy for the bug to come back.
 
 #### Config-only recipes
@@ -118,7 +118,7 @@ This exists because `go build ./...` proved the examples *compiled* while `examp
 - `agent/`, `instruction/`, `config/`, `permissions/`, `tools/`, `mcp/`, `skills/`, `models/`, `telemetry/`, `usage/`, `session/`, `runner/` — library packages.
 - `examples/` — minimal library-use examples.
 - `dev/` — local + CI tooling (run from here, don't reinvent).
-- `docs/` — internal design docs (`acceptance-mN.md`).
+- `docs/` — internal design docs, assessments and UAT records.
 - `docs/site/` — Astro Starlight source for the published documentation site.
 - `.github/workflows/` — thin delegators to `dev/ci/presubmits/`.
 

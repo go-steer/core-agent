@@ -16,7 +16,30 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.0.0]._
+#### Documentation
+
+- **`AGENTS.md` had doubled to 4,251 words and stated things that were no longer true, and every agent working in this repo loads it into its system prompt.**
+  - **What was wrong:**
+    - It told agents that four status checks were required; branch protection requires eight.
+    - Its presubmit "full sweep" named 12 scripts and skipped four that CI runs on every PR: `verify-docs-lint`, `verify-version-fallback`, `verify-gke-drill` and `verify-release-notes`.
+    - It required an `acceptance-mN.md` plan that nobody had written since May.
+    - It cited `convert.go` and a Vertex credentials workaround that moved to core-models with #1296.
+    - Its layout omitted `compose`, `approver`, `childenv`, `transcript` and `attachadapter`.
+  - **The rewrite** is 2,224 words. AGENTS.md now holds the rules and a one-line pointer for each. The mechanics, incident history and worked examples move to the new `docs/contributor-pitfalls.md`, and the procedures already in `.agents/skills/` are linked rather than restated. A review of old against new found two sub-rules the first draft had dropped; both are restored: "`//nolint` is not the fix" and "when a variant only changes what is typical, delete the example".
+  - **Lists that used to drift are no longer hand-written:**
+    - Required checks come from a `gh api` command against branch protection.
+    - Presubmits are "everything in `dev/ci/presubmits/` except `e2e-*`, globbed".
+    - The hand-kept list of packages with a tool-description sweep is gone. `TestEveryToolRegisteringPackageHasASweep` enforces that a sweep *exists*; whether it covers conditionally registered tools is still the author's job, and the text says so.
+  - **Rules new to AGENTS.md:**
+    - Design docs carry a status line that is updated when the work ships or is abandoned.
+    - Don't grow `run()`: reusable substrate goes in `pkg/compose`, and binary-only glue goes in a named helper in `cmd/core-agent`.
+    - A per-session consumer needs a per-session getter, not the global `agentRef` (#1362).
+    - Provider adapter fixes, not just new providers, go to core-models.
+    - Before an `--admin` merge of a Go PR, confirm that the real `CI` run passed, because `ci-docs.yml`'s no-op jobs reuse the required check names (#1271). The `stacked-pr-order` skill gains the same note.
+    - After a GA, bump the version fallback. It was missed after v3.0.0 (#1351).
+  - **Stale text fixed elsewhere:** `CONTRIBUTING.md` and `dev/README.md` said four required checks; `CONTRIBUTING.md` also required `acceptance-mN.md` plans and gave a test path without `pkg/`.
+  - **Kept verbatim,** because other files cite them: the section names "Adversarial review gate before every PR" (`.agents/reviewer/AGENTS.md`), "Which doc changes are user-visible" (the `changelog-bullet` skill, the self-dev rig) and "How we develop" (`dev/claude/README.md`, `review-gate.yml`).
+  - **Deliberately not changed:** CHANGELOG bullet length. The skill still asks for long bullets, and capping them is #1387's decision. ([#1384](https://github.com/go-steer/core-agent/issues/1384))
 
 ## [3.0.0] — 2026-10-21
 

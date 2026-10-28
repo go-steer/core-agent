@@ -1,514 +1,308 @@
 # core-agent project memory
 
-When an AGENTS.md-aware agent runs inside this repo, this file is
-loaded into the agent's system prompt as the project-level
-instruction prefix. Keep it short and load-bearing.
+When an AGENTS.md-aware agent runs inside this repo, this file is loaded into
+its system prompt as the project-level instruction prefix. It holds **rules and
+pointers**. The mechanics, incident history and worked examples behind each
+rule live in [`docs/contributor-pitfalls.md`](./docs/contributor-pitfalls.md)
+and in the skills under [`.agents/skills/`](./.agents/skills/). Read the
+pointed-to section before doing the thing it guards. Keep this file short: a
+new rule earns a line here and its story goes there.
 
 ## What this project is
 
-`core-agent` is a reusable Go-based agent built on the Google ADK
-(`google.golang.org/adk/v2`). It's the bottom layer for any project that
-needs a multi-turn LLM agent in Go — model providers, MCP servers,
-skills, instruction loading, permission gating, telemetry, durable
-sessions, remote attach, and a baseline built-in tool suite
-(files/shell/search/todo). It ships an in-process Bubble Tea TUI as
-the default TTY surface (via `go-steer/core-tui`) but stays runnable
-headless; product-specific tools and rich slash-command frameworks
-remain a consumer concern.
+`core-agent` is a reusable Go agent runtime built on the Google ADK
+(`google.golang.org/adk/v2`). It is the bottom layer for any Go project that
+needs a multi-turn LLM agent. It provides:
+- model providers;
+- MCP servers and skills;
+- instruction loading;
+- permission gating;
+- budgets and guardrails;
+- telemetry;
+- durable sessions;
+- remote attach;
+- a baseline built-in tool suite (files, shell, search, todo).
 
-It deliberately mirrors the structure and conventions of
-[`go-steer/cogo`](https://github.com/go-steer/cogo), the project it
-was extracted from.
+It ships an in-process TUI (via `go-steer/core-tui`) as the default TTY surface
+and stays runnable headless. Product-specific tools remain a consumer concern.
+It was extracted from [`go-steer/cogo`](https://github.com/go-steer/cogo) and
+keeps that project's layout conventions.
 
 ## Layout
 
-Library packages live under `pkg/`; unexported helpers under
-`internal/`; runnable binaries under `cmd/`.
+Library packages live under `pkg/`, unexported helpers under `internal/`, and
+binaries under `cmd/`.
 
 ```
 pkg/
-  agent/              ADK llmagent + runner wrapper; autonomous loop;
-                      background subagents; compaction/checkpoints.
-  instruction/        AGENTS.md / CLAUDE.md / GEMINI.md loader
-                      (+ AGENTS.d overlay + @include; scoped).
-  config/             .agents/config.json schema + discovery + atomic Save.
-  permissions/        ask/auto/accept-edits/plan/yolo gate + bash denylist
-                      + path scope + plan-first enforcement.
-  tools/              Built-in tool suite + GateToolset wrapper
-                      (bridges permissions to ADK toolsets).
-  mcp/                mcp.json schema + stdio/HTTP server lifecycle.
-  skills/             SKILL.md discovery → ADK skilltoolset.
-  models/             Provider interface + registry/Resolve;
-                      gemini/ (API + Vertex), anthropic/ (native
-                      model.LLM adapter, api.anthropic.com + Vertex),
-                      profiles/ (provider profiles via core-models:
-                      vLLM, SGLang, Ollama, OpenAI-compatible,
-                      Vertex AI MaaS, OpenAI, xAI — new providers go
-                      there, not here; see docs/model-support-design.md).
-  pricing/            Re-exports core-models' shared price catalog
-                      (table, layers, refresh); rates are fixed upstream
-                      in go-steer/core-models, then the pin is bumped.
-  usage/              Per-turn token + cost tracker.
-  modeltier/,         Model-tier + task-class routing tables.
-  taskclass/
-  eventlog/           Durable sessions + audit log (SQLite/Postgres/MySQL).
-  session/            Transcript persistence (.agents/sessions/).
-  digest/             Oversized-tool-output summarization.
-  attach/             HTTP/SSE remote-attach server.
-  agentenv/, auth/,   Env interpolation; attach auth; hooks; watchdog;
-  hooks/, watchdog/,  session replay recording.
-  recording/
-  telemetry/          OpenTelemetry + Prometheus setup.
-  runner/             Headless (one-shot) + REPL (multi-turn) drivers.
-internal/             attach client, core-tui remote
-                      adapter, web UI, vertex cache, version, testutil.
-cmd/core-agent/       Reference CLI binary (default in-process TUI).
-cmd/core-agent-tui/   Standalone TUI binary (spawn-and-attach).
-                      (k8s-event-watcher moved to go-steer/k8s-lookout.)
-examples/             Library use examples.
-extras/scion/         Scion harness integration.
-dev/                  Build/test/lint tooling — see dev/README.md.
-docs/                 Internal design docs (acceptance-mN.md, ...).
-docs/site/            Published Astro Starlight site.
+  agent/            ADK agent + runner wrapper; autonomous loop; background
+                    subagents; compaction, checkpoints, guardrails.
+  compose/          Reusable substrate wiring (multi-session factory, MCP
+                    digest, builders) lifted out of cmd/core-agent.
+  instruction/      AGENTS.md / CLAUDE.md / GEMINI.md loader (AGENTS.d
+                    overlay, @include, builtin: personas).
+  config/           .agents/config.json schema, discovery, atomic Save.
+  permissions/      ask/auto/acceptEdits/plan/allow/yolo gate, bash safety,
+                    path scope, control-plane writes, plan-first.
+  approver/         Model-backed approver behind permission mode `auto`.
+  tools/            Built-in tool suite + GateToolset (permissions → ADK).
+  mcp/  skills/     mcp.json server lifecycle; SKILL.md discovery.
+  models/           Provider interface + Resolve; gemini/, anthropic/, and
+                    profiles/ via go-steer/core-models. New providers and
+                    adapter fixes go to core-models, not here.
+  pricing/          Re-export of core-models' price catalog (rates are fixed
+                    upstream, then the pin is bumped).
+  usage/  modeltier/  taskclass/   Cost tracker; model-tier + task routing.
+  eventlog/         Durable sessions + audit log (SQLite/Postgres/MySQL).
+  transcript/       Transcript files on exit (pkg/session is its deprecated
+                    alias).
+  attach/  attachadapter/  auth/   HTTP/SSE remote-attach server, the agent
+                    bridge onto it, and its authentication.
+  childenv/         Keeps daemon credentials out of child processes.
+  digest/  watchdog/  hooks/  agentenv/  recording/  telemetry/
+  runner/           Headless (one-shot) + REPL drivers.
+internal/           Attach client, core-tui remote adapter, web UI, evals,
+                    self-recipe tests, image pins, version, testutil.
+cmd/core-agent/     Reference CLI (in-process TUI by default).
+cmd/core-agent-tui/ Standalone TUI (spawn-and-attach).
+examples/           Library examples + recipes (examples/internal/smokeset
+                    says which ones CI runs).
+extras/scion/       Scion harness integration.
+dev/                Build, test, lint, CI, UAT, release tooling; see
+                    dev/README.md.
+docs/               Internal design docs, assessments, UAT records.
+docs/site/          Published Astro Starlight site.
+.agents/            The self-development recipe and its skills (#1116).
 ```
 
 ## Build & test
 
 ```bash
-dev/tools/ci          # full local CI in fast-fail order
-dev/tools/build       # go build ./...
-dev/tools/test-unit   # go test -race -coverprofile, all packages
-dev/tools/lint-go     # golangci-lint (auto-installs v2.12.1)
-dev/tools/fix-go-format  # auto-fix gofmt + goimports
+dev/tools/ci             # full local CI, fast-fail order
+dev/tools/build          # go build ./...
+dev/tools/test-unit      # go test -race -coverprofile, all packages
+dev/tools/lint-go        # golangci-lint (pinned version auto-installs)
+dev/tools/fix-go-format  # gofmt + goimports
 ```
 
-Provider-gated tests (e.g. `models/anthropic/vertex_test.go::TestResolve_AnthropicVertex_FromConfig`)
-skip cleanly when their creds aren't present. The default test run
-needs no network and no API keys.
+The default test run needs no network and no API keys. Provider-gated tests
+skip cleanly without credentials.
 
 ## Conventions
 
-- **Plan before non-trivial work.** Milestones are designed in plan
-  mode; each lands as one or a few focused commits with an
-  `acceptance-mN.md` plan written first.
-- **License headers everywhere.** The full Apache 2.0 boilerplate
-  attributed to Google LLC sits at the top of every Go / shell /
-  YAML / Python source file. The `goheader` linter inside
-  `dev/tools/lint-go` enforces this on `.go` files; for new shell /
-  YAML / Python files, run `dev/tools/add-license-headers` (idempotent;
-  also normalizes any older SPDX-style headers to the canonical form).
-- **The complexity thresholds only go down.** `dev/tools/lint-go`
-  runs `funlen` and `gocognit` as a *ratchet*: each threshold in
-  `dev/tools/.golangci.yml` is pinned to the worst function in the tree
-  on the day it was set, so it forbids nothing that exists and only
-  catches something new that is worse. If your function trips it,
-  split the function — raising the number is never the fix, and the
-  one exemption (`cmd/core-agent`'s `run`, tracked in #685) is named
-  in the config rather than scattered as `//nolint`.
-- **Small, self-contained commits with informative bodies.** Subject
-  lines follow Conventional Commits (`feat:`, `fix:`, `docs:`,
-  `chore:`, `refactor:`, `test:`, `ci:`, `build:`). Bodies explain
-  *why* and call out the verification done.
-- **No Co-Authored-By trailer, and no agent attribution of any kind.**
-  Maintainer preference — author the work under your own name. That
-  rules out an agent co-author, a "Generated with" footer, an agent as
-  commit author or committer, and any trailer that marks work as
-  agent-authored, in commits and in the PR title and body.
-  `dev/ci/presubmits/verify-no-agent-attribution` enforces it as the
-  required `agent attribution` check. It scans *every* commit on the
-  branch, because a squash merge copies each branch commit's co-authors
-  into `main`. One such commit (#931) is how Claude ended up on this
-  repository's contributor list. An `--admin` merge, a direct push and
-  an edited squash message can all land a commit that check never
-  judged, so `agent-attribution-main.yml` re-scans each push to `main`,
-  plus a daily sweep of the last three days for pushes that skipped CI,
-  and opens an issue on a hit. It can't block, only make the hit loud,
-  so don't count on it: the PR check is the gate. DCO sign-off
-  (`git commit -s`) is the expected practice; see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
-- **Tests before merging.** Every new package ships with unit tests.
-  A new feature without a test is not done. A new bug fix without a
-  regression test makes it easy for the bug to come back.
-- **Errors flow to the user.** Provider / tool / config failures
-  never panic — they surface as errors returned through the agent
-  loop or as `core-agent: ...` lines on stderr.
-- **Gate everything that consumes external state.** MCP and skill
-  tool calls all pass through `permissions.Gate` so the same
-  `ask` / `allow` / `yolo` semantics apply uniformly. Consumers that
-  add their own tools should wrap them with `tools.GateToolset`.
-- **Tool descriptions and `jsonschema:` tags are prompt text, not
-  code comments.** They are system-prompt-weight, they outrank the
-  persona at the moment the model picks a tool, and a recipe author
-  can neither see nor override them. Review them as prose. Three
-  rules, learned the expensive way (#905, #909):
-  - **A string-typed argument is a writing prompt.** Name what the
-    text must *contain* — findings, evidence, the proposed change —
-    never what *genre* of document it is. A genre name drags a whole
-    rhetorical mode with it ("summary" implies retrospection,
-    "status" implies a state machine), and the model honours that
-    mode over the persona, because satisfying the schema is a
-    precondition for the call succeeding at all.
-    `mark_task_done`'s `"one-paragraph completion summary"` — the arg
-    tag, not the description — is what shaped the visible output in
-    the deployment it broke.
-  - **Write one neutral string; don't write interactive and headless
-    variants.** There is no mode bit to branch on: the session that
-    motivated #909 was a headless daemon with an operator attached
-    over the TUI, i.e. both at once. Branch when the branch changes
-    what is TRUE about this build (`whenTool`, `gate.HasTool`,
-    `sciontoolOnPath`); when it only changes what is TYPICAL, delete
-    the example instead. Where a deployment genuinely wants a tool
-    gone, change *registration* — an absent tool is unambiguous and
-    testable, a mode-varying string is invisible to the recipe author.
-  - **Never state frequency.** "Use this generously" sets a policy the
-    persona cannot see or countermand.
+- **Design before non-trivial work.** Anything bigger than a small fix gets a
+  `docs/<feature>-design.md` with a "Settled decisions (do not relitigate)"
+  section and an explicit "Out of scope" list, registered in
+  `docs/README.md`. Give it a status line, and update that line when the work
+  ships or is abandoned.
+- **License headers everywhere.** Every Go, shell, YAML and Python source file
+  starts with the full Apache 2.0 boilerplate attributed to Google LLC.
+  `goheader` in `dev/tools/lint-go` enforces it for `.go` files. For other
+  new files, run `dev/tools/add-license-headers`.
+- **The complexity thresholds only go down.** `funlen` and `gocognit` in
+  `dev/tools/.golangci.yml` are a ratchet pinned to the worst function in the
+  tree. If your function trips it, split the function. Raising the number is
+  never the fix, and neither is `//nolint`. The one exemption,
+  `cmd/core-agent`'s `run` (#685), is named in the config. Don't grow it:
+  reusable substrate goes in `pkg/compose` (see
+  `docs/compose-extraction-design.md`), and binary-only glue goes in a named
+  helper in `cmd/core-agent`, not inline in `run()`.
+- **Commits.** Make them small and self-contained, with Conventional Commits
+  subjects (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`,
+  `build:`). The body says *why* and what verification was done. Sign off
+  with DCO (`git commit -s`); see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+- **No agent attribution of any kind.** That means no Co-Authored-By agent
+  trailer, no "Generated with" footer, no agent as author or committer, and no
+  marker trailer. This applies to commits, PR titles and PR bodies. The
+  required `agent attribution` check scans *every* branch commit, because a
+  squash merge copies co-authors into `main`. History:
+  [contributor-pitfalls § agent attribution](./docs/contributor-pitfalls.md#no-agent-attribution-the-history).
+- **Tests before merging.** Every new package ships with unit tests. A feature
+  without a test is not done. A bug fix needs a regression test that **fails
+  on the pre-fix code** (see the adversarial review gate below).
+- **Errors flow to the user.** Provider, tool and config failures never
+  panic. They surface as errors through the agent loop, or as
+  `core-agent: ...` lines on stderr.
+- **Gate everything that consumes external state.** MCP and skill tool calls
+  pass through `permissions.Gate`, so the same permission semantics apply
+  everywhere. Consumers wrap their own tools with `tools.GateToolset`.
+- **Tool descriptions and `jsonschema:` tags are prompt text, not code
+  comments.** They carry system-prompt weight, they outrank the persona when
+  the model picks a tool, and a recipe author can neither see nor override
+  them. Review them as prose. Three rules (#905, #909):
+  - A string argument is a writing prompt. Name what the text must *contain*
+    (findings, evidence, the proposed change), never its *genre* ("summary",
+    "status").
+  - Write one neutral string, not interactive and headless variants. Branch
+    only on what is TRUE about this build (`whenTool`, `gate.HasTool`). When
+    a variant only changes what is TYPICAL, delete the example instead. To
+    remove a tool for a deployment, change its registration.
+  - Never state frequency ("use this generously").
 
-  `internal/testutil.ModelFacingBans` is the enforcement: a sweep runs
-  over every registered tool's description *and* arg schema in
-  `pkg/tools`, `pkg/tools/agentic`, `pkg/tools/alert`, `pkg/tools/peer`,
-  `pkg/agent`, `pkg/agent/background` and `pkg/agent/autonomous`. Add a
-  phrase there when you find the next one.
-
-  Registering a tool in a package with no sweep fails
-  `TestEveryToolRegisteringPackageHasASweep`
-  (`internal/testutil/modelfacing_coverage_test.go`) — it walks the tree
-  for `functiontool.New(` and requires a matching sweep beside it. The
-  list above used to be maintained by hand and was wrong within one
-  release (#919): `mark_task_done`, the tool the whole thread started
-  from, was the one tool nothing checked. A sweep also has to cover its
-  own package's *conditionally* registered tools — `alert` is gated on a
-  live target and sat outside a sweep that believed it was inside one.
+  `internal/testutil.ModelFacingBans` sweeps every registered tool's
+  description *and* arg schema. Add the next bad phrase there.
+  `TestEveryToolRegisteringPackageHasASweep` fails any package that registers
+  a tool without a sweep. It cannot tell whether your sweep covers the tools
+  you register only conditionally; that part is on you (#919).
+  Incidents:
+  [contributor-pitfalls § tool descriptions](./docs/contributor-pitfalls.md#tool-descriptions-as-prompt-text-the-incidents).
 
 ## Pitfalls & gotchas (real ones we've hit)
 
-- **`t.Setenv` and `t.Parallel()` don't mix** in Go's testing package.
-  We hit this writing `models/anthropic/vertex_test.go`; tests that
-  call `t.Setenv` cannot also call `t.Parallel()`.
-- **ADK streaming requires `agent.RunConfig{StreamingMode: agent.StreamingModeSSE}`.**
+- **`t.Setenv` and `t.Parallel()` don't mix.** A test that calls `t.Setenv`
+  cannot call `t.Parallel()`.
+- **ADK streaming needs `agent.RunConfig{StreamingMode: agent.StreamingModeSSE}`.**
   The default `StreamingModeNone` produces no `Partial` events.
-- **ADK's `req.Tools` field is unused by the existing Gemini provider** —
-  real tool declarations live on `req.Config.Tools` (`[]*genai.Tool`,
-  each with `FunctionDeclarations`). The Anthropic adapter follows
-  the same convention.
-- **Anthropic's Vertex SDK panics on missing creds.**
-  `vertex.WithGoogleAuth` calls `panic` when ADC isn't loadable. We
-  load credentials explicitly via `google.FindDefaultCredentials` and
-  pass them to `vertex.WithCredentials` so we surface a clean error
-  instead.
-- **Anthropic separates the system prompt** from messages — it's a
-  top-level `System []TextBlockParam` field, not a role on the first
-  message. The adapter's `convert.go` extracts it from
-  `genai.GenerateContentConfig.SystemInstruction` and lifts it.
-- **Vertex Claude model IDs sometimes carry `@VERSION` suffixes**
-  (e.g. `claude-opus-4-5@20251101`). Bare aliases often work; if not,
-  pass the date-suffixed form via `--model`.
-- **Gemini function names must match `[A-Za-z0-9_]{1,64}`** — no dots
-  in MCP tool namespaces; we use `<server>_<tool>` not
-  `<server>.<tool>`. See `pkg/mcp/namespace.go::sanitizePrefix`.
-- **The MCP SDK's `Toolset.Tools(ctx)` requires an
-  `agent.ReadonlyContext`**, not a regular `context.Context`. There's
-  a minimal stub at `pkg/mcp/listctx.go`.
-- **ADK's `telemetry.New(...)` returns providers but does NOT install
-  them as OTEL globals.** Always call
-  `providers.SetGlobalOtelProviders()`. `pkg/telemetry/otel.go` does this.
-- **In `cmd/core-agent`, anything wired before `runner.Run` must take
-  a getter, never a value read off `agentRef`.** `agent.New` fires
-  inside `runner.Run`, several hundred lines below the attach / broker
-  / tool wiring, so `agentRef` is nil at every one of those sites — and
-  on a `--multi-session` daemon it is nil *forever*, because there is
-  no primary agent and `POST /sessions` builds each one on demand.
-  Reading `agentRef.SessionID()` at a wiring site is not a blank field,
-  it is a **SIGSEGV at startup before the daemon serves anything**, and
-  it fires even when the feature that wanted the value is switched off.
-  The idiom in that file is `func() *agent.Agent { return agentRef }`.
-  Where an API can, make the getter the only form. This shipped once
-  (#647) and only CI's e2e caught it: every component was individually
-  correct and the defect was in *when* a value was read, which no unit
-  test in the affected packages can see.
-- **Testing that a shell script CALLS something: scan what the shell
-  executes, not the file text.** A regexp over a script's text cannot
-  tell a call from a mention — a usage block is the natural place to
-  write `require_x || exit 1`, so a script can ship with the guard
-  present only as help text and a text match agrees it is guarded.
-  Anchoring to column zero does not help; heredoc bodies are usually
-  unindented. Blank the comments, quoted spans and heredoc bodies
-  (preserving line numbers) and match against that. If you hand-roll
-  that lexer, **assert its soundness against real bash** rather than
-  arguing it in a doc comment. Which direction is the safe one depends
-  on what a *non-match* means for your check, so work it out before
-  picking: for a check that fails when it cannot find something (the
-  #1105 shape — "this script must call the guard"), blanking real code
-  is safe, because the check only gets stricter and fails loudly. For a
-  check that fails when it *does* find something — a violation scanner
-  — the directions invert: over-blanking hides violations and the gate
-  passes silently forever, which is the fatal direction. State in the
-  source which shape your check is and which way it is allowed to err.
-  **This also decides whether you can reuse an existing lexer.** A
-  blanking scanner is only sound for tokens that survive its blanking:
-  `shellCode` in `examples/gke-platform-agent/recipe_test.go` blanks
-  quoted spans, so `"${CORE_AGENT}" --provider=gemini -p "hi"` comes
-  back as `                --provider=gemini -p     ` — the command
-  word is gone. Reusing it for a check that hunts a quoted command word
-  yields a gate that finds nothing in any script, and every harness in
-  this tree quotes that word. `recipe_test.go` already knew: it matches
-  mutating verbs against comments-stripped text and *not* against
-  `shellCode()`, because `K="kubectl …"` is real signal. Before reusing
-  a lexer, run your target token through it and read the output.
-  Run each self-test case through bash with a stub
-  that prints a sentinel, and treat "scanner kept it but the shell
-  never ran it" as an unconditional failure. Constructs that broke a
-  plausible-looking scanner: `<<<` (needs a *backward* check or the
-  scan lands on the second `<`), `<<""`, `$'…\'…'`, `$((1 << 2))`,
-  `<<\EOF`. And a mutation suite must assert the **expected failure
-  message**, not merely a non-zero exit, and verify the mutation
-  actually changed the tree — three mutations once failed for the wrong
-  reason (pointing at the wrong file) and only the message assertion
-  could see it. Learned over six adversarial rounds on #1105/PR #1109.
+- **ADK tool declarations live on `req.Config.Tools`** (`[]*genai.Tool`).
+  `req.Tools` is unused by the providers.
+- **Gemini function names must match `[A-Za-z0-9_]{1,64}`.** MCP tools are
+  namespaced `<server>_<tool>`, never with a dot
+  (`pkg/mcp/namespace.go::sanitizePrefix`).
+- **The MCP SDK's `Toolset.Tools(ctx)` needs an `agent.ReadonlyContext`.** A
+  stub is in `pkg/mcp/listctx.go`.
+- **ADK's `telemetry.New(...)` does not install OTEL globals.** Call
+  `providers.SetGlobalOtelProviders()`, as `pkg/telemetry/otel.go` does.
+- **Vertex Claude model IDs sometimes need an `@VERSION` suffix** (e.g.
+  `claude-opus-4-5@20251101`). Pass that form via `--model` if the bare alias
+  fails.
+- **In `cmd/core-agent`, anything wired before `runner.Run` takes a getter,
+  never a value read off `agentRef`.** `agentRef` is nil at every wiring site,
+  and nil forever on `--multi-session`. An eager read is a startup SIGSEGV
+  even when the feature is off. Use `func() *agent.Agent { return agentRef }`.
+  A per-session consumer needs a per-session getter. Read
+  [contributor-pitfalls § getters](./docs/contributor-pitfalls.md#wiring-sites-in-cmdcore-agent-take-getters-not-agentref-values)
+  before touching wiring in `main.go`.
+- **To test that a shell script *calls* something, scan what the shell
+  executes, not the file text.** Assert any hand-rolled lexer against real
+  bash, and decide which way it may err before you write it. Read
+  [contributor-pitfalls § shell scripts](./docs/contributor-pitfalls.md#testing-that-a-shell-script-calls-something)
+  before writing or reusing a script-scanning check.
 
 ## How we develop
 
-Single long-lived branch: `main`. Work happens on short-lived feature
-branches (`feat/...`, `fix/...`, `chore/...`, `docs/...`) → PR
-against `main` → merge once CI's four required status checks are
-green. Branch protection on `main` requires `test`, `lint`,
-`go mod tidy is clean`, and `govulncheck`; docs-only PRs satisfy
-these via the companion `ci-docs.yml` workflow without running the
-full Go pipeline. Commits are DCO-signed off (`git commit -s`) and
-follow Conventional Commits — see [`CONTRIBUTING.md`](./CONTRIBUTING.md)
-for the full contributor flow + DCO walkthrough.
-
-Conventions worth knowing at agent prompt time:
-
-- **Run presubmits before every push.** `dev/ci/presubmits/*` are the
-  same scripts CI runs. A green local run is the same green run as
-  remote CI — skipping them ships preventable red builds. Full sweep:
-  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain,verify-coretui-guards,verify-harness-config-pinned,verify-no-agent-attribution,examples-smoke}`.
+There is one long-lived branch, `main`. Work happens on short-lived branches
+(`feat/…`, `fix/…`, `chore/…`, `docs/…`), each with a PR against `main`.
+- **Merging.** A PR merges when branch protection's required checks are green.
+  The live list:
+  `gh api repos/go-steer/core-agent/branches/main/protection/required_status_checks --jq '.contexts[]'`.
+  On a docs-only PR, `ci-docs.yml` emits no-op passes for `test`, `lint`,
+  `go mod tidy is clean` and `govulncheck`. The other required checks run
+  for real.
+- **Run presubmits before every push.** Run everything in
+  `dev/ci/presubmits/` except the two `e2e-*` scripts. They are the same
+  scripts CI runs, so a green local sweep is the same green run. Glob the
+  directory rather than trusting any hand-kept list. Skill:
+  [`presubmit-sweep`](./.agents/skills/presubmit-sweep/SKILL.md).
 - **A harness script that runs the binary pins its config with `-c`.**
-  `config.Find` walks *up* from the process cwd, so an unpinned run
-  anywhere under the checkout silently inherits the first `.agents/`
-  above it — a different model, a different permission mode, a
-  `tools.disable` that removes the tool under test, and no error.
-  `--agents-dir` does **not** substitute: the config is loaded by
-  discovery before that flag is applied, so it moves the skills and
-  sessions and leaves the model and permissions behind. The smoke
-  scripts have `pristine_config` / `${SMOKE_CONFIG}` in `_common.sh` for
-  this; `dev/ci/presubmits/verify-harness-config-pinned` enforces it and
-  `--print` lists every site, including the ones built as strings and
-  dispatched through tmux (#1116). See
+  `config.Find` walks *up* from the cwd, so an unpinned run silently inherits
+  the first `.agents/` above it. `--agents-dir` does not substitute. Use
+  `pristine_config` / `${SMOKE_CONFIG}` from `dev/smoke/_common.sh`.
+  Enforced by `verify-harness-config-pinned` (#1116); see
   [`dev/README.md`](./dev/README.md#the-harness-config-pin-gate).
-- **An example under `examples/` is either run by CI or excluded with a
-  reason.** `dev/ci/presubmits/examples-smoke` builds and runs every
-  program `examples/internal/smokeset` marks runnable and fails on any
-  non-zero exit; the companion test there requires every
-  `examples/*/main.go` to be in that manifest, so adding an example
-  means adding a line. `--print` dumps the disposition table. It exists
-  because `go build ./...` proved the examples compiled while
-  `parallel-spawn` sat broken for months advertising "Exits 0" (#852).
-- **Bumping the `core-tui` pin is not just a `go.mod` edit.** Every
-  exported interface in `github.com/go-steer/core-tui/tui` must be
-  accounted for by both TUI hosts — implemented and pinned with a
-  `var _ coretui.X = (*T)(nil)` guard, or declined with a
-  `//coretui:declined X` directive plus the reason, in
-  `cmd/core-agent/coretui_guards.go` (local `--tui`) and
-  `internal/coretuiremote/guards.go` (attach mode). Nowhere else.
-  `dev/ci/presubmits/verify-coretui-guards` enforces it against the
-  pinned version and `--print` dumps the interface × adapter matrix;
+- **Every `examples/*/main.go` is either run by CI or excluded with a
+  reason.** Add a line to `examples/internal/smokeset`. A test there requires
+  every example to be listed, and `examples-smoke` runs the runnable ones and
+  fails on a non-zero exit (#852).
+- **Bumping the `core-tui` pin is not just a `go.mod` edit.** Every exported
+  interface in `github.com/go-steer/core-tui/tui` must be implemented with a
+  `var _ coretui.X = (*T)(nil)` guard, or declined with
+  `//coretui:declined X` plus a reason. This applies in
+  `cmd/core-agent/coretui_guards.go` and in
+  `internal/coretuiremote/guards.go`. `verify-coretui-guards` enforces it;
   see [`dev/README.md`](./dev/README.md#the-core-tui-capability-gate).
-  The guards catch a changed method signature at compile time; the gate
-  catches the capability that appeared and nobody noticed, which is
-  silent otherwise because core-tui feature-detects by type assertion.
-- **Adversarial review gate before every PR.** Before `gh pr create`
-  on any change touching Go code: run a skeptic subagent over the
-  staged diff (correctness, races, API misuse — verified against
-  real dependency source, not memory), fix or pin every finding, and
-  record the outcome in the PR body under an `## Adversarial review`
-  heading. For bug fixes, additionally **verify the new regression
-  test FAILS on the pre-fix code** — a test that passes on the buggy
-  code is documentation, not a gate; this exact failure shipped in a
-  downstream release.
+- **Adversarial review gate before every PR.** Before `gh pr create` on any
+  change touching Go code:
+  1. Run a skeptic subagent over the staged diff, checking correctness, races
+     and API misuse, verified against real dependency source rather than
+     memory.
+  2. Fix or pin every finding.
+  3. Record the outcome in the PR body under `## Adversarial review`.
 
-  **Do not do that by reverting the production files or checking out
-  the parent commit.** Once the fix introduced a new const, type or
-  signature, the test no longer *compiles* against pre-fix sources,
-  and a compile error is not evidence about an assertion. The method
-  that works (used on #935, #974, #1036): copy each production file
-  aside, then patch the *behaviour* back inside the new code, leaving
-  every new symbol in place so the package still builds — silence
-  "declared and not used" with `_ = theSymbol` and mark each site
-  `// PREFIX BEHAVIOUR: ...`. Run the suite, record the exact failure
-  lines for the PR verbatim, restore from the copies, then
-  `grep -rn "PREFIX BEHAVIOUR" pkg/` to prove zero markers survived (a
-  test-cache hit on the re-run is good evidence the restore was
-  byte-identical). **Predict the failure list before running it** — a
-  pure-function or boundary test that legitimately passes both ways is
-  fine, but declare it in the PR as "passes before and after, by
-  design" rather than quietly omitting it. Enforced by this convention
-  plus the
-  `review-gate` **required** CI check (Go-touching PRs fail without
-  the section; docs-only PRs and PRs authored by `go-steer-bot[bot]`
-  — the weekly `lookout-pin-check` job — exempt).
-  Optionally, copy `dev/claude/settings-review-gate.json` to your
-  local `.claude/settings.json` for a Claude Code hook that blocks
-  `gh pr create` at the terminal before CI ever sees it. Evidence it
-  pays: the #537–#567 shutdown/resume train shipped seven substantive
-  PRs and the gate caught a P0/P1-class defect in nearly every first
-  draft.
-- **Rebase, don't merge.** Feature branches stay rebased on `main`.
-  `git push --force-with-lease` on your own branches is normal;
-  never force-push `main`.
-- **Stacked PRs.** When `feat/B` depends on `feat/A`, base PR B on
-  branch A. Three gotchas worth memorizing:
-  - **Retarget downstream PRs to `main` BEFORE merging the parent.**
-    `gh pr merge A --delete-branch` closes any PR whose base was
-    branch A. Edit base first (`gh pr edit B --base main`), then
-    merge A. Recovery if you forget: push the parent SHA back to
-    re-create the branch, `gh pr reopen`, `gh pr edit --base main`.
-  - **Rebase the downstream onto new main after each parent lands**
-    (`git rebase --onto origin/main <old-parent-sha>`) to skip the
-    squashed-and-now-on-main commit from the downstream's history.
-  - **A base-update on a branch stacked on a release-promotion PR
-    silently duplicates the CHANGELOG version heading.** Both sides
-    carry the identical `## [Unreleased]` → `## [X.Y.Z-pre] — DATE`
-    rename, git resolves two identical insertions **without a
-    conflict**, and the stacked PR's bullet ends up filed under a
-    release that was already tagged from a commit demonstrably lacking
-    it. No check catches this: `verify-release-notes` runs against
-    fixtures, not the repo's `CHANGELOG.md`, and both it and
-    `verify-docs-lint` pass on the duplicated file. After any
-    base-update on such a branch, read
-    `git diff <base>...HEAD -- CHANGELOG.md` — the three-dot diff, not
-    the merge's exit code. One-line check:
-    `grep -nE '^## \[' CHANGELOG.md | head`. Observed on #993.
-- **Admin merge protocol.** `gh pr merge <N> --admin --squash --delete-branch`
-  is the maintainer path for the rebase-then-merge cascade above
-  and for landing release commits. **Not** a way to skip review on
-  contributor PRs — that requires actual review.
-- **"No checks reported" means the PR is DIRTY, not that CI is
-  broken.** GitHub cannot compute a merge commit for a conflicting
-  PR, so `pull_request`-triggered workflows never queue at all. Check
-  `gh pr view <N> --json mergeStateStatus` **first**, before reading
-  workflow files: `DIRTY` = conflicts, no checks will ever run (rebase
-  and force-push, they fire immediately); `BEHIND` = stale but not
-  conflicting (`--admin` ignores it); `BLOCKED` = still running;
-  `UNKNOWN` = recomputing, re-poll in ~20s. Straight after a push it
-  is just registration lag — wait 30s before concluding anything.
-  Related: `main` moves faster than a full CI cycle, so a green PR can
-  flip back to `BEHIND` before you look; don't chase it with repeated
-  rebases. And **`--force-with-lease` is disarmed by a preceding
-  `git fetch`** — it compares against the remote-tracking ref the
-  fetch just updated, so it will happily overwrite someone else's
-  push.
-- **Proving a branch is already in `main` before deleting it.**
-  Squash-merging means a merged branch is *not* an ancestor of main,
-  so `git branch -d` refuses it and `merge-base --is-ancestor` says
-  "unmerged". Cheapest-first: (1) `gh pr view N --json
-  headRefOid,mergeCommit` — if the branch tip still equals
-  `headRefOid` and the merge commit is an ancestor of main, the whole
-  branch was inside the merged diff; (2) subject match + `git cherry`,
-  which can only ever corroborate; (3) for a still-unmatched commit, a
-  **two-dot diff scoped to exactly the files that commit touched**.
-  Both unscoped forms are wrong here — plain two-dot is drowned by
-  everything main gained since, and three-dot (`merge-base..branch`)
-  reports what the branch *added*, which is true whether or not main
-  later took it. Check for an OPEN PR before deleting a remote branch:
-  deleting the head branch closes it.
-- **Design docs before non-trivial work.** Anything bigger than a
-  small fix gets a `docs/<feature>-design.md` with a "Settled
-  decisions (do not relitigate)" section + explicit "Out of scope"
-  list. Register the doc in `docs/README.md`'s feature-designs list.
-  Settled-decisions framing keeps follow-up reviews from
-  re-relitigating the same trade-offs.
-- **UAT lives in two places.** `dev/smoke/NN-*.sh` for hermetic
-  CI-runnable shell scripts (mock providers, no creds). For real
-  manual UAT against real backends, `dev/uat/<feature>/` holds a
-  richer driver (typically a `run.sh` + tmux + fixtures + a README
-  walking numbered scenarios). All UAT state goes under `/tmp`,
+  For bug fixes, **verify the new regression test fails on the pre-fix
+  code** by patching the behaviour back. Do not revert files or check out the
+  parent: a compile error is not evidence about an assertion.
+
+  Skills:
+  [`adversarial-review-gate`](./.agents/skills/adversarial-review-gate/SKILL.md)
+  and
+  [`prefix-failure-verification`](./.agents/skills/prefix-failure-verification/SKILL.md).
+
+  The required `review-gate` check only greps the PR body for the phrase
+  "adversarial review", so the substance is on you. Evidence that the gate
+  pays: across the seven substantive PRs of the #537–#567 shutdown/resume
+  train, it caught a P0/P1-class defect in nearly every first draft.
+- **Rebase, don't merge.** Keep feature branches rebased on `main`.
+  `git push --force-with-lease` on your own branch is normal, but a preceding
+  `git fetch` disarms the lease. Never force-push `main`.
+- **Stacked PRs.**
+  - Retarget downstream PRs to `main` *before* merging the parent, because
+    `--delete-branch` closes them.
+  - After each parent lands, rebase with `--onto`.
+  - After a base-update on a branch stacked on a release-promotion PR, read
+    `git diff <base>...HEAD -- CHANGELOG.md`. A duplicated version heading
+    merges without conflict.
+
+  Skill: [`stacked-pr-order`](./.agents/skills/stacked-pr-order/SKILL.md).
+  The hazard is explained in
+  [contributor-pitfalls § stacked PRs](./docs/contributor-pitfalls.md#stacked-prs-and-the-changelog-version-heading-duplication).
+- **Admin merge.** `gh pr merge <N> --admin --squash --delete-branch` is the
+  maintainer path for the rebase cascade and for release commits. It is not a
+  way to skip review on contributor PRs. On a Go PR, confirm that the real
+  `CI` run passed: `ci-docs.yml`'s no-op jobs reuse the required check names.
+- **"No checks reported" means the PR is DIRTY, not that CI is broken.**
+  Check `gh pr view <N> --json mergeStateStatus` first. See
+  [contributor-pitfalls § DIRTY](./docs/contributor-pitfalls.md#no-checks-reported-means-the-pr-is-dirty).
+- **Squash-merged branches are not ancestors of `main`.** Prove a branch
+  merged with the PR's `headRefOid` before deleting it, and check for an open
+  PR first. See
+  [contributor-pitfalls § branch in main](./docs/contributor-pitfalls.md#proving-a-branch-is-already-in-main-before-deleting-it).
+- **UAT lives in two places.** Hermetic, CI-runnable scripts go in
+  `dev/smoke/NN-*.sh` (mock providers, no credentials). Manual UAT against
+  real backends goes in `dev/uat/<feature>/`. All UAT state goes under `/tmp`,
   never `$HOME`.
-- **Astro site walks alongside README/DESIGN.** User-visible changes
-  update the published site at `docs/site/src/content/docs/` in the
-  same PR as the code, not as a follow-up. Before opening a PR that
-  adds or renames a user-visible surface (tool, provider, image
-  variant, CLI flag, release), run `dev/tools/docs-lint` — it
-  hard-fails on the small set of drift patterns that have actually
-  bitten us before (numeric tool counts, spelled-out image-variant
-  counts, pinned `@vX.Y.Z` in install snippets, wrong-major prose
-  version pins).
-- **`[Unreleased]` grows on every merged PR.** Any user-visible change
-  (new feature, bugfix, breaking change, or one of the doc changes
-  listed under "Which doc changes are user-visible" below) adds one
-  bullet under the appropriate `#### Feature` / `#### Bug or
-  Regression` / `#### Documentation` / `#### Other (Cleanup)` /
-  `#### Security` subsection of `## [Unreleased]` in `CHANGELOG.md` as
-  part of the PR itself. Breaking changes get a `**BREAKING:**` prefix
-  under `#### Changed` so the release scripts can hoist them
-  automatically into a `### Breaking Changes` section at tag time.
-  Both `dev/release/cut-dev-tag.sh` and `dev/release/cut-ga-tag.sh`
-  assume `[Unreleased]` is current — if it's stale at tag time,
-  backfill from `git log` before tagging.
-- **Which doc changes are user-visible.** Three kinds get a bullet
-  under `#### Documentation`: the published site under
-  `docs/site/src/content/docs/`; `README.md` and the READMEs under
-  `examples/`; and a change to a *rule* in `AGENTS.md`,
-  `CONTRIBUTING.md`, `docs/release-process.md` or a skill under
-  `.agents/`, because contributors and agents both work from those.
-  Everything else under `docs/` and `dev/` is internal and needs no
-  bullet of its own. That includes design docs, assessments, UAT
-  write-ups and friction logs; `docs/README.md` already calls that
-  tree contributor reference. When an internal doc records a
-  user-visible change, the bullet belongs to that change, not to the
-  doc. Before this rule, `AGENTS.md` said every doc change gets a
-  bullet, and practice almost never did that: 7 of 99 docs-only
-  commits on main carried one. So this narrows the text for internal
-  docs and changes practice for the published site. The first
-  self-development run
-  ([#1116](https://github.com/go-steer/core-agent/issues/1116)) is
-  what exposed the gap. It followed the text, and its grader had
-  encoded the practice.
+- **The published site moves with the code.** A user-visible change updates
+  `docs/site/src/content/docs/` in the same PR. Before adding or renaming a
+  user-visible surface (tool, provider, image variant, CLI flag, release), run
+  `dev/tools/docs-lint`. It hard-fails the drift that has bitten before:
+  numeric tool counts, spelled-out image-variant counts, pinned `@vX.Y.Z` in
+  install snippets, and prose version pins for the wrong major.
+- **`[Unreleased]` grows on every merged PR that ships a user-visible
+  change.** Add one bullet to `## [Unreleased]` in `CHANGELOG.md`, under
+  `#### Feature`, `#### Bug or Regression`, `#### Documentation`,
+  `#### Other (Cleanup)` or `#### Security`, with a trailing
+  `([#NNN](url))` link. Breaking changes get a `**BREAKING:**` prefix under
+  `#### Changed`. Cite the issue, not the PR. Skill:
+  [`changelog-bullet`](./.agents/skills/changelog-bullet/SKILL.md).
+- **Which doc changes are user-visible.** Three kinds get a
+  `#### Documentation` bullet:
+  - the published site under `docs/site/src/content/docs/`;
+  - `README.md` and the READMEs under `examples/`;
+  - a change to a *rule* in `AGENTS.md`, `CONTRIBUTING.md`,
+    `docs/release-process.md` or a skill under `.agents/`.
+
+  Everything else under `docs/` and `dev/` is internal and needs no bullet of
+  its own. When an internal doc records a user-visible change, the bullet
+  belongs to that change. History:
+  [contributor-pitfalls § user-visible docs](./docs/contributor-pitfalls.md#which-doc-changes-are-user-visible-the-history).
 
 ## How we release
 
-SemVer: minor bump (`vX.Y.0`) for additive features, patch (`vX.Y.Z`)
-for fixes only. Breaking changes go through a `vX+1.0.0` bump with a
-one-version deprecation period when feasible. A major bump renames the
-module path to `/vN` **before any `vN` tag, pre-releases included** — a
-tag cut first can never be `go install`ed (v2.0.0–v2.7.0-dev.4 still
-can't, #327); `verify-version-fallback` reads the major from `go.mod`.
-Full mechanical recipe in `docs/release-process.md` — this section
-covers only what an agent authoring PRs needs to know.
-
-Every merged PR that ships a user-visible change adds one bullet to
-`## [Unreleased]` in `CHANGELOG.md`, under the right `#### Feature` /
-`#### Bug or Regression` / `#### Documentation` / `#### Other (Cleanup)` /
-`#### Security` subsection, with a trailing `([#NNN](url))` link.
-Breaking changes get a `**BREAKING:**` prefix under `#### Changed`.
-Both tag-cut scripts assume `[Unreleased]` is current — if it's stale
-at tag time, backfill from `git log` before tagging.
-
-Two scripts under `dev/release/` do the CHANGELOG carve — **use one,
-do NOT hand-carve**:
-
-- **`cut-dev-tag.sh vX.Y.Z-<pre>`** — for dev / rc / pre-release
-  tags. Renames `## [Unreleased]` → `## [X.Y.Z-pre] — YYYY-MM-DD`
-  and reseeds an empty `## [Unreleased]` above it. Pre-release tags
-  also auto-fall-back to `[Unreleased]` + a synthesized PR list if
-  their specific section doesn't exist, so most dev tags don't need
-  a per-tag CHANGELOG edit at all.
-- **`cut-ga-tag.sh vX.Y.Z`** — for GA tags. Folds every pre-release
-  section between `## [Unreleased]` and the previous GA into a
-  **cumulative** `## [X.Y.Z]` entry (the "since last GA" story an
-  operator upgrading from `vX.(Y-1).0` needs, not just what
-  accumulated since the last dev tag), hoists `**BREAKING:**`
-  bullets to a `### Breaking Changes` section, and deletes the
-  folded pre-release sections. Leaves a `<HEADLINE — ...>`
-  placeholder for the operator-facing summary; replace it before
-  committing. This exists because v2.7.0's first-cut GA notes only
-  covered ~5 post-dev.5 bullets and had to be rewritten by hand —
-  don't repeat that.
-
-Both scripts run release-time preflight guards (pricing catalog
-freshness: `dev/tools/verify-pricing-fresh` checks the pinned
-core-models table against LiteLLM), edit `CHANGELOG.md` in place, print the git commands to
-finish the cut, and do NOT commit / tag / push themselves.
-
-The README doesn't hard-code a "current release" pin any more — the
-release-shield badge picks up the latest tag automatically. Nothing to
-bump there at release time.
+The full recipe is [`docs/release-process.md`](./docs/release-process.md).
+What a PR author needs:
+- **SemVer.** A minor release for additive features, a patch for fixes only.
+  Breaking changes need a major bump, with a one-version deprecation period
+  when feasible. A major bump renames the module path to `/vN` **before any
+  `vN` tag**, pre-releases included; a tag cut first can never be
+  `go install`ed (#327).
+- **Never hand-carve the CHANGELOG.** `dev/release/cut-dev-tag.sh` handles
+  dev, rc and pre-release tags. `dev/release/cut-ga-tag.sh` folds every
+  pre-release section since the last GA into one cumulative entry, hoists
+  BREAKING bullets, and leaves a `<HEADLINE — ...>` placeholder for you to
+  replace.
+- **What the scripts do.** Both assume `[Unreleased]` is current (backfill
+  from `git log` if it isn't), run preflight guards such as pricing freshness,
+  edit `CHANGELOG.md`, and print the commands to finish. They do not commit,
+  tag or push.
+- **After a GA, bump `internal/version.Version` to `v<next-minor>.0-dev`**
+  (release-process step 4). Until that lands, `verify-version-fallback`
+  fails every PR. It was missed after v3.0.0 (#1351).

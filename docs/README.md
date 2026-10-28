@@ -129,6 +129,8 @@ research + friction logs, or handover notes.
 
 - [`assessments/`](assessments/) — dated whole-project assessments (strengths, gaps, premise-vs-shipped-reality) and the milestones they seeded
   - [`assessments/2026-08-12-tri-team-assessment.md`](assessments/2026-08-12-tri-team-assessment.md) — advocate/critic/arbitrator review of code quality, subagents, autonomy, SRE fitness + coding ability; seeded the v2.9 and v3.0 milestones
+  - [`assessments/2026-10-27-v3-good-bad-ugly.md`](assessments/2026-10-27-v3-good-bad-ugly.md) — five-lane post-GA review of v3.0.0 (architecture, reliability, security, tests/process, product/DX); prior-finding ledger + v3.1 recommendations
+  - [`assessments/2026-10-27-innovations.md`](assessments/2026-10-27-innovations.md) — what core-agent does that Claude Code, Antigravity, Codex, OpenHands et al. don't document, where the field converged, and where it is ahead
 - [`cogo-core-agent-integration.md`](cogo-core-agent-integration.md) — cogo + core-agent integration strategy (Option C, sequenced through A)
 - [`cogo-flip-readiness-audit.md`](cogo-flip-readiness-audit.md) — cogo → core-agent flip readiness audit (2026-05-26)
 - [`pkg-reorg-option-1.md`](pkg-reorg-option-1.md) — lifting public packages into `pkg/`

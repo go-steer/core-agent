@@ -256,6 +256,16 @@ across two runtimes muddies the story ("which one is the product?") for a
 one-scenario gain. Revisit if S6 is the headline and mast gains a
 `SessionFactory`.
 
+> **Settled 2026-10-30.** The question is closed the other way round: mast
+> folds into core-agent and is retired
+> ([go-steer/mast#596](https://github.com/go-steer/mast/issues/596),
+> [`mast-fold-design.md`](mast-fold-design.md), #1411). What made mast better
+> for S6 — the deterministic `monitor.collect` / notify-on-change cycle and
+> the durable anchored schedule — arrives here as #1405 and #1406; the
+> durable write gate and outbox as #1399/#1400; A2A client and server as
+> #1396/#1407. core-agent is the runtime for the set, and for everything
+> else.
+
 ### 3.4 Opening PRs: two designs, and they disagree
 
 - **kube-agents' `docs/designs/version-control-support.md`** (design of

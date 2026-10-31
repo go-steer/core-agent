@@ -1,0 +1,58 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# A core-agent one-shot turn as an AX task (https://github.com/google/ax).
+# Apply with `ax apply -f task.yaml`,
+# then `ax resume core-agent-oneshot` (new tasks start Suspended).
+#
+# Replace spec.image with wherever you pushed the image built from
+# examples/deploy/ax/Dockerfile.
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: core-agent-oneshot
+  atespace: default
+spec:
+  image: "REGISTRY/core-agent-ax:dev"
+  command:
+    - /usr/local/bin/ax-agent-entry
+    # Keeps the turn out of Substrate's golden boot, where egress is denied.
+    # Point it at the endpoint your provider calls.
+    - --wait-for-egress=generativelanguage.googleapis.com:443
+    - --state-dir=/workspace/.core-agent
+    - --
+    - core-agent
+    - --task=research
+    # GEMINI_API_KEY is injected by AX when the atespace has a Gemini credential.
+    - --provider=gemini
+    # On /workspace so the session survives suspend and resume.
+    - --session-db
+    - --session-db-path=/workspace/.core-agent/sessions.db
+    - -p
+    - "Summarize the trade-offs of running an agent harness inside a snapshotting sandbox."
+  env:
+    # Takes effect once the AX runner supports it (google/ax#446); until then
+    # the runner kills the command 10s after SIGTERM.
+    - name: AX_STOP_GRACE_PERIOD
+      value: 60s
+  workspaces:
+    - name: core-agent-workspace
+      path: /workspace/repo
+---
+apiVersion: ax.io/v1alpha1
+kind: Workspace
+metadata:
+  name: core-agent-workspace
+  atespace: default
+spec: {}

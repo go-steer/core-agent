@@ -1,5 +1,13 @@
 # AX integration gap audit
 
+> **Status note (2026-10-30):** The shipped AX integration is the task-runner
+> deployment in [`examples/deploy/ax/`](../examples/deploy/ax/), ported from
+> `go-steer/mast` under [`docs/mast-fold-design.md`](./mast-fold-design.md)
+> ([#1395](https://github.com/go-steer/core-agent/issues/1395),
+> [#1410](https://github.com/go-steer/core-agent/issues/1410)). The notes below
+> record an earlier gRPC `AgentService` spike on the `axplore` branch for
+> historical context.
+
 Untracked sibling to `docs/attach-mode-design.md`,
 `docs/bidirectional-mcp-design.md`, `docs/code-mode-design.md`. This is
 a lightweight audit + punch list, not a milestone design — the goal is

@@ -209,7 +209,15 @@ func (p *Provider) libClient(ctx context.Context) (*cmgemini.Client, error) {
 	if p.client != nil {
 		return p.client, nil
 	}
-	c, err := cmgemini.New(ctx, p.options())
+	o := p.options()
+	if o.Backend == genai.BackendVertexAI && o.APIKey == "" && o.Credential == nil {
+		cred, err := models.InjectedGoogleCredential(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", p.prefix, err)
+		}
+		o.Credential = cred
+	}
+	c, err := cmgemini.New(ctx, o)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", p.prefix, err)
 	}

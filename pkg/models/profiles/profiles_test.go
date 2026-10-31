@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-steer/core-models/profile"
 
+	"github.com/go-steer/core-agent/v3/pkg/agentenv"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
@@ -205,5 +206,50 @@ func TestChangedProfileIsReopened(t *testing.T) {
 	call(profileConfig(t, "test-reload", tsB.URL))
 	if len(a.body) != 1 || len(b.body) != 1 {
 		t.Errorf("server A got %d requests, B got %d; want one each — the second config reused the first's provider", len(a.body), len(b.body))
+	}
+}
+
+// TestVertexMaaS_InjectedGoogleAuthReachesTheRequest verifies that a
+// google_adc profile (such as vertex-maas) skips ADC discovery and sends
+// "Authorization: Bearer placeholder" when CORE_AGENT_GOOGLE_AUTH=injected.
+// Not parallel: t.Setenv.
+func TestVertexMaaS_InjectedGoogleAuthReachesTheRequest(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir()+"/missing.json")
+	t.Setenv(agentenv.EnvGoogleAuth, agentenv.GoogleAuthInjected)
+
+	srv := &fakeServer{}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Model.Provider = "test-vertex-maas"
+	cfg.Model.Name = "google/gemma-4-26B-A4B-it"
+	cfg.Providers = []profile.Profile{{
+		Name:    "test-vertex-maas",
+		Extends: "vertex-maas",
+		BaseURL: ts.URL + "/v1",
+		Params:  map[string]string{"project": "test-proj", "region": "us-central1"},
+	}}
+
+	p, err := models.Resolve(cfg)
+	if err != nil {
+		t.Fatalf("Resolve with injected auth: %v", err)
+	}
+	m, err := p.Model(context.Background(), cfg.Model.Name)
+	if err != nil {
+		t.Fatalf("Model: %v", err)
+	}
+	req := &model.LLMRequest{Contents: []*genai.Content{genai.NewContentFromText("hi", genai.RoleUser)}}
+	for _, err := range m.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent: %v", err)
+		}
+	}
+
+	srv.mu.Lock()
+	gotAuth := append([]string(nil), srv.auth...)
+	srv.mu.Unlock()
+	if len(gotAuth) != 1 || gotAuth[0] != "Bearer "+agentenv.InjectedGooglePlaceholder {
+		t.Errorf("Authorization = %v, want [Bearer %s]", gotAuth, agentenv.InjectedGooglePlaceholder)
 	}
 }

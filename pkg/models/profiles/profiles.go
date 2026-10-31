@@ -36,6 +36,7 @@ import (
 	coremodels "github.com/go-steer/core-models"
 	"github.com/go-steer/core-models/profile"
 
+	"github.com/go-steer/core-agent/v3/pkg/agentenv"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 )
@@ -62,7 +63,13 @@ var (
 var opened sync.Map // cacheKey(profile) → coremodels.Provider
 
 func cacheKey(p profile.Profile) string {
-	b, err := json.Marshal(p)
+	b, err := json.Marshal(struct {
+		Profile  profile.Profile
+		Injected bool
+	}{
+		Profile:  p,
+		Injected: agentenv.InjectedGoogleAuth(),
+	})
 	if err != nil {
 		return p.Name
 	}
@@ -89,7 +96,9 @@ func New(cfg *config.Config) (models.Provider, error) {
 	if p, ok := opened.Load(key); ok {
 		return &Provider{p: p.(coremodels.Provider)}, nil
 	}
-	p, err := coremodels.Open(context.Background(), prof, coremodels.Options{})
+	p, err := coremodels.Open(context.Background(), prof, coremodels.Options{
+		Resolve: models.ResolveProfileOptions(profile.Options{}),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("models: %w", err)
 	}

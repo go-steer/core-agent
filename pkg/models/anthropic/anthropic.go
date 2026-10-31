@@ -241,7 +241,7 @@ func (p *Provider) init(ctx context.Context, opts []Option) (*Provider, error) {
 		// carries it into the profile's base_url.
 		p.prof.BaseURL = base
 	}
-	if _, err := profile.Resolve(ctx, p.prof, profile.Options{Getenv: p.getenv}); err != nil {
+	if _, err := profile.Resolve(ctx, p.prof, models.ResolveProfileOptions(profile.Options{Getenv: p.getenv})); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -257,7 +257,7 @@ func (p *Provider) open(ctx context.Context) (coremodels.Provider, error) {
 	}
 	cache := key.cache.library()
 	lib, err := coremodels.Open(ctx, p.prof, coremodels.Options{
-		Resolve:      profile.Options{Getenv: p.getenv},
+		Resolve:      models.ResolveProfileOptions(profile.Options{Getenv: p.getenv}),
 		PromptCache:  &cache,
 		BuiltinTools: key.builtins.Names(),
 	})

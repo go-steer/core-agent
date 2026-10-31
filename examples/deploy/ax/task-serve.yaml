@@ -1,0 +1,83 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# core-agent in serve mode as an AX task: a long-lived agent that suspends
+# when idle and wakes when a request reaches it through Substrate's router.
+# AX: https://github.com/google/ax
+# Agent Substrate: https://github.com/agent-substrate/substrate
+#
+# spec.http.port, spec.idle and spec.egress are not in upstream AX yet
+# (see README.md, "Serve mode"). Without them the task runs, but nothing
+# can reach core-agent and it never suspends on its own.
+#
+# Replace spec.image, the project/cluster settings, and the attach token.
+# Anything in spec.env is stored in plain text in the actor template and its
+# snapshots: use test tokens, or tokens you can rotate.
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: core-agent-serve
+  atespace: default
+spec:
+  image: "REGISTRY/core-agent-ax:dev"
+  command:
+    - core-agent
+    - -c
+    - /opt/core-agent/recipes/gke-platform-agent/.agents/config.json
+    - --provider=vertex
+    - --model=gemini-3.5-flash
+    - --no-repl
+    # The session API (POST /sessions, inject, wake, the event stream),
+    # reached through the runner's spec.http.port pass-through.
+    - --attach-listen=127.0.0.1:8484
+    - --attach-token=CORE_AGENT_ATTACH_TOKEN
+    # On /workspace, so sessions survive suspend, resume and restarts.
+    - --session-db
+    - --session-db-path=/workspace/.core-agent/sessions.db
+    # The workspace's AGENTS.md tells the agent what this deployment is for.
+    - --agents-content-dir=/workspace/repo
+  env:
+    # The egress gateway adds the real Google token (spec.egress below).
+    - name: CORE_AGENT_GOOGLE_AUTH
+      value: injected
+    - name: GOOGLE_CLOUD_PROJECT
+      value: my-project
+    - name: GOOGLE_CLOUD_LOCATION
+      value: us-central1
+    - name: GKE_CLUSTER
+      value: my-cluster
+    - name: GKE_LOCATION
+      value: us-central1
+    - name: CORE_AGENT_ATTACH_TOKEN
+      value: "replace-with-a-random-token"
+  egress:
+    - hosts: [aiplatform.googleapis.com, container.googleapis.com]
+      credentials:
+        - header: Authorization
+          prefix: "Bearer "
+          credentialUri: ate-secret://k8s.io/default/ate-credentials/google-token/token
+  http:
+    port: 8484
+  idle:
+    suspendAfter: 10m
+  workspaces:
+    - name: core-agent-serve-workspace
+      path: /workspace/repo
+---
+apiVersion: ax.io/v1alpha1
+kind: Workspace
+metadata:
+  name: core-agent-serve-workspace
+  atespace: default
+spec: {}

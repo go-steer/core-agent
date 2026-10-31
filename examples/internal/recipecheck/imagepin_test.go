@@ -337,10 +337,18 @@ func TestCheckDeployPinsUnionsEveryConfigTheRecipeShips(t *testing.T) {
 
 // TestCheckDeployPinsWithoutManifests: most examples are local-run
 // recipes with no deploy tree. There is no pin to be wrong, so there is
-// nothing to say.
+// nothing to say — even when the shared examples/deploy/ directory
+// exists alongside the recipe (#1395).
 func TestCheckDeployPinsWithoutManifests(t *testing.T) {
 	t.Parallel()
 	examples, r := writeLocalRecipe(t, gatedConfig, nil)
+	if err := os.MkdirAll(filepath.Join(examples, "deploy", "ax"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(examples, "deploy", "ax", "Dockerfile"),
+		[]byte("FROM ghcr.io/go-steer/core-agent:main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	findings, err := recipecheck.CheckDeployPins(examples, r, releasedForTest(t))
 	if err != nil {
 		t.Fatalf("CheckDeployPins: %v", err)

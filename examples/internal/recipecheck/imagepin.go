@@ -413,11 +413,14 @@ func deployRoot(examplesDir, configRoot string) string {
 		return ""
 	}
 	for {
+		if dir == absExamples {
+			return ""
+		}
 		if info, statErr := os.Stat(filepath.Join(dir, "deploy")); statErr == nil && info.IsDir() {
 			return dir
 		}
 		parent := filepath.Dir(dir)
-		if dir == absExamples || parent == dir {
+		if parent == dir {
 			return ""
 		}
 		dir = parent

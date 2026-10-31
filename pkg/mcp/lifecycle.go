@@ -31,6 +31,7 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/core-agent/v3/pkg/agentenv"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
@@ -395,21 +396,25 @@ func transportFor(ctx context.Context, name string, spec ServerSpec) (mcpsdk.Tra
 		// via misconfiguration. Net effect: auth-set Authorization
 		// always wins over a header-set one.
 		if spec.Auth != nil && spec.Auth.GoogleOAuth != nil {
-			creds, err := google.FindDefaultCredentials(ctx, spec.Auth.GoogleOAuth.Scopes...)
-			if err != nil {
-				return nil, nil, fmt.Errorf(
-					"mcp: %q: load Google default credentials: %w "+
-						"(run `gcloud auth application-default login` or "+
-						"ensure metadata server is reachable)", name, err)
+			if agentenv.InjectedGoogleAuth() {
+				rt = &googleAuthTransport{base: rt, source: agentenv.InjectedGoogleTokenSource()}
+			} else {
+				creds, err := google.FindDefaultCredentials(ctx, spec.Auth.GoogleOAuth.Scopes...)
+				if err != nil {
+					return nil, nil, fmt.Errorf(
+						"mcp: %q: load Google default credentials: %w "+
+							"(run `gcloud auth application-default login` or "+
+							"ensure metadata server is reachable)", name, err)
+				}
+				// Fail-fast: pre-fetch a token so misconfig (no ADC,
+				// missing scopes grant, etc.) surfaces at server-init
+				// time instead of on the first tool call.
+				if _, err := creds.TokenSource.Token(); err != nil {
+					return nil, nil, fmt.Errorf(
+						"mcp: %q: initial Google OAuth token fetch: %w", name, err)
+				}
+				rt = &googleAuthTransport{base: rt, source: creds.TokenSource}
 			}
-			// Fail-fast: pre-fetch a token so misconfig (no ADC,
-			// missing scopes grant, etc.) surfaces at server-init
-			// time instead of on the first tool call.
-			if _, err := creds.TokenSource.Token(); err != nil {
-				return nil, nil, fmt.Errorf(
-					"mcp: %q: initial Google OAuth token fetch: %w", name, err)
-			}
-			rt = &googleAuthTransport{base: rt, source: creds.TokenSource}
 		}
 
 		headers := InterpolateMap(spec.Headers)

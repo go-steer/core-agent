@@ -21,9 +21,12 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 
 	"github.com/go-steer/core-models/adkv2"
+	"github.com/go-steer/core-models/auth"
 	"github.com/go-steer/core-models/llm"
+	"github.com/go-steer/core-models/profile"
 	coreusage "github.com/go-steer/core-models/usage"
 
+	"github.com/go-steer/core-agent/v3/pkg/agentenv"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
@@ -102,4 +105,31 @@ func BridgeUsage(resp *adkmodel.LLMResponse) {
 	if d.CacheWrite1hTokens != nil && *d.CacheWrite1hTokens > 0 {
 		resp.CustomMetadata[usage.CacheCreation1hTokensMetadataKey] = *d.CacheWrite1hTokens
 	}
+}
+
+// ResolveProfileOptions decorates opts so a Google-ADC profile sends
+// "Authorization: Bearer placeholder" when CORE_AGENT_GOOGLE_AUTH=injected
+// (Agent Substrate's egress gateway replaces the header with a real
+// token), instead of looking for Application Default Credentials in the
+// sandbox.
+func ResolveProfileOptions(opts profile.Options) profile.Options {
+	if opts.Auth.DetectGoogle == nil && agentenv.InjectedGoogleAuthFrom(opts.Getenv) {
+		opts.Auth.DetectGoogle = func(context.Context, []string) (auth.TokenSource, error) {
+			return agentenv.InjectedGoogleStatic{}, nil
+		}
+	}
+	return opts
+}
+
+// InjectedGoogleCredential returns a placeholder GoogleADC credential when
+// CORE_AGENT_GOOGLE_AUTH=injected is set, or nil otherwise.
+func InjectedGoogleCredential(ctx context.Context) (*auth.Credential, error) {
+	if !agentenv.InjectedGoogleAuth() {
+		return nil, nil
+	}
+	return auth.Config{Kind: auth.GoogleADC}.Resolve(ctx, auth.Options{
+		DetectGoogle: func(context.Context, []string) (auth.TokenSource, error) {
+			return agentenv.InjectedGoogleStatic{}, nil
+		},
+	})
 }

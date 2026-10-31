@@ -1,0 +1,84 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: ax-pin-check
+
+# Weekly + on-demand check of examples/deploy/ax's pinned AX runner
+# commits (.ax-ref on google/ax and .ax-fork-ref on mastersingh24/ax).
+#
+# Diffs google/ax main against .ax-ref for changes under docs/runner.md,
+# the task-spec schema (pkg/apis/) and cmd/ax-task-runner, and diffs the
+# fork against .ax-fork-ref and .ax-ref. Opens or updates one rolling
+# issue rather than failing CI (#1410).
+
+on:
+  schedule:
+    # Wednesdays at 06:41 UTC, off minute 0 to avoid GHA's scheduling spike.
+    - cron: '41 6 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  ISSUE_TITLE: 'chore(examples/deploy/ax): AX runner pin drift report'
+  BODY_FILE: ax-pin-issue-body.md
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/go-toolchain
+
+      - name: Detect AX pin drift
+        id: drift
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verdict="$(go run ./dev/ax-pin-check \
+            --summary="${GITHUB_STEP_SUMMARY}" \
+            --issue-body="${RUNNER_TEMP}/${BODY_FILE}")"
+          case "$verdict" in
+            drift=true|drift=false) echo "$verdict" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::unexpected ax-pin-check output: ${verdict}"; exit 1 ;;
+          esac
+
+      - name: Open or update rolling issue
+        if: steps.drift.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing="$(gh issue list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --state open \
+            --search "\"${ISSUE_TITLE}\" in:title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"${ISSUE_TITLE}\") | .number" \
+            | head -n1)"
+          if [[ -n "${existing}" ]]; then
+            gh issue edit "${existing}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --body-file "${RUNNER_TEMP}/${BODY_FILE}"
+            echo "Updated rolling issue #${existing}"
+          else
+            gh issue create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${ISSUE_TITLE}" \
+              --body-file "${RUNNER_TEMP}/${BODY_FILE}"
+          fi

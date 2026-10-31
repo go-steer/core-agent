@@ -15,15 +15,21 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
+
+	"github.com/go-steer/core-agent/v3/pkg/agentenv"
 )
 
 func TestServer_Close_NilSafe(t *testing.T) {
@@ -185,5 +191,57 @@ func TestServer_Close_ReapsStartedProcess(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		_ = cmd.Process.Kill()
 		t.Fatal("Server.Close did not return within 5s")
+	}
+}
+
+// TestTransportFor_InjectedGoogleAuthSendsPlaceholder verifies that
+// CORE_AGENT_GOOGLE_AUTH=injected skips google.FindDefaultCredentials
+// and attaches "Authorization: Bearer placeholder" on HTTP MCP servers
+// configured with auth.google_oauth. Not parallel: t.Setenv.
+func TestTransportFor_InjectedGoogleAuthSendsPlaceholder(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir()+"/missing.json")
+	t.Setenv(agentenv.EnvGoogleAuth, agentenv.GoogleAuthInjected)
+
+	var (
+		mu   sync.Mutex
+		auth string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	tr, _, err := transportFor(context.Background(), "gke", ServerSpec{
+		Transport: "http",
+		URL:       srv.URL,
+		Auth: &AuthSpec{
+			GoogleOAuth: &GoogleOAuthAuth{Scopes: []string{"https://www.googleapis.com/auth/container.read-only"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("transportFor with injected auth: %v", err)
+	}
+	st, ok := tr.(*mcpsdk.StreamableClientTransport)
+	if !ok || st.HTTPClient == nil {
+		t.Fatalf("transport = %#v, want *mcpsdk.StreamableClientTransport with HTTPClient", tr)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := st.HTTPClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTPClient.Do: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	mu.Lock()
+	gotAuth := auth
+	mu.Unlock()
+	if want := "Bearer " + agentenv.InjectedGooglePlaceholder; gotAuth != want {
+		t.Errorf("Authorization = %q, want %q", gotAuth, want)
 	}
 }

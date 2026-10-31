@@ -34,6 +34,7 @@ import (
 	"github.com/go-steer/core-models/llm"
 	"github.com/go-steer/core-models/retry"
 
+	"github.com/go-steer/core-agent/v3/pkg/agentenv"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
@@ -175,6 +176,7 @@ type fakeGenerate struct {
 	srv *httptest.Server
 
 	mu     sync.Mutex
+	auth   []string
 	bodies []map[string]any
 }
 
@@ -186,6 +188,7 @@ func newFakeGenerate(t *testing.T) *fakeGenerate {
 		var body map[string]any
 		_ = json.Unmarshal(raw, &body)
 		f.mu.Lock()
+		f.auth = append(f.auth, r.Header.Get("Authorization"))
 		f.bodies = append(f.bodies, body)
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -452,5 +455,33 @@ func TestFacade_RejectedHooksStillSurfaceOnTheNextCall(t *testing.T) {
 	}
 	if callErr == nil || !strings.Contains(callErr.Error(), "ContextCacheModel") {
 		t.Errorf("next call error = %v, want the library's missing-ContextCacheModel error", callErr)
+	}
+}
+
+// TestVertex_InjectedGoogleAuthReachesTheRequest verifies that setting
+// CORE_AGENT_GOOGLE_AUTH=injected skips ADC discovery and sends
+// "Authorization: Bearer placeholder" for an egress proxy to replace.
+// Not parallel: t.Setenv.
+func TestVertex_InjectedGoogleAuthReachesTheRequest(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir()+"/missing.json")
+	t.Setenv(agentenv.EnvGoogleAuth, agentenv.GoogleAuthInjected)
+
+	f := newFakeGenerate(t)
+	p, err := NewVertex("proj", "us-central1", WithBuiltinTools(BuiltinTools{}))
+	if err != nil {
+		t.Fatalf("NewVertex: %v", err)
+	}
+	p.baseURL = f.srv.URL
+	m, err := p.Model(context.Background(), "gemini-3.5-flash")
+	if err != nil {
+		t.Fatalf("Model: %v", err)
+	}
+	generateOnce(t, context.Background(), m)
+
+	f.mu.Lock()
+	gotAuth := append([]string(nil), f.auth...)
+	f.mu.Unlock()
+	if len(gotAuth) != 1 || gotAuth[0] != "Bearer "+agentenv.InjectedGooglePlaceholder {
+		t.Errorf("Authorization = %v, want [Bearer %s]", gotAuth, agentenv.InjectedGooglePlaceholder)
 	}
 }

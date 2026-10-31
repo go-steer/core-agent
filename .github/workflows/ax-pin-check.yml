@@ -34,6 +34,12 @@ permissions:
 
 env:
   ISSUE_TITLE: 'chore(examples/deploy/ax): AX runner pin drift report'
+  # The rolling issue is found by this label, not by title search: the
+  # search index is eventually consistent and a maintainer may rename the
+  # issue, either of which would make a title search open a duplicate
+  # (#1418). The body also carries the ax-pin-check-rolling-issue marker
+  # as a secondary check.
+  ISSUE_LABEL: ax-pin-check
   BODY_FILE: ax-pin-issue-body.md
 
 jobs:
@@ -64,13 +70,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Idempotent: --force updates the label if it already exists.
+          gh label create "${ISSUE_LABEL}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --description "Rolling AX runner pin drift report (ax-pin-check workflow)" \
+            --color C5DEF5 \
+            --force
+          # Oldest open issue carrying the label and the body marker. A
+          # label query is a direct lookup, not a search-index query.
           existing="$(gh issue list \
             --repo "${GITHUB_REPOSITORY}" \
             --state open \
-            --search "\"${ISSUE_TITLE}\" in:title" \
-            --json number,title \
-            --jq ".[] | select(.title == \"${ISSUE_TITLE}\") | .number" \
-            | head -n1)"
+            --label "${ISSUE_LABEL}" \
+            --limit 20 \
+            --json number,body \
+            --jq '[.[] | select((.body // "") | contains("<!-- ax-pin-check-rolling-issue -->"))] | sort_by(.number) | .[0].number // empty')"
           if [[ -n "${existing}" ]]; then
             gh issue edit "${existing}" \
               --repo "${GITHUB_REPOSITORY}" \
@@ -80,5 +94,6 @@ jobs:
             gh issue create \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${ISSUE_TITLE}" \
+              --label "${ISSUE_LABEL}" \
               --body-file "${RUNNER_TEMP}/${BODY_FILE}"
           fi

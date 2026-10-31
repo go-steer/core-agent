@@ -16,6 +16,24 @@
 // commits (.ax-ref on google/ax and .ax-fork-ref on mastersingh24/ax)
 // against upstream and fork main branches, and renders the job summary
 // and rolling-issue body used by .github/workflows/ax-pin-check.yml (#1410).
+//
+// Four GitHub API calls per run (#1418):
+//
+//   - compare google/ax .ax-ref...main: upstream movement and the watched
+//     files that changed;
+//   - compare mastersingh24/ax .ax-fork-ref...main: fork movement;
+//   - compare mastersingh24/ax .ax-ref...main: the fork's patch stack on
+//     top of the upstream pin. This one 404s if the fork has not fetched
+//     the upstream commit named by .ax-ref, and the run errors rather than
+//     filing an issue. That is deliberate: a fork that does not contain
+//     the upstream pin is a pin problem, not a drift report;
+//   - GET /repos/{repo}/commits/heads/{branch} for each head SHA. The
+//     compare payload's commits[] is capped at 250 and its files[] at
+//     300; GitHub documents that on an unpaged call the last listed
+//     commit is still the tip, but that is a property of the pagination
+//     defaults, not of the endpoint. The branch tip is read from the
+//     endpoint whose job that is, and a failed lookup is an error rather
+//     than a silent fallback to the pin.
 package main
 
 import (
@@ -39,6 +57,18 @@ const (
 	forkRepo        = "mastersingh24/ax"
 	targetBranch    = "main"
 	issueBodyMarker = "<!-- ax-pin-check-rolling-issue -->"
+
+	// GitHub's compare endpoint returns at most this many files; past the
+	// ceiling the payload is silently partial. Commits are capped too (250
+	// unpaged), but total_commits is reported alongside, so that side is
+	// detected exactly rather than by a hardcoded count.
+	compareFilesCeiling = 300
+
+	// maxResponseBytes bounds a single API response. A compare payload
+	// carries a unified diff per changed file, so 300 files of a large
+	// upstream range can run to tens of megabytes; a bound that is too
+	// small fails the weekly run exactly when the report matters most.
+	maxResponseBytes = 64 << 20
 )
 
 var sha40Re = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -62,23 +92,34 @@ type compareResponse struct {
 	} `json:"files"`
 }
 
+// truncated reports whether GitHub cut either list in this payload, in
+// which case counts are trustworthy but contents are not.
+func (c compareResponse) truncated() bool {
+	return c.TotalCommits > len(c.Commits) || len(c.Files) >= compareFilesCeiling
+}
+
+// commitResponse is the subset of GET /repos/{owner}/{repo}/commits/{ref}
+// that ax-pin-check inspects.
+type commitResponse struct {
+	SHA string `json:"sha"`
+}
+
 // Report is the evaluated state of the AX pins against upstream and fork.
 type Report struct {
-	UpstreamPin        string   `json:"upstream_pin"`
-	ForkPin            string   `json:"fork_pin"`
-	UpstreamStatus     string   `json:"upstream_status"`
-	UpstreamAheadBy    int      `json:"upstream_ahead_by"`
-	UpstreamBehindBy   int      `json:"upstream_behind_by"`
-	UpstreamHeadSHA    string   `json:"upstream_head_sha,omitempty"`
-	WatchedFiles       []string `json:"watched_files,omitempty"`
-	CompareTruncated   bool     `json:"compare_truncated,omitempty"`
-	ForkAheadBy        int      `json:"fork_ahead_by"`
-	ForkBehindBy       int      `json:"fork_behind_by"`
-	ForkHeadSHA        string   `json:"fork_head_sha,omitempty"`
-	ForkWatchedFiles   []string `json:"fork_watched_files,omitempty"`
-	PatchStackCommits  int      `json:"patch_stack_commits"`
-	PatchStackBehind   int      `json:"patch_stack_behind"`
-	ForkBehindUpstream int      `json:"fork_behind_upstream"`
+	UpstreamPin       string   `json:"upstream_pin"`
+	ForkPin           string   `json:"fork_pin"`
+	UpstreamStatus    string   `json:"upstream_status"`
+	UpstreamAheadBy   int      `json:"upstream_ahead_by"`
+	UpstreamBehindBy  int      `json:"upstream_behind_by"`
+	UpstreamHeadSHA   string   `json:"upstream_head_sha,omitempty"`
+	WatchedFiles      []string `json:"watched_files,omitempty"`
+	CompareTruncated  bool     `json:"compare_truncated,omitempty"`
+	ForkAheadBy       int      `json:"fork_ahead_by"`
+	ForkBehindBy      int      `json:"fork_behind_by"`
+	ForkHeadSHA       string   `json:"fork_head_sha,omitempty"`
+	ForkWatchedFiles  []string `json:"fork_watched_files,omitempty"`
+	PatchStackCommits int      `json:"patch_stack_commits"`
+	PatchStackBehind  int      `json:"patch_stack_behind"`
 }
 
 // Drift reports whether either pin has relevant upstream or fork movement
@@ -130,35 +171,43 @@ func evaluate(ctx context.Context, axDir, apiBase, token string) (Report, error)
 		return Report{}, err
 	}
 
-	upCmp, err := fetchCompare(ctx, apiBase, token, upstreamRepo, upPin, targetBranch)
+	c := apiClient{base: apiBase, token: token}
+	upCmp, err := c.compare(ctx, upstreamRepo, upPin, targetBranch)
 	if err != nil {
 		return Report{}, fmt.Errorf("compare upstream %s: %w", upstreamRepo, err)
 	}
-	forkCmp, err := fetchCompare(ctx, apiBase, token, forkRepo, forkPin, targetBranch)
+	forkCmp, err := c.compare(ctx, forkRepo, forkPin, targetBranch)
 	if err != nil {
 		return Report{}, fmt.Errorf("compare fork %s against .ax-fork-ref: %w", forkRepo, err)
 	}
-	stackCmp, err := fetchCompare(ctx, apiBase, token, forkRepo, upPin, targetBranch)
+	stackCmp, err := c.compare(ctx, forkRepo, upPin, targetBranch)
 	if err != nil {
 		return Report{}, fmt.Errorf("compare fork %s against .ax-ref: %w", forkRepo, err)
 	}
+	upHead, err := c.branchHead(ctx, upstreamRepo, targetBranch)
+	if err != nil {
+		return Report{}, fmt.Errorf("head of %s:%s: %w", upstreamRepo, targetBranch, err)
+	}
+	forkHead, err := c.branchHead(ctx, forkRepo, targetBranch)
+	if err != nil {
+		return Report{}, fmt.Errorf("head of %s:%s: %w", forkRepo, targetBranch, err)
+	}
 
 	return Report{
-		UpstreamPin:        upPin,
-		ForkPin:            forkPin,
-		UpstreamStatus:     upCmp.Status,
-		UpstreamAheadBy:    upCmp.AheadBy,
-		UpstreamBehindBy:   upCmp.BehindBy,
-		UpstreamHeadSHA:    headSHA(upCmp, upPin),
-		WatchedFiles:       filterWatchedFiles(upCmp),
-		CompareTruncated:   len(upCmp.Files) >= 300 || len(forkCmp.Files) >= 300,
-		ForkAheadBy:        forkCmp.AheadBy,
-		ForkBehindBy:       forkCmp.BehindBy,
-		ForkHeadSHA:        headSHA(forkCmp, forkPin),
-		ForkWatchedFiles:   filterWatchedFiles(forkCmp),
-		PatchStackCommits:  stackCmp.AheadBy,
-		PatchStackBehind:   stackCmp.BehindBy,
-		ForkBehindUpstream: upCmp.AheadBy + stackCmp.BehindBy,
+		UpstreamPin:       upPin,
+		ForkPin:           forkPin,
+		UpstreamStatus:    upCmp.Status,
+		UpstreamAheadBy:   upCmp.AheadBy,
+		UpstreamBehindBy:  upCmp.BehindBy,
+		UpstreamHeadSHA:   upHead,
+		WatchedFiles:      filterWatchedFiles(upCmp),
+		CompareTruncated:  upCmp.truncated() || forkCmp.truncated() || stackCmp.truncated(),
+		ForkAheadBy:       forkCmp.AheadBy,
+		ForkBehindBy:      forkCmp.BehindBy,
+		ForkHeadSHA:       forkHead,
+		ForkWatchedFiles:  filterWatchedFiles(forkCmp),
+		PatchStackCommits: stackCmp.AheadBy,
+		PatchStackBehind:  stackCmp.BehindBy,
 	}, nil
 }
 
@@ -191,41 +240,66 @@ func readAndVerifyPins(axDir string) (upPin, forkPin string, err error) {
 	return upPin, forkPin, nil
 }
 
-func fetchCompare(ctx context.Context, apiBase, token, repo, base, head string) (compareResponse, error) {
-	url := fmt.Sprintf("%s/repos/%s/compare/%s...%s", strings.TrimRight(apiBase, "/"), repo, base, head)
+// apiClient is the thin GitHub REST client ax-pin-check needs.
+type apiClient struct {
+	base  string
+	token string
+}
+
+func (c apiClient) get(ctx context.Context, path string, out any) error {
+	url := strings.TrimRight(c.base, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return compareResponse{}, err
+		return err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return compareResponse{}, err
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return compareResponse{}, err
+		return err
+	}
+	if len(body) >= maxResponseBytes {
+		return fmt.Errorf("GET %s: response exceeded %d bytes", url, maxResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return compareResponse{}, fmt.Errorf("GET %s: HTTP %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("GET %s: HTTP %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	var out compareResponse
-	if err := json.Unmarshal(body, &out); err != nil {
-		return compareResponse{}, fmt.Errorf("decode %s: %w", url, err)
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decode %s: %w", url, err)
 	}
-	return out, nil
+	return nil
 }
 
-func headSHA(cmp compareResponse, fallback string) string {
-	if n := len(cmp.Commits); n > 0 && cmp.Commits[n-1].SHA != "" {
-		return cmp.Commits[n-1].SHA
+// compare fetches GET /repos/{repo}/compare/{base}...{head}.
+func (c apiClient) compare(ctx context.Context, repo, base, head string) (compareResponse, error) {
+	var out compareResponse
+	err := c.get(ctx, fmt.Sprintf("/repos/%s/compare/%s...%s", repo, base, head), &out)
+	return out, err
+}
+
+// branchHead fetches the current tip of repo's branch via
+// GET /repos/{repo}/commits/heads/{branch}. The `heads/` form is the
+// documented unambiguous spelling (a tag could share the name). This is
+// the endpoint whose purpose is "where is the branch now"; the compare
+// payload's commits[] is a capped list whose ordering guarantees depend
+// on pagination defaults (#1418).
+func (c apiClient) branchHead(ctx context.Context, repo, branch string) (string, error) {
+	var out commitResponse
+	if err := c.get(ctx, fmt.Sprintf("/repos/%s/commits/heads/%s", repo, branch), &out); err != nil {
+		return "", err
 	}
-	return fallback
+	if !sha40Re.MatchString(out.SHA) {
+		return "", fmt.Errorf("%s:%s: head sha %q is not a 40-char hex SHA", repo, branch, out.SHA)
+	}
+	return out.SHA, nil
 }
 
 // isWatchedPath reports whether a changed file in AX affects the runner
@@ -269,11 +343,12 @@ func renderMarkdown(r Report) string {
 	fmt.Fprintf(&b, "| `.ax-fork-ref` | [`%s`](https://github.com/%s) | `%s` | %d ahead / %d behind (`%s`) | %d |\n\n",
 		forkRepo, forkRepo, shortSHA(r.ForkPin), r.ForkAheadBy, r.ForkBehindBy, shortSHA(r.ForkHeadSHA), len(r.ForkWatchedFiles))
 
-	fmt.Fprintf(&b, "**Fork patch stack (`%s` vs `.ax-ref`):** %d commit(s) ahead, %d behind (`%s:main` is %d commit(s) ahead of `.ax-ref`).\n\n",
-		forkRepo, r.PatchStackCommits, r.PatchStackBehind, upstreamRepo, r.ForkBehindUpstream)
+	fmt.Fprintf(&b, "**Fork patch stack (`%s:main` vs `.ax-ref`):** %d commit(s) ahead, %d behind. **Upstream movement:** `%s:main` is %d commit(s) ahead of `.ax-ref`.\n\n",
+		forkRepo, r.PatchStackCommits, r.PatchStackBehind, upstreamRepo, r.UpstreamAheadBy)
 
 	if r.CompareTruncated {
-		b.WriteString("> **Warning:** GitHub Compare file list reached the 300-file pagination ceiling; inspect the full diff before bumping pins.\n\n")
+		fmt.Fprintf(&b, "> **Warning:** a GitHub Compare payload was cut (more than %d files, or fewer commits listed than `total_commits`); the counts above are right but the watched-file list may be incomplete. Inspect the full diff before bumping pins.\n\n",
+			compareFilesCeiling)
 	}
 
 	if len(r.WatchedFiles) > 0 {

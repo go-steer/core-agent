@@ -199,10 +199,12 @@ There is one long-lived branch, `main`. Work happens on short-lived branches
   `pristine_config` / `${SMOKE_CONFIG}` from `dev/smoke/_common.sh`.
   Enforced by `verify-harness-config-pinned` (#1116); see
   [`dev/README.md`](./dev/README.md#the-harness-config-pin-gate).
-- **Every `examples/*/main.go` is either run by CI or excluded with a
-  reason.** Add a line to `examples/internal/smokeset`. A test there requires
-  every example to be listed, and `examples-smoke` runs the runnable ones and
-  fails on a non-zero exit (#852).
+- **Every `main.go` under `examples/` (outside `internal/` and `testdata/`,
+  at any depth) is either run by CI or excluded with a reason.** Add a line
+  to `examples/internal/smokeset`, named by the directory's path relative to
+  `examples/`. A test there requires every example to be listed, and
+  `examples-smoke` runs the runnable ones and fails on a non-zero exit
+  (#852, #1417).
 - **Bumping the `core-tui` pin is not just a `go.mod` edit.** Every exported
   interface in `github.com/go-steer/core-tui/tui` must be implemented with a
   `var _ coretui.X = (*T)(nil)` guard, or declined with

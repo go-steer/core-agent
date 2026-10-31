@@ -57,6 +57,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -101,8 +102,10 @@ type Entry struct {
 }
 
 // Entries is the recorded disposition of every example program in the
-// tree, sorted by name. Adding an examples/<name>/main.go without
-// adding a line here fails TestEveryExampleProgramIsAccountedFor.
+// tree, sorted by name. Adding a main.go anywhere under examples/
+// (outside internal/ and testdata/) without adding a line here fails
+// TestEveryExampleProgramIsAccountedFor; the name is the directory's
+// slash-separated path relative to examples/.
 var Entries = []Entry{
 	{Name: "attach-daemon", Disposition: Skip,
 		Reason: "binds an HTTP listener and serves until interrupted; it has no terminating path to exit 0 from"},
@@ -115,6 +118,8 @@ var Entries = []Entry{
 	{Name: "bouncer-preflight", Disposition: Skip,
 		Reason: "needs GOOGLE_API_KEY, and its logic is already covered by its own go tests in the same directory"},
 	{Name: "compose-multi-session", Disposition: Run},
+	{Name: "deploy/ax/entrypoint", Disposition: Skip,
+		Reason: "the AX task-runner wrapper, not a library example: it takes the agent command after `--` and exits 2 without one, and when booted with --wait-for-egress blocks on AX's egress proxy; its own unit tests cover the exit-code, done-marker and egress-wait paths"},
 	{Name: "embed/slim", Disposition: Run},
 	{Name: "parallel-spawn", Disposition: Run},
 	{Name: "replay", Disposition: Run},
@@ -145,9 +150,11 @@ func (e Entry) Bound() time.Duration {
 	return DefaultTimeout
 }
 
-// Discover lists the example programs in examplesDir: every immediate
-// subdirectory holding a main.go, plus nested embedding examples under
-// examples/embed/<name>/main.go.
+// Discover lists the example programs in examplesDir: every directory
+// under it, at any depth, holding a main.go. Names are slash-separated
+// paths relative to examplesDir (`basic`, `embed/slim`,
+// `deploy/ax/entrypoint`), which is also the form `go build
+// ./examples/<name>` takes.
 //
 // main.go is the rule rather than "any Go file" or "any directory"
 // because it is what makes a directory a runnable program. Several
@@ -156,37 +163,54 @@ func (e Entry) Bound() time.Duration {
 // examples/internal/recipecheck and by the recipe e2e workflows, not
 // by this gate. A rule that swept them in would need a permanent row
 // of "not a Go program" exclusions saying nothing.
+//
+// The walk is depth-unbounded on purpose. The first version looked one
+// level down, then grew an `embed/` special case, and in between
+// `deploy/ax/entrypoint/main.go` landed two levels down and the
+// accounting test never saw it (#1417). A program's depth is not
+// evidence about whether CI should run it; the entry's Disposition is.
+//
+// Skipped subtrees: `internal` (this package and its siblings),
+// `testdata` (fixtures, which Go itself ignores), `node_modules`, and
+// dot-directories (`.agents`, `.git`). A main.go inside those is not an
+// example program.
 func Discover(examplesDir string) ([]string, error) {
-	ents, err := os.ReadDir(examplesDir)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", examplesDir, err)
-	}
 	var names []string
-	for _, ent := range ents {
-		if !ent.IsDir() || ent.Name() == "internal" {
-			continue
+	err := filepath.WalkDir(examplesDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		if ent.Name() == "embed" {
-			subs, err := os.ReadDir(filepath.Join(examplesDir, "embed"))
-			if err != nil {
-				return nil, fmt.Errorf("read %s/embed: %w", examplesDir, err)
-			}
-			for _, sub := range subs {
-				if !sub.IsDir() {
-					continue
-				}
-				if _, err := os.Stat(filepath.Join(examplesDir, "embed", sub.Name(), "main.go")); err != nil {
-					continue
-				}
-				names = append(names, "embed/"+sub.Name())
-			}
-			continue
+		if !d.IsDir() {
+			return nil
 		}
-		if _, err := os.Stat(filepath.Join(examplesDir, ent.Name(), "main.go")); err != nil {
-			continue
+		if path != examplesDir && skipDir(d.Name()) {
+			return filepath.SkipDir
 		}
-		names = append(names, ent.Name())
+		if _, err := os.Stat(filepath.Join(path, "main.go")); err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(examplesDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		names = append(names, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk %s: %w", examplesDir, err)
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// skipDir names the directories Discover does not descend into.
+func skipDir(name string) bool {
+	switch name {
+	case "internal", "testdata", "node_modules":
+		return true
+	}
+	return strings.HasPrefix(name, ".")
 }

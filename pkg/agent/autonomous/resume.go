@@ -168,42 +168,15 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 	// checkpoints."
 	goal := latest.Goal
 
-	emitTurnCheckpoint := func(payload checkpointPayload) {
-		if leaseLost(lock) {
-			return
-		}
-		_ = emitCheckpoint(leaseCtx, a, payload)
+	cp := &resumeCheckpoints{
+		ctx: ctx, leaseCtx: leaseCtx, a: a, lock: lock, cfg: &cfg,
+		result: &result, goal: goal, haveSubstantive: &haveSubstantive, startedAt: startedAt,
 	}
-
-	emitFinalCheckpoint := func(reason StopReason) {
-		if leaseLost(lock) {
-			// Never write a checkpoint after losing the session lease —
-			// another process now owns the session, and appending to its
-			// eventlog would commit a split-brain write (#1361).
-			return
-		}
-		// Detached write: the final checkpoint is the crash-resume
-		// anchor and is emitted even when the loop exits because ctx
-		// was cancelled — passing the dead ctx here silently lost the
-		// checkpoint on exactly the shutdown path where it matters
-		// most (#365).
-		emitFinalCheckpointDetached(ctx, a, checkpointPayload{
-			Turn:                 result.Turns,
-			InputTokens:          result.InputTokens,
-			OutputTokens:         result.OutputTokens,
-			CostUSD:              result.CostUSD,
-			Goal:                 goal,
-			ContinuationPrompt:   cfg.continuationPrompt,
-			StopReason:           string(reason),
-			DoneDetail:           result.DoneDetail,
-			FinalText:            result.FinalText,
-			FinalTextSubstantive: haveSubstantive,
-		})
-	}
+	emitTurnCheckpoint, emitFinalCheckpoint, loseLease := cp.turn, cp.final, cp.loseLease
 
 	for {
 		if leaseLost(lock) {
-			return leaseLostResult(result, startedAt)
+			return loseLease()
 		}
 		// Pre-turn budget checks — applied to the cumulative
 		// (resumed + newly-accumulated) totals.
@@ -239,7 +212,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 
 		if leaseLost(lock) {
 			bankReturn(&result, turnRes)
-			return leaseLostResult(result, startedAt)
+			return loseLease()
 		}
 
 		if turnErr != nil {
@@ -310,7 +283,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 			emitTurnCheckpoint(scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev, haveSubstantive))
 			serr := awaitScheduledWake(leaseCtx, a, &cfg, ev)
 			if leaseLost(lock) {
-				return leaseLostResult(result, startedAt)
+				return loseLease()
 			}
 			switch {
 			case serr == nil:
@@ -343,7 +316,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 
 deferredExit:
 	if leaseLost(lock) {
-		return leaseLostResult(result, startedAt)
+		return loseLease()
 	}
 	result.Duration = time.Since(startedAt)
 	emitFinalCheckpoint(result.Reason)
@@ -354,6 +327,75 @@ func leaseLostResult(res RunResult, startedAt time.Time) (RunResult, error) {
 	res.Reason = StopReasonContextCancelled
 	res.Duration = time.Since(startedAt)
 	return res, fmt.Errorf("agent: Resume: %w", eventlog.ErrLeaseLost)
+}
+
+// resumeCheckpoints owns the checkpoint writes Resume makes under the
+// session lease. It reads Resume's live result through pointers so the
+// payload reflects whatever the loop has banked by the time it writes.
+type resumeCheckpoints struct {
+	ctx, leaseCtx   context.Context
+	a               *agent.Agent
+	lock            *eventlog.SessionLock
+	cfg             *autoConfig
+	result          *RunResult
+	goal            string
+	haveSubstantive *bool
+	startedAt       time.Time
+}
+
+// turn writes a per-turn or schedule checkpoint unless the lease is gone.
+func (c *resumeCheckpoints) turn(payload checkpointPayload) {
+	if leaseLost(c.lock) {
+		return
+	}
+	_ = emitCheckpoint(c.leaseCtx, c.a, payload)
+}
+
+// writeFinal is the unguarded final write; final and loseLease decide
+// whether it may run.
+func (c *resumeCheckpoints) writeFinal(reason StopReason) {
+	// Detached write: the final checkpoint is the crash-resume anchor
+	// and is emitted even when the loop exits because ctx was cancelled
+	// — passing the dead ctx here silently lost the checkpoint on
+	// exactly the shutdown path where it matters most (#365).
+	emitFinalCheckpointDetached(c.ctx, c.a, checkpointPayload{
+		Turn:                 c.result.Turns,
+		InputTokens:          c.result.InputTokens,
+		OutputTokens:         c.result.OutputTokens,
+		CostUSD:              c.result.CostUSD,
+		Goal:                 c.goal,
+		ContinuationPrompt:   c.cfg.continuationPrompt,
+		StopReason:           string(reason),
+		DoneDetail:           c.result.DoneDetail,
+		FinalText:            c.result.FinalText,
+		FinalTextSubstantive: *c.haveSubstantive,
+	})
+}
+
+// final writes the terminal checkpoint for a run that still holds its
+// lease. Never after losing it: another process may own the session,
+// and appending to its eventlog would commit a split-brain write (#1361).
+func (c *resumeCheckpoints) final(reason StopReason) {
+	if leaseLost(c.lock) {
+		return
+	}
+	c.writeFinal(reason)
+}
+
+// loseLease is the exit for every lease-lost path. Lost() closes for two
+// reasons: the row was stolen, or heartbeats stalled past the loss
+// window. In a single-replica deployment the second case is a database
+// outage with nobody to take the lease, and the partial turn's
+// accounting is worth keeping; Reaffirm proves which case this is with
+// one conditional UPDATE, and only a proven-still-held lease gets the
+// final checkpoint (#1361 review). The run ends with ErrLeaseLost either
+// way.
+func (c *resumeCheckpoints) loseLease() (RunResult, error) {
+	if held, err := c.lock.Reaffirm(c.ctx); err == nil && held {
+		c.result.Duration = time.Since(c.startedAt)
+		c.writeFinal(StopReasonContextCancelled)
+	}
+	return leaseLostResult(*c.result, c.startedAt)
 }
 
 // bindLeaseContext returns a child context that cancels with

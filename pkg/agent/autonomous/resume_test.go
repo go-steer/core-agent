@@ -705,3 +705,93 @@ func TestResumeAutonomous_AbortsWhenSessionLockLostDuringWakeWait(t *testing.T) 
 		t.Errorf("checkpoint count changed from %d to %d after wake-wait lease loss", beforeCheckpoints, after)
 	}
 }
+
+// TestResumeAutonomous_StallLossStillWritesFinalCheckpointWhenRowKept
+// covers the single-replica outage (#1361 review): heartbeats fail past
+// the loss window so Lost() fires and the turn is cancelled, but nobody
+// took the row. Once the database is back, Resume re-proves ownership
+// with Reaffirm and writes the final checkpoint, so the partial turn's
+// accounting is not lost; the error is still ErrLeaseLost so the caller
+// exits and restarts. Contrast the mid-turn steal test above, where the
+// row is someone else's and no checkpoint may be written.
+func TestResumeAutonomous_StallLossStillWritesFinalCheckpointWhenRowKept(t *testing.T) {
+	t.Parallel()
+	dsn := filepath.Join(t.TempDir(), "session.db")
+	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn),
+		eventlog.WithLockHeartbeat(10*time.Millisecond, 100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	defer h.Close()
+
+	seedLLM := &stubLLM{scenarios: []scenarioFn{textTurn("seed", 1, 1)}}
+	if _, err := Run(context.Background(),
+		runBuilder(seedLLM, h, "app", "u", "stall-kept"),
+		"go", WithMaxTurns(1)); err != nil {
+		t.Fatalf("seed Run: %v", err)
+	}
+	before := countCheckpoints(t, h, "app", "u", "stall-kept")
+
+	turnEntered := make(chan struct{})
+	turnCancelled := make(chan struct{})
+	proceed := make(chan struct{})
+	blockLLM := &stubLLM{scenarios: []scenarioFn{
+		func(ctx context.Context, _ *adkmodel.LLMRequest) []stubResp {
+			close(turnEntered)
+			<-ctx.Done()
+			close(turnCancelled)
+			// Hold the turn open until the test has restored the table,
+			// so Resume's Reaffirm runs against a healthy database.
+			<-proceed
+			return []stubResp{{err: ctx.Err()}}
+		},
+	}}
+
+	type resumeOut struct {
+		res RunResult
+		err error
+	}
+	done := make(chan resumeOut, 1)
+	go func() {
+		res, rerr := Resume(context.Background(),
+			resumeBuilder(blockLLM, h, "app", "u"),
+			SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "stall-kept"},
+			WithMaxTurns(5))
+		done <- resumeOut{res: res, err: rerr}
+	}()
+
+	select {
+	case <-turnEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Resume to enter the model turn")
+	}
+
+	// Stall: every heartbeat UPDATE now fails ("no such table"). The
+	// row itself is untouched, parked under another name.
+	if err := h.DB.Exec("ALTER TABLE agent_run_lock RENAME TO agent_run_lock_stalled").Error; err != nil {
+		t.Fatalf("rename away: %v", err)
+	}
+	select {
+	case <-turnCancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lease-bound turn was not cancelled after heartbeats stalled past the loss window")
+	}
+	// Recovery: the row comes back with our holder on it.
+	if err := h.DB.Exec("ALTER TABLE agent_run_lock_stalled RENAME TO agent_run_lock").Error; err != nil {
+		t.Fatalf("rename back: %v", err)
+	}
+	close(proceed)
+
+	var out resumeOut
+	select {
+	case out = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resume did not return after the stalled turn was released")
+	}
+	if !errors.Is(out.err, eventlog.ErrLeaseLost) {
+		t.Errorf("Resume err = %v, want errors.Is(..., eventlog.ErrLeaseLost): a stall still ends the run", out.err)
+	}
+	if after := countCheckpoints(t, h, "app", "u", "stall-kept"); after != before+1 {
+		t.Errorf("checkpoint count %d → %d; a stall with the row still ours must write exactly one final checkpoint", before, after)
+	}
+}

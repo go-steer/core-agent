@@ -91,10 +91,34 @@ type SessionLock struct {
 	done     chan struct{}
 	// lost is closed by the heartbeat loop if it discovers the lease
 	// was stolen out from under us (its conditional UPDATE matched zero
-	// rows) or if heartbeats have failed for at least staleAfter.
+	// rows) or if heartbeats have failed for at least lossWindow().
 	// Callers running work under the lock select on Lost() to abort
 	// before committing split-brain writes.
 	lost chan struct{}
+	// stolen records that lost was closed because the conditional
+	// UPDATE matched zero rows — the row is now someone else's — as
+	// opposed to a heartbeat stall. Written by the heartbeat goroutine
+	// before it closes done; read by Release after <-done.
+	stolen bool
+}
+
+// lossWindow is how long heartbeats may fail before the holder declares
+// its own lease lost. It is one heartbeatInterval SHORTER than
+// staleAfter, the point at which AcquireLock lets another process steal
+// the row: a fast-failing database is noticed only on the next tick, so
+// without the margin a holder could believe it owned the lease for up to
+// one interval after a successor had taken it (#1361 review). Floored at
+// staleAfter/2 so a configuration with interval >= staleAfter cannot
+// drive the window to zero.
+func (l *SessionLock) lossWindow() time.Duration {
+	if l.staleAfter <= 0 {
+		return 0
+	}
+	w := l.staleAfter - l.heartbeatInterval
+	if floor := l.staleAfter / 2; w < floor {
+		w = floor
+	}
+	return w
 }
 
 func (h *Handle) lockIntervals() (interval, staleAfter time.Duration) {
@@ -212,11 +236,23 @@ func (l *SessionLock) Release() error {
 	// row so we don't race a heartbeat against the delete.
 	<-l.done
 
+	// A stolen row is a successor's lease; the conditional predicate
+	// below would match nothing, and the query is one more round trip
+	// against a database that may be the reason we are here.
+	if l.stolen {
+		return nil
+	}
+
 	// Conditional delete: only remove the row if we still hold it
 	// (i.e. nobody stole it after a stale-window elapsed during a
 	// long pause). Avoids accidentally deleting a successor's
-	// lease.
-	res := l.db.
+	// lease. Bounded: on the DB-stall path that closes Lost(), an
+	// unbounded DELETE here would hang Release — and with it the
+	// caller's exit-and-restart — against the very database that
+	// stalled (#1361 review).
+	ctx, cancel := context.WithTimeout(context.Background(), l.heartbeatTimeout)
+	defer cancel()
+	res := l.db.WithContext(ctx).
 		Where("app_name = ? AND user_id = ? AND session_id = ? AND holder = ?",
 			l.app, l.user, l.session, l.holder).
 		Delete(&agentRunLockRow{})
@@ -226,20 +262,60 @@ func (l *SessionLock) Release() error {
 	return nil
 }
 
+// Reaffirm re-proves ownership with one conditional heartbeat UPDATE
+// and reports whether this holder still owns the row. It exists for the
+// moment after Lost() has closed because heartbeats STALLED (not because
+// the row was stolen): in a single-replica deployment nobody took the
+// lease during the outage, and a caller that can prove that may still
+// write its final checkpoint. A stolen lease reports false without
+// touching the database. The query is bounded by heartbeatTimeout.
+func (l *SessionLock) Reaffirm(ctx context.Context) (bool, error) {
+	if l == nil {
+		return false, nil
+	}
+	l.mu.Lock()
+	released := l.released
+	l.mu.Unlock()
+	if released {
+		return false, nil
+	}
+	select {
+	case <-l.done:
+		if l.stolen {
+			return false, nil
+		}
+	default:
+	}
+	ctx, cancel := context.WithTimeout(ctx, l.heartbeatTimeout)
+	defer cancel()
+	res := l.db.WithContext(ctx).
+		Model(&agentRunLockRow{}).
+		Where("app_name = ? AND user_id = ? AND session_id = ? AND holder = ?",
+			l.app, l.user, l.session, l.holder).
+		Update("heartbeat_at", time.Now())
+	if res.Error != nil {
+		return false, fmt.Errorf("eventlog: SessionLock.Reaffirm: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // Holder returns the identifier we registered when acquiring the
 // lock. Useful for diagnostics + for tests that need to assert the
 // row content.
 func (l *SessionLock) Holder() string { return l.holder }
 
-// Lost returns a channel that is closed if the lease is stolen out
-// from under us while it is held — the heartbeat's conditional UPDATE
-// matched zero rows, meaning another process reclaimed the lease after
-// our heartbeat lapsed past the staleness window (a >staleAfter GC
-// pause, sleep, or DB stall). A caller running work under the lock —
-// e.g. the autonomous run loop — must select on this channel and abort
+// Lost returns a channel that is closed if the lease is lost while it is
+// held: either the heartbeat's conditional UPDATE matched zero rows —
+// another process reclaimed the lease after our heartbeat lapsed past
+// the staleness window (a long GC pause, sleep, or DB stall) — or
+// heartbeats have failed to reach the database for the loss window
+// (staleAfter minus one heartbeat interval), after which we can no
+// longer prove exclusivity. A caller running work under the lock — e.g.
+// the autonomous run loop — must select on this channel and abort
 // promptly, otherwise both processes run against the same session: the
-// exact split-brain the lock exists to prevent. The channel is never
-// closed for a lock that is cleanly Released while still held.
+// exact split-brain the lock exists to prevent. Reaffirm tells the two
+// causes apart after the fact. The channel is never closed for a lock
+// that is cleanly Released while still held.
 func (l *SessionLock) Lost() <-chan struct{} { return l.lost }
 
 func (l *SessionLock) heartbeatLoop() {
@@ -254,11 +330,13 @@ func (l *SessionLock) heartbeatLoop() {
 		case <-l.stop:
 			return
 		case <-ticker.C:
-			if l.beat() {
+			lost, stolen := l.beat()
+			if lost {
 				// Lease lost. Signal any consumer running under the
 				// lock so it can abort, then stop heartbeating —
 				// continuing to refresh a row we no longer own is
 				// pointless.
+				l.stolen = stolen
 				close(l.lost)
 				return
 			}
@@ -268,13 +346,13 @@ func (l *SessionLock) heartbeatLoop() {
 
 // beat refreshes heartbeat_at for the row we still own, bounded by
 // beatTimeout() so a wedged database neither hangs the loop forever nor
-// outlives the remaining staleAfter window (#1361). It returns true when
-// the lease has been lost — either the conditional UPDATE succeeded and
-// matched zero rows (another process stole the row), or heartbeats have
-// failed for at least staleAfter so we can no longer guarantee
-// exclusivity (#1361). A transient error within staleAfter returns
-// false and retries on the next tick.
-func (l *SessionLock) beat() (lost bool) {
+// outlives the loss window (#1361). It returns lost=true when the lease
+// is gone: stolen=true if the conditional UPDATE succeeded and matched
+// zero rows (another process owns the row), stolen=false if heartbeats
+// have failed for at least lossWindow() so exclusivity can no longer be
+// guaranteed. A transient error inside the window returns false and
+// retries on the next tick.
+func (l *SessionLock) beat() (lost, stolen bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), l.beatTimeout())
 	defer cancel()
 	now := time.Now()
@@ -284,31 +362,33 @@ func (l *SessionLock) beat() (lost bool) {
 			l.app, l.user, l.session, l.holder).
 		Update("heartbeat_at", now)
 	if res.Error != nil {
-		return l.staleAfter > 0 && time.Since(l.lastHeartbeat) >= l.staleAfter
+		w := l.lossWindow()
+		return w > 0 && time.Since(l.lastHeartbeat) >= w, false
 	}
 	if res.RowsAffected == 0 {
-		return true
+		return true, true
 	}
 	l.lastHeartbeat = now
-	return false
+	return false, false
 }
 
 // beatTimeout bounds each heartbeat query by the lesser of
-// heartbeatTimeout and the remaining staleAfter budget from
-// lastHeartbeat so a hung database unblocks right at the staleness
-// boundary instead of lingering up to defaultHeartbeatTimeout (10s)
-// after another process is already eligible to steal the lease (#1361).
+// heartbeatTimeout and the remaining loss window from lastHeartbeat so a
+// hung database unblocks right at the loss boundary instead of lingering
+// up to defaultHeartbeatTimeout (10s) after another process is already
+// eligible to steal the lease (#1361).
 func (l *SessionLock) beatTimeout() time.Duration {
 	timeout := l.heartbeatTimeout
-	if l.staleAfter <= 0 {
+	window := l.lossWindow()
+	if window <= 0 {
 		return timeout
 	}
-	rem := l.staleAfter - time.Since(l.lastHeartbeat)
+	rem := window - time.Since(l.lastHeartbeat)
 	if rem > 0 && rem < timeout {
 		return rem
 	}
-	if rem <= 0 && l.staleAfter < timeout {
-		return l.staleAfter
+	if rem <= 0 && window < timeout {
+		return window
 	}
 	return timeout
 }

@@ -326,24 +326,153 @@ func TestHeartbeat_SingleDBErrorWithinStaleWindowDoesNotSignalLoss(t *testing.T)
 	}
 
 	lock := &SessionLock{
-		db:               h.db,
-		app:              "app",
-		user:             "user",
-		session:          "sess1",
-		holder:           "me/1/beef",
-		heartbeatTimeout: time.Second,
-		staleAfter:       time.Minute,
-		lastHeartbeat:    time.Now(),
+		db:                h.db,
+		app:               "app",
+		user:              "user",
+		session:           "sess1",
+		holder:            "me/1/beef",
+		heartbeatInterval: 5 * time.Second,
+		heartbeatTimeout:  time.Second,
+		staleAfter:        time.Minute,
+		lastHeartbeat:     time.Now(),
 	}
-	if lock.beat() {
-		t.Fatal("beat() returned true on a single DB error well within staleAfter; want false")
+	if lost, _ := lock.beat(); lost {
+		t.Fatal("beat() returned lost on a single DB error well within the loss window; want false")
 	}
 
-	// Once lastHeartbeat is older than staleAfter, the same DB error
-	// must report lease loss.
+	// Once lastHeartbeat is older than the loss window, the same DB
+	// error must report lease loss — as a stall, not a steal.
 	lock.lastHeartbeat = time.Now().Add(-2 * time.Minute)
-	if !lock.beat() {
-		t.Fatal("beat() returned false when DB error occurred past staleAfter; want true")
+	lost, stolen := lock.beat()
+	if !lost {
+		t.Fatal("beat() returned lost=false when DB error occurred past the loss window; want true")
+	}
+	if stolen {
+		t.Fatal("beat() reported stolen=true for a stall; a stall is not a steal")
+	}
+}
+
+// The holder declares its own lease lost one heartbeat interval BEFORE
+// the point at which AcquireLock lets a successor steal it. The margin
+// is what makes "the holder knows before anyone else can own the row"
+// hold when a fast-failing database is noticed only on the next tick
+// (#1361 review). This pins the two numbers against each other so they
+// cannot be re-aligned without this test saying so.
+func TestLossWindow_PrecedesStealThresholdByOneInterval(t *testing.T) {
+	t.Parallel()
+	l := &SessionLock{heartbeatInterval: defaultHeartbeatInterval, staleAfter: defaultStaleAfter}
+	if got, want := l.lossWindow(), defaultStaleAfter-defaultHeartbeatInterval; got != want {
+		t.Fatalf("lossWindow() = %v, want %v (staleAfter − heartbeatInterval)", got, want)
+	}
+	if l.lossWindow()+l.heartbeatInterval > l.staleAfter {
+		t.Fatalf("invariant broken: lossWindow %v + interval %v exceeds steal threshold %v",
+			l.lossWindow(), l.heartbeatInterval, l.staleAfter)
+	}
+	// A degenerate configuration cannot drive the window to zero.
+	l = &SessionLock{heartbeatInterval: time.Minute, staleAfter: 30 * time.Second}
+	if got, want := l.lossWindow(), 15*time.Second; got != want {
+		t.Fatalf("lossWindow() with interval >= staleAfter = %v, want floor %v", got, want)
+	}
+	// Unconfigured staleAfter disables the stall rule entirely.
+	if got := (&SessionLock{heartbeatInterval: time.Second}).lossWindow(); got != 0 {
+		t.Fatalf("lossWindow() with staleAfter=0 = %v, want 0", got)
+	}
+}
+
+// beat() on a DB error applies the loss window, not staleAfter: at
+// 24s of silence with a 5s interval and 30s staleAfter it holds, at 25s
+// it gives up.
+func TestBeat_DBErrorUsesLossWindowNotStaleAfter(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := h.db.WithContext(ctx).AutoMigrate(&agentRunLockRow{}); err != nil {
+		t.Fatalf("AutoMigrate: %v", err)
+	}
+	if err := h.db.WithContext(ctx).Exec("DROP TABLE agent_run_lock").Error; err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	lock := &SessionLock{
+		db: h.db, app: "app", user: "user", session: "s", holder: "me/1/beef",
+		heartbeatInterval: 5 * time.Second,
+		heartbeatTimeout:  time.Second,
+		staleAfter:        30 * time.Second,
+	}
+	lock.lastHeartbeat = time.Now().Add(-24 * time.Second)
+	if lost, _ := lock.beat(); lost {
+		t.Fatal("beat() lost at 24s of silence; the 25s loss window had not elapsed")
+	}
+	lock.lastHeartbeat = time.Now().Add(-26 * time.Second)
+	if lost, _ := lock.beat(); !lost {
+		t.Fatal("beat() held at 26s of silence; the 25s loss window had elapsed (staleAfter is 30s, but the holder must give up first)")
+	}
+}
+
+// On the DB-stall path that closes Lost(), Release must still return
+// promptly: an unbounded DELETE against the database that stalled would
+// hang the caller's exit-and-restart (#1361 review).
+func TestRelease_ReturnsPromptlyAfterStallLoss(t *testing.T) {
+	t.Parallel()
+	dsn := t.TempDir() + "/stall-release.db"
+	ctx := context.Background()
+	h, err := Open(ctx, sqlite.Open(dsn), WithLockHeartbeat(10*time.Millisecond, 60*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	lock, err := h.AcquireLock(ctx, "app", "user", "sess1")
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	if err := h.db.WithContext(ctx).Exec("DROP TABLE agent_run_lock").Error; err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	select {
+	case <-lock.Lost():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Lost() did not close")
+	}
+	done := make(chan error, 1)
+	go func() { done <- lock.Release() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Release returned nil against a dropped table; want the DELETE's error surfaced")
+		}
+	case <-time.After(lock.heartbeatTimeout + 2*time.Second):
+		t.Fatal("Release did not return within heartbeatTimeout after a stall loss")
+	}
+}
+
+// Reaffirm distinguishes "the row was stolen" (false, no DB call) from
+// "heartbeats stalled but the row is still ours" (true after the
+// database recovers), which is what lets a single-replica run write its
+// final checkpoint after an outage.
+func TestReaffirm_StallIsRecoverableStealIsNot(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	lock, err := h.AcquireLock(ctx, "app", "user", "sess1")
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	defer lock.Release()
+	ok, err := lock.Reaffirm(ctx)
+	if err != nil || !ok {
+		t.Fatalf("Reaffirm on a held lease = (%v, %v), want (true, nil)", ok, err)
+	}
+
+	// Simulate a steal: rewrite the holder out from under us.
+	if err := h.db.WithContext(ctx).Model(&agentRunLockRow{}).
+		Where("session_id = ?", "sess1").Update("holder", "thief/9/cafe").Error; err != nil {
+		t.Fatalf("steal: %v", err)
+	}
+	ok, err = lock.Reaffirm(ctx)
+	if err != nil || ok {
+		t.Fatalf("Reaffirm after a steal = (%v, %v), want (false, nil)", ok, err)
 	}
 }
 

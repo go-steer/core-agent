@@ -161,7 +161,11 @@ if err != nil { /* ErrSessionLocked when another holder is fresh */ }
 defer lock.Release()
 ```
 
-A background heartbeat goroutine refreshes the lease every 5 seconds. A lease is considered stale after 30 seconds without a heartbeat and is automatically stolen by the next acquirer (recovers from crashed processes). Concurrent attempts on a fresh lease return `eventlog.ErrSessionLocked` with the holder identifier in the error message for diagnostics.
+A background heartbeat goroutine refreshes the lease every 5 seconds (`eventlog.WithLockHeartbeat(interval, staleAfter)` overrides the defaults). A lease is considered stale after 30 seconds without a heartbeat and is automatically stolen by the next acquirer (recovers from crashed processes). Concurrent attempts on a fresh lease return `eventlog.ErrSessionLocked` with the holder identifier in the error message for diagnostics.
+
+If a heartbeat tick discovers either that another holder stole the row (`RowsAffected == 0`) or that database errors have prevented a heartbeat refresh for at least the `staleAfter` window, `SessionLock.Lost()` closes and the heartbeat loop stops. `autonomous.Resume` selects on `lock.Lost()`, cancels any in-flight turn or scheduled-wake wait, skips its final checkpoint write so it cannot clobber the successor holder's state, and returns `eventlog.ErrLeaseLost` (`StopReasonContextCancelled`).
+
+**HA posture: single-replica with safe restart.** `SessionLock` is a cooperative lease for rolling restarts, crash recovery, and preventing accidental concurrent `autonomous.Resume` invocations against the same `(AppName, UserID, SessionID)`. It is not a fencing token on every event or tool side-effect: run at most one active replica per session (for example a single-replica `Deployment`, a `StatefulSet` ordinal, or one Kubernetes `Job` per session) rather than an active-active pool competing for the same session ID.
 
 `autonomous.Resume` acquires the lock automatically. Plain `autonomous.Run` does not — fresh runs have no shared session to protect.
 

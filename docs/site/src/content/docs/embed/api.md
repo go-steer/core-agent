@@ -387,9 +387,11 @@ The bundled CLI wires this automatically when `--session-db` is combined with `-
 
 ### Session lock
 
-Both `autonomous.Run` (when its agent is wired with `WithEventLog`) and `autonomous.Resume` acquire an exclusive lease on `(AppName, UserID, SessionID)` via `Handle.AcquireLock`. A heartbeat goroutine refreshes the lease every 5 seconds; a lease is considered stale after 30 seconds without a heartbeat and is automatically stolen by the next acquirer (recovers from crashed processes). Concurrent attempts on a fresh lease return `eventlog.ErrSessionLocked` with the holder identifier in the error message for diagnostics.
+`autonomous.Resume` acquires an exclusive lease on `(AppName, UserID, SessionID)` via `Handle.AcquireLock` (plain `autonomous.Run` does not acquire the lock — fresh runs start a new session rather than resuming a shared one). A heartbeat goroutine refreshes the lease every 5 seconds (configurable via `eventlog.WithLockHeartbeat(interval, staleAfter)`); a lease is considered stale after 30 seconds without a heartbeat and is automatically stolen by the next acquirer (recovers from crashed processes). Concurrent attempts on a fresh lease return `eventlog.ErrSessionLocked` with the holder identifier in the error message for diagnostics.
 
-The lock lives in its own `agent_run_lock` table in the same database; callers don't manage it directly.
+If a holder's lease is stolen after a pause or its heartbeat fails to reach the database for the full `staleAfter` window, `SessionLock.Lost()` closes. `autonomous.Resume` watches `lock.Lost()`, cancels the active turn or wake timer, skips emitting any further checkpoints so the successor's session is not corrupted, and returns `eventlog.ErrLeaseLost`.
+
+The lock lives in its own `agent_run_lock` table in the same database. It provides **single-replica with safe restart** semantics (crash recovery and rolling handoff), not active-active multi-replica fencing across every tool side-effect.
 
 ---
 

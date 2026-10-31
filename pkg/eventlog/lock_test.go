@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/glebarez/sqlite"
 )
 
 func TestAcquireLock_FirstAcquireSucceeds(t *testing.T) {
@@ -260,6 +262,88 @@ func TestHeartbeat_LeaseLostSignalsAndStops(t *testing.T) {
 	case <-lock.done:
 	case <-time.After(time.Second):
 		t.Error("heartbeat loop did not stop after detecting lease loss")
+	}
+}
+
+// TestHeartbeat_DBStallPastStaleWindowSignalsLeaseLoss is the
+// regression test for #1361: when the database becomes unreachable or
+// errors continuously past staleAfter, another process can steal our
+// expired lease on disk while our UPDATEs are failing with res.Error.
+// Once time.Since(lastHeartbeat) >= staleAfter on a DB error, beat()
+// must assume the lease is gone, close Lost(), and exit the heartbeat
+// loop so autonomous.Resume aborts instead of writing split-brain
+// checkpoints after the DB recovers.
+func TestHeartbeat_DBStallPastStaleWindowSignalsLeaseLoss(t *testing.T) {
+	t.Parallel()
+	dsn := t.TempDir() + "/stall.db"
+	ctx := context.Background()
+	h, err := Open(ctx, sqlite.Open(dsn), WithLockHeartbeat(10*time.Millisecond, 60*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+
+	lock, err := h.AcquireLock(ctx, "app", "user", "sess1")
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	defer lock.Release()
+
+	// Drop the lock table to force every subsequent heartbeat UPDATE to
+	// fail with res.Error != nil ("no such table: agent_run_lock").
+	if err := h.db.WithContext(ctx).Exec("DROP TABLE agent_run_lock").Error; err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+
+	select {
+	case <-lock.Lost():
+	case <-time.After(2 * time.Second):
+		t.Fatal("lease loss was not signaled via Lost() after DB errors exceeded staleAfter")
+	}
+
+	select {
+	case <-lock.done:
+	case <-time.After(time.Second):
+		t.Error("heartbeat loop did not stop after signaling DB-stall lease loss")
+	}
+}
+
+// TestHeartbeat_SingleDBErrorWithinStaleWindowDoesNotSignalLoss
+// verifies that a transient DB error before staleAfter has elapsed
+// does not prematurely signal lease loss (#1361).
+func TestHeartbeat_SingleDBErrorWithinStaleWindowDoesNotSignalLoss(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	if err := h.db.WithContext(ctx).AutoMigrate(&agentRunLockRow{}); err != nil {
+		t.Fatalf("AutoMigrate: %v", err)
+	}
+	// Drop the table so beat() gets res.Error != nil.
+	if err := h.db.WithContext(ctx).Exec("DROP TABLE agent_run_lock").Error; err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+
+	lock := &SessionLock{
+		db:               h.db,
+		app:              "app",
+		user:             "user",
+		session:          "sess1",
+		holder:           "me/1/beef",
+		heartbeatTimeout: time.Second,
+		staleAfter:       time.Minute,
+		lastHeartbeat:    time.Now(),
+	}
+	if lock.beat() {
+		t.Fatal("beat() returned true on a single DB error well within staleAfter; want false")
+	}
+
+	// Once lastHeartbeat is older than staleAfter, the same DB error
+	// must report lease loss.
+	lock.lastHeartbeat = time.Now().Add(-2 * time.Minute)
+	if !lock.beat() {
+		t.Fatal("beat() returned false when DB error occurred past staleAfter; want true")
 	}
 }
 

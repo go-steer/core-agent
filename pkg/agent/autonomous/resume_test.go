@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 
@@ -501,5 +502,206 @@ func TestResumeAutonomous_CancelledWhileWaitingReportsElapsedDuration(t *testing
 	}
 	if res.Duration > elapsed {
 		t.Errorf("Duration = %v, want <= observed elapsed %v", res.Duration, elapsed)
+	}
+}
+
+// countCheckpoints returns the number of checkpoint events recorded
+// for (app, user, sessionID).
+func countCheckpoints(t *testing.T, h *eventlog.Handle, app, user, sessionID string) int {
+	t.Helper()
+	var n int
+	for entry, err := range h.Stream.Since(context.Background(), 0,
+		eventlog.ForSession(app, user, sessionID),
+		eventlog.WithAuthorSuffix(checkpointAuthorSuffix)) {
+		if err != nil {
+			t.Fatalf("Since: %v", err)
+		}
+		if entry.Event != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// stealSessionLock overwrites the holder column in agent_run_lock for
+// (app, user, sessionID) so the active SessionLock's next heartbeat
+// matches zero rows and closes Lost().
+func stealSessionLock(t *testing.T, h *eventlog.Handle, app, user, sessionID, newHolder string) {
+	t.Helper()
+	res := h.DB.WithContext(context.Background()).
+		Table("agent_run_lock").
+		Where("app_name = ? AND user_id = ? AND session_id = ?", app, user, sessionID).
+		Updates(map[string]any{"holder": newHolder, "heartbeat_at": time.Now()})
+	if res.Error != nil {
+		t.Fatalf("stealSessionLock: %v", res.Error)
+	}
+	if res.RowsAffected != 1 {
+		t.Fatalf("stealSessionLock affected %d rows, want 1", res.RowsAffected)
+	}
+}
+
+// TestResumeAutonomous_AbortsWhenSessionLockLostMidTurn is the
+// end-to-end regression test for #1361: when SessionLock.Lost() fires
+// while a resumed turn is in flight, Resume must cancel the turn,
+// return eventlog.ErrLeaseLost with StopReasonContextCancelled, and
+// skip emitting a final checkpoint so it does not write split-brain
+// state into the successor holder's session.
+func TestResumeAutonomous_AbortsWhenSessionLockLostMidTurn(t *testing.T) {
+	t.Parallel()
+	dsn := filepath.Join(t.TempDir(), "session.db")
+	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn),
+		eventlog.WithLockHeartbeat(10*time.Millisecond, 100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	defer h.Close()
+
+	// Seed a resumable 1-turn checkpoint.
+	seedLLM := &stubLLM{scenarios: []scenarioFn{textTurn("seed", 1, 1)}}
+	if _, err := Run(context.Background(),
+		runBuilder(seedLLM, h, "app", "u", "stolen-midturn"),
+		"go", WithMaxTurns(1)); err != nil {
+		t.Fatalf("seed Run: %v", err)
+	}
+	beforeCheckpoints := countCheckpoints(t, h, "app", "u", "stolen-midturn")
+
+	turnEntered := make(chan struct{})
+	blockLLM := &stubLLM{scenarios: []scenarioFn{
+		func(ctx context.Context, _ *adkmodel.LLMRequest) []stubResp {
+			close(turnEntered)
+			<-ctx.Done()
+			return []stubResp{{err: ctx.Err()}}
+		},
+	}}
+
+	type resumeOut struct {
+		res RunResult
+		err error
+	}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	done := make(chan resumeOut, 1)
+	go func() {
+		res, rerr := Resume(runCtx,
+			resumeBuilder(blockLLM, h, "app", "u"),
+			SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "stolen-midturn"},
+			WithMaxTurns(5))
+		done <- resumeOut{res: res, err: rerr}
+	}()
+
+	select {
+	case <-turnEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Resume to enter the model turn")
+	}
+
+	// Overwrite the lock holder so the next 10ms heartbeat sees 0 rows
+	// affected and closes lock.Lost().
+	stealSessionLock(t, h, "app", "u", "stolen-midturn", "successor/2/beef")
+
+	var out resumeOut
+	select {
+	case out = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resume did not abort after SessionLock.Lost() fired")
+	}
+
+	if !errors.Is(out.err, eventlog.ErrLeaseLost) {
+		t.Errorf("Resume err = %v, want errors.Is(..., eventlog.ErrLeaseLost)", out.err)
+	}
+	if out.res.Reason != StopReasonContextCancelled {
+		t.Errorf("Reason = %q, want %q", out.res.Reason, StopReasonContextCancelled)
+	}
+
+	// Crucial split-brain invariant: the evicted holder must NOT write
+	// a per-turn or final checkpoint after losing the lease.
+	afterCheckpoints := countCheckpoints(t, h, "app", "u", "stolen-midturn")
+	if afterCheckpoints != beforeCheckpoints {
+		t.Errorf("checkpoint count changed from %d to %d after lease loss; evicted Resume must not emit split-brain checkpoints",
+			beforeCheckpoints, afterCheckpoints)
+	}
+}
+
+// TestResumeAutonomous_AbortsWhenSessionLockLostDuringWakeWait verifies
+// that losing the session lock while parked on a deferred NextWakeAt
+// wait unblocks the wait immediately with eventlog.ErrLeaseLost and
+// writes no checkpoint (#1361).
+func TestResumeAutonomous_AbortsWhenSessionLockLostDuringWakeWait(t *testing.T) {
+	t.Parallel()
+	dsn := filepath.Join(t.TempDir(), "session.db")
+	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn),
+		eventlog.WithLockHeartbeat(10*time.Millisecond, 100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	defer h.Close()
+
+	llm := &stubLLM{}
+	seed, err := resumeBuilder(llm, h, "app", "u")(nil, "stolen-wakewait")
+	if err != nil {
+		t.Fatalf("build seeding agent: %v", err)
+	}
+	if _, err := seed.SessionService().Create(context.Background(), &session.CreateRequest{
+		AppName: "app", UserID: "u", SessionID: "stolen-wakewait",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := emitCheckpoint(context.Background(), seed, checkpointPayload{
+		Turn:               2,
+		ContinuationPrompt: "continue",
+		NextWakeAt:         time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("emitCheckpoint: %v", err)
+	}
+	beforeCheckpoints := countCheckpoints(t, h, "app", "u", "stolen-wakewait")
+
+	type resumeOut struct {
+		res RunResult
+		err error
+	}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	done := make(chan resumeOut, 1)
+	go func() {
+		res, rerr := Resume(runCtx,
+			resumeBuilder(llm, h, "app", "u"),
+			SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "stolen-wakewait"})
+		done <- resumeOut{res: res, err: rerr}
+	}()
+
+	// Wait until Resume has acquired the row in agent_run_lock.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var count int64
+		h.DB.WithContext(context.Background()).
+			Table("agent_run_lock").
+			Where("app_name = ? AND user_id = ? AND session_id = ?", "app", "u", "stolen-wakewait").
+			Count(&count)
+		if count == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for Resume to acquire agent_run_lock")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	stealSessionLock(t, h, "app", "u", "stolen-wakewait", "successor/2/cafe")
+
+	var out resumeOut
+	select {
+	case out = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resume did not abort from deferred-wake wait after SessionLock.Lost() fired")
+	}
+
+	if !errors.Is(out.err, eventlog.ErrLeaseLost) {
+		t.Errorf("Resume err = %v, want errors.Is(..., eventlog.ErrLeaseLost)", out.err)
+	}
+	if out.res.Reason != StopReasonContextCancelled {
+		t.Errorf("Reason = %q, want %q", out.res.Reason, StopReasonContextCancelled)
+	}
+	if after := countCheckpoints(t, h, "app", "u", "stolen-wakewait"); after != beforeCheckpoints {
+		t.Errorf("checkpoint count changed from %d to %d after wake-wait lease loss", beforeCheckpoints, after)
 	}
 }

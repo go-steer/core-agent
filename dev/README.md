@@ -249,6 +249,7 @@ and a new one should copy its shape:
 | Workflow | Schedule | Tool | Answers |
 |----------|----------|------|---------|
 | `lookout-pin-check.yml` | Tuesdays 06:23 UTC | `dev/lookout-pin-check` | is the recipe's pin of `ghcr.io/go-steer/lookout` still upstream's current release? |
+| `ax-pin-check.yml` | Wednesdays 06:41 UTC | `dev/ax-pin-check` | have `google/ax` or the `mastersingh24/ax` fork moved under `examples/deploy/ax`'s `.ax-ref` / `.ax-fork-ref` in the runner contract, the task-spec schema or `cmd/ax-task-runner`? Files or refreshes one rolling issue (label `ax-pin-check`) rather than a PR, because the bump is a human decision tied to shipmind's `ax-runner` pin (#1410). |
 
 The built-in price table used to be the other one (`pricing-regen.yml`,
 `dev/regen-builtin-pricing`). It now lives in

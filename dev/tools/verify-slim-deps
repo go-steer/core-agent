@@ -42,6 +42,17 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 cd "$(repo_root)"
 
+# Ceiling on the transitive package count of the slim target. The
+# denylist below names the heavy subsystems; this number is the tripwire
+# for everything it does not name — an ORM or a websocket client arriving
+# through a type-only import looks like nothing in particular until the
+# count moves (#1415). Measured 546 at the time of writing; the known
+# heavy edges still inside that figure are gorm.io/gorm (via pkg/eventlog
+# and pkg/attach), github.com/gorilla/websocket (pkg/attach),
+# github.com/itchyny/gojq (pkg/tools) and otelhttp (genai). Raise it only
+# in the PR that knowingly adds weight, and say what came in.
+SLIM_MAX_PACKAGES="${SLIM_MAX_PACKAGES:-570}"
+
 DENYLIST=(
   # Binary entrypoints and TUI/daemon internal packages.
   '^github\.com/go-steer/core-agent(/v[0-9]+)?/cmd/'
@@ -131,7 +142,16 @@ EOF
 
   local count
   count="$(echo "$deps" | wc -l | tr -d ' ')"
-  echo "verify-slim-deps: OK (${target}, ${count} transitive packages, 0 denylisted)"
+  if [[ "$count" -gt "$SLIM_MAX_PACKAGES" ]]; then
+    cat >&2 <<EOF
+verify-slim-deps: FAIL: ${target} has ${count} transitive packages; the slim-embed ceiling is ${SLIM_MAX_PACKAGES}.
+The denylist above catches the named heavy subsystems; this ceiling catches everything else
+arriving through a type-only import (#1415). If the growth is deliberate, raise
+SLIM_MAX_PACKAGES in dev/tools/verify-slim-deps in the same PR and say what came in and why.
+EOF
+    return 1
+  fi
+  echo "verify-slim-deps: OK (${target}, ${count} transitive packages, 0 denylisted, ceiling ${SLIM_MAX_PACKAGES})"
 }
 
 main() {

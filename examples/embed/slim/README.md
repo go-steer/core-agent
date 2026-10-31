@@ -49,4 +49,10 @@ audit-event types (`WithAttachEmitter`, `WithEventLog`), and `google.golang.org/
 plus `pkg/agent` import the OpenTelemetry API (`go.opentelemetry.io/otel`,
 `/trace`, `/metric`). Neither pulls in SQLite drivers, Prometheus, or the
 OpenTelemetry SDK unless `pkg/telemetry` or `github.com/glebarez/sqlite` is
-imported by the host binary.
+imported by the host binary. Those type-only edges do bring `gorm.io/gorm`,
+`github.com/gorilla/websocket` and `github.com/itchyny/gojq` into the graph
+today ([#1415](https://github.com/go-steer/core-agent/issues/1415) tracks
+splitting them out). Because the denylist cannot see that kind of arrival,
+the script also enforces a transitive package-count ceiling
+(`SLIM_MAX_PACKAGES`, 570 against a measured 546); a PR that knowingly adds
+weight raises it in the same change and says what came in.

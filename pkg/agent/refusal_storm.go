@@ -228,14 +228,6 @@ func (a *Agent) drainRefusalStormAudit() {
 	if repeats == 0 || a.eventLog == nil {
 		return
 	}
-	getResp, err := a.eventLog.Service.Get(context.Background(), &session.GetRequest{
-		AppName:   a.appName,
-		UserID:    a.userID,
-		SessionID: a.sessionID,
-	})
-	if err != nil {
-		return
-	}
 	ev := session.NewEvent(context.Background(), "gate-refusal-storm")
 	ev.Author = refusalStormAuthor
 	ev.CustomMetadata = map[string]any{
@@ -243,5 +235,5 @@ func (a *Agent) drainRefusalStormAudit() {
 		"repeats": repeats,
 		"reason":  "turn ended: the agent re-issued a call the operator had already refused in this turn",
 	}
-	_ = a.eventLog.Service.AppendEvent(context.Background(), getResp.Session, ev)
+	a.queueOutOfBandEvent(ev)
 }

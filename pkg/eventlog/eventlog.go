@@ -162,6 +162,10 @@ type Handle struct {
 	// Pass to agent.WithSessionService (or use the
 	// agent.WithEventLog convenience that does both at once).
 	Service session.Service
+	// Guardrail is the durable O(1) guardrail state store backed by
+	// agent_guardrail_state on the same database (#1360). Nil on a
+	// non-SQL Handle.
+	Guardrail *GuardrailStore
 	// DB exposes the overlay-table connection so adjacent
 	// substrates (e.g., pkg/attach.SessionACLStore) can share the
 	// same database without re-opening it. Read-only access from

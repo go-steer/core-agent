@@ -171,6 +171,11 @@ func (s *gormStream) overlayAfterCreate(tx *gorm.DB) {
 		_ = tx.AddError(err)
 		return
 	}
+	if err := applyGuardrailEventOnDB(tx.Session(&gorm.Session{NewDB: true}), p.sess, p.ev); err != nil {
+		p.err = err
+		_ = tx.AddError(err)
+		return
+	}
 	p.seq = row.Seq
 	p.done = true
 }

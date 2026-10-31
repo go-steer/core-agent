@@ -298,15 +298,7 @@ func (t *turnApprover) drainAudits() {
 	t.audits, t.bills = nil, nil
 	t.mu.Unlock()
 	a := t.a
-	if (len(audits) == 0 && len(bills) == 0) || a.eventLog == nil {
-		return
-	}
-	getResp, err := a.eventLog.Service.Get(context.Background(), &session.GetRequest{
-		AppName:   a.appName,
-		UserID:    a.userID,
-		SessionID: a.sessionID,
-	})
-	if err != nil {
+	if (len(audits) == 0 && len(bills) == 0) || a == nil || a.eventLog == nil {
 		return
 	}
 	for _, au := range audits {
@@ -324,12 +316,12 @@ func (t *turnApprover) drainAudits() {
 			meta["error"] = au.Err
 		}
 		ev.CustomMetadata = meta
-		_ = a.eventLog.Service.AppendEvent(context.Background(), getResp.Session, ev)
+		a.queueOutOfBandEvent(ev)
 	}
 	for _, b := range bills {
 		ev := session.NewEvent(context.Background(), "gate-approver-usage")
 		ev.Author = approverUsageAuthor
 		ev.CustomMetadata = usage.SideUsageMetadata(b.model, b.usage)
-		_ = a.eventLog.Service.AppendEvent(context.Background(), getResp.Session, ev)
+		a.queueOutOfBandEvent(ev)
 	}
 }

@@ -103,7 +103,8 @@ The runnable set is a list, not a glob, because the examples split
 three ways (runnable, needs a key or an argument or binds a listener,
 covered by its own tests). The list lives in
 `examples/internal/smokeset` with a test that requires every
-`examples/*/main.go` to appear in one column or the other, so a new
+`main.go` under `examples/` (at any depth, outside `internal/` and
+`testdata/`) to appear in one column or the other, so a new
 example is either covered or excluded with a written reason — never
 silently uncovered.
 

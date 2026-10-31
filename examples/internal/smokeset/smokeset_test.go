@@ -15,7 +15,9 @@
 package smokeset_test
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -111,4 +113,59 @@ func TestEntriesAreWellFormed(t *testing.T) {
 		t.Errorf("only %d runnable examples; the gate has been hollowed out "+
 			"(entries can be moved to Skip, but not silently)", n)
 	}
+}
+
+// TestDiscoverSeesNestedPrograms pins the discovery rule to "any
+// directory with a main.go, at any depth, outside the skipped subtrees".
+// The first rule looked one level down, grew an `embed/` special case,
+// and missed examples/deploy/ax/entrypoint/main.go in between (#1417).
+func TestDiscoverSeesNestedPrograms(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel string) {
+		t.Helper()
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("package main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Programs at three depths.
+	mk("a/main.go")
+	mk("embed/b/main.go")
+	mk("deploy/c/d/main.go")
+	// Not programs: no main.go, or inside a skipped subtree.
+	mk("recipe-only/.agents/config.json")
+	mk("recipe-only/README.md")
+	mk("internal/tool/main.go")
+	mk("a/testdata/fixture/main.go")
+	mk("deploy/c/.hidden/main.go")
+	mk("web/node_modules/pkg/main.go")
+	mk("a/helper.go")
+
+	got, err := smokeset.Discover(root)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	want := []string{"a", "deploy/c/d", "embed/b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Discover = %v, want %v", got, want)
+	}
+}
+
+// TestDiscoverAccountsForTheAXEntrypoint is the concrete instance: the
+// program this rule was missing must be visible to the accounting test
+// in the real tree, so that its Skip row is load-bearing.
+func TestDiscoverAccountsForTheAXEntrypoint(t *testing.T) {
+	found, err := smokeset.Discover(examplesDir)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	for _, n := range found {
+		if n == "deploy/ax/entrypoint" {
+			return
+		}
+	}
+	t.Fatalf("Discover(%s) = %v; does not include deploy/ax/entrypoint", examplesDir, found)
 }

@@ -36,6 +36,7 @@ dev/
 │   ├── verify-vuln        # govulncheck ./...
 │   ├── verify-go-toolchain # every named Go version agrees with go.mod
 │   ├── verify-coretui-guards # capability guards vs the pinned core-tui
+│   ├── verify-slim-deps   # slim-embed dependency denylist
 │   ├── examples-smoke     # the credential-free examples still run
 │   ├── add-license-headers # bulk-applier for SPDX + copyright headers
 │   ├── common.sh          # shared bash helpers (ensure_tool, run_step)
@@ -50,6 +51,7 @@ dev/
         ├── verify-mod-tidy
         ├── verify-go-toolchain
         ├── verify-coretui-guards
+        ├── verify-slim-deps
         ├── examples-smoke
         └── verify-vuln
 ```
@@ -111,11 +113,11 @@ dev/tools/examples-smoke --print   # the disposition table
 ```
 
 What it does **not** prove: that an example demonstrates what its
-README claims. Only `parallel-spawn` and `compose-multi-session` assert
-on their own results today; the rest exit non-zero only when an
-operation errors. The runner also fails if a run leaves the worktree
-dirty, since an example writing into the checkout is a defect the exit
-code would not catch.
+README claims. Only `parallel-spawn`, `compose-multi-session` and
+`embed/slim` assert on their own results today; the rest exit non-zero
+only when an operation errors. The runner also fails if a run leaves
+the worktree dirty, since an example writing into the checkout is a
+defect the exit code would not catch.
 
 ## The core-tui capability gate
 

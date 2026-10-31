@@ -15,6 +15,7 @@
 package smokeset_test
 
 import (
+	"path/filepath"
 	"sort"
 	"testing"
 
@@ -65,6 +66,7 @@ func TestEveryExampleProgramIsAccountedFor(t *testing.T) {
 // reason on every exclusion and none on any inclusion.
 func TestEntriesAreWellFormed(t *testing.T) {
 	seen := map[string]bool{}
+	seenBase := map[string]string{}
 	var names []string
 	for _, e := range smokeset.Entries {
 		if seen[e.Name] {
@@ -72,6 +74,14 @@ func TestEntriesAreWellFormed(t *testing.T) {
 		}
 		seen[e.Name] = true
 		names = append(names, e.Name)
+
+		if e.Disposition == smokeset.Run {
+			base := filepath.Base(e.Name)
+			if prev, dup := seenBase[base]; dup {
+				t.Errorf("runnable entries %q and %q share binary name %q (go build -o <dir>/ would overwrite one)", prev, e.Name, base)
+			}
+			seenBase[base] = e.Name
+		}
 
 		switch e.Disposition {
 		case smokeset.Run:

@@ -98,6 +98,11 @@ jobs:
       # full pipeline.
       - name: Capability guards
         run: dev/ci/presubmits/verify-coretui-guards
+      # The slim-embed reference consumer (examples/embed/slim) imports
+      # no TUI, MCP SDK, Prometheus, OTel SDK/exporters, SQLite drivers,
+      # or daemon composition packages (#1397).
+      - name: Slim embed deps
+        run: dev/ci/presubmits/verify-slim-deps
       # Every harness script pins its config with -c, so a .agents/ at
       # the repo root cannot silently re-parent the runs (#1116). A step
       # in `test` for the same reasons as the guards above: it needs the

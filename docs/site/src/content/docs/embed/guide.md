@@ -67,6 +67,12 @@ The blank `_` import on the provider package matters — it triggers the `init()
 
 This works, but it has no tools, no permissions, no persistence. The rest of this guide is about layering those in via extension points.
 
+### What a slim embed pulls in
+
+If you are adding core-agent to an existing service, the question after "does it run" is "what did I just import". The **slim slice** is `pkg/agent` + `pkg/models` + `pkg/permissions` + `pkg/tools` (for `GateToolset`) + `pkg/usage`, on top of ADK v2 and [core-models](https://github.com/go-steer/core-models). That slice does **not** bring in the terminal UI (`core-tui`, `charmbracelet`), the MCP SDK, Prometheus, the OpenTelemetry SDK or exporters, any SQLite driver, or the CLI/daemon composition packages (`cmd/*`, `pkg/compose`, `pkg/runner`, `pkg/attachadapter`, `pkg/telemetry`, `pkg/mcp`, `pkg/skills`, `pkg/instruction`, `pkg/approver`). Two edges that *are* in the graph on purpose: the OpenTelemetry *API* (`go.opentelemetry.io/otel`, `/trace`, `/metric`), which `genai` and `pkg/agent` use for no-op spans, and `pkg/attach` + `pkg/eventlog`, which `pkg/agent` imports for its option and audit-event types.
+
+That boundary is a CI contract, not a convention: [`examples/embed/slim`](https://github.com/go-steer/core-agent/tree/main/examples/embed/slim) is the runnable reference consumer, and `dev/ci/presubmits/verify-slim-deps` runs `go list -deps` over it against a denylist on every PR. Copy the example when you want to start from the smallest working shape; run the same script against your own package (`dev/tools/verify-slim-deps ./cmd/yourbinary`) if you want the same guarantee for it.
+
 ## The extension points
 
 Every customization happens through one of these interfaces or option functions. The pattern across all of them is the same: `core-agent` ships sensible defaults; you replace any of them with `WithX(yourImplementation)`.

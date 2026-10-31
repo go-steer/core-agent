@@ -120,6 +120,10 @@ Wire `BackgroundAgentManager` and demonstrate in-process spawn end-to-end with n
 
 One assistant turn fans out three independent background subagents via the `spawn_agent` tool family; their reports drain back into the parent's next turn automatically. The Claude-Code-style parallel dispatch pattern, hermetic on the scripted mock.
 
+### [`embed/slim`](https://github.com/go-steer/core-agent/tree/main/examples/embed/slim)
+
+The reference **slim embed**: core-agent's governance slice (`pkg/agent`, `pkg/models.Adapt` over a `core-models` `llm.LLM`, `pkg/permissions` in `ModeAllow`, `pkg/tools.GateToolset`, `pkg/usage`) in a host binary with none of the TUI, MCP SDK, Prometheus, OTel SDK/exporters, SQLite drivers or daemon composition packages in the import graph. CI's `verify-slim-deps` gate checks that graph against a denylist on every PR, so the slice stays embeddable; the example asserts on gate denial, gated tool execution and two-turn token/cost accounting. Hermetic — scripted model, no credentials. Start here if you are adding an agent to an existing service and want to know what you are pulling in.
+
 ### [`scheduled-monitor`](https://github.com/go-steer/core-agent/tree/main/examples/scheduled-monitor)
 
 The supervision-tree topology from [`docs/scheduled-monitoring-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/scheduled-monitoring-design.md) — periodic health sweeps with a scheduler + supervisor + worker layout. Pattern for cron-style monitoring agents.

@@ -34,6 +34,14 @@ import (
 // consults.
 const FinishReasonMetadataKey = "finish_reason"
 
+// ModelVersionMetadataKey is the CustomMetadata key under which
+// AppendEvent records a model turn's LLMResponse.ModelVersion before
+// persist (#1359). ADK's storageEvent has no ModelVersion column
+// (createEventFromStorageEvent drops it), so without this stamp a
+// reloaded event loses its model identity and RebuildTrackerFromEvents
+// falls back to the parent session's default model.
+const ModelVersionMetadataKey = "model_version"
+
 // service is the session.Service eventlog.Open returns. It wraps
 // ADK's database.SessionService unchanged for Get/List and
 // serializes all writes (Create / Delete / AppendEvent) behind a
@@ -63,6 +71,7 @@ type service struct {
 	inner     session.Service
 	stream    *gormStream
 	guardrail *GuardrailStore
+	spend     *SpendStore
 
 	writeMu sync.Mutex
 }
@@ -100,7 +109,10 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 	if err := s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
 		return err
 	}
-	return s.guardrail.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
+	if err := s.guardrail.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
+		return err
+	}
+	return s.spend.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
 }
 
 // AppendEvent writes the event through ADK and mirrors it into the
@@ -121,6 +133,7 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	stampFinishReason(ev)
+	stampModelVersion(ev)
 
 	var pending *overlayPending
 	if s.stream != nil && s.stream.overlayInTx && sess != nil && ev != nil {
@@ -171,4 +184,20 @@ func stampFinishReason(ev *session.Event) {
 		ev.CustomMetadata = map[string]any{}
 	}
 	ev.CustomMetadata[FinishReasonMetadataKey] = string(ev.FinishReason)
+}
+
+// stampModelVersion mirrors LLMResponse.ModelVersion into
+// CustomMetadata[ModelVersionMetadataKey] on UsageMetadata-bearing
+// final events so the model name survives ADK's database persistence
+// round-trip (#1359).
+func stampModelVersion(ev *session.Event) {
+	if ev == nil || ev.Partial || ev.UsageMetadata == nil || ev.ModelVersion == "" {
+		return
+	}
+	if ev.CustomMetadata == nil {
+		ev.CustomMetadata = map[string]any{}
+	}
+	if _, exists := ev.CustomMetadata[ModelVersionMetadataKey]; !exists {
+		ev.CustomMetadata[ModelVersionMetadataKey] = ev.ModelVersion
+	}
 }

@@ -19,15 +19,20 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
@@ -322,4 +327,234 @@ func TestReproduceAgent_WatchdogEnforceActuallyHalts(t *testing.T) {
 		t.Fatalf("tenant session did not trip after %d identical tool calls", llm.calls)
 	}
 	t.Logf("halted after %d model invocations: %s", llm.calls, reason)
+}
+
+type scriptedTurnLLM struct {
+	name  string
+	mu    sync.Mutex
+	calls int
+	turns []*adkmodel.LLMResponse
+}
+
+func (s *scriptedTurnLLM) Name() string { return s.name }
+
+func (s *scriptedTurnLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		s.mu.Lock()
+		idx := s.calls
+		s.calls++
+		s.mu.Unlock()
+		if idx >= len(s.turns) {
+			yield(&adkmodel.LLMResponse{
+				Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}},
+				TurnComplete: true,
+			}, nil)
+			return
+		}
+		yield(s.turns[idx], nil)
+	}
+}
+
+// TestReproduceAgent_ResumedRebuildsSubagentSpendAcrossSessionTree is the
+// kill-and-resume regression test for #1359.
+//
+// Pre-fix, ReproduceAgent reconstructed the per-session usage tracker on
+// origin=="resumed" by scanning eventlog.ForSession(app, user, sid) and
+// pricing every event at the parent model's pricingRate. Delegated and
+// background subagent turns live in child sessions (<sid>:sub:...) so
+// ForSession missed them completely, and even if included, a constant
+// pricingFor callback would bill a flash subagent at Opus rates.
+// Meanwhile, SkipParentUsage subtasks (such as the shared MCP digest LLM
+// fallback) ALSO live in child sessions (<sid>:sub:sub.mcp_digest:...)
+// and must NOT be billed to the host session on a tree scan.
+func TestReproduceAgent_ResumedRebuildsSubagentSpendAcrossSessionTree(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	h, err := eventlog.Open(ctx, sqlite.Open(filepath.Join(t.TempDir(), "s.db")))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	// Subagent LLM intentionally leaves LLMResponse.ModelVersion empty:
+	// ADK's database persistence strips ModelVersion anyway, so
+	// BranchInjectingService + eventlog must preserve subModel.Name() via
+	// CustomMetadata["model_version"].
+	subLLM := &scriptedTurnLLM{
+		name: "gemini-2.5-flash",
+		turns: []*adkmodel.LLMResponse{
+			{
+				Content: &genai.Content{
+					Role:  genai.RoleModel,
+					Parts: []*genai.Part{{Text: "subagent findings"}},
+				},
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     40_000,
+					CandidatesTokenCount: 10_000,
+					TotalTokenCount:      50_000,
+				},
+				TurnComplete: true,
+			},
+		},
+	}
+	subAgent, err := agent.New(subLLM, agent.WithName("researcher"), agent.WithInstruction("research"))
+	if err != nil {
+		t.Fatalf("agent.New(researcher): %v", err)
+	}
+
+	parentLLM := &scriptedTurnLLM{
+		name: "claude-opus-4-6",
+		turns: []*adkmodel.LLMResponse{
+			{
+				Content: &genai.Content{
+					Role: genai.RoleModel,
+					Parts: []*genai.Part{{
+						FunctionCall: &genai.FunctionCall{
+							ID:   "call_sub_1",
+							Name: "researcher",
+							Args: map[string]any{"request": "investigate"},
+						},
+					}},
+				},
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     10_000,
+					CandidatesTokenCount: 5_000,
+					TotalTokenCount:      15_000,
+				},
+				TurnComplete: true,
+			},
+			{
+				Content: &genai.Content{
+					Role:  genai.RoleModel,
+					Parts: []*genai.Part{{Text: "all done"}},
+				},
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     20_000,
+					CandidatesTokenCount: 10_000,
+					TotalTokenCount:      30_000,
+				},
+				TurnComplete: true,
+			},
+			// Third response is used by the SkipParentUsage subtask below.
+			{
+				Content: &genai.Content{
+					Role:  genai.RoleModel,
+					Parts: []*genai.Part{{Text: "digest output"}},
+				},
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     50_000,
+					CandidatesTokenCount: 25_000,
+					TotalTokenCount:      75_000,
+				},
+				TurnComplete: true,
+			},
+		},
+	}
+
+	parentRate := usage.PriceFor("claude-opus-4-6", nil)
+	subRate := usage.PriceFor("gemini-2.5-flash", nil)
+	if parentRate.Unpriced || subRate.Unpriced {
+		t.Fatalf("expected built-in rates for claude-opus-4-6 and gemini-2.5-flash, got %+v / %+v", parentRate, subRate)
+	}
+
+	noTitle := false
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			SessionTitle: &noTitle,
+		},
+	}
+
+	deps := SessionFactoryDeps{
+		DaemonCtx:      ctx,
+		Model:          parentLLM,
+		Template:       permissions.New(permissions.Options{Mode: permissions.ModeYolo}),
+		Subagents:      []*agent.Agent{subAgent},
+		EventlogHandle: h,
+		PricingRate:    parentRate,
+		Cfg:            cfg,
+		NoCompact:      true,
+		CheckpointMode: config.CheckpointModeOff,
+	}
+
+	const sid = "sid-resume-subagent-spend"
+	adCreated, cancelCreated, err := ReproduceAgent(deps, auth.Anonymous, sid, "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent(created): %v", err)
+	}
+
+	var tap usage.TurnTap
+	for ev, runErr := range adCreated.Agent().Run(ctx, "start") {
+		if runErr != nil {
+			t.Fatalf("Run: %v", runErr)
+		}
+		tap.Observe(ev)
+		if u, ok := tap.Commit(ev); ok {
+			adCreated.Agent().Tracker().AppendUsage(parentLLM.Name(), u, parentRate)
+		}
+	}
+
+	// Run a SkipParentUsage subtask under the same parent session (simulating
+	// the primary agent's shared MCP digest LLM fallback, #717). Its child
+	// session (<sid>:sub:sub.mcp_digest:...) lives in WithSessionTree, so
+	// resume rebuild must skip its UsageMetadata rather than billing it to
+	// the parent session.
+	if _, err := adCreated.Agent().RunSubtask(ctx, agent.SubtaskSpec{
+		Name:            "mcp_digest",
+		SystemPrompt:    "summarize",
+		UserMessage:     "raw payload",
+		SkipParentUsage: true,
+	}); err != nil {
+		t.Fatalf("RunSubtask(SkipParentUsage): %v", err)
+	}
+
+	liveTotals := adCreated.Agent().Tracker().Totals()
+	liveByModel := adCreated.Agent().Tracker().TotalsByModel()
+
+	wantCost := parentRate.CostUSD(30_000, 15_000) + subRate.CostUSD(40_000, 10_000)
+	if liveTotals.InputTokens != 70_000 || liveTotals.OutputTokens != 25_000 {
+		t.Fatalf("pre-kill liveTotals tokens = (%d in, %d out), want (70000 in, 25000 out)",
+			liveTotals.InputTokens, liveTotals.OutputTokens)
+	}
+	if math.Abs(liveTotals.CostUSD-wantCost) > 1e-6 {
+		t.Fatalf("pre-kill liveTotals.CostUSD = %f, want %f", liveTotals.CostUSD, wantCost)
+	}
+
+	// Kill/evict the in-memory session and resume from eventlog.
+	cancelCreated()
+
+	adResumed, cancelResumed, err := ReproduceAgent(deps, auth.Anonymous, sid, "resumed")
+	if err != nil {
+		t.Fatalf("ReproduceAgent(resumed): %v", err)
+	}
+	t.Cleanup(cancelResumed)
+
+	resumedTotals := adResumed.Agent().Tracker().Totals()
+	resumedByModel := adResumed.Agent().Tracker().TotalsByModel()
+
+	if resumedTotals.Turns != liveTotals.Turns {
+		t.Errorf("resumed Turns = %d, want %d (subagent turns dropped or SkipParentUsage leaked)",
+			resumedTotals.Turns, liveTotals.Turns)
+	}
+	if resumedTotals.InputTokens != liveTotals.InputTokens {
+		t.Errorf("resumed InputTokens = %d, want %d", resumedTotals.InputTokens, liveTotals.InputTokens)
+	}
+	if resumedTotals.OutputTokens != liveTotals.OutputTokens {
+		t.Errorf("resumed OutputTokens = %d, want %d", resumedTotals.OutputTokens, liveTotals.OutputTokens)
+	}
+	if math.Abs(resumedTotals.CostUSD-liveTotals.CostUSD) > 1e-6 {
+		t.Errorf("resumed CostUSD = %f, want %f (subagent spend missing or mispriced at parent rate)",
+			resumedTotals.CostUSD, liveTotals.CostUSD)
+	}
+	for modelName, want := range liveByModel {
+		got, ok := resumedByModel[modelName]
+		if !ok {
+			t.Errorf("resumed TotalsByModel missing model %q (got keys: %v)", modelName, resumedByModel)
+			continue
+		}
+		if got.InputTokens != want.InputTokens || got.OutputTokens != want.OutputTokens || math.Abs(got.CostUSD-want.CostUSD) > 1e-6 {
+			t.Errorf("resumed TotalsByModel[%q] = %+v, want %+v", modelName, got, want)
+		}
+	}
 }

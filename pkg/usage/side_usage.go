@@ -69,8 +69,14 @@ func sideUsageFrom(meta map[string]any) (model string, u TurnUsage, ok bool) {
 func intField(v any) int {
 	switch n := v.(type) {
 	case int:
+		if n < 0 {
+			return 0
+		}
 		return n
 	case int64:
+		if n < 0 || n > math.MaxInt32 {
+			return 0
+		}
 		return int(n)
 	case float64:
 		if math.IsNaN(n) || n < 0 || n > math.MaxInt32 {
@@ -79,7 +85,7 @@ func intField(v any) int {
 		return int(n)
 	case json.Number:
 		i, err := n.Int64()
-		if err != nil || i < 0 {
+		if err != nil || i < 0 || i > math.MaxInt32 {
 			return 0
 		}
 		return int(i)

@@ -148,13 +148,31 @@ func InLineage(ctx context.Context, name string) bool {
 }
 
 // BranchInjectingService wraps a session.Service so every appended event
-// picks up Branch before landing in storage. The CRUD methods pass through
-// unchanged. This is how a subagent's events end up tagged for the audit
-// log without requiring the subagent's runner to know anything about
-// branching.
+// picks up Branch (plus optional Model, Backend, and SkipParentUsage
+// metadata for session-tree spend rebuilds, #1359) before landing in
+// storage. The CRUD methods pass through unchanged. This is how a
+// subagent's events end up tagged for the audit log without requiring
+// the subagent's runner to know anything about branching.
 type BranchInjectingService struct {
 	Inner  session.Service
 	Branch string
+	// Model, when non-empty, populates LLMResponse.ModelVersion (when
+	// the provider left it blank) and stamps CustomMetadata["model_version"]
+	// on UsageMetadata-bearing events so RebuildTrackerFromEvents can
+	// price delegated and background subagent turns under their own model
+	// after ADK database serialization (#1359).
+	Model string
+	// Backend, when non-empty, stamps CustomMetadata["billing_backend"]
+	// on UsageMetadata-bearing events so a subagent running on a
+	// provider different from its parent's is priced against its own
+	// backend on rebuild (#1359).
+	Backend string
+	// SkipParentUsage, when true, stamps
+	// CustomMetadata["skip_parent_usage"] = true on UsageMetadata-bearing
+	// events so a session-tree rebuild skips subtasks whose spend is
+	// billed to a different session via a tool-response sidecar (such
+	// as the MCP digest LLM fallback, #1359).
+	SkipParentUsage bool
 }
 
 func (s *BranchInjectingService) Create(ctx context.Context, req *session.CreateRequest) (*session.CreateResponse, error) {
@@ -173,13 +191,42 @@ func (s *BranchInjectingService) Delete(ctx context.Context, req *session.Delete
 	return s.Inner.Delete(ctx, req)
 }
 
-// AppendEvent stamps Branch on the event before delegating. We only
-// override an empty Branch — events that already carry one (e.g., nested
-// subagent invocations) keep their existing label so the branch hierarchy
-// stays accurate.
+// AppendEvent stamps Branch (and optional usage-attribution metadata) on
+// the event before delegating. We only override an empty Branch /
+// ModelVersion — events that already carry one (e.g., nested subagent
+// invocations) keep their existing label so the hierarchy stays accurate.
 func (s *BranchInjectingService) AppendEvent(ctx context.Context, sess session.Session, ev *session.Event) error {
-	if ev != nil && ev.Branch == "" {
-		ev.Branch = s.Branch
+	if ev != nil {
+		if ev.Branch == "" {
+			ev.Branch = s.Branch
+		}
+		if ev.UsageMetadata != nil {
+			if s.Model != "" && ev.ModelVersion == "" {
+				ev.ModelVersion = s.Model
+			}
+			if ev.ModelVersion != "" {
+				if ev.CustomMetadata == nil {
+					ev.CustomMetadata = map[string]any{}
+				}
+				if _, exists := ev.CustomMetadata["model_version"]; !exists {
+					ev.CustomMetadata["model_version"] = ev.ModelVersion
+				}
+			}
+			if s.Backend != "" {
+				if ev.CustomMetadata == nil {
+					ev.CustomMetadata = map[string]any{}
+				}
+				if _, exists := ev.CustomMetadata["billing_backend"]; !exists {
+					ev.CustomMetadata["billing_backend"] = s.Backend
+				}
+			}
+			if s.SkipParentUsage {
+				if ev.CustomMetadata == nil {
+					ev.CustomMetadata = map[string]any{}
+				}
+				ev.CustomMetadata["skip_parent_usage"] = true
+			}
+		}
 	}
 	return s.Inner.AppendEvent(ctx, sess, ev)
 }

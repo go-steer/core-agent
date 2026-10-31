@@ -166,6 +166,10 @@ type Handle struct {
 	// agent_guardrail_state on the same database (#1360). Nil on a
 	// non-SQL Handle.
 	Guardrail *GuardrailStore
+	// Spend is the durable append-only spend ledger backed by
+	// agent_budget_spend on the same database (#1359). Nil on a
+	// non-SQL Handle.
+	Spend *SpendStore
 	// DB exposes the overlay-table connection so adjacent
 	// substrates (e.g., pkg/attach.SessionACLStore) can share the
 	// same database without re-opening it. Read-only access from

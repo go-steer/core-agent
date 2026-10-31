@@ -602,7 +602,7 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	if origin == "resumed" && deps.EventlogHandle != nil && deps.EventlogHandle.Stream != nil {
 		events := deps.EventlogHandle.Stream.Since(
 			deps.DaemonCtx, 0,
-			eventlog.ForSession("core-agent", caller.Identity, sid),
+			eventlog.WithSessionTree("core-agent", caller.Identity, sid),
 		)
 		// Adapter: eventlog yields (Entry, error); tracker rebuild
 		// wants (*session.Event, error). Peel the event field.
@@ -616,7 +616,12 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		if err := usage.RebuildTrackerFromEvents(
 			deps.DaemonCtx, sessionTracker, eventsSeq,
 			cust.Model.Name(),
-			func(model string) usage.Pricing { return pricingRate },
+			func(model string) usage.Pricing {
+				if model == "" || model == cust.Model.Name() {
+					return pricingRate
+				}
+				return usage.PriceFor(model, deps.Cfg)
+			},
 		); err != nil {
 			// Non-fatal — the session still functions, just with
 			// zero baseline aggregate. Log so operators can spot

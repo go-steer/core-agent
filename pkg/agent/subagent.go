@@ -371,8 +371,10 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		parentBranch := toolCtx.Branch()
 		fullBranch := subsession.ComposeBranch(parentBranch, branch)
 		wrapped := &subsession.BranchInjectingService{
-			Inner:  parentService,
-			Branch: fullBranch,
+			Inner:   parentService,
+			Branch:  fullBranch,
+			Model:   innerModelName,
+			Backend: opts.Inner.BillingBackend(),
 		}
 
 		// Derive a per-invocation session row. The invocation-unique

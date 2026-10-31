@@ -816,7 +816,7 @@ The subagent's turns are attributed to *its* model name, not the parent's, so a 
 Two properties worth knowing:
 
 - The roll-up happens **during** the parent's turn, from inside the tool call, so an attached client sees `usage-update` frames mid-turn — the same shape the asynchronous `spawn_agent` door already produced.
-- A subagent's events live in a derived session row, and `usage.RebuildTrackerFromEvents` replays only the parent row, so delegated spend is **not** restored when a session is lazily resumed. Same limitation as `spawn_agent`.
+- A subagent's events live in a derived `<parent>:sub:<branch>` session row; lazy session resume queries `eventlog.WithSessionTree` and passes a per-model pricing resolver to `usage.RebuildTrackerFromEvents`, so both synchronous delegations and `spawn_agent` background turns are restored under their own model rates.
 
 ### Bounding one delegation
 

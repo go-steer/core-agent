@@ -20,7 +20,9 @@
 # An incompatible change fails the check unless Either:
 #   - its `<package> <symbol>` is listed in dev/api-breaks.txt, or
 #   - the ## [Unreleased] section of CHANGELOG.md contains a
-#     `**BREAKING:**` entry naming the package or symbol.
+#     `**BREAKING:**` bullet whose line names BOTH the package
+#     (`pkg/foo` or `foo` in backticks) AND the symbol (`Bar`,
+#     `Type.Method` or `foo.Bar` in backticks).
 #
 # Set APIDIFF_BASE_TAG to override the baseline tag (or APIDIFF_TAG_PATTERN
 # to change the git-describe glob; defaults to v[1-9]*).
@@ -102,7 +104,22 @@ ack_in_changelog() {
   clean_sym="${clean_sym/\)./.}"
   local head_sym="${clean_sym%%.*}"
   [[ -n "$UNRELEASED" ]] || return 1
-  grep -F '**BREAKING:**' <<<"$UNRELEASED" | grep -Fqe "$pkg" -e "\`$short_pkg\`" -e "${short_pkg}." -e "$clean_sym" -e "$head_sym"
+  # One **BREAKING:** bullet acknowledges one break: the SAME line must
+  # name the package (backticked path, or backticked short name) AND the
+  # symbol in backticks. Substring matches on bare words were too loose —
+  # `config.` matched any bullet mentioning config.json, `agent.` matched
+  # "core-agent." at a sentence end, and a head symbol like `New` or
+  # `Agent` matched prose — so one bullet quietly acknowledged every
+  # later break in the package (#1421 review).
+  local line
+  while IFS= read -r line; do
+    grep -Fq -e "\`$pkg\`" -e "\`$short_pkg\`" -e "\`${short_pkg}." <<<"$line" || continue
+    if [[ "$sym" == "$pkg" ]]; then
+      return 0 # whole-package removal: naming the package is the ack
+    fi
+    grep -Fq -e "\`$clean_sym\`" -e "\`${short_pkg}.${clean_sym}\`" -e "\`${head_sym}\`" -e "\`${short_pkg}.${head_sym}\`" <<<"$line" && return 0
+  done < <(grep -F '**BREAKING:**' <<<"$UNRELEASED")
+  return 1
 }
 
 unacked=()

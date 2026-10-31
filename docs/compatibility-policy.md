@@ -79,7 +79,7 @@ For every `promised` package in `dev/api-surface.txt` that existed at the baseli
 2. `apidiff` compares the baseline snapshot against the current working tree.
 3. Any line under `Incompatible changes:` fails the presubmit unless it is explicitly acknowledged in either:
    - [`dev/api-breaks.txt`](../dev/api-breaks.txt) (`<package> <symbol> # <issue-or-reason>`), or
-   - a `**BREAKING:**` bullet under `## [Unreleased]` in [`CHANGELOG.md`](../CHANGELOG.md) naming the package or symbol.
+   - a `**BREAKING:**` bullet under `## [Unreleased]` in [`CHANGELOG.md`](../CHANGELOG.md) whose line names **both** the package (`` `pkg/foo` `` or `` `foo` ``) **and** the symbol (`` `Bar` ``, `` `Type.Method` `` or `` `foo.Bar` ``) in backticks. One bullet acknowledges the breaks it names, not every later break in that package.
 
 `dev/api-breaks.txt` is cleared when cutting a new major release tag.
 

@@ -23,9 +23,19 @@ title: Library API
 | `github.com/go-steer/core-agent/v3/pkg/models/anthropic` | Anthropic / Claude provider (first-party + Vertex). |
 | `github.com/go-steer/core-agent/v3/pkg/telemetry` | [OpenTelemetry](/concepts/otel/) exporter setup. |
 | `github.com/go-steer/core-agent/v3/pkg/usage` | Per-turn token + cost tracker. |
-| `github.com/go-steer/core-agent/v3/pkg/session` | Transcript persistence (`.agents/sessions/`). |
+| `github.com/go-steer/core-agent/v3/pkg/transcript` | Transcript files on exit (`.agents/sessions/`). |
+| `github.com/go-steer/core-agent/v3/pkg/session` | **Deprecated** alias of `pkg/transcript`; removed in v4.0. *Unsupported.* |
 | `github.com/go-steer/core-agent/v3/pkg/runner` | Headless (one-shot) + REPL (multi-turn) drivers; `WakeLoop` for attach-only daemons. |
-| `github.com/go-steer/core-agent/v3/pkg/compose` | The bundled binary's reusable wiring: substrate builders, multi-session construction, grant persistence, formatters. |
+| `github.com/go-steer/core-agent/v3/pkg/compose` | The bundled binary's reusable wiring: substrate builders, multi-session construction, grant persistence, formatters. *Unsupported — see below.* |
+
+### Compatibility: promised and unsupported packages
+
+Not every exported package is a stable contract. `dev/api-surface.txt` classifies every importable `pkg/` package as one of two things, and CI enforces the split (`verify-apidiff`, which diffs each promised package against the latest release tag with `apidiff`, and a test that fails if a package is unclassified):
+
+- **Promised** — covered by the SemVer guarantee in [`docs/compatibility-policy.md`](https://github.com/go-steer/core-agent/blob/main/docs/compatibility-policy.md): no incompatible change within a major version, deprecations carry a `Removed in vN.0.` marker, and a break needs a `**BREAKING:**` CHANGELOG bullet naming the package and symbol. Today: `pkg/agent` (+ `autonomous`, `background`), `pkg/config`, `pkg/eventlog`, `pkg/instruction`, `pkg/mcp`, `pkg/models` (+ `anthropic`, `gemini`, `mock`, `profiles`), `pkg/permissions`, `pkg/pricing`, `pkg/recording`, `pkg/runner`, `pkg/skills`, `pkg/telemetry`, `pkg/tools`, `pkg/transcript`, `pkg/usage`, `pkg/watchdog`.
+- **Unsupported** — exported so that `cmd/`, `internal/` and sibling repositories can compose them, **may change in a minor release**: `pkg/compose`, `pkg/attach`, `pkg/attachadapter`, `pkg/auth`, `pkg/agentenv`, `pkg/approver`, `pkg/childenv`, `pkg/digest`, `pkg/hooks`, `pkg/modeltier`, `pkg/session`, `pkg/taskclass`, `pkg/tools/agentic`, `pkg/tools/alert`, `pkg/tools/peer`.
+
+This page documents some unsupported packages (`pkg/compose` below; the `attach` resume modes, `attach.HealthCheck` and `auth.Caller` in the daemon sections) because embedders of the daemon shape need them. Treat those sections as "how the binary does it today", not as an API you can pin a release to. If you depend on one of them from a second real consumer, that is the extraction trigger named in `docs/mast-fold-design.md` decision 9 — open an issue rather than assuming stability.
 
 ---
 
@@ -1136,6 +1146,8 @@ a, _ := agent.New(m,
 Each step is independent — skip the ones you don't need (e.g. no MCP, no skills, no permission gate) and the layers below still work.
 
 ### pkg/compose — the binary's wiring as a library
+
+> `pkg/compose` is **unsupported** under the [compatibility split](#compatibility-promised-and-unsupported-packages): it is the binary's own glue, exported so a sibling host can reuse it, and its builders can change shape in a minor release. The promised way to get the same behaviour is to wire the promised packages yourself; this section shows what the binary does today.
 
 Everything the bundled binary layers on top of that minimum lives in `pkg/compose`, so a custom host doesn't re-implement it:
 

@@ -18,46 +18,46 @@
 // both. Everything here forwards; the on-disk layout
 // (.agents/sessions/, schema v1) is unchanged.
 //
-// Deprecated: use pkg/transcript.
+// Deprecated: use pkg/transcript. Removed in v4.0.
 package session
 
 import "github.com/go-steer/core-agent/v3/pkg/transcript"
 
 // SchemaVersion is the on-disk schema version for transcripts.
 //
-// Deprecated: use transcript.SchemaVersion.
+// Deprecated: use transcript.SchemaVersion. Removed in v4.0.
 const SchemaVersion = transcript.SchemaVersion
 
 // SessionsDirName is the directory under .agents/ that holds saved
 // transcripts.
 //
-// Deprecated: use transcript.SessionsDirName.
+// Deprecated: use transcript.SessionsDirName. Removed in v4.0.
 const SessionsDirName = transcript.SessionsDirName
 
 // Transcript captures one session for archival.
 //
-// Deprecated: use transcript.Transcript.
+// Deprecated: use transcript.Transcript. Removed in v4.0.
 type Transcript = transcript.Transcript
 
 // Message is one chat message in a Transcript.
 //
-// Deprecated: use transcript.Message.
+// Deprecated: use transcript.Message. Removed in v4.0.
 type Message = transcript.Message
 
 // Usage is the final usage totals in a Transcript.
 //
-// Deprecated: use transcript.Usage.
+// Deprecated: use transcript.Usage. Removed in v4.0.
 type Usage = transcript.Usage
 
 // ErrNoProject reports that no project .agents/ directory is
 // configured.
 //
-// Deprecated: use transcript.ErrNoProject.
+// Deprecated: use transcript.ErrNoProject. Removed in v4.0.
 var ErrNoProject = transcript.ErrNoProject
 
 // Save persists t under agentsDir.
 //
-// Deprecated: use transcript.Save.
+// Deprecated: use transcript.Save. Removed in v4.0.
 func Save(agentsDir string, t Transcript) (string, error) {
 	return transcript.Save(agentsDir, t)
 }

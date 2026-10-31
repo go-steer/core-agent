@@ -25,42 +25,42 @@ import "github.com/go-steer/core-agent/v3/pkg/config"
 
 // AppendPathScope adds pattern to path_scope.allow.
 //
-// Deprecated: use config.AppendPathScope.
+// Deprecated: use config.AppendPathScope. Removed in v4.0.
 func AppendPathScope(agentsDir, pattern string) error {
 	return config.AppendPathScope(agentsDir, pattern)
 }
 
 // AppendPermissionsAllow adds patterns to permissions.allow.
 //
-// Deprecated: use config.AppendPermissionsAllow.
+// Deprecated: use config.AppendPermissionsAllow. Removed in v4.0.
 func AppendPermissionsAllow(agentsDir string, patterns []string) error {
 	return config.AppendPermissionsAllow(agentsDir, patterns)
 }
 
 // AppendPermissionsDeny adds patterns to permissions.deny.
 //
-// Deprecated: use config.AppendPermissionsDeny.
+// Deprecated: use config.AppendPermissionsDeny. Removed in v4.0.
 func AppendPermissionsDeny(agentsDir string, patterns []string) error {
 	return config.AppendPermissionsDeny(agentsDir, patterns)
 }
 
 // AppendBuiltinAllowExtra adds name to permissions.builtin_allow_extras.
 //
-// Deprecated: use config.AppendBuiltinAllowExtra.
+// Deprecated: use config.AppendBuiltinAllowExtra. Removed in v4.0.
 func AppendBuiltinAllowExtra(agentsDir, name string) error {
 	return config.AppendBuiltinAllowExtra(agentsDir, name)
 }
 
 // PersistModelChoice writes the new model name.
 //
-// Deprecated: use config.PersistModelChoice.
+// Deprecated: use config.PersistModelChoice. Removed in v4.0.
 func PersistModelChoice(agentsDir, modelID string) error {
 	return config.PersistModelChoice(agentsDir, modelID)
 }
 
 // PersistThemeChoice writes the theme selection.
 //
-// Deprecated: use config.PersistThemeChoice.
+// Deprecated: use config.PersistThemeChoice. Removed in v4.0.
 func PersistThemeChoice(agentsDir, themeName string) error {
 	return config.PersistThemeChoice(agentsDir, themeName)
 }

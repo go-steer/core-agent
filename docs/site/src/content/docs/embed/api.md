@@ -140,7 +140,7 @@ When `WithInstruction` is not used, the prompt assembles from ordered layers (#4
 agent.WithExtraInstruction(extraGuidance) // composes; the harness contract stays intact
 ```
 
-The pre-#459 `agent.DefaultInstruction` constant survives as a deprecated alias (`CoreInstruction + InteractiveOverlay`) through v2.8.x; `WithInstruction(DefaultInstruction + extra)` compositions should migrate to `WithExtraInstruction(extra)` (+ `WithMode(ModeAutonomous)` for autonomous consumers).
+The pre-#459 `agent.DefaultInstruction` constant survives as a deprecated alias (`CoreInstruction + InteractiveOverlay`) through v3.x (removed in v4.0); `WithInstruction(DefaultInstruction + extra)` compositions should migrate to `WithExtraInstruction(extra)` (+ `WithMode(ModeAutonomous)` for autonomous consumers).
 
 ### Composition layers — substrate, consumer, deploy
 

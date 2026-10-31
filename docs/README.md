@@ -17,6 +17,7 @@ research + friction logs, or handover notes.
 ## Architectural + acceptance criteria
 
 - [`DESIGN.md`](DESIGN.md) — package layout, the Anthropic adapter, deliberate non-goals
+- [`compatibility-policy.md`](compatibility-policy.md) — promised vs. unsupported `pkg/` surface (`dev/api-surface.txt`), the `verify-apidiff` CI gate against the latest GA tag, `Deprecated:` removal-version markers, and the v4.0 removal schedule (settled, [#1368](https://github.com/go-steer/core-agent/issues/1368), [#1373](https://github.com/go-steer/core-agent/issues/1373), [#1398](https://github.com/go-steer/core-agent/issues/1398))
 - [`mast-fold-design.md`](mast-fold-design.md) — one harness: folding go-steer/mast's distinctive capabilities (durable write gate + outbox, spend ledger, scheduling lease, apidiff discipline, workload recipes, A2A, the AX task-runner deployment) into core-agent and retiring mast; settled decisions, what moves in what shape, phases, the shipmind cutover (settled, [#1411](https://github.com/go-steer/core-agent/issues/1411))
 - [`agent-package-split-design.md`](agent-package-split-design.md) — decomposing the `pkg/agent` god package (autonomous driver / background manager / attach adapter) behind a narrow seam before the v2 surface freezes
 - [`compose-extraction-design.md`](compose-extraction-design.md) — lifting reusable substrate wiring (multi-session construction, grant persistence, agentic/digest assembly) out of `cmd/core-agent` into `pkg/compose` so cogo/scion/ax stop re-implementing it

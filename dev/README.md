@@ -16,7 +16,7 @@ dev/tools/ci --keep-going
 dev/tools/fix-go-format
 ```
 
-Missing tools (`golangci-lint`, `goimports`, `govulncheck`) auto-install
+Missing tools (`golangci-lint`, `goimports`, `govulncheck`, `apidiff`) auto-install
 into `$GOBIN` (or `$(go env GOPATH)/bin`) on first use. No setup needed
 beyond a Go toolchain.
 
@@ -37,6 +37,7 @@ dev/
 │   ├── verify-go-toolchain # every named Go version agrees with go.mod
 │   ├── verify-coretui-guards # capability guards vs the pinned core-tui
 │   ├── verify-slim-deps   # slim-embed dependency denylist
+│   ├── verify-apidiff     # promised pkg/ API compatibility vs latest GA tag
 │   ├── examples-smoke     # the credential-free examples still run
 │   ├── add-license-headers # bulk-applier for SPDX + copyright headers
 │   ├── common.sh          # shared bash helpers (ensure_tool, run_step)
@@ -52,6 +53,7 @@ dev/
         ├── verify-go-toolchain
         ├── verify-coretui-guards
         ├── verify-slim-deps
+        ├── verify-apidiff
         ├── examples-smoke
         └── verify-vuln
 ```
@@ -329,6 +331,7 @@ the older SPDX-shorthand variant) to the current canonical form.
 | Tool          | Version    | Source                                                     |
 |---------------|------------|------------------------------------------------------------|
 | golangci-lint | v2.12.1    | `dev/tools/lint-go` (`GOLANGCI_LINT_VERSION` env var)      |
+| apidiff       | v0.0.0-20260112195511-716be5621a96 | `dev/tools/verify-apidiff` (`APIDIFF_VERSION` env var) |
 | goimports     | latest     | `dev/tools/fix-go-format`, `dev/tools/verify-go-format`    |
 | govulncheck   | latest     | `dev/tools/verify-vuln`                                    |
 

@@ -20,12 +20,12 @@ import "github.com/go-steer/core-agent/v3/pkg/permissions"
 // half of that package's GrantStore contract. The alias keeps
 // existing `&compose.ConfigGrantStore{…}` wiring building unchanged.
 //
-// Deprecated: use permissions.ConfigGrantStore.
+// Deprecated: use permissions.ConfigGrantStore. Removed in v4.0.
 type ConfigGrantStore = permissions.ConfigGrantStore
 
 // AppendPathScopeEntry adds a typed path_scope.allow_paths entry.
 //
-// Deprecated: use permissions.AppendPathScopeEntry.
+// Deprecated: use permissions.AppendPathScopeEntry. Removed in v4.0.
 func AppendPathScopeEntry(agentsDir, path, access string) error {
 	return permissions.AppendPathScopeEntry(agentsDir, path, access)
 }

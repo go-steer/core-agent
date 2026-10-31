@@ -726,7 +726,7 @@ type PermissionsConfig struct {
 	// consumer switching on this bool sees "off" for an advisory run
 	// and would skip registering record_plan.
 	//
-	// Deprecated: set PlanMode instead. Removed in the next major.
+	// Deprecated: set PlanMode instead. Removed in v4.0.
 	RequirePlanArtifact bool `json:"require_plan_artifact,omitempty"`
 
 	// PlanMode controls the two things record_plan does — persist a

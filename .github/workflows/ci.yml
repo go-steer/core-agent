@@ -76,6 +76,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # verify-apidiff compares promised packages against the nearest
+          # v[1-9]* release tag reachable from HEAD (#1368).
+          fetch-depth: 0
       - uses: ./.github/actions/go-toolchain
         with:
           # setup-go@v5 caches ~/go/pkg/mod + ~/.cache/go-build using a
@@ -103,6 +107,10 @@ jobs:
       # or daemon composition packages (#1397).
       - name: Slim embed deps
         run: dev/ci/presubmits/verify-slim-deps
+      # Promised packages in dev/api-surface.txt remain SemVer-compatible
+      # with the latest release tag (#1368, #1398).
+      - name: API compatibility (apidiff)
+        run: dev/ci/presubmits/verify-apidiff
       # Every harness script pins its config with -c, so a .agents/ at
       # the repo root cannot silently re-parent the runs (#1116). A step
       # in `test` for the same reasons as the guards above: it needs the

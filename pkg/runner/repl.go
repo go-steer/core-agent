@@ -53,7 +53,7 @@ import (
 // its signal.NotifyContext for that reason; passing a ctx whose
 // parent cancels on SIGINT would defeat the gesture.
 //
-// Deprecated: use Run with RunOptions{Model: m, AgentOptions: agentOpts, …}.
+// Deprecated: use Run with RunOptions{Model: m, AgentOptions: agentOpts, …}. Removed in v4.0.
 func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, agentOpts []agent.Option, eventsOpts ...EventsOption) (int, error) {
 	a, err := agent.New(m, agentOpts...)
 	if err != nil {
@@ -71,7 +71,7 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 // initialPrompt == "" is exactly equivalent to REPL — no seed, no
 // behavior change.
 //
-// Deprecated: use Run with RunOptions{Model: m, InitialPrompt: initialPrompt, …}.
+// Deprecated: use Run with RunOptions{Model: m, InitialPrompt: initialPrompt, …}. Removed in v4.0.
 func REPLWithInitialPrompt(ctx context.Context, m adkmodel.LLM, initialPrompt string, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, agentOpts []agent.Option, eventsOpts ...EventsOption) (int, error) {
 	a, err := agent.New(m, agentOpts...)
 	if err != nil {
@@ -86,7 +86,7 @@ func REPLWithInitialPrompt(ctx context.Context, m adkmodel.LLM, initialPrompt st
 // construct the Agent themselves. Equivalent to REPL minus the
 // agent.New() call at the top.
 //
-// Deprecated: use Run with RunOptions{Agent: a, Model: m, …}.
+// Deprecated: use Run with RunOptions{Agent: a, Model: m, …}. Removed in v4.0.
 func REPLWithAgent(ctx context.Context, a *agent.Agent, m adkmodel.LLM, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts ...EventsOption) (int, error) {
 	return replCore(ctx, a, m, "", stdin, stdout, stderr, tracker, pricing, eventsOpts...)
 }
@@ -99,7 +99,7 @@ func REPLWithAgent(ctx context.Context, a *agent.Agent, m adkmodel.LLM, stdin io
 // keep the --prompt startup behavior the construct-inside variants
 // provide.
 //
-// Deprecated: use Run with RunOptions{Agent: a, Model: m, InitialPrompt: initialPrompt, …}.
+// Deprecated: use Run with RunOptions{Agent: a, Model: m, InitialPrompt: initialPrompt, …}. Removed in v4.0.
 func REPLWithAgentAndInitialPrompt(ctx context.Context, a *agent.Agent, m adkmodel.LLM, initialPrompt string, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts ...EventsOption) (int, error) {
 	return replCore(ctx, a, m, initialPrompt, stdin, stdout, stderr, tracker, pricing, eventsOpts...)
 }

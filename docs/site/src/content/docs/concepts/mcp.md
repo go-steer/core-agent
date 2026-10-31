@@ -140,6 +140,8 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 
 In production, ADC discovers credentials from `GOOGLE_APPLICATION_CREDENTIALS` (a service-account key file path) or the [GCE/GKE/Cloud Run metadata server](https://cloud.google.com/docs/authentication/application-default-credentials#attached-sa) — no code change.
 
+**Inside a credential-injecting sandbox** (an Agent Substrate / AX task, where an egress gateway rewrites the `Authorization` header and the pod holds no credential), set `CORE_AGENT_GOOGLE_AUTH=injected`. The startup `FindDefaultCredentials` call and the pre-fetch are skipped, and every request to this server carries `Authorization: Bearer placeholder` for the gateway to replace. The `scopes` field is still required for the config to parse but is not sent anywhere — the gateway decides what the real token is scoped to. The same variable switches the Vertex model providers; see [Injected auth](/concepts/providers/#injected-auth--sandboxes-with-an-egress-gateway-v31) for the caveats (exact value only, useless outside a gateway).
+
 ### Header precedence
 
 When both `auth` and `headers` are set on the same HTTP server, the auth layer wraps innermost. Net effect: the auth strategy's `Authorization` header **always wins** over any `Authorization` you put in `headers`. Non-conflicting static headers (e.g. `X-Custom-Trace-Id: ...`) pass through unchanged. This is intentional: the auth declaration of intent should not be silently overridable by a stray header.

@@ -246,6 +246,16 @@ GOOGLE_GENAI_USE_VERTEXAI=true \
 - ADC resolution follows the standard Google chain: `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login`, then workload identity in production environments.
 - Project/region in config takes precedence over env vars.
 
+### Injected auth — sandboxes with an egress gateway (v3.1+)
+
+Some sandboxes never hold a Google credential: an egress gateway outside the sandbox replaces the `Authorization` header on the wire with a real token, and the pod has no ADC, no metadata server, and nothing worth snapshotting. [Agent Substrate](https://github.com/agent-substrate/substrate), which runs [AX](https://github.com/google/ax) tasks, is the shipped case ([`examples/deploy/ax`](https://github.com/go-steer/core-agent/tree/main/examples/deploy/ax)). In that environment the ADC chain above fails at startup.
+
+Set `CORE_AGENT_GOOGLE_AUTH=injected` and every Google client skips ADC detection entirely and sends `Authorization: Bearer placeholder` on each request — the gateway only rewrites a header that is already present. It applies to all four Google credential paths at once: `vertex`, `anthropic-vertex`, [provider profiles](#provider-profiles) with `auth: google_adc` such as `vertex-maas`, and HTTP MCP servers with [`auth.google_oauth`](/concepts/mcp/#authgoogle_oauth--google-oauth-access-tokens-adc). Three things to know:
+
+- **Only the exact value `injected` turns it on.** Any other value, including `Injected` or `true`, is ignored and the normal ADC chain runs — which, inside the sandbox, fails with the usual "could not find default credentials" ([#1419](https://github.com/go-steer/core-agent/issues/1419) tracks rejecting bad values at startup).
+- **Outside a gateway it is a misconfiguration, not a bypass.** Google rejects the placeholder with `401`; nothing is granted. Do not set it on a workstation or in a plain cluster.
+- **It does not affect non-Google providers.** `anthropic`, OpenAI-dialect profiles and the mocks read their own keys as before.
+
 ### Transient rate limits (v2.10.0+)
 
 `google.golang.org/genai` has no retry of any kind, so before v2.10.0 a momentary `429 RESOURCE_EXHAUSTED` ended the call. On a subagent delegation that was worse than an error: across 38 archived GKE drill runs, four lost a delegation this way, three of them died on the child's *first* model call, and the runs still produced an answer because the parent quietly did the work itself. You lose the context isolation you delegated for, pay full parent-context price, and nothing says so.
@@ -577,6 +587,7 @@ ANTHROPIC_VERTEX_PROJECT_ID=my-gcp-project \
 - Vertex's Claude model IDs sometimes carry a `@version` suffix (e.g. `claude-opus-4-5@20251101`). The bare alias often works; if it doesn't, check the [Vertex Model Garden](https://console.cloud.google.com/vertex-ai/model-garden) for the current ID and pass it via `--model`.
 - All adapter behavior (streaming, tool round-trip, system extraction, caching) is identical to first-party Anthropic — only the client construction differs. The conversion code (`models/anthropic/convert.go`, `stream.go`, `llm.go`) is shared.
 - Auto-detection is intentionally off — opt in via `--provider anthropic-vertex` or `model.provider: "anthropic-vertex"`.
+- In a sandbox whose egress gateway injects the credential, `CORE_AGENT_GOOGLE_AUTH=injected` applies here exactly as it does to `vertex` — see [Injected auth](#injected-auth--sandboxes-with-an-egress-gateway-v31).
 
 ---
 
@@ -629,6 +640,7 @@ core-agent --provider house-vllm          # runs the profile's mid tier
 - **Usage parity.** Prompt, output, cache-read, cache-write and reasoning tokens are carried into the same per-turn usage record the other backends feed, so `/stats`, metrics and cost work unchanged. Which fields a server actually reports varies; core-models' [tested models](https://github.com/go-steer/core-models/blob/main/docs/site/src/content/docs/reference/tested-models.md) page lists them per server.
 - **Pricing.** The built-in table is core-models' shared catalog, the same one mast bills from. It covers Gemini and Claude, and prices OpenAI, xAI and Vertex AI partner models under their backend (a row keyed `openai/<model>`, `xai/<model>` or `vertex-maas/<model>`), so `--provider openai` or `--provider vertex-maas` prices out of the box. Price anything else with `model.pricing`, `.agents/pricing.json`, or `rates` on the profile's model, the lowest-precedence layer. A cost ceiling (`--max-turn-cost-usd`, `--max-session-cost-usd`, or their config fields) over a model with **no** price is refused at startup, on any provider and for subagent models too, because every call would count as $0 and the ceiling could never trip. The unattended default session ceiling is not refused but prints a warning. To declare a self-hosted model you don't pay per token for as free, put zero rates in `model.pricing`: $0 there counts as a price. All-zero `rates` on a profile's model are rejected when the profile loads. See [A model nobody prices](/concepts/context-management/#a-model-nobody-prices).
 - **Not auto-detected.** Auto-detection only ever picks the four built-in backends; a profile is always an explicit choice.
+- **Injected auth.** A profile with `auth: google_adc` (`vertex-maas` is the shipped one) honours `CORE_AGENT_GOOGLE_AUTH=injected` like the Vertex providers do — see [Injected auth](#injected-auth--sandboxes-with-an-egress-gateway-v31). The flag is part of the provider cache key, so a profile opened under ADC is never reused under injected auth or the reverse.
 - **Self-hosting.** core-models keeps a [GKE vLLM fixture](https://github.com/go-steer/core-models/tree/main/deploy/gke-vllm) for running models on your own GPUs.
 
 ---

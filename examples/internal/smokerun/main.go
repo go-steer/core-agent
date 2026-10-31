@@ -116,7 +116,7 @@ func run(timeoutOverride time.Duration) error {
 		if timeoutOverride > 0 {
 			bound = timeoutOverride
 		}
-		took, out, err := runOne(filepath.Join(binDir, e.Name), bound)
+		took, out, err := runOne(filepath.Join(binDir, filepath.Base(e.Name)), bound)
 		if err != nil {
 			failures = append(failures, e.Name)
 			fmt.Printf("FAIL  %-24s %5.1fs  %v\n", e.Name, took.Seconds(), err)

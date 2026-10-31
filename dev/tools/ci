@@ -49,6 +49,7 @@ STEPS=(
   "vet             dev/tools/vet"
   "build           dev/tools/build"
   "coretui-guards  dev/tools/verify-coretui-guards"
+  "slim-deps       dev/tools/verify-slim-deps"
   "config-pins     dev/tools/verify-harness-config-pinned"
   "lint            dev/tools/lint-go"
   "mod-tidy        dev/tools/verify-mod-tidy"

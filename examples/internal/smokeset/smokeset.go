@@ -37,12 +37,12 @@
 //
 // It proves a program runs to completion and exits 0 with no
 // credentials and no arguments. That is strictly weaker than "the
-// example demonstrates what its README claims": only parallel-spawn
-// and compose-multi-session assert on their own results today, and the
-// other seven exit non-zero only when an operation returns an error.
-// A stronger gate would need each example to check its own output,
-// which is worth doing per example and is not what this package
-// claims to have done.
+// example demonstrates what its README claims": only parallel-spawn,
+// compose-multi-session and embed/slim assert on their own results
+// today, and the rest exit non-zero only when an operation returns an
+// error. A stronger gate would need each example to check its own
+// output, which is worth doing per example and is not what this
+// package claims to have done.
 //
 // The other thing it cannot catch is a Skip whose reason has stopped
 // being true — an example that grows a default prompt, or drops its
@@ -115,6 +115,7 @@ var Entries = []Entry{
 	{Name: "bouncer-preflight", Disposition: Skip,
 		Reason: "needs GOOGLE_API_KEY, and its logic is already covered by its own go tests in the same directory"},
 	{Name: "compose-multi-session", Disposition: Run},
+	{Name: "embed/slim", Disposition: Run},
 	{Name: "parallel-spawn", Disposition: Run},
 	{Name: "replay", Disposition: Run},
 	{Name: "scheduled-monitor", Disposition: Run},
@@ -145,7 +146,8 @@ func (e Entry) Bound() time.Duration {
 }
 
 // Discover lists the example programs in examplesDir: every immediate
-// subdirectory holding a main.go.
+// subdirectory holding a main.go, plus nested embedding examples under
+// examples/embed/<name>/main.go.
 //
 // main.go is the rule rather than "any Go file" or "any directory"
 // because it is what makes a directory a runnable program. Several
@@ -162,6 +164,22 @@ func Discover(examplesDir string) ([]string, error) {
 	var names []string
 	for _, ent := range ents {
 		if !ent.IsDir() || ent.Name() == "internal" {
+			continue
+		}
+		if ent.Name() == "embed" {
+			subs, err := os.ReadDir(filepath.Join(examplesDir, "embed"))
+			if err != nil {
+				return nil, fmt.Errorf("read %s/embed: %w", examplesDir, err)
+			}
+			for _, sub := range subs {
+				if !sub.IsDir() {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(examplesDir, "embed", sub.Name(), "main.go")); err != nil {
+					continue
+				}
+				names = append(names, "embed/"+sub.Name())
+			}
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(examplesDir, ent.Name(), "main.go")); err != nil {

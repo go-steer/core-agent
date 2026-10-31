@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Enforces the slim-embed dependency-hygiene guarantee (#1397,
+# docs/mast-fold-design.md decision 9): embedding core-agent's minimal
+# library path (ADK v2 + core-models + pkg/agent + pkg/models +
+# pkg/permissions + pkg/tools.GateToolset + pkg/usage) in an existing Go
+# binary must NOT pull in the interactive TUI (core-tui, charmbracelet),
+# the MCP SDK, Prometheus, the OpenTelemetry SDK/exporters, SQLite
+# drivers, or the daemon/CLI composition packages.
+#
+# Notes on two transitive edges that ARE allowed:
+#   - OpenTelemetry API (go.opentelemetry.io/otel, /trace, /metric):
+#     imported by google.golang.org/genai and pkg/agent for no-op spans
+#     and instruments. The OTel SDK (go.opentelemetry.io/otel/sdk/...)
+#     and exporters (go.opentelemetry.io/otel/exporters/...) live behind
+#     pkg/telemetry and are denylisted below.
+#   - pkg/attach and pkg/eventlog: imported by pkg/agent for its option
+#     and audit-event types (WithAttachEmitter, WithEventLog). Neither
+#     package imports SQLite drivers (glebarez/sqlite, modernc.org),
+#     Prometheus, or the attach bridge (pkg/attachadapter).
+#
+# Usage:
+#   dev/tools/verify-slim-deps [package ...]
+#
+# With no arguments, checks ./examples/embed/slim (after running a
+# self-test to prove every denylist pattern matches its target).
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+DENYLIST=(
+  # Binary entrypoints and TUI/daemon internal packages.
+  '^github\.com/go-steer/core-agent(/v[0-9]+)?/cmd/'
+  '^github\.com/go-steer/core-agent(/v[0-9]+)?/internal/(attachclient|coretuievent|coretuiremote|evals|webui)(/|$)'
+  # Heavy or daemon-only pkg/ subsystems outside the slim library slice.
+  '^github\.com/go-steer/core-agent(/v[0-9]+)?/pkg/(approver|attachadapter|compose|instruction|mcp|runner|skills|telemetry)(/|$)'
+  # Terminal UI frameworks.
+  '^github\.com/go-steer/core-tui(/|$)'
+  '^github\.com/charmbracelet/'
+  # MCP SDK (pulled in by pkg/mcp, not by pkg/agent or pkg/tools).
+  '^github\.com/modelcontextprotocol/'
+  # Prometheus metrics client/exporter.
+  '^github\.com/prometheus/'
+  # OpenTelemetry SDK and exporters (the lightweight API is allowed).
+  '^go\.opentelemetry\.io/otel/sdk(/|$)'
+  '^go\.opentelemetry\.io/otel/exporters/'
+  # SQLite drivers (callers pass a gorm.Dialector to eventlog.Open).
+  '^github\.com/glebarez/(go-)?sqlite(/|$)'
+  '^modernc\.org/'
+  '^github\.com/mattn/go-sqlite3(/|$)'
+)
+
+join_denylist() {
+  local IFS='|'
+  echo "${DENYLIST[*]}"
+}
+
+self_test() {
+  local pattern mod_path
+  pattern="$(join_denylist)"
+  mod_path="$(go list -m)"
+
+  # Prove every category in DENYLIST actually matches a representative
+  # import path (using the live module path from go.mod so a major bump
+  # is verified here too), so a regex error cannot turn the gate into a
+  # no-op.
+  local expected_count actual_count
+  local samples=(
+    "${mod_path}/cmd/core-agent"
+    "${mod_path}/internal/coretuievent"
+    "${mod_path}/pkg/compose"
+    "${mod_path}/pkg/mcp"
+    "${mod_path}/pkg/telemetry"
+    "github.com/go-steer/core-tui/tui"
+    "github.com/charmbracelet/bubbletea"
+    "github.com/modelcontextprotocol/go-sdk/mcp"
+    "github.com/prometheus/client_golang/prometheus"
+    "go.opentelemetry.io/otel/sdk/trace"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+    "github.com/glebarez/sqlite"
+    "modernc.org/sqlite"
+    "github.com/mattn/go-sqlite3"
+  )
+  expected_count="${#samples[@]}"
+  actual_count="$(printf '%s\n' "${samples[@]}" | grep -cE "$pattern" || true)"
+  if [[ "$actual_count" -ne "$expected_count" ]]; then
+    echo "verify-slim-deps: self-test failed: matched ${actual_count}/${expected_count} denylisted sample imports" >&2
+    return 1
+  fi
+}
+
+check_target() {
+  local target="$1"
+  local pattern="$2"
+  local deps hits
+
+  if ! deps="$(go list -deps "$target")"; then
+    echo "verify-slim-deps: go list -deps ${target} failed" >&2
+    return 1
+  fi
+  if [[ -z "$deps" ]]; then
+    echo "verify-slim-deps: go list -deps ${target} returned empty output" >&2
+    return 1
+  fi
+
+  hits="$(echo "$deps" | grep -E "$pattern" || true)"
+  if [[ -n "$hits" ]]; then
+    cat >&2 <<EOF
+verify-slim-deps: FAIL: ${target} transitively imports denylisted packages:
+$(echo "$hits" | sed 's/^/  - /')
+
+Hint: run \`go mod why <pkg>\` or \`go list -f '{{.ImportPath}}: {{.Imports}}' -deps ${target}\`
+to trace which import edge introduced the dependency.
+EOF
+    return 1
+  fi
+
+  local count
+  count="$(echo "$deps" | wc -l | tr -d ' ')"
+  echo "verify-slim-deps: OK (${target}, ${count} transitive packages, 0 denylisted)"
+}
+
+main() {
+  self_test
+
+  local targets=("$@")
+  if [[ "${#targets[@]}" -eq 0 ]]; then
+    targets=("./examples/embed/slim")
+  fi
+
+  local pattern failed=0
+  pattern="$(join_denylist)"
+  for target in "${targets[@]}"; do
+    check_target "$target" "$pattern" || failed=1
+  done
+  return "$failed"
+}
+
+main "$@"

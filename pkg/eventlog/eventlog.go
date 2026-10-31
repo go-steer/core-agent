@@ -183,7 +183,9 @@ type Handle struct {
 	// retain it so Close can shut it down too; otherwise every
 	// Open/Close cycle leaks the ADK pool's connections and file
 	// handles. Nil if it couldn't be retrieved (Close then skips it).
-	adkDB *gorm.DB
+	adkDB                 *gorm.DB
+	lockHeartbeatInterval time.Duration
+	lockStaleAfter        time.Duration
 }
 
 // Close releases all resources held by the Handle (Stream + the
@@ -229,10 +231,12 @@ func closeGormDB(db *gorm.DB) error {
 type Option func(*openOpts)
 
 type openOpts struct {
-	watchInterval     time.Duration
-	gormConfig        *gorm.Config
-	skipWAL           bool
-	metadataExtractor MetadataExtractor
+	watchInterval         time.Duration
+	gormConfig            *gorm.Config
+	skipWAL               bool
+	metadataExtractor     MetadataExtractor
+	lockHeartbeatInterval time.Duration
+	lockStaleAfter        time.Duration
 }
 
 func defaultOpenOpts() openOpts {
@@ -278,6 +282,21 @@ func WithSkipWAL() Option {
 // pkg/auth.
 func WithMetadataExtractor(fn MetadataExtractor) Option {
 	return func(o *openOpts) { o.metadataExtractor = fn }
+}
+
+// WithLockHeartbeat overrides the heartbeat cadence and staleness
+// window used by Handle.AcquireLock (defaults: 5s interval, 30s
+// staleness window). Non-positive arguments keep their respective
+// defaults.
+func WithLockHeartbeat(interval, staleAfter time.Duration) Option {
+	return func(o *openOpts) {
+		if interval > 0 {
+			o.lockHeartbeatInterval = interval
+		}
+		if staleAfter > 0 {
+			o.lockStaleAfter = staleAfter
+		}
+	}
 }
 
 // QueryOption filters Since/Watch results.

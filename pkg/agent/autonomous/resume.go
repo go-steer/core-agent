@@ -94,11 +94,20 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 	}
 	defer func() { _ = lock.Release() }()
 
+	// Cancel in-flight turns and scheduled waits immediately if the
+	// session lease is stolen or expires during a DB stall (#1361).
+	leaseCtx, cancelLease := bindLeaseContext(ctx, lock)
+	defer cancelLease()
+
 	// Discover the latest checkpoint by suffix-matching the author
 	// so handoffs across binaries (core-agent ↔ scion-agent ↔
 	// ax-agent) work.
-	latest, found, err := loadLatestCheckpoint(ctx, ref)
+	latest, found, err := loadLatestCheckpoint(leaseCtx, ref)
 	if err != nil {
+		if leaseLost(lock) {
+			return RunResult{Reason: StopReasonContextCancelled, Duration: time.Since(resumeStart)},
+				fmt.Errorf("agent: Resume: %w", eventlog.ErrLeaseLost)
+		}
 		return RunResult{}, fmt.Errorf("agent: Resume: %w", err)
 	}
 
@@ -129,64 +138,14 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		prompt = latest.ContinuationPrompt
 	}
 
-	// Done-tool registration mirrors Run so the model has
-	// the same termination gesture available on resume.
 	doneCh := make(chan string, 1)
-	doneTools, err := buildDoneTools(&cfg, doneCh)
+	a, scheduleCh, err := buildResumedAgent(build, ref.SessionID, &cfg, doneCh)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: Resume: build done tool: %w", err)
+		return RunResult{}, err
 	}
 
-	extras := append([]tool.Tool(nil), doneTools...)
-	var scheduleCh <-chan coretools.ScheduleEvent
-	if cfg.scheduler != nil {
-		schTool, ch, err := coretools.NewScheduleTool(coretools.ScheduleOptions{
-			Name:        cfg.scheduleToolName,
-			Description: cfg.scheduleToolDescription,
-			MaxDefer:    cfg.scheduleToolMaxDefer,
-		})
-		if err != nil {
-			return RunResult{}, fmt.Errorf("agent: Resume: build schedule tool: %w", err)
-		}
-		extras = append(extras, schTool)
-		scheduleCh = ch
-	}
-
-	a, err := build(extras, ref.SessionID)
-	warnIfInteractiveMode(a, err)
-	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: Resume: build agent: %w", err)
-	}
-	if a == nil {
-		return RunResult{}, errors.New("agent: Resume: build returned nil agent")
-	}
-
-	// If the latest checkpoint is a deferred-state checkpoint, honor
-	// the wake-time at startup so daemon-mode resume picks up at the
-	// scheduled wake rather than firing immediately. ExitOnDefer-mode
-	// resume reaches this code path when the orchestrator fires after
-	// the wake-time, in which case time.Until returns <=0 and we
-	// proceed without delay. A cancelled context unblocks promptly.
-	if found && !latest.NextWakeAt.IsZero() {
-		wait := time.Until(latest.NextWakeAt)
-		if wait > 0 {
-			t := time.NewTimer(wait)
-			select {
-			case <-t.C:
-			case <-ctx.Done():
-				t.Stop()
-				result := RunResult{
-					Reason:       StopReasonContextCancelled,
-					Turns:        latest.Turn,
-					InputTokens:  latest.InputTokens,
-					OutputTokens: latest.OutputTokens,
-					CostUSD:      latest.CostUSD,
-					FinalText:    latest.FinalText,
-				}
-				result.Duration = time.Since(resumeStart)
-				return result, ctx.Err()
-			}
-		}
+	if res, exited, err := awaitResumeWake(ctx, lock, latest, found, resumeStart); exited {
+		return res, err
 	}
 
 	startedAt := time.Now()
@@ -209,27 +168,16 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 	// checkpoints."
 	goal := latest.Goal
 
-	emitFinalCheckpoint := func(reason StopReason) {
-		// Detached write: the final checkpoint is the crash-resume
-		// anchor and is emitted even when the loop exits because ctx
-		// was cancelled — passing the dead ctx here silently lost the
-		// checkpoint on exactly the shutdown path where it matters
-		// most (#365).
-		emitFinalCheckpointDetached(ctx, a, checkpointPayload{
-			Turn:                 result.Turns,
-			InputTokens:          result.InputTokens,
-			OutputTokens:         result.OutputTokens,
-			CostUSD:              result.CostUSD,
-			Goal:                 goal,
-			ContinuationPrompt:   cfg.continuationPrompt,
-			StopReason:           string(reason),
-			DoneDetail:           result.DoneDetail,
-			FinalText:            result.FinalText,
-			FinalTextSubstantive: haveSubstantive,
-		})
+	cp := &resumeCheckpoints{
+		ctx: ctx, leaseCtx: leaseCtx, a: a, lock: lock, cfg: &cfg,
+		result: &result, goal: goal, haveSubstantive: &haveSubstantive, startedAt: startedAt,
 	}
+	emitTurnCheckpoint, emitFinalCheckpoint, loseLease := cp.turn, cp.final, cp.loseLease
 
 	for {
+		if leaseLost(lock) {
+			return loseLease()
+		}
 		// Pre-turn budget checks — applied to the cumulative
 		// (resumed + newly-accumulated) totals.
 		if reason := budgetStop(&cfg, &result, time.Since(startedAt)); reason != "" {
@@ -243,10 +191,10 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 			return result, err
 		}
 
-		turnCtx := ctx
+		turnCtx := leaseCtx
 		var cancel context.CancelFunc
 		if cfg.perTurnTimeout > 0 {
-			turnCtx, cancel = context.WithTimeout(ctx, cfg.perTurnTimeout)
+			turnCtx, cancel = context.WithTimeout(leaseCtx, cfg.perTurnTimeout)
 		}
 		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1, result.CostUSD)
 		if cancel != nil {
@@ -260,6 +208,11 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		if keepFinalText(turnRes.text, turnRes.usedTools, haveSubstantive) {
 			result.FinalText = turnRes.text
 			haveSubstantive = haveSubstantive || turnRes.usedTools
+		}
+
+		if leaseLost(lock) {
+			bankReturn(&result, turnRes)
+			return loseLease()
 		}
 
 		if turnErr != nil {
@@ -279,7 +232,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 				continue
 			case SkipTurn:
 				prompt = cfg.continuationPrompt
-				_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
+				emitTurnCheckpoint(perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
 				continue
 			default:
 				result.Reason = StopReasonRetryAborted
@@ -327,8 +280,11 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 					ev.WakeAt = ceiling
 				}
 			}
-			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev, haveSubstantive))
-			serr := awaitScheduledWake(ctx, a, &cfg, ev)
+			emitTurnCheckpoint(scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev, haveSubstantive))
+			serr := awaitScheduledWake(leaseCtx, a, &cfg, ev)
+			if leaseLost(lock) {
+				return loseLease()
+			}
 			switch {
 			case serr == nil:
 				if ev.NextPrompt != "" {
@@ -354,14 +310,183 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 			}
 		}
 
-		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
+		emitTurnCheckpoint(perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
 		prompt = cfg.continuationPrompt
 	}
 
 deferredExit:
+	if leaseLost(lock) {
+		return loseLease()
+	}
 	result.Duration = time.Since(startedAt)
 	emitFinalCheckpoint(result.Reason)
 	return result, nil
+}
+
+func leaseLostResult(res RunResult, startedAt time.Time) (RunResult, error) {
+	res.Reason = StopReasonContextCancelled
+	res.Duration = time.Since(startedAt)
+	return res, fmt.Errorf("agent: Resume: %w", eventlog.ErrLeaseLost)
+}
+
+// resumeCheckpoints owns the checkpoint writes Resume makes under the
+// session lease. It reads Resume's live result through pointers so the
+// payload reflects whatever the loop has banked by the time it writes.
+type resumeCheckpoints struct {
+	ctx, leaseCtx   context.Context
+	a               *agent.Agent
+	lock            *eventlog.SessionLock
+	cfg             *autoConfig
+	result          *RunResult
+	goal            string
+	haveSubstantive *bool
+	startedAt       time.Time
+}
+
+// turn writes a per-turn or schedule checkpoint unless the lease is gone.
+func (c *resumeCheckpoints) turn(payload checkpointPayload) {
+	if leaseLost(c.lock) {
+		return
+	}
+	_ = emitCheckpoint(c.leaseCtx, c.a, payload)
+}
+
+// writeFinal is the unguarded final write; final and loseLease decide
+// whether it may run.
+func (c *resumeCheckpoints) writeFinal(reason StopReason) {
+	// Detached write: the final checkpoint is the crash-resume anchor
+	// and is emitted even when the loop exits because ctx was cancelled
+	// — passing the dead ctx here silently lost the checkpoint on
+	// exactly the shutdown path where it matters most (#365).
+	emitFinalCheckpointDetached(c.ctx, c.a, checkpointPayload{
+		Turn:                 c.result.Turns,
+		InputTokens:          c.result.InputTokens,
+		OutputTokens:         c.result.OutputTokens,
+		CostUSD:              c.result.CostUSD,
+		Goal:                 c.goal,
+		ContinuationPrompt:   c.cfg.continuationPrompt,
+		StopReason:           string(reason),
+		DoneDetail:           c.result.DoneDetail,
+		FinalText:            c.result.FinalText,
+		FinalTextSubstantive: *c.haveSubstantive,
+	})
+}
+
+// final writes the terminal checkpoint for a run that still holds its
+// lease. Never after losing it: another process may own the session,
+// and appending to its eventlog would commit a split-brain write (#1361).
+func (c *resumeCheckpoints) final(reason StopReason) {
+	if leaseLost(c.lock) {
+		return
+	}
+	c.writeFinal(reason)
+}
+
+// loseLease is the exit for every lease-lost path. Lost() closes for two
+// reasons: the row was stolen, or heartbeats stalled past the loss
+// window. In a single-replica deployment the second case is a database
+// outage with nobody to take the lease, and the partial turn's
+// accounting is worth keeping; Reaffirm proves which case this is with
+// one conditional UPDATE, and only a proven-still-held lease gets the
+// final checkpoint (#1361 review). The run ends with ErrLeaseLost either
+// way.
+func (c *resumeCheckpoints) loseLease() (RunResult, error) {
+	if held, err := c.lock.Reaffirm(c.ctx); err == nil && held {
+		c.result.Duration = time.Since(c.startedAt)
+		c.writeFinal(StopReasonContextCancelled)
+	}
+	return leaseLostResult(*c.result, c.startedAt)
+}
+
+// bindLeaseContext returns a child context that cancels with
+// eventlog.ErrLeaseLost as soon as lock.Lost() closes (#1361).
+func bindLeaseContext(ctx context.Context, lock *eventlog.SessionLock) (context.Context, context.CancelFunc) {
+	leaseCtx, cancelLease := context.WithCancelCause(ctx)
+	go func() {
+		select {
+		case <-lock.Lost():
+			cancelLease(eventlog.ErrLeaseLost)
+		case <-leaseCtx.Done():
+		}
+	}()
+	return leaseCtx, func() { cancelLease(nil) }
+}
+
+// buildResumedAgent registers the done/return and schedule lifecycle
+// tools and invokes the caller's ResumeBuildFunc.
+func buildResumedAgent(build ResumeBuildFunc, sessionID string, cfg *autoConfig, doneCh chan string) (*agent.Agent, <-chan coretools.ScheduleEvent, error) {
+	doneTools, err := buildDoneTools(cfg, doneCh)
+	if err != nil {
+		return nil, nil, fmt.Errorf("agent: Resume: build done tool: %w", err)
+	}
+	extras := append([]tool.Tool(nil), doneTools...)
+	var scheduleCh <-chan coretools.ScheduleEvent
+	if cfg.scheduler != nil {
+		schTool, ch, err := coretools.NewScheduleTool(coretools.ScheduleOptions{
+			Name:        cfg.scheduleToolName,
+			Description: cfg.scheduleToolDescription,
+			MaxDefer:    cfg.scheduleToolMaxDefer,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("agent: Resume: build schedule tool: %w", err)
+		}
+		extras = append(extras, schTool)
+		scheduleCh = ch
+	}
+	a, err := build(extras, sessionID)
+	warnIfInteractiveMode(a, err)
+	if err != nil {
+		return nil, nil, fmt.Errorf("agent: Resume: build agent: %w", err)
+	}
+	if a == nil {
+		return nil, nil, errors.New("agent: Resume: build returned nil agent")
+	}
+	return a, scheduleCh, nil
+}
+
+// awaitResumeWake honors a deferred checkpoint's NextWakeAt timestamp
+// at startup, unblocking early if the caller context cancels or the
+// session lock is lost (#1361).
+func awaitResumeWake(ctx context.Context, lock *eventlog.SessionLock, latest checkpointPayload, found bool, resumeStart time.Time) (RunResult, bool, error) {
+	if !found || latest.NextWakeAt.IsZero() {
+		return RunResult{}, false, nil
+	}
+	wait := time.Until(latest.NextWakeAt)
+	if wait <= 0 {
+		return RunResult{}, false, nil
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	base := RunResult{
+		Reason:       StopReasonContextCancelled,
+		Turns:        latest.Turn,
+		InputTokens:  latest.InputTokens,
+		OutputTokens: latest.OutputTokens,
+		CostUSD:      latest.CostUSD,
+		FinalText:    latest.FinalText,
+	}
+	select {
+	case <-t.C:
+		return RunResult{}, false, nil
+	case <-lock.Lost():
+		base.Duration = time.Since(resumeStart)
+		return base, true, fmt.Errorf("agent: Resume: %w", eventlog.ErrLeaseLost)
+	case <-ctx.Done():
+		base.Duration = time.Since(resumeStart)
+		return base, true, ctx.Err()
+	}
+}
+
+func leaseLost(lock *eventlog.SessionLock) bool {
+	if lock == nil {
+		return false
+	}
+	select {
+	case <-lock.Lost():
+		return true
+	default:
+		return false
+	}
 }
 
 // loadLatestCheckpoint walks the session's event log via Since(0)

@@ -177,7 +177,15 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	stream.overlayInTx = stream.registerOverlayCallback(adkDB)
 
 	svc := &service{inner: adkSvc, stream: stream}
-	return &Handle{Stream: stream, Service: svc, db: db, DB: db, adkDB: adkDB}, nil
+	return &Handle{
+		Stream:                stream,
+		Service:               svc,
+		db:                    db,
+		DB:                    db,
+		adkDB:                 adkDB,
+		lockHeartbeatInterval: o.lockHeartbeatInterval,
+		lockStaleAfter:        o.lockStaleAfter,
+	}, nil
 }
 
 // adkGormDB reaches the *gorm.DB that adkdatabase.NewSessionService

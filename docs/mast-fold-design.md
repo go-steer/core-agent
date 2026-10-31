@@ -103,7 +103,7 @@ two repositories answering "which one is the product?".
 | mast mechanism | core-agent home | Issue |
 |---|---|---|
 | Per-call spend ledger priced at call time, restored on resume (`pkg/budget/durable.go`, `eventlog.SpendStore`) | `pkg/usage` + `pkg/eventlog`; rebuild over the session tree, never re-priced | #1359 |
-| Single scheduling lease that consumes `Lost()` (`internal/cli/schedlease.go`) | `pkg/eventlog` lease consumer in `autonomous.Resume` and the wake loop; "single replica, safe restart" documented | #1361 |
+| Single scheduling lease that consumes `Lost()` (`internal/cli/schedlease.go`) | `pkg/eventlog` lease consumer in `autonomous.Resume` only. The wake loop deliberately takes no lease: ordinary turns are not session-level mutual exclusion, and the one race that matters there — two daemons continuing the same interrupted tail — is closed by the durable continuation claim (`pkg/eventlog/claim.go`), not a lock. "Single replica, safe restart" documented | #1361 |
 | apidiff + `dev/api-surface.txt` + `dev/api-breaks.txt` + compatibility policy + `deprecation_test.go` | `dev/tools/verify-apidiff`, a promised subset of `pkg/`, the 4.0 removal list | #1368, #1398 |
 | Guardrail state in an owned, append-only table (`eventlog.GuardrailStore`) | replaces `drainOutOfBandEvents` | #1360 |
 | AX task-runner deployment (`examples/deploy/ax`, `internal/injectedauth`) | `examples/…/deploy/ax`, `CORE_AGENT_GOOGLE_AUTH=injected` | #1395, #1410 |

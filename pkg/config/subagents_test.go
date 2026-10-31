@@ -234,6 +234,139 @@ func TestValidate_Subagents(t *testing.T) {
 	}
 }
 
+func TestValidate_RemoteSubagents(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		specs   []SubagentSpec
+		wantErr bool
+	}{
+		{
+			name: "remote with a2a url",
+			specs: []SubagentSpec{{
+				Name: "remote-reviewer",
+				Remote: &SubagentRemoteConfig{
+					A2A:            "https://reviewer.example.com/.well-known/agent-card.json",
+					Skill:          "code-review",
+					Skills:         []string{"code-review", "security-scan"},
+					Auth:           &SubagentRemoteAuthConfig{Type: SubagentRemoteAuthBearer, TokenEnv: "A2A_TOKEN"},
+					TimeoutSeconds: 120,
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "remote with endpoint only",
+			specs: []SubagentSpec{{
+				Name:   "remote-endpoint",
+				Remote: &SubagentRemoteConfig{Endpoint: "https://reviewer.example.com/a2a"},
+			}},
+			wantErr: false,
+		},
+		{
+			name:    "remote missing both a2a and endpoint",
+			specs:   []SubagentSpec{{Name: "remote-empty", Remote: &SubagentRemoteConfig{}}},
+			wantErr: true,
+		},
+		{
+			name: "remote combined with in-process root",
+			specs: []SubagentSpec{{
+				Name:   "remote-bad",
+				Root:   "../cluster",
+				Remote: &SubagentRemoteConfig{A2A: "https://reviewer.example.com"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "remote combined with in-process model",
+			specs: []SubagentSpec{{
+				Name:   "remote-bad",
+				Model:  &ModelConfig{Provider: ProviderVertex, Name: "gemini-3.5-flash"},
+				Remote: &SubagentRemoteConfig{A2A: "https://reviewer.example.com"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "remote with unknown auth type",
+			specs: []SubagentSpec{{
+				Name: "remote-bad",
+				Remote: &SubagentRemoteConfig{
+					A2A:  "https://reviewer.example.com",
+					Auth: &SubagentRemoteAuthConfig{Type: "basic", TokenEnv: "A2A_TOKEN"},
+				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "remote with empty auth token_env",
+			specs: []SubagentSpec{{
+				Name: "remote-bad",
+				Remote: &SubagentRemoteConfig{
+					A2A:  "https://reviewer.example.com",
+					Auth: &SubagentRemoteAuthConfig{Type: SubagentRemoteAuthBearer},
+				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "remote with negative timeout_seconds",
+			specs: []SubagentSpec{{
+				Name: "remote-bad",
+				Remote: &SubagentRemoteConfig{
+					A2A:            "https://reviewer.example.com",
+					TimeoutSeconds: -1,
+				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "remote with empty skills entry",
+			specs: []SubagentSpec{{
+				Name: "remote-bad",
+				Remote: &SubagentRemoteConfig{
+					A2A:    "https://reviewer.example.com",
+					Skills: []string{"code-review", " "},
+				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "remote with skill not in skills allowlist",
+			specs: []SubagentSpec{{
+				Name: "remote-bad",
+				Remote: &SubagentRemoteConfig{
+					A2A:    "https://reviewer.example.com",
+					Skill:  "deploy",
+					Skills: []string{"code-review"},
+				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "remote with non-http scheme",
+			specs: []SubagentSpec{{
+				Name:   "remote-bad",
+				Remote: &SubagentRemoteConfig{A2A: "reviewer.example.com:8080"},
+			}},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := DefaultConfig()
+			c.Subagents = tc.specs
+			err := c.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() with %s: got nil, want error", tc.name)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() with %s: got %v, want nil", tc.name, err)
+			}
+		})
+	}
+}
+
 // TestSubagents_JSONRoundTrip proves the on-disk schema survives a
 // marshal→unmarshal cycle unchanged — the same path `core-agent -c` takes
 // (json.Unmarshal into DefaultConfig). A field that drops here would make a
@@ -251,6 +384,19 @@ func TestSubagents_JSONRoundTrip(t *testing.T) {
 			MCP:          []string{"gke-readonly"},
 			Skills:       []string{"gke-cluster-lifecycle"},
 			Root:         "../cluster",
+		},
+		{
+			Name:        "remote-reviewer",
+			Description: "Remote A2A code review delegate.",
+			Remote: &SubagentRemoteConfig{
+				A2A:            "https://reviewer.example.com/.well-known/agent-card.json",
+				Endpoint:       "https://reviewer.example.com/a2a",
+				Skill:          "code-review",
+				Skills:         []string{"code-review"},
+				Auth:           &SubagentRemoteAuthConfig{Type: SubagentRemoteAuthBearer, TokenEnv: "A2A_TOKEN"},
+				TimeoutSeconds: 60,
+			},
+			Budgets: &SubagentBudgets{MaxWallclockSeconds: 180},
 		},
 	}
 	in := DefaultConfig()

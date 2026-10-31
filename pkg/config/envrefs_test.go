@@ -133,6 +133,7 @@ func TestEnvRefTagInventory(t *testing.T) {
 		"alerts.targets[].auth.bearer_env",
 		"alerts.targets[].url_env",
 		"attach.token_env",
+		"subagents[].remote.auth.token_env",
 		"tools.call_peer.token_env",
 	}
 	got := envRefTagPaths(reflect.TypeOf(Config{}), "", make(map[reflect.Type]bool), 0)

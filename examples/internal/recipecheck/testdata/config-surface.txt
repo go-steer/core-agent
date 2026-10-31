@@ -199,6 +199,13 @@ subagents[].model.vertex.context_cache.ttl
 subagents[].model.vertex.location
 subagents[].model.vertex.project
 subagents[].name
+subagents[].remote.a2a
+subagents[].remote.auth.token_env
+subagents[].remote.auth.type
+subagents[].remote.endpoint
+subagents[].remote.skill
+subagents[].remote.skills
+subagents[].remote.timeout_seconds
 subagents[].root
 subagents[].scheduler
 subagents[].skills

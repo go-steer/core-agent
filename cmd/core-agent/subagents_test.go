@@ -1120,3 +1120,50 @@ func TestBuildDeclaredSubagents_SchedulerReachesTheSpawnTemplate(t *testing.T) {
 		t.Errorf("boot lines = %q, want scheduler=sleep on cluster-watch's line only", lines)
 	}
 }
+
+func TestBuildDeclaredSubagents_RemoteA2A(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{
+			Name:        "remote-reviewer",
+			Description: "Remote A2A code review delegate.",
+			Remote: &config.SubagentRemoteConfig{
+				A2A:            "https://reviewer.example.com/.well-known/agent-card.json",
+				Skill:          "code-review",
+				Skills:         []string{"code-review"},
+				Auth:           &config.SubagentRemoteAuthConfig{Type: config.SubagentRemoteAuthBearer, TokenEnv: "A2A_TOKEN"},
+				TimeoutSeconds: 45,
+			},
+			Budgets: &config.SubagentBudgets{MaxWallclockSeconds: 120},
+		}},
+	}
+	var lines []string
+	deps := testDeps()
+	deps.send = func(s string) { lines = append(lines, s) }
+	subs, templates, _, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(), parentSurface{}, deps,
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	if len(subs) != 0 {
+		t.Errorf("remote A2A subagent should not register an in-process sync *agent.Agent, got %d", len(subs))
+	}
+	if len(templates) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(templates))
+	}
+	tmpl := templates[0]
+	if tmpl.Name != "remote-reviewer" {
+		t.Errorf("template Name = %q, want %q", tmpl.Name, "remote-reviewer")
+	}
+	if tmpl.Remote == nil {
+		t.Fatal("template Remote = nil, want non-nil RemoteAgentSpawner")
+	}
+	if tmpl.Budgets.MaxWallclock != 120*time.Second {
+		t.Errorf("template Budgets.MaxWallclock = %v, want 120s", tmpl.Budgets.MaxWallclock)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "remote=a2a") || !strings.Contains(lines[0], "skill=code-review") {
+		t.Errorf("boot lines = %q, want remote=a2a and skill=code-review", lines)
+	}
+}

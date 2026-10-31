@@ -387,6 +387,14 @@ func buildDeclaredSubagents(
 	templates := make([]background.SubagentTemplate, 0, len(cfg.Subagents))
 	var rootedServers []*mcp.Server
 	for i, spec := range cfg.Subagents {
+		if spec.Remote != nil {
+			tmpl, err := buildRemoteSubagentTemplate(spec, deps.send)
+			if err != nil {
+				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: remote: %w", i, spec.Name, err)
+			}
+			templates = append(templates, tmpl)
+			continue
+		}
 		// Resolve the provider + model name once; the sync path builds one
 		// LLM from it, the async template a fresh-LLM-per-spawn factory.
 		subProvider, modelName, err := resolveSubagentProvider(cfg, parentProvider, spec, deps.noPromptCache, deps.promptCacheTTL, deps.send)
@@ -497,6 +505,50 @@ func buildDeclaredSubagents(
 		deps.send(fmt.Sprintf("subagent %q: model=%s, %s", spec.Name, llm.Name(), scopeDesc))
 	}
 	return subs, templates, rootedServers, nil
+}
+
+func buildRemoteSubagentTemplate(spec config.SubagentSpec, send func(string)) (background.SubagentTemplate, error) {
+	r := spec.Remote
+	var auth *background.A2AAuthConfig
+	if r.Auth != nil {
+		auth = &background.A2AAuthConfig{
+			Type:     r.Auth.Type,
+			TokenEnv: r.Auth.TokenEnv,
+		}
+	}
+	timeoutSec := r.TimeoutSeconds
+	if timeoutSec == 0 && spec.Budgets != nil && spec.Budgets.MaxWallclockSeconds > 0 {
+		timeoutSec = spec.Budgets.MaxWallclockSeconds
+	}
+	client, err := background.NewA2AClient(background.A2AConfig{
+		Name:           spec.Name,
+		AgentCardURL:   r.A2A,
+		Endpoint:       r.Endpoint,
+		Skill:          r.Skill,
+		Skills:         r.Skills,
+		Auth:           auth,
+		TimeoutSeconds: timeoutSec,
+	})
+	if err != nil {
+		return background.SubagentTemplate{}, err
+	}
+	target := r.A2A
+	if target == "" {
+		target = r.Endpoint
+	}
+	if send != nil {
+		line := fmt.Sprintf("subagent %q: remote=a2a (%s)", spec.Name, target)
+		if r.Skill != "" {
+			line += fmt.Sprintf(", skill=%s", r.Skill)
+		}
+		send(line)
+	}
+	return background.SubagentTemplate{
+		Name:        spec.Name,
+		Description: spec.Description,
+		Remote:      client,
+		Budgets:     asyncBudgets(spec.Budgets),
+	}, nil
 }
 
 // assembleSubagent builds the *agent.Agent from a resolved model, persona,

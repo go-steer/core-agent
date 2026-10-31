@@ -209,6 +209,13 @@ var GatedFeatures = []GatedFeature{
 			"finishes after its first turn, and a watcher the content relies on never watches",
 	},
 	{
+		Path: "subagents[].remote",
+		Min:  "3.1.0-dev.1",
+		Why: "a remote A2A v0.3 subagent delegate (#1396). An older daemon drops the `remote` block " +
+			"and builds an in-process subagent on the parent's model with inherited tools instead " +
+			"of dispatching to the remote A2A service",
+	},
+	{
 		Path: "model.builtin_tools",
 		Min:  "2.9.0-dev.4",
 		Why: "the provider's server-side built-ins — web search, URL fetching, code execution (#876). " +

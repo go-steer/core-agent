@@ -20,7 +20,11 @@
 // turn safe under those rules:
 //
 //   - With --wait-for-egress it blocks until a TLS handshake to that address
-//     succeeds, so no turn starts inside the golden boot.
+//     succeeds, so no turn starts inside the golden boot. The wait is
+//     unbounded by default because the golden boot's length is Substrate's
+//     to decide; --egress-timeout bounds it for a real boot where a wrong
+//     host would otherwise spin until AX kills the pod. SIGTERM and SIGINT
+//     end the wait (#1419).
 //   - It skips the run when --state-dir holds a done marker from an earlier
 //     boot, so a resumed task does not repeat a finished turn. The marker is
 //     checked after the egress wait, because /workspace is only populated
@@ -35,6 +39,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -50,39 +55,64 @@ import (
 	"time"
 )
 
+// entryOptions is what the flags resolve to.
+type entryOptions struct {
+	stateDir      string
+	waitFor       string
+	egressTimeout time.Duration
+	tlsCfg        *tls.Config
+}
+
 func main() {
 	stateDir := flag.String("state-dir", "/workspace/.core-agent", "durable directory for the done marker and result.txt")
 	waitFor := flag.String("wait-for-egress", "", "host:port that must accept a TLS handshake before core-agent starts; empty skips the wait")
+	egressTimeout := flag.Duration("egress-timeout", 0, "give up on --wait-for-egress after this long and exit non-zero; 0 waits indefinitely (the golden boot needs that)")
 	flag.Parse()
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	os.Exit(entryMain(logger, *stateDir, *waitFor, flag.Args(), nil))
+	code := entryMain(ctx, logger, entryOptions{
+		stateDir:      *stateDir,
+		waitFor:       *waitFor,
+		egressTimeout: *egressTimeout,
+	}, flag.Args())
+	stop() // os.Exit skips defers; release the signal handler explicitly.
+	os.Exit(code)
 }
 
-func entryMain(logger *slog.Logger, stateDir, waitFor string, args []string, tlsCfg *tls.Config) int {
+func entryMain(ctx context.Context, logger *slog.Logger, o entryOptions, args []string) int {
 	if len(args) == 0 {
 		logger.Error("no agent command given after --")
 		return 2
 	}
 
-	if waitFor != "" {
-		if err := waitForEgress(logger, waitFor, tlsCfg); err != nil {
-			logger.Error("invalid --wait-for-egress", "addr", waitFor, "error", err)
+	if o.waitFor != "" {
+		switch err := waitForEgress(ctx, logger, o.waitFor, o.egressTimeout, o.tlsCfg); {
+		case err == nil:
+		case errors.Is(err, context.Canceled):
+			logger.Info("signal received while waiting for egress; exiting", "addr", o.waitFor)
+			return 1
+		case errors.Is(err, context.DeadlineExceeded):
+			logger.Error("egress did not become available", "addr", o.waitFor, "timeout", o.egressTimeout)
+			return 1
+		default:
+			logger.Error("invalid --wait-for-egress", "addr", o.waitFor, "error", err)
 			return 2
 		}
 	}
 
-	donePath := filepath.Join(stateDir, "done")
+	donePath := filepath.Join(o.stateDir, "done")
 	if b, err := os.ReadFile(donePath); err == nil {
 		logger.Info("turn already completed on an earlier boot; not running it again", "marker", donePath, "completed", string(b))
 		return 0
 	}
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+	if err := os.MkdirAll(o.stateDir, 0o755); err != nil {
 		logger.Error("creating state dir", "error", err)
 		return 1
 	}
 
-	code, err := run(logger, args, filepath.Join(stateDir, "result.txt"))
+	code, err := run(logger, args, filepath.Join(o.stateDir, "result.txt"))
 	if err != nil {
 		logger.Error("agent turn did not complete", "exitCode", code, "error", err)
 		return code
@@ -95,10 +125,15 @@ func entryMain(logger *slog.Logger, stateDir, waitFor string, args []string, tls
 	return 0
 }
 
-// waitForEgress blocks until a TLS handshake with addr succeeds. A bare TCP
-// connect is not enough: Substrate's egress gateway accepts the connection
-// and then drops it for an actor without an egress policy.
-func waitForEgress(logger *slog.Logger, addr string, baseTLS *tls.Config) error {
+// waitForEgress blocks until a TLS handshake with addr succeeds, ctx is
+// done, or timeout (if non-zero) elapses. A bare TCP connect is not
+// enough: Substrate's egress gateway accepts the connection and then
+// drops it for an actor without an egress policy.
+//
+// Returns context.Canceled when ctx ended the wait and
+// context.DeadlineExceeded when the timeout did; any other error means
+// addr itself is unusable.
+func waitForEgress(ctx context.Context, logger *slog.Logger, addr string, timeout time.Duration, baseTLS *tls.Config) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return err
@@ -110,20 +145,39 @@ func waitForEgress(logger *slog.Logger, addr string, baseTLS *tls.Config) error 
 			cfg.ServerName = host
 		}
 	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: cfg}
 	start, lastLog := time.Now(), time.Time{}
 	for {
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, cfg)
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err == nil {
 			_ = conn.Close()
+			// A signal that landed during the final, successful dial
+			// still ends the run: NotifyContext keeps its handler until
+			// main's stop(), so without this the signal would be swallowed
+			// and the turn would start.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			logger.Info("egress available", "addr", addr, "waited", time.Since(start).Round(time.Second))
 			return nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
 		if time.Since(lastLog) > time.Minute {
 			logger.Info("waiting for egress", "addr", addr, "error", err)
 			lastLog = time.Now()
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 
@@ -148,9 +202,13 @@ func run(logger *slog.Logger, args []string, resultPath string) (int, error) {
 	defer signal.Stop(sigs)
 
 	if err := cmd.Start(); err != nil {
-		return 1, fmt.Errorf("starting %v: %w", args, err)
+		return 1, fmt.Errorf("starting %s: %w", args[0], err)
 	}
-	logger.Info("started agent", "pid", cmd.Process.Pid, "command", args)
+	// The full argv carries the prompt (-p "...") and every operator
+	// flag; that is Debug material, not something every runner log line
+	// should carry (#1419).
+	logger.Info("started agent", "pid", cmd.Process.Pid, "command", args[0], "args", len(args)-1)
+	logger.Debug("agent argv", "argv", args)
 
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()

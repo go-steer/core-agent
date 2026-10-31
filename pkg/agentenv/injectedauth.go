@@ -16,6 +16,7 @@ package agentenv
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -57,6 +58,29 @@ func InjectedGoogleAuthFrom(getenv func(string) string) bool {
 		getenv = os.Getenv
 	}
 	return getenv(EnvGoogleAuth) == GoogleAuthInjected
+}
+
+// ValidateGoogleAuthEnv rejects a CORE_AGENT_GOOGLE_AUTH value that is
+// neither empty nor exactly "injected". The variable is only ever set in
+// a task manifest, where a typo ("Injected", "true") would otherwise fall
+// through to the real ADC chain and fail inside the sandbox with the
+// generic "could not find default credentials" — an error that points
+// at the wrong thing (#1419).
+func ValidateGoogleAuthEnv() error {
+	return ValidateGoogleAuthEnvFrom(os.Getenv)
+}
+
+// ValidateGoogleAuthEnvFrom is ValidateGoogleAuthEnv over getenv. A nil
+// getenv defaults to os.Getenv.
+func ValidateGoogleAuthEnvFrom(getenv func(string) string) error {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	v := getenv(EnvGoogleAuth)
+	if v == "" || v == GoogleAuthInjected {
+		return nil
+	}
+	return fmt.Errorf("%s=%q: want %q or unset", EnvGoogleAuth, v, GoogleAuthInjected)
 }
 
 // InjectedGoogleTokenSource returns an oauth2.TokenSource that always

@@ -224,3 +224,33 @@ func cfgWithProvider(name string) func() *config.Config {
 		return cfg
 	}
 }
+
+// A mistyped CORE_AGENT_GOOGLE_AUTH is refused by name before any
+// provider is constructed, for every provider: the variable is set per
+// deployment, and a typo that silently ran the ADC chain used to fail
+// with an error about credentials instead (#1419).
+func TestResolve_RejectsMistypedGoogleAuthEnv(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("CORE_AGENT_GOOGLE_AUTH", "Injected")
+
+	cfg := config.DefaultConfig()
+	cfg.Model.Provider = "echo"
+	_, err := models.Resolve(cfg)
+	if err == nil {
+		t.Fatal("Resolve with CORE_AGENT_GOOGLE_AUTH=Injected returned nil error, want a refusal")
+	}
+	for _, want := range []string{"CORE_AGENT_GOOGLE_AUTH", `"Injected"`, `"injected"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Resolve error %q does not mention %q", err, want)
+		}
+	}
+
+	// The exact value and the unset value both pass this check; the echo
+	// provider needs no credentials so Resolve succeeds end to end.
+	for _, v := range []string{"", "injected"} {
+		t.Setenv("CORE_AGENT_GOOGLE_AUTH", v)
+		if _, err := models.Resolve(cfg); err != nil {
+			t.Errorf("Resolve with CORE_AGENT_GOOGLE_AUTH=%q: %v, want nil", v, err)
+		}
+	}
+}

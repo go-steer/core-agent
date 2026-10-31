@@ -396,6 +396,9 @@ func transportFor(ctx context.Context, name string, spec ServerSpec) (mcpsdk.Tra
 		// via misconfiguration. Net effect: auth-set Authorization
 		// always wins over a header-set one.
 		if spec.Auth != nil && spec.Auth.GoogleOAuth != nil {
+			if err := agentenv.ValidateGoogleAuthEnv(); err != nil {
+				return nil, nil, fmt.Errorf("mcp: %q: %w", name, err)
+			}
 			if agentenv.InjectedGoogleAuth() {
 				rt = &googleAuthTransport{base: rt, source: agentenv.InjectedGoogleTokenSource()}
 			} else {

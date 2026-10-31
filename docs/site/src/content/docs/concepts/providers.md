@@ -252,7 +252,7 @@ Some sandboxes never hold a Google credential: an egress gateway outside the san
 
 Set `CORE_AGENT_GOOGLE_AUTH=injected` and every Google client skips ADC detection entirely and sends `Authorization: Bearer placeholder` on each request — the gateway only rewrites a header that is already present. It applies to all four Google credential paths at once: `vertex`, `anthropic-vertex`, [provider profiles](#provider-profiles) with `auth: google_adc` such as `vertex-maas`, and HTTP MCP servers with [`auth.google_oauth`](/concepts/mcp/#authgoogle_oauth--google-oauth-access-tokens-adc). Three things to know:
 
-- **Only the exact value `injected` turns it on.** Any other value, including `Injected` or `true`, is ignored and the normal ADC chain runs — which, inside the sandbox, fails with the usual "could not find default credentials" ([#1419](https://github.com/go-steer/core-agent/issues/1419) tracks rejecting bad values at startup).
+- **Only the exact value `injected` turns it on, and anything else is refused.** `Injected`, `true` or any other non-empty value fails at startup with `core-agent: models: CORE_AGENT_GOOGLE_AUTH="Injected": want "injected" or unset` (and the same from an `auth.google_oauth` MCP server), rather than silently running the ADC chain and failing about credentials. Unset means ADC, as always.
 - **Outside a gateway it is a misconfiguration, not a bypass.** Google rejects the placeholder with `401`; nothing is granted. Do not set it on a workstation or in a plain cluster.
 - **It does not affect non-Google providers.** `anthropic`, OpenAI-dialect profiles and the mocks read their own keys as before.
 

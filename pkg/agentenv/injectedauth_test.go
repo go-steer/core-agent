@@ -16,6 +16,7 @@ package agentenv
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +54,28 @@ func TestInjectedGoogleTokenSource(t *testing.T) {
 	}
 	if got != InjectedGooglePlaceholder {
 		t.Errorf("InjectedGoogleStatic.Token() = %q, want %q", got, InjectedGooglePlaceholder)
+	}
+}
+
+// A mistyped value must be refused by name, not fall through to ADC and
+// fail with an error about credentials (#1419).
+func TestValidateGoogleAuthEnv(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"", GoogleAuthInjected} {
+		if err := ValidateGoogleAuthEnvFrom(func(string) string { return v }); err != nil {
+			t.Errorf("ValidateGoogleAuthEnvFrom(%q) = %v, want nil", v, err)
+		}
+	}
+	for _, v := range []string{"Injected", "inject", "true", "1", " injected"} {
+		err := ValidateGoogleAuthEnvFrom(func(string) string { return v })
+		if err == nil {
+			t.Errorf("ValidateGoogleAuthEnvFrom(%q) = nil, want an error naming the variable", v)
+			continue
+		}
+		for _, want := range []string{EnvGoogleAuth, v, GoogleAuthInjected} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("ValidateGoogleAuthEnvFrom(%q) error %q does not mention %q", v, err, want)
+			}
+		}
 	}
 }

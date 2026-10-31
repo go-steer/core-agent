@@ -32,7 +32,7 @@ import (
 // Deprecated: the projection lives in core-models now; call
 // adkv2.GroundingProjection (github.com/go-steer/core-models/adkv2)
 // directly. This wrapper delegates to it and stays for embedders who
-// wired the core-agent name.
+// wired the core-agent name. Removed in v4.0.
 func GroundingProjection(inner session.Service) session.Service {
 	return adkv2.GroundingProjection(inner)
 }

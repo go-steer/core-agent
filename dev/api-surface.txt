@@ -1,0 +1,85 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Public API surface classification for github.com/go-steer/core-agent/v3.
+#
+# Every importable package under pkg/ (excluding internal/ subtrees)
+# MUST appear here with one of two dispositions:
+#
+#   promised     Covered by the SemVer compatibility guarantee in
+#                docs/compatibility-policy.md and checked against the
+#                latest release tag by dev/tools/verify-apidiff.
+#   unsupported  Exported for in-repo / sibling-tool composition across
+#                cmd/, internal/, or extras/, NOT covered by the
+#                compatibility promise; may change in minor releases.
+#
+# internal/testutil/surface_test.go (TestEveryImportablePackageIsADecision)
+# fails if a package under pkg/ is missing from this file or if a listed
+# directory no longer exists.
+
+# --- Promised public API surface ---
+promised pkg/agent
+promised pkg/agent/autonomous
+promised pkg/agent/background
+promised pkg/config
+promised pkg/eventlog
+promised pkg/instruction
+promised pkg/mcp
+promised pkg/models
+promised pkg/models/anthropic
+promised pkg/models/gemini
+promised pkg/models/mock
+promised pkg/models/profiles
+promised pkg/permissions
+promised pkg/pricing
+promised pkg/recording
+promised pkg/runner
+promised pkg/skills
+promised pkg/telemetry
+promised pkg/tools
+promised pkg/transcript
+promised pkg/usage
+promised pkg/watchdog
+
+# --- Unsupported (exported for in-repo / sibling composition only) ---
+# Daemon/sandbox environment variable readers (CORE_AGENT_*).
+unsupported pkg/agentenv
+# Model-backed approver behind experimental permission mode `auto`.
+unsupported pkg/approver
+# HTTP/SSE remote-attach server wire protocol and handler.
+unsupported pkg/attach
+# Bridge adapting pkg/agent onto pkg/attach.
+unsupported pkg/attachadapter
+# Static bearer-token authentication; moving to go-steer/purser.
+unsupported pkg/auth
+# Child-process credential-stripping helper for daemon subprocesses.
+unsupported pkg/childenv
+# Reusable CLI/daemon composition glue lifted out of cmd/core-agent.
+unsupported pkg/compose
+# Local digesting primitives backing pkg/tools/agentic.
+unsupported pkg/digest
+# Lifecycle hook runner for CLI/daemon turns.
+unsupported pkg/hooks
+# Model-tier routing table used by watchdog escalation and task routing.
+unsupported pkg/modeltier
+# Deprecated forwarding alias for pkg/transcript (removed in v4.0).
+unsupported pkg/session
+# Task-classification heuristics for model-tier routing.
+unsupported pkg/taskclass
+# Agentic-MCP wrapper toolset wired by pkg/compose.
+unsupported pkg/tools/agentic
+# Outbound webhook alert tool implementation wired by pkg/tools.
+unsupported pkg/tools/alert
+# Peer-session messaging tools wired by pkg/compose.
+unsupported pkg/tools/peer

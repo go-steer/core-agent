@@ -24,31 +24,31 @@ import "context"
 
 // AutonomousHandle is the pre-#492 name for Handle.
 //
-// Deprecated: use Handle.
+// Deprecated: use Handle. Removed in v4.0.
 type AutonomousHandle = Handle
 
 // AutonomousOption is the pre-#492 name for Option.
 //
-// Deprecated: use Option.
+// Deprecated: use Option. Removed in v4.0.
 type AutonomousOption = Option
 
 // RunAutonomous is the pre-#492 name for Run.
 //
-// Deprecated: use Run.
+// Deprecated: use Run. Removed in v4.0.
 func RunAutonomous(ctx context.Context, build BuildFunc, goal string, opts ...Option) (RunResult, error) {
 	return Run(ctx, build, goal, opts...)
 }
 
 // StartAutonomous is the pre-#492 name for Start.
 //
-// Deprecated: use Start.
+// Deprecated: use Start. Removed in v4.0.
 func StartAutonomous(ctx context.Context, build BuildFunc, goal string, opts ...Option) (*Handle, error) {
 	return Start(ctx, build, goal, opts...)
 }
 
 // ResumeAutonomous is the pre-#492 name for Resume.
 //
-// Deprecated: use Resume.
+// Deprecated: use Resume. Removed in v4.0.
 func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...Option) (RunResult, error) {
 	return Resume(ctx, build, ref, opts...)
 }

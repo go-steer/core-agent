@@ -293,7 +293,7 @@ func (ad *Adapter) SetOperatorEventEmitter(f func(eventType string, payload any)
 
 // SetAttachEmitter is the pre-#506 name.
 //
-// Deprecated: use SetOperatorEventEmitter.
+// Deprecated: use SetOperatorEventEmitter. Removed in v4.0.
 func (ad *Adapter) SetAttachEmitter(f func(eventType string, payload any)) {
 	ad.SetOperatorEventEmitter(f)
 }

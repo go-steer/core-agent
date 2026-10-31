@@ -914,7 +914,7 @@ type OperatorEventTarget interface {
 // just goes dark), which is why this stays for a full deprecation
 // cycle rather than being cut over.
 //
-// Deprecated: implement OperatorEventTarget.
+// Deprecated: implement OperatorEventTarget. Removed in v4.0.
 type EmitTarget interface {
 	SetAttachEmitter(func(eventType string, payload any))
 }

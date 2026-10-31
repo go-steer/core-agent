@@ -123,14 +123,14 @@ const InteractiveOverlay = `A user is present. Before starting non-trivial work 
 const AutonomousOverlay = `You are operating autonomously: no human reads your output in real time, and questions posed in it go unanswered — do not ask for clarification in your responses. Proceed on reversible actions that follow from the goal; gather missing information with your tools instead of asking, and prefer a recorded reasonable assumption over stalling. Before each multi-step or consequential series of actions, state in a sentence or two what you are about to do and why — nobody will approve it; your output is the audit record of the run. Verify your work before declaring it done: run the checks that exist rather than asserting success. End your turn only when the goal is complete or blocked on something no tool can resolve, and say which.`
 
 // DefaultInstruction is the pre-#459 monolithic prompt, retained as
-// a compositional alias through the v2.8.x series (deleted at the
-// next breaking window alongside WithSystemInstructionPrefix). Close
-// to today's semantics minus the persona and plan-sketch lines — see
-// the disposition table in docs/system-prompt-layering-design.md.
+// a compositional alias through the v3.x series (deleted at v4.0
+// alongside WithSystemInstructionPrefix). Close to today's semantics
+// minus the persona and plan-sketch lines — see the disposition table
+// in docs/system-prompt-layering-design.md.
 //
 // Deprecated: build with the layer options (WithMode,
 // WithExtraInstruction, WithUserInstruction) instead of composing
-// against this constant.
+// against this constant. Removed in v4.0.
 const DefaultInstruction = CoreInstruction + "\n\n" + InteractiveOverlay
 
 // Mode selects the layer-3 overlay: how the agent should carry
@@ -874,10 +874,9 @@ func WithGate(g *permissions.Gate) Option {
 // the DefaultInstruction alias), so layer assembly is skipped.
 //
 // Deprecated: memory belongs AFTER the core, not before it — use
-// WithUserInstruction (layer 4). This survives through v2.8.x for
+// WithUserInstruction (layer 4). This survives through v3.x for
 // consumers that composed against the old prefix arrangement and is
-// deleted at the next breaking window together with
-// DefaultInstruction.
+// deleted together with DefaultInstruction. Removed in v4.0.
 func WithSystemInstructionPrefix(prefix string) Option {
 	return func(o *options) {
 		if prefix == "" {
@@ -2278,7 +2277,7 @@ func wrapWithCleanup(seq iter.Seq2[*session.Event, error], cleanup func()) iter.
 // the typed operator-event seam is transport-neutral; only its
 // first consumer was attach.
 //
-// Deprecated: use SetOperatorEventEmitter.
+// Deprecated: use SetOperatorEventEmitter. Removed in v4.0.
 func (a *Agent) SetAttachEmitter(f func(eventType string, payload any)) {
 	a.SetOperatorEventEmitter(f)
 }

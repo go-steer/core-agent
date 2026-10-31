@@ -4,19 +4,21 @@ All notable changes to `core-agent` are recorded here. The format follows [Keep 
 
 ## Stability promise
 
-The public API of `core-agent` is the exported surface of these packages:
+The SemVer-governed public API of `core-agent` is the exported surface of the `promised` packages in [`dev/api-surface.txt`](dev/api-surface.txt) (see [`docs/compatibility-policy.md`](docs/compatibility-policy.md)):
 
-- `agent`, `eventlog`, `tools`, `permissions`, `config`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`, `models/profiles`), `pricing`, `recording`, `runner`, `transcript` (formerly `session`; the old path forwards, deprecated), `usage`, `instruction`, `mcp`, `skills`, `telemetry`
+- `agent` (+ `agent/autonomous`, `agent/background`), `eventlog`, `tools`, `permissions`, `config`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`, `models/profiles`), `pricing`, `recording`, `runner`, `transcript`, `usage`, `watchdog`, `instruction`, `mcp`, `skills`, `telemetry`
 
-Pre-1.0, breaking changes are possible at any minor version (`v0.X`). When we make one, the change is called out in this file under **Changed** or **Removed**, and non-trivial removals get a one-version deprecation period when feasible. Patch versions (`v0.X.Y`) are bug fixes only.
-
-The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `internal/` packages they ship with track `core-agent`'s minor version but do not promise their own stability — adapters target moving runtimes (Scion, AX) and follow whatever those upstream projects do.
+Remaining packages under `pkg/` (`agentenv`, `approver`, `attach`, `attachadapter`, `auth`, `childenv`, `compose`, `digest`, `hooks`, `modeltier`, `session`, `taskclass`, `tools/agentic`, `tools/alert`, `tools/peer`) are marked `unsupported` in `dev/api-surface.txt`: they are exported for in-repo and sibling-tool composition (`cmd/`, `internal/`, `extras/`) and may change in minor releases. Incompatible changes to `promised` packages require a major version bump (`/vN`) and are gated on every PR by `dev/ci/presubmits/verify-apidiff`. Deprecated symbols carry a `Deprecated: ... Removed in v<N>.<M>.` marker enforced by `TestDeprecationMarkersNameTheirRemoval`.
 
 ---
 
 ## [Unreleased]
 
 #### Feature
+
+- **Public API compatibility gate (`dev/tools/verify-apidiff`), promised-surface manifest (`dev/api-surface.txt`), and v4.0 deprecation discipline (`docs/compatibility-policy.md`).**
+  - **What was missing:** `CHANGELOG.md` named a prose list of supported packages (which still described pre-1.0 `v0.X` rules and omitted `agent/autonomous`, `agent/background`, and `watchdog`), nothing in CI ran `apidiff` against the latest GA tag (`v3.0.0`) or required new `pkg/` packages to be classified as promised versus composition-only, and 33 `Deprecated:` markers across `pkg/` lacked a concrete `Removed in v<N>.<M>.` target version.
+  - **What landed:** `dev/api-surface.txt` classifies all 37 importable `pkg/` packages into 22 `promised` packages and 15 `unsupported` composition packages, enforced on every `go test` run by `internal/testutil.TestEveryImportablePackageIsADecision`. `dev/tools/verify-apidiff` (and `dev/ci/presubmits/verify-apidiff`) compares every `promised` package against the nearest `v[1-9]*` GA tag with `golang.org/x/exp/cmd/apidiff` and fails on any unacknowledged incompatible change (unless recorded in `dev/api-breaks.txt` or a `**BREAKING:**` bullet in `CHANGELOG.md` whose line names both the package and the symbol in backticks — a bare-word match was tried first and one bullet mentioning `config.json` or "core-agent." acknowledged every later break in the package). All 33 `Deprecated:` comments across `pkg/` now end with `Removed in v4.0.`, enforced by `internal/testutil.TestDeprecationMarkersNameTheirRemoval`, and `docs/compatibility-policy.md` documents the compatibility policy and v4.0 removal schedule. The published Library API page states the promised/unsupported split and marks `pkg/compose` and `pkg/session` as unsupported where it documents them. ([#1368](https://github.com/go-steer/core-agent/issues/1368), [#1373](https://github.com/go-steer/core-agent/issues/1373), [#1398](https://github.com/go-steer/core-agent/issues/1398))
 
 - **Reference slim-embed consumer (`examples/embed/slim`) and CI dependency-hygiene gate (`dev/ci/presubmits/verify-slim-deps`).**
   - **What was missing:** Decision 9 of `docs/mast-fold-design.md` retired the separate "mast as a slim library" option because `core-agent`'s runtime governance slice (`pkg/agent`, `pkg/models`, `pkg/permissions`, `pkg/tools.GateToolset`, and `pkg/usage`) was already free of the interactive TUI (`core-tui`, `charmbracelet`), the MCP SDK, Prometheus, the OpenTelemetry SDK/exporters, and SQLite drivers — but nothing in CI enforced that import boundary or exercised the minimal embedding path end to end.

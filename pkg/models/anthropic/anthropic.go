@@ -115,7 +115,7 @@ type Option func(*Provider)
 // WithCacheSystem(false) still means "no caching at all", the way it did
 // when system blocks were the only thing that could be marked. A caller
 // who wrote it to avoid the write premium keeps that outcome instead of
-// silently acquiring rolling history breakpoints.
+// silently acquiring rolling history breakpoints. Removed in v4.0.
 func WithCacheSystem(on bool) Option {
 	return func(p *Provider) { p.cache = CacheOptions{System: on} }
 }

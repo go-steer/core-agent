@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Compare the exported API of every `promised` package in
+# dev/api-surface.txt against the latest release tag using
+# golang.org/x/exp/cmd/apidiff.
+#
+# An incompatible change fails the check unless Either:
+#   - its `<package> <symbol>` is listed in dev/api-breaks.txt, or
+#   - the ## [Unreleased] section of CHANGELOG.md contains a
+#     `**BREAKING:**` bullet whose line names BOTH the package
+#     (`pkg/foo` or `foo` in backticks) AND the symbol (`Bar`,
+#     `Type.Method` or `foo.Bar` in backticks).
+#
+# Set APIDIFF_BASE_TAG to override the baseline tag (or APIDIFF_TAG_PATTERN
+# to change the git-describe glob; defaults to v[1-9]*).
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+
+# Pin matches golang.org/x/exp in go.mod.
+APIDIFF_VERSION="${APIDIFF_VERSION:-v0.0.0-20260112195511-716be5621a96}"
+
+ROOT="$(repo_root)"
+cd "$ROOT"
+
+SURFACE_FILE="dev/api-surface.txt"
+BREAKS_FILE="dev/api-breaks.txt"
+CHANGELOG_FILE="CHANGELOG.md"
+
+if [[ ! -f "$SURFACE_FILE" ]]; then
+  echo "FAIL: missing $SURFACE_FILE" >&2
+  exit 1
+fi
+
+TAG_PATTERN="${APIDIFF_TAG_PATTERN:-v[1-9]*}"
+BASE_TAG="${APIDIFF_BASE_TAG:-$(git describe --tags --abbrev=0 --match "$TAG_PATTERN" --exclude '*-*' 2>/dev/null || true)}"
+if [[ -z "$BASE_TAG" ]]; then
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "FAIL: no release tag matching '$TAG_PATTERN' reachable from HEAD in CI (ensure actions/checkout uses fetch-depth: 0)" >&2
+    exit 1
+  fi
+  echo "verify-apidiff: no release tag matching '$TAG_PATTERN' reachable from HEAD; skipping."
+  exit 0
+fi
+
+mapfile -t PROMISED < <(awk '$1 == "promised" { print $2 }' "$SURFACE_FILE")
+if [[ ${#PROMISED[@]} -eq 0 ]]; then
+  echo "FAIL: no 'promised' packages listed in $SURFACE_FILE" >&2
+  exit 1
+fi
+
+ensure_tool apidiff "golang.org/x/exp/cmd/apidiff@${APIDIFF_VERSION}"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/core-agent-apidiff.XXXXXX")"
+BASE_TREE="$WORK/base"
+SNAP_DIR="$WORK/snaps"
+mkdir -p "$BASE_TREE" "$SNAP_DIR"
+cleanup() {
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+git archive "$BASE_TAG" | tar -x -C "$BASE_TREE"
+
+# Extract the ## [Unreleased] section of CHANGELOG.md once.
+UNRELEASED=""
+if [[ -f "$CHANGELOG_FILE" ]]; then
+  UNRELEASED="$(awk '
+    /^## \[Unreleased\]/ { in_unrel = 1; next }
+    /^## \[/ && in_unrel { exit }
+    in_unrel { print }
+  ' "$CHANGELOG_FILE")"
+fi
+
+ack_in_breaks_file() {
+  local pkg="$1" sym="$2"
+  [[ -f "$BREAKS_FILE" ]] || return 1
+  awk -v pkg="$pkg" -v sym="$sym" '
+    {
+      sub(/#.*/, "")
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+      if ($1 == pkg && ($2 == sym || $2 == "*")) { found = 1; exit }
+    }
+    END { exit (found ? 0 : 1) }
+  ' "$BREAKS_FILE"
+}
+
+ack_in_changelog() {
+  local pkg="$1" sym="$2"
+  local short_pkg="${pkg#pkg/}"
+  local clean_sym="${sym#(\*}"
+  clean_sym="${clean_sym/\)./.}"
+  local head_sym="${clean_sym%%.*}"
+  [[ -n "$UNRELEASED" ]] || return 1
+  # One **BREAKING:** bullet acknowledges one break: the SAME line must
+  # name the package (backticked path, or backticked short name) AND the
+  # symbol in backticks. Substring matches on bare words were too loose —
+  # `config.` matched any bullet mentioning config.json, `agent.` matched
+  # "core-agent." at a sentence end, and a head symbol like `New` or
+  # `Agent` matched prose — so one bullet quietly acknowledged every
+  # later break in the package (#1421 review).
+  local line
+  while IFS= read -r line; do
+    grep -Fq -e "\`$pkg\`" -e "\`$short_pkg\`" -e "\`${short_pkg}." <<<"$line" || continue
+    if [[ "$sym" == "$pkg" ]]; then
+      return 0 # whole-package removal: naming the package is the ack
+    fi
+    grep -Fq -e "\`$clean_sym\`" -e "\`${short_pkg}.${clean_sym}\`" -e "\`${head_sym}\`" -e "\`${short_pkg}.${head_sym}\`" <<<"$line" && return 0
+  done < <(grep -F '**BREAKING:**' <<<"$UNRELEASED")
+  return 1
+}
+
+unacked=()
+checked=0
+
+for pkg in "${PROMISED[@]}"; do
+  if ! compgen -G "$BASE_TREE/$pkg/*.go" >/dev/null; then
+    # Package added after BASE_TAG — no baseline to break.
+    continue
+  fi
+  if ! compgen -G "$ROOT/$pkg/*.go" >/dev/null; then
+    if ack_in_breaks_file "$pkg" "*" || ack_in_changelog "$pkg" "$pkg"; then
+      echo "verify-apidiff: acknowledged removal of promised package $pkg"
+      continue
+    fi
+    unacked+=("$pkg: promised package directory removed since $BASE_TAG")
+    continue
+  fi
+
+  snap="$SNAP_DIR/$(tr '/' '_' <<<"$pkg").api"
+  (cd "$BASE_TREE" && apidiff -w "$snap" "./$pkg")
+  diff_out="$(apidiff "$snap" "./$pkg")"
+  checked=$((checked + 1))
+
+  [[ -z "$diff_out" ]] && continue
+
+  # Extract lines under the "Incompatible changes:" header.
+  incompat="$(awk '
+    /^Incompatible changes:/ { inc = 1; next }
+    /^Compatible changes:/   { inc = 0; next }
+    inc && /^[[:space:]]*-[[:space:]]+/ {
+      sub(/^[[:space:]]*-[[:space:]]+/, "")
+      print
+    }
+  ' <<<"$diff_out")"
+
+  [[ -z "$incompat" ]] && continue
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    sym="${line%%:*}"
+    sym="${sym%% *}"
+    if ack_in_breaks_file "$pkg" "$sym" || ack_in_changelog "$pkg" "$sym"; then
+      echo "verify-apidiff: acknowledged break in $pkg: $line"
+    else
+      unacked+=("$pkg: $line")
+    fi
+  done <<<"$incompat"
+done
+
+if [[ ${#unacked[@]} -gt 0 ]]; then
+  echo "FAIL: unacknowledged incompatible API changes vs $BASE_TAG:" >&2
+  for item in "${unacked[@]}"; do
+    echo "  - $item" >&2
+  done
+  echo "" >&2
+  echo "Either restore compatibility, record the break in $BREAKS_FILE," >&2
+  echo "or add a **BREAKING:** bullet under ## [Unreleased] in $CHANGELOG_FILE." >&2
+  echo "See docs/compatibility-policy.md." >&2
+  exit 1
+fi
+
+echo "verify-apidiff: $checked promised package(s) compatible with $BASE_TAG."

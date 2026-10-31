@@ -29,6 +29,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 #### Documentation
 
+- **The published site said nothing about `CORE_AGENT_GOOGLE_AUTH=injected` or the AX deployment target, so an operator reading the Vertex, Anthropic-on-Vertex, profile or `auth.google_oauth` pages still saw "ADC required" with no way out inside a credential-injecting sandbox.** The feature landed with a CHANGELOG bullet and an `examples/deploy/ax/README.md` but no change under `docs/site/src/content/docs/`, which AGENTS.md's "the published site moves with the code" rule requires in the same PR. `concepts/providers.md` gains an "Injected auth" section under Vertex (what it switches, that only the exact value `injected` counts, that outside a gateway it is a 401 rather than a bypass) with pointers from the Anthropic-on-Vertex and profile notes; `concepts/mcp.md` § `auth.google_oauth` says what the flag skips and that `scopes` is still validated but not sent; `examples/index.md` lists `deploy/ax` under "Serving & deployment". Deliberately not changed: `reference/configuration.md`, because the variable is read from the environment and has no `config.json` field. ([#1416](https://github.com/go-steer/core-agent/issues/1416))
 - **`AGENTS.md` had doubled to 4,251 words and stated things that were no longer true, and every agent working in this repo loads it into its system prompt.**
   - **What was wrong:**
     - It told agents that four status checks were required; branch protection requires eight.

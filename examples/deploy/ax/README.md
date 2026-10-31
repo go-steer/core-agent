@@ -42,7 +42,12 @@ and AX's sandboxes boot in ways a plain one-shot does not expect:
   `/workspace` is empty (`google/ax#427`, `google/ax#428`). With
   `--wait-for-egress`, the wrapper waits until it can complete a TLS
   handshake with the model endpoint, so the turn starts only in the
-  real task.
+  real task. The wait is unbounded by default, because the golden boot's
+  length is Substrate's to decide; `--egress-timeout=10m` bounds it on a
+  real boot where a wrong host would otherwise spin until AX kills the
+  pod, and SIGTERM ends the wait either way. The wrapper logs the agent
+  binary and argument count at startup; the full command line (which
+  carries the prompt) only appears at debug level.
 - **Resume after completion.** When `core-agent` exits successfully, the
   wrapper writes `/workspace/.core-agent/done`. On later boots it sees the
   marker and does not run the turn again.

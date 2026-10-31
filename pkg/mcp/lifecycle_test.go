@@ -245,3 +245,28 @@ func TestTransportFor_InjectedGoogleAuthSendsPlaceholder(t *testing.T) {
 		t.Errorf("Authorization = %q, want %q", gotAuth, want)
 	}
 }
+
+// A mistyped CORE_AGENT_GOOGLE_AUTH on a google_oauth server is refused
+// by name, not run through FindDefaultCredentials to fail about ADC
+// (#1419). Not parallel: t.Setenv.
+func TestTransportFor_RejectsMistypedGoogleAuthEnv(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir()+"/missing.json")
+	t.Setenv(agentenv.EnvGoogleAuth, "Injected")
+
+	_, _, err := transportFor(context.Background(), "gke", ServerSpec{
+		Transport: "http",
+		URL:       "http://127.0.0.1:9",
+		Auth: &AuthSpec{
+			GoogleOAuth: &GoogleOAuthAuth{Scopes: []string{"https://www.googleapis.com/auth/container.read-only"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("transportFor with CORE_AGENT_GOOGLE_AUTH=Injected returned nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), agentenv.EnvGoogleAuth) || !strings.Contains(err.Error(), `"Injected"`) {
+		t.Fatalf("error %q should name the variable and the bad value, not ADC", err)
+	}
+	if strings.Contains(err.Error(), "default credentials") {
+		t.Fatalf("error %q is about ADC; the variable check must run first", err)
+	}
+}

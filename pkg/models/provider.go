@@ -36,6 +36,7 @@ import (
 
 	"google.golang.org/adk/v2/model"
 
+	"github.com/go-steer/core-agent/v3/pkg/agentenv"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
@@ -163,6 +164,13 @@ func Register(name string, c Constructor) {
 // a clear error when no path is viable so the user knows which env var
 // or config field to set.
 func Resolve(cfg *config.Config) (Provider, error) {
+	// A mistyped CORE_AGENT_GOOGLE_AUTH would otherwise fall through to
+	// the ADC chain and fail with an error about credentials, not about
+	// the variable (#1419). Checked for every provider, because the
+	// variable is set per deployment, not per backend.
+	if err := agentenv.ValidateGoogleAuthEnv(); err != nil {
+		return nil, fmt.Errorf("models: %w", err)
+	}
 	name := cfg.Model.Provider
 	if name == "" {
 		name = autoDetectProvider()

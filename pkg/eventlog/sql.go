@@ -155,9 +155,13 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		}
 	}
 
-	// 4) AutoMigrate the overlay table.
+	// 4) AutoMigrate the overlay table and the guardrail state table.
 	if err := db.WithContext(ctx).AutoMigrate(&agentEventRow{}); err != nil {
 		return nil, fmt.Errorf("eventlog: AutoMigrate overlay: %w", err)
+	}
+	guardrailStore, err := NewGuardrailStore(ctx, db)
+	if err != nil {
+		return nil, err
 	}
 
 	stream := &gormStream{
@@ -176,10 +180,11 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	adkDB := adkGormDB(adkSvc)
 	stream.overlayInTx = stream.registerOverlayCallback(adkDB)
 
-	svc := &service{inner: adkSvc, stream: stream}
+	svc := &service{inner: adkSvc, stream: stream, guardrail: guardrailStore}
 	return &Handle{
 		Stream:                stream,
 		Service:               svc,
+		Guardrail:             guardrailStore,
 		db:                    db,
 		DB:                    db,
 		adkDB:                 adkDB,

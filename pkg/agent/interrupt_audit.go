@@ -15,10 +15,6 @@
 package agent
 
 import (
-	"context"
-
-	"google.golang.org/adk/v2/session"
-
 	"github.com/go-steer/core-agent/v3/pkg/attach"
 )
 
@@ -60,16 +56,5 @@ func (a *Agent) drainInterruptAudit() {
 	if a == nil || !a.pendingInterruptAudit.Swap(false) {
 		return
 	}
-	if a.eventLog == nil {
-		return
-	}
-	getResp, err := a.eventLog.Service.Get(context.Background(), &session.GetRequest{
-		AppName:   a.appName,
-		UserID:    a.userID,
-		SessionID: a.sessionID,
-	})
-	if err != nil {
-		return
-	}
-	_ = a.eventLog.Service.AppendEvent(context.Background(), getResp.Session, attach.NewInterruptAuditEvent())
+	a.queueOutOfBandEvent(attach.NewInterruptAuditEvent())
 }

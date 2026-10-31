@@ -56,10 +56,12 @@ package agent
 import (
 	"context"
 	"iter"
+	"log/slog"
 
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
@@ -89,10 +91,14 @@ func (a *Agent) queueOutOfBandEvent(ev *session.Event) {
 	}
 }
 
-// drainOutOfBandEvents writes every queued row. Best-effort,
-// mirroring drainInterruptAudit: a Get/Append failure is swallowed
-// because the state change already happened in the agent, and failing
-// the operator's turn over a missed audit row helps nobody.
+// drainOutOfBandEvents writes every queued row (#643, #1360).
+//
+// Requests NumRecentEvents: 1 on Service.Get because AppendEvent only
+// reads the session identity, updatedAt, and state map — never its
+// hydrated event history. When Get or AppendEvent fails, any unwritten
+// rows are prepended back onto pendingOutOfBandEvents and logged so the
+// next drain window retries them rather than silently dropping a
+// durable guardrail trip or audit row (#1360).
 //
 // Uses context.Background rather than a turn context: the post-turn
 // cleanup runs with runCtx already cancelled, and a reset arrives on an
@@ -104,7 +110,7 @@ func (a *Agent) queueOutOfBandEvent(ev *session.Event) {
 // only the take under a.mu, two concurrent drains could each take a
 // batch and append them in the reverse of the order they were queued.
 func (a *Agent) drainOutOfBandEvents() {
-	if a == nil || a.eventLog == nil {
+	if a == nil || a.eventLog == nil || a.eventLog.Service == nil {
 		return
 	}
 	a.outOfBandDrainMu.Lock()
@@ -118,16 +124,50 @@ func (a *Agent) drainOutOfBandEvents() {
 	}
 	ctx := context.Background()
 	getResp, err := a.eventLog.Service.Get(ctx, &session.GetRequest{
-		AppName:   a.appName,
-		UserID:    a.userID,
-		SessionID: a.sessionID,
+		AppName:         a.appName,
+		UserID:          a.userID,
+		SessionID:       a.sessionID,
+		NumRecentEvents: 1,
 	})
-	if err != nil {
+	if err != nil || getResp == nil || getResp.Session == nil {
+		a.requeueOutOfBandEvents(pending)
+		a.logOutOfBandDrainError("get session", err)
 		return
 	}
-	for _, ev := range pending {
-		_ = a.eventLog.Service.AppendEvent(ctx, getResp.Session, ev)
+	for i, ev := range pending {
+		if err := a.eventLog.Service.AppendEvent(ctx, getResp.Session, ev); err != nil {
+			a.requeueOutOfBandEvents(pending[i:])
+			a.logOutOfBandDrainError("append event", err)
+			return
+		}
 	}
+}
+
+// requeueOutOfBandEvents prepends failed events back onto
+// pendingOutOfBandEvents so a transient Get or AppendEvent error
+// preserves ordering and retries on the next drain window (#1360).
+func (a *Agent) requeueOutOfBandEvents(failed []*session.Event) {
+	if a == nil || len(failed) == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.pendingOutOfBandEvents) == 0 {
+		a.pendingOutOfBandEvents = append([]*session.Event(nil), failed...)
+		return
+	}
+	combined := make([]*session.Event, 0, len(failed)+len(a.pendingOutOfBandEvents))
+	combined = append(combined, failed...)
+	combined = append(combined, a.pendingOutOfBandEvents...)
+	a.pendingOutOfBandEvents = combined
+}
+
+func (a *Agent) logOutOfBandDrainError(op string, err error) {
+	slog.Warn("agent: out-of-band event drain failed; events re-queued for retry",
+		"op", op,
+		"session_id", a.sessionID,
+		"err", err,
+	)
 }
 
 // RecordGuardrailReset persists an operator's reset (#643) and is the
@@ -166,7 +206,7 @@ func (a *Agent) RecordGuardrailReset(reset []string, budgetUSD float64, caller s
 // Returns an error only when the session read fails. A session with no
 // guardrail history restores nothing and reports success.
 func (a *Agent) RestoreGuardrails(ctx context.Context) error {
-	if a == nil || a.eventLog == nil {
+	if a == nil || a.eventLog == nil || a.eventLog.Service == nil {
 		return nil
 	}
 	a.mu.Lock()
@@ -175,15 +215,60 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 	if done {
 		return nil
 	}
-	getResp, err := a.eventLog.Service.Get(ctx, &session.GetRequest{
-		AppName:   a.appName,
-		UserID:    a.userID,
-		SessionID: a.sessionID,
-	})
-	if err != nil {
-		return err
+	var st attach.GuardrailPersistedState
+	if a.eventLog.Guardrail != nil {
+		if _, err := a.eventLog.Service.Get(ctx, &session.GetRequest{
+			AppName:         a.appName,
+			UserID:          a.userID,
+			SessionID:       a.sessionID,
+			NumRecentEvents: 1,
+		}); err != nil {
+			return err
+		}
+		gs, needsLegacyFold, err := a.eventLog.Guardrail.LoadWithLegacyCheck(ctx, a.appName, a.userID, a.sessionID)
+		if err != nil {
+			return err
+		}
+		if needsLegacyFold {
+			getResp, err := a.eventLog.Service.Get(ctx, &session.GetRequest{
+				AppName:   a.appName,
+				UserID:    a.userID,
+				SessionID: a.sessionID,
+			})
+			if err != nil {
+				return err
+			}
+			st = attach.FoldGuardrailEvents(eventSeq(getResp.Session))
+			_ = a.eventLog.Guardrail.SaveState(ctx, eventlog.GuardrailState{
+				AppName:            a.appName,
+				UserID:             a.userID,
+				SessionID:          a.sessionID,
+				WatchdogTripped:    st.WatchdogTripped,
+				WatchdogReason:     st.WatchdogReason,
+				CostTripped:        st.CostTripped,
+				CostReason:         st.CostReason,
+				BudgetExtensionUSD: st.BudgetAddedUSD,
+			})
+		} else {
+			st = attach.GuardrailPersistedState{
+				WatchdogTripped: gs.WatchdogTripped,
+				WatchdogReason:  gs.WatchdogReason,
+				CostTripped:     gs.CostTripped,
+				CostReason:      gs.CostReason,
+				BudgetAddedUSD:  gs.BudgetExtensionUSD,
+			}
+		}
+	} else {
+		getResp, err := a.eventLog.Service.Get(ctx, &session.GetRequest{
+			AppName:   a.appName,
+			UserID:    a.userID,
+			SessionID: a.sessionID,
+		})
+		if err != nil {
+			return err
+		}
+		st = attach.FoldGuardrailEvents(eventSeq(getResp.Session))
 	}
-	st := attach.FoldGuardrailEvents(eventSeq(getResp.Session))
 
 	a.mu.Lock()
 	if a.guardrailRestored {

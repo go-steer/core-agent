@@ -1864,7 +1864,6 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// daemon). Safe here: cleanup runs after the event stream has
 		// fully drained, so nothing still depends on runCtx (#359).
 		cancel()
-		a.clearCancelInFlight(cancelGen)
 		// The turn is over: its cost check must not screen calls made
 		// under its context from here on (a background subagent's).
 		endPreflight()
@@ -1908,6 +1907,13 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		if turnErr != nil {
 			turnError = a.recordTurnError(attach.ClassifyTurnError(turnErr), promptID, guardrailHalt)
 		}
+		// Clear cancelInFlight right before the single out-of-band
+		// flush so all post-turn hooks above queue onto
+		// pendingOutOfBandEvents rather than triggering separate
+		// synchronous drains, and so Compact/Checkpoint continue
+		// refusing mid-turn writes until post-turn rows are ready to
+		// flush (#355, #1360).
+		a.clearCancelInFlight(cancelGen)
 		// Durable guardrail rows (#643, #1258) for anything the hooks
 		// above just tripped, and the turn-error row. Same window and
 		// same reasoning as the interrupt audit: the stream has drained

@@ -60,8 +60,9 @@ const FinishReasonMetadataKey = "finish_reason"
 // same event is a no-op rather than a duplicate. Eventual-consistency
 // reconciliation across the two tables is out of scope for v1.
 type service struct {
-	inner  session.Service
-	stream *gormStream
+	inner     session.Service
+	stream    *gormStream
+	guardrail *GuardrailStore
 
 	writeMu sync.Mutex
 }
@@ -96,7 +97,10 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 	if err := s.inner.Delete(ctx, req); err != nil {
 		return err
 	}
-	return s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
+	if err := s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
+		return err
+	}
+	return s.guardrail.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
 }
 
 // AppendEvent writes the event through ADK and mirrors it into the
@@ -139,6 +143,9 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 	}
 	if _, err := s.stream.Append(ctx, sess, ev); err != nil {
 		return fmt.Errorf("eventlog: overlay write after ADK AppendEvent: %w", err)
+	}
+	if err := s.guardrail.applyEvent(ctx, sess, ev); err != nil {
+		return fmt.Errorf("eventlog: guardrail state write after ADK AppendEvent: %w", err)
 	}
 	return nil
 }

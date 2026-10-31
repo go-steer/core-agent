@@ -16,8 +16,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -719,5 +721,212 @@ func TestGuardrailPersist_PerTurnStreakEscalationSurvivesARestart(t *testing.T) 
 	}
 	if err := second.preflightCostCeiling(); err == nil {
 		t.Error("the successor accepted a turn after restoring the escalation halt")
+	}
+}
+
+type flakySessionService struct {
+	session.Service
+	mu          sync.Mutex
+	failGets    int
+	failAppends int
+	getNumRecs  []int
+}
+
+func (f *flakySessionService) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
+	f.mu.Lock()
+	if req != nil {
+		f.getNumRecs = append(f.getNumRecs, req.NumRecentEvents)
+	}
+	if f.failGets > 0 {
+		f.failGets--
+		f.mu.Unlock()
+		return nil, errors.New("injected transient session.Get error")
+	}
+	f.mu.Unlock()
+	return f.Service.Get(ctx, req)
+}
+
+func (f *flakySessionService) AppendEvent(ctx context.Context, sess session.Session, ev *session.Event) error {
+	f.mu.Lock()
+	if f.failAppends > 0 {
+		f.failAppends--
+		f.mu.Unlock()
+		return errors.New("injected transient session.AppendEvent error")
+	}
+	f.mu.Unlock()
+	return f.Service.AppendEvent(ctx, sess, ev)
+}
+
+func (f *flakySessionService) recordedNumRecentEvents() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.getNumRecs...)
+}
+
+// TestGuardrailPersist_TransientDrainErrorRequeuesAndSurvivesRestart is
+// the #1360 regression:
+//
+//  1. drainOutOfBandEvents used to nil pendingOutOfBandEvents before
+//     calling Service.Get and ignore both Get and AppendEvent errors,
+//     so a transient DB lock contention or connection error silently
+//     dropped the durable guardrail trip row forever.
+//  2. drainOutOfBandEvents and RestoreGuardrails used to call
+//     Service.Get without NumRecentEvents: 1, hydrating the entire
+//     session history on every out-of-band flush and restore.
+func TestGuardrailPersist_TransientDrainErrorRequeuesAndSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	createTestSession(t, h, "core-agent", "u", "s-1360-retry")
+
+	flaky := &flakySessionService{Service: h.Service, failGets: 1}
+	h.Service = flaky
+
+	first, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1360-retry"),
+		WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+		WithWatchdog(&fakeWatchdog{pending: []watchdog.Alert{
+			{Signal: "repeated-tool-call", Severity: watchdog.SeverityCritical, Reason: "looping on bash."},
+		}}, nil),
+		WithWatchdogEnforce(),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	// Trip the watchdog while the first Service.Get is set to fail.
+	first.drainWatchdogAlerts(false)
+	if tripped, _ := first.WatchdogTripped(); !tripped {
+		t.Fatal("in-memory watchdog should be tripped")
+	}
+	first.mu.Lock()
+	queuedAfterGetErr := len(first.pendingOutOfBandEvents)
+	first.mu.Unlock()
+	if queuedAfterGetErr != 1 {
+		t.Fatalf("pendingOutOfBandEvents after failed Get = %d, want 1 (must re-queue rather than drop)", queuedAfterGetErr)
+	}
+
+	// Inject a transient AppendEvent error on the next drain attempt as
+	// well, with a second queued event behind the first to verify
+	// ordering is preserved on partial failure.
+	flaky.mu.Lock()
+	flaky.failAppends = 1
+	flaky.mu.Unlock()
+	first.mu.Lock()
+	first.pendingOutOfBandEvents = append(first.pendingOutOfBandEvents,
+		attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
+	first.mu.Unlock()
+	first.drainOutOfBandEvents()
+
+	first.mu.Lock()
+	queuedAfterAppendErr := len(first.pendingOutOfBandEvents)
+	first.mu.Unlock()
+	if queuedAfterAppendErr != 2 {
+		t.Fatalf("pendingOutOfBandEvents after failed AppendEvent = %d, want 2", queuedAfterAppendErr)
+	}
+
+	// Next drain window (triggered by the pre-turn pipeline on first's
+	// next Run attempt) succeeds and flushes both queued rows before
+	// the preflight refuses the turn.
+	for _, runErr := range first.Run(context.Background(), "retry") {
+		_ = runErr
+	}
+	first.mu.Lock()
+	remaining := len(first.pendingOutOfBandEvents)
+	first.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("pendingOutOfBandEvents after recovery drain = %d, want 0", remaining)
+	}
+
+	// Every Service.Get from drainOutOfBandEvents and RestoreGuardrails
+	// must pass NumRecentEvents: 1 rather than hydrating full history.
+	recs := flaky.recordedNumRecentEvents()
+	if len(recs) == 0 {
+		t.Fatal("expected recorded Service.Get calls")
+	}
+	for i, n := range recs {
+		if n != 1 {
+			t.Errorf("Service.Get call #%d had NumRecentEvents = %d, want 1", i, n)
+		}
+	}
+
+	// Simulate a restart: a fresh Agent on the same database must
+	// restore both halts from GuardrailStore and refuse the turn.
+	second, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1360-retry"),
+		WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+		WithWatchdog(&fakeWatchdog{}, nil),
+		WithWatchdogEnforce(),
+	)
+	if err != nil {
+		t.Fatalf("agent.New (restart): %v", err)
+	}
+	if err := second.RestoreGuardrails(context.Background()); err != nil {
+		t.Fatalf("RestoreGuardrails: %v", err)
+	}
+	if tripped, reason := second.WatchdogTripped(); !tripped || !strings.Contains(reason, "looping on bash") {
+		t.Errorf("restarted watchdog state = (%v, %q), want tripped with reason", tripped, reason)
+	}
+	if tripped, reason := second.CostCeilingTripped(); !tripped || reason != "blew the budget" {
+		t.Errorf("restarted cost state = (%v, %q), want tripped with reason", tripped, reason)
+	}
+}
+
+// TestGuardrailPersist_BackfillsPreUpgradeDatabase verifies that a
+// session whose guardrail trip and budget-extension events were written
+// before agent_guardrail_state existed (simulated by deleting the
+// agent_guardrail_state row while leaving events and agent_eventlog
+// intact) is detected via LoadWithLegacyCheck, folded, and backfilled
+// into agent_guardrail_state on the first RestoreGuardrails call (#1360).
+func TestGuardrailPersist_BackfillsPreUpgradeDatabase(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	createTestSession(t, h, "core-agent", "u", "s-1360-legacy")
+
+	first, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1360-legacy"),
+		WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	first.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "legacy cost halt"))
+	first.RecordGuardrailReset(nil, 5, "alice@example.com")
+
+	// Simulate a pre-upgrade database by wiping agent_guardrail_state
+	// while keeping the event log rows.
+	if err := h.DB.Exec("DELETE FROM agent_guardrail_state").Error; err != nil {
+		t.Fatalf("clear agent_guardrail_state: %v", err)
+	}
+
+	second, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1360-legacy"),
+		WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New (restart): %v", err)
+	}
+	if err := second.RestoreGuardrails(context.Background()); err != nil {
+		t.Fatalf("RestoreGuardrails: %v", err)
+	}
+	if tripped, reason := second.CostCeilingTripped(); !tripped || reason != "legacy cost halt" {
+		t.Errorf("restored legacy cost state = (%v, %q), want tripped", tripped, reason)
+	}
+	if got := second.CostCeilingLimits().MaxSessionUSD; got != 15 {
+		t.Errorf("restored MaxSessionUSD = %v, want 15", got)
+	}
+
+	// Verify agent_guardrail_state was backfilled for subsequent O(1) loads.
+	gs, needsLegacy, err := h.Guardrail.LoadWithLegacyCheck(context.Background(), "core-agent", "u", "s-1360-legacy")
+	if err != nil {
+		t.Fatalf("LoadWithLegacyCheck after backfill: %v", err)
+	}
+	if needsLegacy || !gs.CostTripped || gs.BudgetExtensionUSD != 5 {
+		t.Errorf("after backfill: needsLegacy=%v state=%+v", needsLegacy, gs)
 	}
 }

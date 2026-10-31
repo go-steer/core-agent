@@ -17,16 +17,43 @@ package usage
 import (
 	"context"
 	"iter"
+	"strings"
 
 	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
+)
+
+const (
+	// SkipParentUsageMetadataKey marks a subtask event whose spend is
+	// attributed to a different session via a tool-response savings
+	// sidecar (e.g. the primary agent's MCP digest LLM fallback, #717,
+	// #1359) so a session-tree rebuild skips the subtask's own
+	// UsageMetadata and does not double-count or mis-bill it.
+	SkipParentUsageMetadataKey = "skip_parent_usage"
+
+	// ModelVersionMetadataKey is the CustomMetadata key under which
+	// eventlog and BranchInjectingService persist LLMResponse.ModelVersion
+	// across ADK database serialization (#1359).
+	ModelVersionMetadataKey = "model_version"
+
+	// BillingBackendMetadataKey is the CustomMetadata key under which
+	// BranchInjectingService persists a subagent's billing backend
+	// across ADK database serialization (#1359).
+	BillingBackendMetadataKey = "billing_backend"
+
+	// toolSavingsResponseKey is the FunctionResponse map key carrying
+	// MCP digest savings sidecars (#1359).
+	toolSavingsResponseKey = "savings"
 )
 
 // RebuildTrackerFromEvents replays a persisted-event stream into t,
 // reconstructing the per-turn totals via the same TurnTap.Observe +
 // TurnTap.Commit pattern the live turn loop uses. Called on the
-// session-resume path (cmd/core-agent/multi_session.go's reproduceAgent
+// session-resume path (pkg/compose/multi_session.go's ReproduceAgent
 // when origin=="resumed") so the newly-minted per-session tracker
-// carries the historical totals instead of starting at zero.
+// carries the historical totals — including delegated and background
+// subagent turns across the session tree (#1359) — instead of starting
+// at zero.
 //
 // Motivation: PR #275 correctly isolated per-session usage.Trackers to
 // stop cross-session contamination, but every session-resume path
@@ -40,9 +67,17 @@ import (
 // Best-effort semantics:
 //
 //   - Events missing UsageMetadata: skipped by TurnTap.Observe (safe).
-//   - Events missing ModelVersion: fall back to defaultModel. In
-//     practice the session's primary model is stable across its
-//     lifetime, so this is fine.
+//   - Events with CustomMetadata["skip_parent_usage"] == true: skipped
+//     so SkipParentUsage subtasks (such as the shared MCP digest LLM
+//     fallback) are not billed to the host session on a session-tree
+//     rebuild; the calling session's tool-response "savings" sidecar is
+//     replayed instead (#1359).
+//   - Events missing ModelVersion: fall back to
+//     CustomMetadata["model_version"] (persisted by eventlog /
+//     BranchInjectingService across ADK database round-trips) and then
+//     to defaultModel (#1359).
+//   - Subtask branches ("sub.<name>"): replayed via AppendSideUsage so
+//     Tracker.Last() remains the conversation's own turn (#1191, #1359).
 //   - pricingFor returning zero: tracker records tokens but $0.00
 //     cost for that model. Downstream cost totals reflect this;
 //     operators re-appending after a pricing refresh land the
@@ -94,10 +129,14 @@ func RebuildTrackerFromEvents(
 		if ev == nil {
 			continue
 		}
-		if model, u, ok := sideUsageFrom(ev.CustomMetadata); ok {
-			t.AppendSideUsage(model, u, pricingFor(model))
+		if skipParentUsageFrom(ev.CustomMetadata) {
 			continue
 		}
+		if model, u, ok := sideUsageFrom(ev.CustomMetadata); ok {
+			t.AppendSideUsage(model, u, resolveRebuildPricing(ev, model, pricingFor))
+			continue
+		}
+		replayToolSavings(t, ev, pricingFor)
 		if ev.UsageMetadata == nil {
 			continue
 		}
@@ -108,11 +147,105 @@ func RebuildTrackerFromEvents(
 			// would inflate the turn count without adding real cost.
 			continue
 		}
-		modelName := ev.ModelVersion
-		if modelName == "" {
-			modelName = defaultModel
+		modelName := resolveRebuildModel(ev, defaultModel)
+		price := resolveRebuildPricing(ev, modelName, pricingFor)
+		if isSubtaskBranch(ev.Branch) {
+			t.AppendSideUsage(modelName, u, price)
+		} else {
+			t.AppendUsage(modelName, u, price)
 		}
-		t.AppendUsage(modelName, u, pricingFor(modelName))
 	}
 	return nil
+}
+
+func skipParentUsageFrom(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	skip, _ := meta[SkipParentUsageMetadataKey].(bool)
+	return skip
+}
+
+func resolveRebuildModel(ev *session.Event, defaultModel string) string {
+	if ev != nil {
+		if ev.ModelVersion != "" {
+			return ev.ModelVersion
+		}
+		if mv, ok := ev.CustomMetadata[ModelVersionMetadataKey].(string); ok && mv != "" {
+			return mv
+		}
+	}
+	return defaultModel
+}
+
+func resolveRebuildPricing(ev *session.Event, modelName string, pricingFor func(string) Pricing) Pricing {
+	price := pricingFor(modelName)
+	if ev == nil || len(ev.CustomMetadata) == 0 {
+		return price
+	}
+	backend, _ := ev.CustomMetadata[BillingBackendMetadataKey].(string)
+	if backend != "" && (price.Unpriced || (price.Backend != "" && price.Backend != backend)) {
+		if pOn := PriceOn(backend, modelName); !pOn.Unpriced {
+			return pOn
+		}
+	}
+	return price
+}
+
+func isSubtaskBranch(branch string) bool {
+	return strings.HasPrefix(branch, "sub.") || strings.Contains(branch, ".sub.")
+}
+
+// replayToolSavings restores the calling session's token and dollar
+// spend from MCP digest "savings" sidecars via AppendSideUsage (#1359).
+// It deliberately does NOT call AppendDigestSavings: in
+// WithoutSessionLabels mode, aggregatedObserver.retiredDigest retains
+// evicted sessions' digest-cost baseline across lazy resume
+// (pkg/usage/metrics.go), so replaying into DigestSavings here would
+// double-count core_agent.digest.subagent.cost_usd.
+func replayToolSavings(t *Tracker, ev *session.Event, pricingFor func(string) Pricing) {
+	if t == nil || ev == nil || ev.Content == nil || ev.Partial {
+		return
+	}
+	for _, p := range ev.Content.Parts {
+		rec, ok := extractSavingsRecordFromPart(p, pricingFor)
+		if !ok {
+			continue
+		}
+		if rec.SubagentModel != "" && (rec.SubagentInputTokens > 0 || rec.SubagentOutputTokens > 0) {
+			t.AppendSideUsage(rec.SubagentModel, rec.SubagentTurn(), resolveRebuildPricing(ev, rec.SubagentModel, pricingFor))
+		}
+	}
+}
+
+func extractSavingsRecordFromPart(p *genai.Part, pricingFor func(string) Pricing) (DigestSavingsRecord, bool) {
+	if p == nil || p.FunctionResponse == nil {
+		return DigestSavingsRecord{}, false
+	}
+	raw, ok := p.FunctionResponse.Response[toolSavingsResponseKey].(map[string]any)
+	if !ok {
+		return DigestSavingsRecord{}, false
+	}
+	path, _ := raw["path"].(string)
+	if path == "" {
+		return DigestSavingsRecord{}, false
+	}
+	origTokens := intField(raw["original_tokens_est"])
+	digestTokens := intField(raw["digest_tokens_est"])
+	subModel, _ := raw["subagent_model"].(string)
+	rec := DigestSavingsRecord{
+		Path:                               path,
+		ParentTokensSaved:                  origTokens - digestTokens,
+		SubagentModel:                      subModel,
+		SubagentInputTokens:                intField(raw["subagent_input_tokens"]),
+		SubagentOutputTokens:               intField(raw["subagent_output_tokens"]),
+		SubagentCachedInputTokens:          intField(raw["subagent_cached_input_tokens"]),
+		SubagentCacheCreationInputTokens:   intField(raw["subagent_cache_creation_input_tokens"]),
+		SubagentCacheCreation1hInputTokens: intField(raw["subagent_cache_creation_1h_input_tokens"]),
+		SubagentThoughtsTokens:             intField(raw["subagent_thoughts_tokens"]),
+	}
+	if subModel != "" {
+		rec.SubagentCostUSD = pricingFor(subModel).CostUSDForTurn(rec.SubagentTurn())
+	}
+	return rec, true
 }

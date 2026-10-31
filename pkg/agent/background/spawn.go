@@ -363,13 +363,21 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	}
 
 	// Branch-wrap the parent's session.Service so every event the
-	// subagent emits picks up the correct Branch label. The session
-	// row itself is derived from the parent's so two concurrent
-	// runners don't collide on ADK's optimistic-concurrency check.
+	// subagent emits picks up the correct Branch label (and model +
+	// backend attribution for session-tree spend rebuilds, #1359).
+	// The session row itself is derived from the parent's so two
+	// concurrent runners don't collide on ADK's optimistic-concurrency
+	// check.
+	subModelName := rs.priceModelID
+	if subModelName == "" && subModel != nil {
+		subModelName = subModel.Name()
+	}
 	parentSvc := parent.SessionService()
 	wrappedSvc := &subsession.BranchInjectingService{
-		Inner:  parentSvc,
-		Branch: branch,
+		Inner:   parentSvc,
+		Branch:  branch,
+		Model:   subModelName,
+		Backend: rs.priceBackend,
 	}
 	// No invocation-unique component: a background agent is addressed
 	// (and resumed/reported on) by its stable name, so its derived row

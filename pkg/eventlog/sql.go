@@ -155,11 +155,15 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		}
 	}
 
-	// 4) AutoMigrate the overlay table and the guardrail state table.
+	// 4) AutoMigrate the overlay table, guardrail state table, and spend ledger.
 	if err := db.WithContext(ctx).AutoMigrate(&agentEventRow{}); err != nil {
 		return nil, fmt.Errorf("eventlog: AutoMigrate overlay: %w", err)
 	}
 	guardrailStore, err := NewGuardrailStore(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	spendStore, err := NewSpendStore(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -180,11 +184,12 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	adkDB := adkGormDB(adkSvc)
 	stream.overlayInTx = stream.registerOverlayCallback(adkDB)
 
-	svc := &service{inner: adkSvc, stream: stream, guardrail: guardrailStore}
+	svc := &service{inner: adkSvc, stream: stream, guardrail: guardrailStore, spend: spendStore}
 	return &Handle{
 		Stream:                stream,
 		Service:               svc,
 		Guardrail:             guardrailStore,
+		Spend:                 spendStore,
 		db:                    db,
 		DB:                    db,
 		adkDB:                 adkDB,
@@ -769,6 +774,11 @@ func (h *sessionHydrator) buildIndex(ctx context.Context, key sessionKey) *sessi
 	events := make(map[string]*session.Event)
 	for ev := range resp.Session.Events().All() {
 		if ev != nil {
+			if ev.ModelVersion == "" {
+				if mv, ok := ev.CustomMetadata[ModelVersionMetadataKey].(string); ok && mv != "" {
+					ev.ModelVersion = mv
+				}
+			}
 			events[ev.ID] = ev
 		}
 	}

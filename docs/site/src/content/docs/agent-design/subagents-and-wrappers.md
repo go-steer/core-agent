@@ -343,7 +343,7 @@ Whichever door a subagent came through, **its tokens are the parent's tokens**. 
 
 Before v2.9 that held only for the spawn door. A subagent installed as a **named tool** ran on its own runner inside the parent's tool call, and its spend landed in no ledger at all: not the parent's, not its own. One that wandered for twenty turns cost real money and moved the session total by zero. (`spawn_agent { wait: true }` was never this case — it blocks on a background run, which was already billed.)
 
-Two consequences worth knowing. Delegated turns append *during* the parent's turn, so an attached operator sees `usage-update` frames arrive mid-turn (spawned subagents already behaved this way). And a session resumed lazily from the event log replays the parent's own row only, so delegated spend is not restored into the rebuilt tracker — the same limitation `spawn_agent` has always had.
+Two consequences worth knowing. Delegated turns append *during* the parent's turn, so an attached operator sees `usage-update` frames arrive mid-turn (spawned subagents already behaved this way). And a session resumed lazily from the event log replays the full session tree (`eventlog.WithSessionTree`), so both delegated and `spawn_agent` subagent spend is restored into the rebuilt tracker with per-model pricing ([#1359](https://github.com/go-steer/core-agent/issues/1359)).
 
 The parent's ceiling stops the *tree*; it does not stop one delegate from eating the whole allowance before the parent gets another turn. That's what a per-subagent `budgets` block is for — `max_turns`, `max_cost_usd`, `max_wallclock_seconds`, declared once and honored on both doors:
 

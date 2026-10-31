@@ -385,8 +385,11 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// would do unnecessary scanning + risk slicing on a parent's
 	// summary event that doesn't belong to this subtask.
 	subSvc := &subsession.BranchInjectingService{
-		Inner:  a.sessionService,
-		Branch: branch,
+		Inner:           a.sessionService,
+		Branch:          branch,
+		Model:           subModel.Name(),
+		Backend:         a.BillingBackend(),
+		SkipParentUsage: spec.SkipParentUsage,
 	}
 
 	subRunner, err := runner.New(runner.Config{

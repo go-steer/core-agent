@@ -748,11 +748,22 @@ func semverLess(a, b string) bool {
 // loader.
 //
 // config.Load reads a fixed filename, so each leg is staged into a temp
-// agents dir as config.json. That is worth the copy: Validate is what
-// rejects an approval_notify naming a target the alerts block never
-// registered, and that mistake would otherwise surface as a daemon that
-// refuses to start in the cluster.
+// agents dir as config.json alongside the gated-apply subagents/ and
+// schemas/ trees. That is worth the copy: Validate is what rejects an
+// approval_notify naming a target the alerts block never registered, and
+// what validates markdown subagents (change-executor.md + change-report.json),
+// and that mistake would otherwise surface as a daemon that refuses to
+// start in the cluster.
 func TestGatedApplyConfigsLoadAndValidate(t *testing.T) {
+	schemaBody, err := os.ReadFile(filepath.Join(gatedAgentsDir, "schemas", "change-report.json"))
+	if err != nil {
+		t.Fatalf("read change-report.json: %v", err)
+	}
+	specBody, err := os.ReadFile(filepath.Join(gatedAgentsDir, "subagents", "change-executor.md"))
+	if err != nil {
+		t.Fatalf("read change-executor.md: %v", err)
+	}
+
 	for _, leg := range gatedLegs() {
 		t.Run(leg, func(t *testing.T) {
 			body, err := os.ReadFile(filepath.Join(gatedAgentsDir, leg))
@@ -760,6 +771,18 @@ func TestGatedApplyConfigsLoadAndValidate(t *testing.T) {
 				t.Fatalf("read %s: %v", leg, err)
 			}
 			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "schemas"), 0o755); err != nil {
+				t.Fatalf("mkdir schemas: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(dir, "subagents"), 0o755); err != nil {
+				t.Fatalf("mkdir subagents: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "schemas", "change-report.json"), schemaBody, 0o600); err != nil {
+				t.Fatalf("stage change-report.json: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "subagents", "change-executor.md"), specBody, 0o600); err != nil {
+				t.Fatalf("stage change-executor.md: %v", err)
+			}
 			if err := os.WriteFile(filepath.Join(dir, "config.json"), body, 0o600); err != nil {
 				t.Fatalf("stage %s: %v", leg, err)
 			}
@@ -776,6 +799,34 @@ func TestGatedApplyConfigsLoadAndValidate(t *testing.T) {
 				t.Errorf("safety.watchdog = %q, want \"enforce\"; an agent that can write to a "+
 					"cluster is the last place to run the loop backstop in observe-only mode",
 					cfg.Safety.Watchdog)
+			}
+			var foundExec *config.SubagentSpec
+			for i := range cfg.Subagents {
+				if cfg.Subagents[i].Name == "change-executor" {
+					foundExec = &cfg.Subagents[i]
+					break
+				}
+			}
+			if foundExec == nil {
+				t.Fatalf("%s did not load change-executor from subagents/change-executor.md (subagents: %v)", leg, cfg.Subagents)
+			}
+			if foundExec.Mode != config.SubagentModeTask {
+				t.Errorf("change-executor.mode = %q, want %q", foundExec.Mode, config.SubagentModeTask)
+			}
+			if foundExec.Capability != config.CapabilityChangeExecutor {
+				t.Errorf("change-executor.capability = %q, want %q", foundExec.Capability, config.CapabilityChangeExecutor)
+			}
+			if len(foundExec.OutputSchema) == 0 {
+				t.Error("change-executor.output_schema was not loaded from schemas/change-report.json")
+			}
+			wantMCPTools := []string{
+				"get_k8s_resource",
+				"describe_k8s_resource",
+				"get_k8s_rollout_status",
+				"patch_k8s_resource",
+			}
+			if len(foundExec.MCPTools) != 1 || foundExec.MCPTools[0].Server != "gke" || !slices.Equal(foundExec.MCPTools[0].Tools, wantMCPTools) {
+				t.Errorf("change-executor.mcp_tools = %+v, want [{Server:gke Tools:%v}]", foundExec.MCPTools, wantMCPTools)
 			}
 		})
 	}
@@ -994,6 +1045,10 @@ func TestGatedApplyAllowlistAuthorizesExactlyTheIntendedCalls(t *testing.T) {
 			if got := p.Match("spawn_agent", "cluster"); got != permissions.OutcomeAllow {
 				t.Errorf("spawn_agent:cluster: Match = %v, want allow; without it the parent "+
 					"cannot delegate the diagnosis and step 2 of the incident flow dies", got)
+			}
+			if got := p.Match("spawn_agent", "change-executor"); got != permissions.OutcomeAllow {
+				t.Errorf("spawn_agent:change-executor: Match = %v, want allow; without it the parent "+
+					"cannot delegate the approved remediation to change-executor", got)
 			}
 			if got := p.Match("alert", "oncall"); got != permissions.OutcomeAllow {
 				t.Errorf("alert:oncall: Match = %v, want allow; escalation is the documented "+

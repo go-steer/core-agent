@@ -1577,6 +1577,24 @@ Add `-i "seed prompt"` to seed the first turn of an interactive session and stay
 
 ---
 
+## Importing legacy `workload.yaml` bundles (v3.1+, #1402)
+
+`core-agent config import-workload <workload-dir> [--out <recipe-dir>]` converts a legacy `workload.yaml` bundle (`workload.yaml`, `mcp.json`, `specialists/*.specialist.md`, `schemas/*.json`) into a standard `core-agent` recipe (`AGENTS.md`, `.agents/config.json`, `.agents/mcp.json`, `.agents/subagents/<name>.md`, `.agents/schemas/*.json`) and validates the resulting recipe with `config.Load`:
+
+```bash
+core-agent config import-workload ./agents/sre-triage/gke-triage-f --out ./gke-triage-f-recipe
+```
+
+Key mappings:
+- `tool_catalog.tools[].mutating: false` → `permissions.allow` (`mcp:<server>_<tool>*` or `spawn_agent:<specialist>`) plus `tools.policies` entries (`name`, `mutating`, `precondition`, `capture`).
+- `hitl.require_approval: true` / `hitl.on_mutation: gate` → `permissions.mode: "ask"`; `hitl.on_mutation: apply` (without `require_approval`) → `permissions.mode: "allow"`; `hitl.on_mutation: dry_run` → `permissions.mode: "plan"`.
+- `budget` (`max_cost_usd`, `max_turns`, `max_wallclock_seconds`, `final_report`) → `agent.max_session_cost_usd`, `agent.max_steps`, `agent.max_wallclock_seconds`, `agent.final_report`.
+- `builtin_tools` → `model.builtin_tools` (all three server-side built-ins default to `false` when importing a workload bundle unless explicitly enabled).
+- `mode: single_session` / `multi_session` → `attach.multi_session.enabled`.
+- `specialists/*.specialist.md` → `.agents/subagents/<name>.md` (`mode`, `tier`, `capability`, `output_schema`, `budgets`, `tools`, `mcp_tools`, `skills`), enforcing the capability-split invariant (`capability: change_executor` vs read-only diagnosers) at import time.
+
+---
+
 ## Not in `config.json` — runtime-only flags
 
 A handful of features are CLI-flag-only, with no `config.json` field today (consumers that want them per-project typically wrap the CLI in a script):

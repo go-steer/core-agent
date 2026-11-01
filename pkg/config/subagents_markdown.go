@@ -360,7 +360,7 @@ func resolveOutputSchemaPath(baseDir, ref string) (string, error) {
 		return "", fmt.Errorf("output_schema %q: resolve base dir: %w", ref, err)
 	}
 	scopeRoot := absBase
-	if filepath.Base(absBase) == SubagentsDirName {
+	if base := filepath.Base(absBase); base == SubagentsDirName || base == SpecialistsDirName {
 		scopeRoot = filepath.Dir(absBase)
 	}
 	fromSlash := filepath.FromSlash(ref)

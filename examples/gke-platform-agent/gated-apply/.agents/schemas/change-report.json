@@ -1,0 +1,36 @@
+{
+  "title": "ChangeReport",
+  "type": "object",
+  "description": "What the change-executor actually did to the cluster for one approved remediation. Distinct from Finding on purpose: a finding says what is wrong, a change report says what changed. Reusing one contract for both is how 'proposed' and 'applied' end up indistinguishable in an incident log.",
+  "properties": {
+    "applied": {
+      "type": "boolean",
+      "description": "True only if a mutating call completed successfully. False when the operator refused it, when the write gate was in dry_run, or when the call failed — say which in outcome."
+    },
+    "action": {
+      "type": "string",
+      "description": "The change, as executed: the tool called and what it did, e.g. 'patch_k8s_resource: set spec.template.spec.containers[0].resources.limits.memory=1Gi'."
+    },
+    "namespace": {
+      "type": "string",
+      "description": "Kubernetes namespace of the changed object. Empty for cluster-scoped changes."
+    },
+    "kind": {
+      "type": "string",
+      "description": "Kubernetes kind of the changed object, capitalized and singular: Pod, Deployment, StatefulSet, DaemonSet, Node, Job, CronJob, Service, ConfigMap, Secret."
+    },
+    "resource_name": {
+      "type": "string",
+      "description": "Name of the changed object, exactly as it appears in the cluster."
+    },
+    "outcome": {
+      "type": "string",
+      "description": "What happened after the change, or why it did not happen: the observed state, the operator's refusal, or the error returned."
+    },
+    "rollback": {
+      "type": "string",
+      "description": "How to undo this change, concretely — the inverse patch, the previous revision number. Empty only when nothing was applied."
+    }
+  },
+  "required": ["applied", "action", "outcome"]
+}

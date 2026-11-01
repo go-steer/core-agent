@@ -50,7 +50,9 @@ for required in \
     "gated-apply/.agents/mcp.json" \
     "gated-apply/.agents/config.d1.json" \
     "gated-apply/.agents/config.d2.json" \
-    "gated-apply/.agents/plans/.gitkeep"
+    "gated-apply/.agents/plans/.gitkeep" \
+    "gated-apply/.agents/schemas/change-report.json" \
+    "gated-apply/.agents/subagents/change-executor.md"
 do
     if [[ ! -e "${RECIPE_ROOT}/${required}" ]]; then
         echo "✗ missing ${required} under ${RECIPE_ROOT}"

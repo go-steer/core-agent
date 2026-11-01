@@ -24,6 +24,7 @@
       "mcp:gke_list_operations*",
       "mcp:gke_get_operation*",
       "spawn_agent:cluster",
+      "spawn_agent:change-executor",
       "alert:oncall"
     ]
   },

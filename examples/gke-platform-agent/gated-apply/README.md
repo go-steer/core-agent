@@ -18,6 +18,10 @@ AGENTS.md              # variant persona — propose-only except in 7 marked reg
   mcp.json             # the FULL gke endpoint, 16 tools, one of them mutating
   env.yaml             # byte-identical to ../.agents/env.yaml
   plans/.gitkeep       # pre-baked mount POINT — nothing mounts it yet, see below
+  schemas/
+    change-report.json # structured ChangeReport output schema (#1402)
+  subagents/
+    change-executor.md # bounded task-mode change executor specialist (#1402)
 ```
 
 No `cluster/`. The subagent's root is `"../../cluster"`, which resolves back to

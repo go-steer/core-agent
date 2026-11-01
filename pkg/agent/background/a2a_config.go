@@ -91,6 +91,14 @@ type A2AConfig struct {
 
 	// TimeoutSeconds bounds each invocation; 0 uses DefaultA2ATimeout.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+
+	// AllowCardHostChange permits a JSON-RPC endpoint taken from the
+	// agent card to live on a different host than the card itself. Off
+	// by default: the operator configured one host and the bearer token
+	// is sent to whatever endpoint is chosen, so a card that points
+	// elsewhere is refused rather than trusted (#1435). A downgrade from
+	// https to http is refused regardless of this setting.
+	AllowCardHostChange bool `json:"allow_card_host_change,omitempty"`
 }
 
 // Timeout returns the effective invocation bound.
@@ -158,6 +166,37 @@ func validateA2AURL(raw string) error {
 	}
 	if u.Host == "" {
 		return errors.New("missing host")
+	}
+	return nil
+}
+
+// ErrRemoteEndpointUntrusted indicates the agent card offered a
+// JSON-RPC endpoint this client refuses to send credentials to: a
+// different host than the card's (unless AllowCardHostChange) or a
+// downgrade from https to http (#1435).
+var ErrRemoteEndpointUntrusted = errors.New("background: remote endpoint not trusted")
+
+// trustCardEndpoint decides whether an endpoint URL taken from the agent
+// card may be used. The card URL is the operator's trust anchor: the
+// endpoint must parse as http(s) with a host, must not downgrade the
+// card's https to http, and must share the card's host unless the
+// operator opted in. Host comparison includes the port and is
+// case-insensitive.
+func trustCardEndpoint(cardURL, endpoint string, allowHostChange bool) error {
+	if err := validateA2AURL(endpoint); err != nil {
+		return fmt.Errorf("%w: card endpoint %q: %v", ErrRemoteEndpointUntrusted, endpoint, err)
+	}
+	card, err := url.Parse(strings.TrimSpace(cardURL))
+	if err != nil {
+		return fmt.Errorf("%w: agent card url %q: %v", ErrRemoteEndpointUntrusted, cardURL, err)
+	}
+	ep, _ := url.Parse(strings.TrimSpace(endpoint)) // validated above
+	if card.Scheme == "https" && ep.Scheme != "https" {
+		return fmt.Errorf("%w: card endpoint %q downgrades the card's https to %s", ErrRemoteEndpointUntrusted, endpoint, ep.Scheme)
+	}
+	if !strings.EqualFold(card.Host, ep.Host) && !allowHostChange {
+		return fmt.Errorf("%w: card endpoint %q is on a different host than the agent card (%s); set allow_card_host_change to permit it",
+			ErrRemoteEndpointUntrusted, endpoint, card.Host)
 	}
 	return nil
 }

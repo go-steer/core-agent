@@ -521,13 +521,14 @@ func buildRemoteSubagentTemplate(spec config.SubagentSpec, send func(string)) (b
 		timeoutSec = spec.Budgets.MaxWallclockSeconds
 	}
 	client, err := background.NewA2AClient(background.A2AConfig{
-		Name:           spec.Name,
-		AgentCardURL:   r.A2A,
-		Endpoint:       r.Endpoint,
-		Skill:          r.Skill,
-		Skills:         r.Skills,
-		Auth:           auth,
-		TimeoutSeconds: timeoutSec,
+		Name:                spec.Name,
+		AgentCardURL:        r.A2A,
+		Endpoint:            r.Endpoint,
+		Skill:               r.Skill,
+		Skills:              r.Skills,
+		Auth:                auth,
+		TimeoutSeconds:      timeoutSec,
+		AllowCardHostChange: r.AllowCardHostChange,
 	})
 	if err != nil {
 		return background.SubagentTemplate{}, err

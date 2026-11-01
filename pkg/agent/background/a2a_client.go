@@ -56,9 +56,27 @@ type A2AClient struct {
 type A2AClientOption func(*A2AClient)
 
 // WithA2AHTTPClient substitutes the HTTP client used for card and
-// JSON-RPC requests.
+// JSON-RPC requests. The default client does not follow redirects (see
+// newA2AHTTPClient); a substitute that does takes on the responsibility
+// of not forwarding the bearer token to a host the operator did not
+// configure.
 func WithA2AHTTPClient(h *http.Client) A2AClientOption {
 	return func(c *A2AClient) { c.http = h }
+}
+
+// newA2AHTTPClient returns the default client: no redirects. Go's
+// transport strips Authorization only when a redirect leaves the host
+// (and keeps it for subdomains), so a same-host https→http or subdomain
+// 302 would carry the bearer token to a URL the operator never
+// configured, and a 301/302 would also turn the JSON-RPC POST into a
+// GET. A 3xx therefore surfaces as "returned HTTP 3xx" from the caller
+// that already rejects every non-200 (#1435).
+func newA2AHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // WithA2APollInterval overrides the tasks/get polling cadence.
@@ -74,7 +92,7 @@ func NewA2AClient(cfg A2AConfig, opts ...A2AClientOption) (*A2AClient, error) {
 	}
 	c := &A2AClient{
 		cfg:          cfg,
-		http:         &http.Client{},
+		http:         newA2AHTTPClient(),
 		pollInterval: 500 * time.Millisecond,
 	}
 	for _, opt := range opts {
@@ -169,21 +187,34 @@ func (c *A2AClient) endpointURL(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if card.PreferredTransport == "" || card.PreferredTransport == A2ATransportJSONRPC {
+	candidate := ""
+	switch card.PreferredTransport {
+	case "", A2ATransportJSONRPC:
 		if card.URL == "" {
 			return "", fmt.Errorf("a2a: %s: agent card has no url", c.cfg.Name)
 		}
-		c.endpoint = card.URL
-		return c.endpoint, nil
-	}
-	for _, iface := range card.AdditionalInterfaces {
-		if iface.Transport == A2ATransportJSONRPC && iface.URL != "" {
-			c.endpoint = iface.URL
-			return c.endpoint, nil
+		candidate = card.URL
+	default:
+		for _, iface := range card.AdditionalInterfaces {
+			if iface.Transport == A2ATransportJSONRPC && iface.URL != "" {
+				candidate = iface.URL
+				break
+			}
+		}
+		if candidate == "" {
+			return "", fmt.Errorf("%w: %s: agent card offers no JSONRPC interface (preferredTransport=%q)",
+				ErrRemoteProtocolMismatch, c.cfg.Name, card.PreferredTransport)
 		}
 	}
-	return "", fmt.Errorf("%w: %s: agent card offers no JSONRPC interface (preferredTransport=%q)",
-		ErrRemoteProtocolMismatch, c.cfg.Name, card.PreferredTransport)
+	// The card is fetched from the operator's configured host; the
+	// endpoint it names is where the bearer token will go. Refuse a
+	// host change or an https→http downgrade rather than follow the
+	// card blindly (#1435).
+	if err := trustCardEndpoint(c.cfg.AgentCardURL, candidate, c.cfg.AllowCardHostChange); err != nil {
+		return "", fmt.Errorf("a2a: %s: %w", c.cfg.Name, err)
+	}
+	c.endpoint = candidate
+	return c.endpoint, nil
 }
 
 func (c *A2AClient) setAuth(req *http.Request) error {

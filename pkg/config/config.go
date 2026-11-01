@@ -1494,6 +1494,13 @@ type SubagentRemoteConfig struct {
 	// TimeoutSeconds bounds each remote invocation; 0 uses the client
 	// default (120s).
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+
+	// AllowCardHostChange permits the JSON-RPC endpoint named by the
+	// agent card to be on a different host than the card. Off by
+	// default: the bearer token goes to whichever endpoint is chosen, so
+	// a card pointing elsewhere is refused. An https→http downgrade is
+	// refused regardless.
+	AllowCardHostChange bool `json:"allow_card_host_change,omitempty"`
 }
 
 // SubagentRemoteAuthConfig configures authentication for a remote A2A

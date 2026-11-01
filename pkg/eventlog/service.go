@@ -16,11 +16,14 @@ package eventlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
+	"gorm.io/gorm"
 )
 
 // FinishReasonMetadataKey is the CustomMetadata key under which
@@ -94,7 +97,14 @@ func (s *service) List(ctx context.Context, req *session.ListRequest) (*session.
 func (s *service) Create(ctx context.Context, req *session.CreateRequest) (*session.CreateResponse, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.inner.Create(ctx, req)
+	resp, err := s.inner.Create(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp != nil && resp.Session != nil && s.guardrail != nil {
+		_ = s.guardrail.ensureState(ctx, resp.Session.AppName(), resp.Session.UserID(), resp.Session.ID())
+	}
+	return resp, nil
 }
 
 // Delete removes the session from ADK and then drops the matching
@@ -144,10 +154,17 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 		pending = &overlayPending{sess: sess, ev: ev}
 		ctx = withOverlayPending(ctx, pending)
 	}
+	recoveredFallback := false
 	if err := s.inner.AppendEvent(ctx, sess, ev); err != nil {
-		return err
-	}
-	if pending != nil && pending.done {
+		incomplete, probeErr := s.checkIncompleteFallbackEvent(ctx, sess, ev, err)
+		if probeErr != nil {
+			return probeErr
+		}
+		if !incomplete {
+			return err
+		}
+		recoveredFallback = true
+	} else if pending != nil && pending.done {
 		return nil
 	}
 	// ADK drops partial events without writing a row (runner.go filters
@@ -158,13 +175,62 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 	if ev != nil && ev.Partial {
 		return nil
 	}
-	if _, err := s.stream.Append(ctx, sess, ev); err != nil {
-		return fmt.Errorf("eventlog: overlay write after ADK AppendEvent: %w", err)
+	if s.stream != nil {
+		appendFn := s.stream.Append
+		if recoveredFallback {
+			appendFn = s.stream.appendIdempotent
+		}
+		if _, err := appendFn(ctx, sess, ev); err != nil {
+			return fmt.Errorf("eventlog: overlay write after ADK AppendEvent: %w", err)
+		}
 	}
 	if err := s.guardrail.applyEvent(ctx, sess, ev); err != nil {
 		return fmt.Errorf("eventlog: guardrail state write after ADK AppendEvent: %w", err)
 	}
 	return nil
+}
+
+// checkIncompleteFallbackEvent reports whether a non-hook fallback AppendEvent
+// retry hit a primary-key collision on an ADK events row committed by an
+// earlier partial attempt (#1438). On the atomic hook path (overlayInTx ==
+// true), duplicate event IDs still surface as errors (preserving
+// TestAppend_DuplicateEventIDRejected). If the probe query itself fails with a
+// database error, that error is returned with an "eventlog:" prefix so
+// drainOutOfBandEvents retries rather than mistaking the unprobed duplicate key
+// for a completed overlay+guardrail write.
+func (s *service) checkIncompleteFallbackEvent(ctx context.Context, sess session.Session, ev *session.Event, err error) (bool, error) {
+	if err == nil || sess == nil || ev == nil || ev.Partial || ev.ID == "" {
+		return false, nil
+	}
+	if s.stream == nil || s.stream.overlayInTx || s.stream.db == nil || !isDuplicateKeyError(err) {
+		return false, nil
+	}
+	var exists int
+	qErr := s.stream.db.WithContext(ctx).
+		Table(adkEventsTable).
+		Select("1").
+		Where("id = ? AND app_name = ? AND user_id = ? AND session_id = ?",
+			ev.ID, sess.AppName(), sess.UserID(), sess.ID()).
+		Limit(1).
+		Scan(&exists).Error
+	if qErr != nil {
+		return false, fmt.Errorf("eventlog: probe ADK events after duplicate key: %w", qErr)
+	}
+	return exists == 1, nil
+}
+
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "primary key constraint")
 }
 
 // stampFinishReason mirrors a model turn's abnormal genai FinishReason

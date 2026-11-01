@@ -57,6 +57,7 @@ import (
 	"context"
 	"iter"
 	"log/slog"
+	"strings"
 
 	"google.golang.org/adk/v2/session"
 
@@ -64,6 +65,16 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
+
+// maxOutOfBandEventAttempts bounds per-event AppendEvent retries in
+// drainOutOfBandEvents so one deterministically failing event cannot
+// block every subsequent guardrail trip, reset, or audit row (#1438).
+const maxOutOfBandEventAttempts = 3
+
+type queuedOutOfBandEvent struct {
+	ev       *session.Event
+	attempts int
+}
 
 // queueOutOfBandEvent enqueues a durable row the agent writes ABOUT a
 // session rather than as part of a turn, and flushes it immediately when
@@ -84,21 +95,22 @@ func (a *Agent) queueOutOfBandEvent(ev *session.Event) {
 		return
 	}
 	a.mu.Lock()
-	a.pendingOutOfBandEvents = append(a.pendingOutOfBandEvents, ev)
+	a.pendingOutOfBandEvents = append(a.pendingOutOfBandEvents, queuedOutOfBandEvent{ev: ev})
 	a.mu.Unlock()
 	if !a.turnInFlight() {
 		a.drainOutOfBandEvents()
 	}
 }
 
-// drainOutOfBandEvents writes every queued row (#643, #1360).
+// drainOutOfBandEvents writes every queued row (#643, #1360, #1438).
 //
 // Requests NumRecentEvents: 1 on Service.Get because AppendEvent only
 // reads the session identity, updatedAt, and state map — never its
-// hydrated event history. When Get or AppendEvent fails, any unwritten
-// rows are prepended back onto pendingOutOfBandEvents and logged so the
-// next drain window retries them rather than silently dropping a
-// durable guardrail trip or audit row (#1360).
+// hydrated event history. Transient Get or AppendEvent errors prepend
+// unwritten rows back onto pendingOutOfBandEvents so FIFO order holds
+// across the next drain window (#1360); an event that fails AppendEvent
+// maxOutOfBandEventAttempts times is logged with slog.Error and dropped
+// so later guardrail and audit rows still drain (#1438).
 //
 // Uses context.Background rather than a turn context: the post-turn
 // cleanup runs with runCtx already cancelled, and a reset arrives on an
@@ -123,40 +135,87 @@ func (a *Agent) drainOutOfBandEvents() {
 		return
 	}
 	ctx := context.Background()
+	sess, err := a.fetchOutOfBandSession(ctx)
+	if err != nil {
+		a.requeueOutOfBandEvents(pending)
+		a.logOutOfBandDrainError("get session", err)
+		return
+	}
+	for i := range pending {
+		if pending[i].ev != nil && !sess.LastUpdateTime().IsZero() && pending[i].ev.Timestamp.Before(sess.LastUpdateTime()) {
+			pending[i].ev.Timestamp = sess.LastUpdateTime()
+		}
+		err := a.eventLog.Service.AppendEvent(ctx, sess, pending[i].ev)
+		if err == nil || isDuplicateADKEventError(err) {
+			continue
+		}
+		pending[i].attempts++
+		if pending[i].attempts < maxOutOfBandEventAttempts {
+			a.requeueOutOfBandEvents(pending[i:])
+			a.logOutOfBandDrainError("append event", err)
+			return
+		}
+		a.logDroppedOutOfBandEvent(pending[i], err)
+		if i+1 < len(pending) {
+			sess, err = a.fetchOutOfBandSession(ctx)
+			if err != nil {
+				a.requeueOutOfBandEvents(pending[i+1:])
+				a.logOutOfBandDrainError("get session", err)
+				return
+			}
+		}
+	}
+}
+
+func (a *Agent) fetchOutOfBandSession(ctx context.Context) (session.Session, error) {
 	getResp, err := a.eventLog.Service.Get(ctx, &session.GetRequest{
 		AppName:         a.appName,
 		UserID:          a.userID,
 		SessionID:       a.sessionID,
 		NumRecentEvents: 1,
 	})
-	if err != nil || getResp == nil || getResp.Session == nil {
-		a.requeueOutOfBandEvents(pending)
-		a.logOutOfBandDrainError("get session", err)
-		return
+	if err != nil {
+		return nil, err
 	}
-	for i, ev := range pending {
-		if err := a.eventLog.Service.AppendEvent(ctx, getResp.Session, ev); err != nil {
-			a.requeueOutOfBandEvents(pending[i:])
-			a.logOutOfBandDrainError("append event", err)
-			return
-		}
+	if getResp == nil || getResp.Session == nil {
+		return nil, session.ErrNotFound
 	}
+	return getResp.Session, nil
+}
+
+func isDuplicateADKEventError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "eventlog:") ||
+		strings.Contains(msg, "agent_eventlog") ||
+		strings.Contains(msg, "agent_guardrail_state") {
+		return false
+	}
+	return (strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry")) &&
+		(strings.Contains(msg, "events.id") ||
+			strings.Contains(msg, "events_pkey") ||
+			strings.Contains(msg, "events.primary") ||
+			strings.Contains(msg, "for key 'primary'"))
 }
 
 // requeueOutOfBandEvents prepends failed events back onto
 // pendingOutOfBandEvents so a transient Get or AppendEvent error
 // preserves ordering and retries on the next drain window (#1360).
-func (a *Agent) requeueOutOfBandEvents(failed []*session.Event) {
+func (a *Agent) requeueOutOfBandEvents(failed []queuedOutOfBandEvent) {
 	if a == nil || len(failed) == 0 {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.pendingOutOfBandEvents) == 0 {
-		a.pendingOutOfBandEvents = append([]*session.Event(nil), failed...)
+		a.pendingOutOfBandEvents = append([]queuedOutOfBandEvent(nil), failed...)
 		return
 	}
-	combined := make([]*session.Event, 0, len(failed)+len(a.pendingOutOfBandEvents))
+	combined := make([]queuedOutOfBandEvent, 0, len(failed)+len(a.pendingOutOfBandEvents))
 	combined = append(combined, failed...)
 	combined = append(combined, a.pendingOutOfBandEvents...)
 	a.pendingOutOfBandEvents = combined
@@ -166,6 +225,21 @@ func (a *Agent) logOutOfBandDrainError(op string, err error) {
 	slog.Warn("agent: out-of-band event drain failed; events re-queued for retry",
 		"op", op,
 		"session_id", a.sessionID,
+		"err", err,
+	)
+}
+
+func (a *Agent) logDroppedOutOfBandEvent(item queuedOutOfBandEvent, err error) {
+	var eventID, author string
+	if item.ev != nil {
+		eventID = item.ev.ID
+		author = item.ev.Author
+	}
+	slog.Error("agent: dropping permanently failing out-of-band event after max retries",
+		"session_id", a.sessionID,
+		"event_id", eventID,
+		"author", author,
+		"attempts", item.attempts,
 		"err", err,
 	)
 }

@@ -659,9 +659,9 @@ func TestPreTurn_643_TheOutOfBandFlushMustPrecedeTheRefusal(t *testing.T) {
 		// cuts its own turn — and whose post-turn flush did not land.
 		a.costCeilingExceeded = true
 		a.costCeilingReason = "per-session cost ceiling exceeded"
-		a.pendingOutOfBandEvents = []*session.Event{
-			attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, a.costCeilingReason),
-		}
+		a.pendingOutOfBandEvents = []queuedOutOfBandEvent{{
+			ev: attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, a.costCeilingReason),
+		}}
 		return a
 	}
 

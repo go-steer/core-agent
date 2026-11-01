@@ -15,8 +15,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +26,9 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"google.golang.org/adk/v2/session"
+	adkdatabase "google.golang.org/adk/v2/session/database"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
@@ -815,7 +820,7 @@ func TestGuardrailPersist_TransientDrainErrorRequeuesAndSurvivesRestart(t *testi
 	flaky.mu.Unlock()
 	first.mu.Lock()
 	first.pendingOutOfBandEvents = append(first.pendingOutOfBandEvents,
-		attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
+		queuedOutOfBandEvent{ev: attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget")})
 	first.mu.Unlock()
 	first.drainOutOfBandEvents()
 
@@ -928,5 +933,201 @@ func TestGuardrailPersist_BackfillsPreUpgradeDatabase(t *testing.T) {
 	}
 	if needsLegacy || !gs.CostTripped || gs.BudgetExtensionUSD != 5 {
 		t.Errorf("after backfill: needsLegacy=%v state=%+v", needsLegacy, gs)
+	}
+}
+
+// postCommitFailService delegates AppendEvent to the inner service first and
+// then returns an error for matching failures, reproducing the #1438 failure
+// mode where ADK has already committed the events row before an overlay,
+// guardrail, or transport error triggers a retry with the same event ID.
+type postCommitFailService struct {
+	session.Service
+	mu            sync.Mutex
+	failPostOnce  bool
+	poisonEventID string
+}
+
+func (p *postCommitFailService) AppendEvent(ctx context.Context, sess session.Session, ev *session.Event) error {
+	p.mu.Lock()
+	if ev != nil && p.poisonEventID != "" && ev.ID == p.poisonEventID {
+		p.mu.Unlock()
+		return errors.New("injected permanent poison AppendEvent error")
+	}
+	failAfter := p.failPostOnce
+	if failAfter {
+		p.failPostOnce = false
+	}
+	p.mu.Unlock()
+
+	if err := p.Service.AppendEvent(ctx, sess, ev); err != nil {
+		return err
+	}
+	if failAfter {
+		return errors.New("injected failure after inner AppendEvent committed")
+	}
+	return nil
+}
+
+func TestGuardrailPersist_PostCommitDuplicateRetryUnblocksQueue(t *testing.T) {
+	t.Parallel()
+
+	t.Run("eventlog service heals post-commit retry and drains following rows", func(t *testing.T) {
+		t.Parallel()
+		h, cleanup := openTestEventLog(t)
+		defer cleanup()
+		createTestSession(t, h, "core-agent", "u", "s-1438-postcommit")
+
+		wrapped := &postCommitFailService{Service: h.Service, failPostOnce: true}
+		h.Service = wrapped
+
+		a, err := New(minimalLLM{},
+			WithEventLog(h),
+			WithSession("u", "s-1438-postcommit"),
+			WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+			WithWatchdog(&fakeWatchdog{}, nil),
+			WithWatchdogEnforce(),
+		)
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+
+		ev1 := attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "looping on grep")
+		ev2 := attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "exceeded session cap")
+		a.mu.Lock()
+		a.pendingOutOfBandEvents = []queuedOutOfBandEvent{{ev: ev1}, {ev: ev2}}
+		a.mu.Unlock()
+
+		// First drain commits ev1 inside inner AppendEvent and then fails,
+		// re-queuing [ev1, ev2].
+		a.drainOutOfBandEvents()
+		a.mu.Lock()
+		queued := len(a.pendingOutOfBandEvents)
+		a.mu.Unlock()
+		if queued != 2 {
+			t.Fatalf("pending after post-commit failure = %d, want 2", queued)
+		}
+
+		// Second drain retries ev1 with the same ID: duplicate-PK on events
+		// must be treated as already committed so ev2 drains right behind it.
+		a.drainOutOfBandEvents()
+		a.mu.Lock()
+		remaining := len(a.pendingOutOfBandEvents)
+		a.mu.Unlock()
+		if remaining != 0 {
+			t.Fatalf("pending after retry drain = %d, want 0 (blocked behind duplicate key)", remaining)
+		}
+		if got := countGuardrailRows(t, a, attach.GuardrailTripEventAuthor); got != 2 {
+			t.Fatalf("durable trip rows = %d, want 2", got)
+		}
+	})
+
+	t.Run("raw ADK database service duplicate PK on retry drains following rows", func(t *testing.T) {
+		t.Parallel()
+		dsn := filepath.Join(t.TempDir(), "raw-adk.db")
+		adkSvc, err := adkdatabase.NewSessionService(
+			sqlite.Open(dsn),
+			&gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)},
+		)
+		if err != nil {
+			t.Fatalf("NewSessionService: %v", err)
+		}
+		if err := adkdatabase.AutoMigrate(adkSvc); err != nil {
+			t.Fatalf("AutoMigrate: %v", err)
+		}
+		wrapped := &postCommitFailService{Service: adkSvc, failPostOnce: true}
+		h := &eventlog.Handle{Service: wrapped}
+		createTestSession(t, h, "core-agent", "u", "s-1438-raw-adk")
+
+		a, err := New(minimalLLM{}, WithEventLog(h), WithSession("u", "s-1438-raw-adk"))
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		ev1 := attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "first")
+		ev2 := attach.NewGuardrailResetAuditEvent("alice@example.com", []string{attach.GuardrailWatchdog}, 0)
+		a.mu.Lock()
+		a.pendingOutOfBandEvents = []queuedOutOfBandEvent{{ev: ev1}, {ev: ev2}}
+		a.mu.Unlock()
+
+		a.drainOutOfBandEvents()
+		a.drainOutOfBandEvents()
+
+		a.mu.Lock()
+		remaining := len(a.pendingOutOfBandEvents)
+		a.mu.Unlock()
+		if remaining != 0 {
+			t.Fatalf("pending after raw ADK retry = %d, want 0", remaining)
+		}
+		if got := countGuardrailRows(t, a, attach.GuardrailResetEventAuthor); got != 1 {
+			t.Fatalf("reset rows behind duplicate event = %d, want 1", got)
+		}
+	})
+}
+
+// Not parallel: swaps process-global slog default to assert slog.Error on drop.
+func TestGuardrailPersist_PoisonEventDroppedAfterMaxAttemptsAndQueueDrains(t *testing.T) {
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	createTestSession(t, h, "core-agent", "u", "s-1438-poison")
+
+	poison := attach.NewGuardrailResetAuditEvent("bob@example.com", []string{attach.GuardrailWatchdog}, 0)
+	poison.ID = "poison-event-1438"
+	healthy := attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "session cap tripped behind poison")
+
+	wrapped := &postCommitFailService{Service: h.Service, poisonEventID: poison.ID}
+	h.Service = wrapped
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(prevLogger)
+
+	a, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1438-poison"),
+		WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	a.mu.Lock()
+	a.pendingOutOfBandEvents = []queuedOutOfBandEvent{{ev: poison}, {ev: healthy}}
+	a.mu.Unlock()
+
+	for attempt := 1; attempt < maxOutOfBandEventAttempts; attempt++ {
+		a.drainOutOfBandEvents()
+		a.mu.Lock()
+		queued := len(a.pendingOutOfBandEvents)
+		a.mu.Unlock()
+		if queued != 2 {
+			t.Fatalf("attempt %d: pending = %d, want 2 while under retry cap", attempt, queued)
+		}
+	}
+
+	// Final attempt drops poison with slog.Error and drains healthy in the same pass.
+	a.drainOutOfBandEvents()
+	a.mu.Lock()
+	remaining := len(a.pendingOutOfBandEvents)
+	a.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("pending after poison drop = %d, want 0", remaining)
+	}
+	if !strings.Contains(logBuf.String(), "dropping permanently failing out-of-band event") ||
+		!strings.Contains(logBuf.String(), poison.ID) {
+		t.Errorf("expected slog.Error naming dropped poison event %q, got %q", poison.ID, logBuf.String())
+	}
+
+	restarted, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1438-poison"),
+		WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New (restart): %v", err)
+	}
+	if err := restarted.RestoreGuardrails(context.Background()); err != nil {
+		t.Fatalf("RestoreGuardrails: %v", err)
+	}
+	if tripped, reason := restarted.CostCeilingTripped(); !tripped || reason != "session cap tripped behind poison" {
+		t.Errorf("healthy trip behind poison did not persist: tripped=%v reason=%q", tripped, reason)
 	}
 }

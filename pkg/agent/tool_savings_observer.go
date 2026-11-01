@@ -37,6 +37,8 @@
 package agent
 
 import (
+	"fmt"
+
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
@@ -84,13 +86,17 @@ func (a *Agent) observeToolSavings(ev *session.Event) {
 	if a == nil || a.tracker == nil || ev == nil || ev.Content == nil || ev.Partial {
 		return
 	}
-	for _, p := range ev.Content.Parts {
+	for i, p := range ev.Content.Parts {
 		rec, ok := extractSavingsRecord(p, a.BillingBackend())
 		if !ok {
 			continue
 		}
 		a.tracker.AppendDigestSavings(rec)
-		a.chargeDigestSubagent(rec)
+		var eventID string
+		if ev.ID != "" {
+			eventID = fmt.Sprintf("%s:savings:%d", ev.ID, i)
+		}
+		a.chargeDigestSubagentWithEventID(rec, eventID)
 	}
 }
 
@@ -116,6 +122,10 @@ func (a *Agent) observeToolSavings(ev *session.Event) {
 // Structural and passthrough paths carry no subagent model and are
 // skipped — they spend no tokens.
 func (a *Agent) chargeDigestSubagent(rec usage.DigestSavingsRecord) {
+	a.chargeDigestSubagentWithEventID(rec, "")
+}
+
+func (a *Agent) chargeDigestSubagentWithEventID(rec usage.DigestSavingsRecord, eventID string) {
 	if rec.SubagentModel == "" {
 		return
 	}
@@ -129,6 +139,7 @@ func (a *Agent) chargeDigestSubagent(rec usage.DigestSavingsRecord) {
 	// --max-session-cost-usd by the same margin, because
 	// maybeEnforceCostCeiling reads these totals (#771).
 	u := rec.SubagentTurn()
+	u.EventID = eventID
 	// Side usage (#1191): the summarizer's prompt is one tool result,
 	// not the conversation, so it must not become Last() — that would
 	// report its input as the context fill, look the window up by the

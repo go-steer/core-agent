@@ -70,12 +70,17 @@ func (t *TurnTap) Observe(ev *session.Event) {
 		return
 	}
 	t.last = TurnUsageFromMetadata(ev.UsageMetadata, ev.CustomMetadata)
+	t.last.EventID = ev.ID
 }
 
 // Commit returns (per-turn totals, true) exactly when ev is a
 // TurnComplete carrying non-zero accumulated usage, after resetting
 // internal state so the next turn's chunks accumulate cleanly.
 // Returns (zero, false) otherwise. Call after Observe.
+//
+// The returned TurnUsage.EventID is the committing event's ID when it
+// has one, else the ID of the last usage-bearing chunk observed — the
+// per-turn identity the durable spend ledger keys on (#1433).
 func (t *TurnTap) Commit(ev *session.Event) (TurnUsage, bool) {
 	if ev == nil || !ev.TurnComplete {
 		return TurnUsage{}, false
@@ -84,6 +89,9 @@ func (t *TurnTap) Commit(ev *session.Event) (TurnUsage, bool) {
 		return TurnUsage{}, false
 	}
 	u := t.last
+	if ev.ID != "" {
+		u.EventID = ev.ID
+	}
 	t.last = TurnUsage{}
 	return u, true
 }

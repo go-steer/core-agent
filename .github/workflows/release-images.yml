@@ -48,8 +48,9 @@ on:
 
 permissions:
   contents: read
-  packages: write   # push to GHCR
-  id-token: write   # cosign keyless via GitHub OIDC
+  packages: write      # push to GHCR
+  id-token: write      # cosign keyless via GitHub OIDC
+  attestations: write  # SLSA build provenance for the container images (#1408)
 
 env:
   REGISTRY: ghcr.io
@@ -294,3 +295,20 @@ jobs:
           # immutable. cosign signs once and the signature covers
           # every tag that points at the same digest.
           echo "$TAGS" | xargs -I {} cosign sign --yes "{}@${DIGEST}"
+
+      # SLSA build provenance beside the signature (#1408).
+      # push-to-registry writes the attestation as an OCI referrer of the
+      # digest so it travels with the image.
+      - name: Attest image
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image_name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify the published provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SOURCE_REF: ${{ github.ref }}
+        run: dev/release/verify-provenance.sh --oci "${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image_name }}@${DIGEST}"

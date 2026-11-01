@@ -87,6 +87,9 @@ jobs:
           # the `tar: File exists` collision an explicit actions/cache@v4
           # caused when both tried to restore the same directories.
           cache-dependency-path: '**/go.sum'
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
       - run: go mod download
       - name: Vet
         run: dev/ci/presubmits/vet
@@ -133,6 +136,8 @@ jobs:
         run: dev/ci/presubmits/examples-smoke
       - name: GKE drill (offline)
         run: dev/ci/presubmits/verify-gke-drill
+      - name: Terraform
+        run: dev/ci/presubmits/verify-terraform
       # The release-notes composer degrades an over-long body instead of
       # handing GitHub one it will 422 into an empty release (#894). A
       # step in `test` for the same reasons as the two above, plus one

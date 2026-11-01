@@ -1,0 +1,59 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Originally derived from go-steer/mast:examples/deploy/terraform/terraform.tfvars.example.
+
+# Copy to terraform.tfvars and edit. Everything except project_id has a
+# working default; what is uncommented below is the whole required
+# surface.
+#
+# terraform.tfvars is gitignored — it is the file most likely to acquire
+# a real project ID.
+
+project_id = "my-project"
+
+# Namespace gke-platform-agent runs in. Reaches BOTH halves from here: it
+# is part of the daemon's IAM identity as well as the install target.
+# namespace = "gke-platform-agent"
+
+# Override the daemon image tag if needed. Unset takes the overlay's pin.
+# image_tag = "2.9.0"
+
+# GKE Standard needs the daemon on metadata-server-enabled nodes.
+# Autopilot REJECTS that selector — leave this false there.
+# gke_standard = false
+
+# The namespaces core-agent may CHANGE (via deploy/components/gated-apply).
+# Empty — the default — installs an agent that diagnoses the whole cluster
+# and can write nowhere. Start there.
+# remediation_namespaces = ["team-a", "team-b"]
+
+# "namespaced" (default) binds roles/container.viewer and leaves the
+# per-namespace write Roles load-bearing. "cluster-admin" binds
+# roles/container.admin, which authorizes every mutating call in every
+# namespace whatever RBAC renders — GKE allows a call if IAM OR RBAC
+# allows it. Unlike an imperative gcloud script, setting this back to
+# "namespaced" actually removes the wide binding.
+# write_scope = "namespaced"
+
+# False where service enablement is somebody else's pipeline.
+# enable_apis = true
+
+# The node service account the daemon may impersonate. Empty derives the
+# Compute Engine default for the project.
+# node_service_account = ""
+
+# Cluster name and location passed into core-agent-gcp-env.
+# cluster_name     = "local"
+# cluster_location = "us-central1"

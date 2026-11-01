@@ -42,8 +42,9 @@ on:
         default: false
 
 permissions:
-  contents: write   # create / update the GitHub Release
-  id-token: write   # cosign keyless OIDC
+  contents: write      # create / update the GitHub Release
+  id-token: write      # cosign keyless OIDC
+  attestations: write  # SLSA build provenance for the release assets (#1408)
 
 jobs:
   goreleaser:
@@ -278,6 +279,43 @@ jobs:
             echo "::error::release body suspiciously short after edit (body_len=${body_len}); check the compose step's output"
             exit 1
           fi
+
+      # SLSA build provenance, attested per asset so an operator can run
+      # `gh attestation verify` directly against the archive they
+      # downloaded without a second hop through checksums.txt (#1408).
+      - name: Attest the release assets
+        if: ${{ !inputs.dry_run }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'dist/*.tar.gz, dist/checksums.txt'
+
+      - name: Verify the published provenance
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REF: ${{ github.ref }}
+        run: dev/release/verify-provenance.sh "${{ steps.notes.outputs.tag }}"
+
+      # The dry run attests and verifies too, so a missing permission or
+      # broken verifier surfaces on a rehearsal rather than on a release
+      # tag (#1408).
+      - name: Attest the dry-run artifacts
+        if: ${{ inputs.dry_run }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'dist/*.tar.gz, dist/checksums.txt'
+
+      - name: Verify the dry-run provenance
+        if: ${{ inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh attestation verify dist/checksums.txt \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/release.yml" \
+            --source-ref "${{ github.ref }}"
+          echo "dry run: provenance stored and findable for dist/checksums.txt"
 
       # On dry-run, surface the built artifacts so they can be
       # downloaded + inspected without a Release ever being created.

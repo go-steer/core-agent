@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
-_No unreleased changes since [3.1.0-dev.1]._
+#### Feature
+
+- **Terraform module for `examples/gke-platform-agent` (`examples/gke-platform-agent/deploy/terraform/`) and SLSA build provenance attestation (`release.yml`, `release-images.yml`, `dev/release/verify-provenance.sh`).**
+  - **What was missing:** `examples/gke-platform-agent/scripts/grant-iam.sh` applied GKE Workload Identity Federation bindings imperatively via `gcloud`, which is additive-only and cannot declaratively remove an earlier `roles/container.admin` grant when narrowing a deployment to per-namespace RBAC remediation (`go-steer/mast#290`). Release archives and OCI container images were published without SLSA build provenance attestations (`actions/attest-build-provenance@v4`) or a post-publish provenance verifier.
+  - **What landed:** `examples/gke-platform-agent/deploy/terraform/` adds the root Terraform module and `modules/wif` + `modules/release` submodules (tested offline via `terraform test` mock providers in `tests/*.tftest.hcl`, `examples/gke-platform-agent/terraform_test.go`, and `dev/ci/presubmits/verify-terraform`), binding additive `google_project_iam_member` roles (`roles/aiplatform.user`, `roles/mcp.toolUser`, and `roles/container.viewer` or `roles/container.admin`) so narrowing `write_scope` back to `"namespaced"` destroys `roles/container.admin`, while `modules/release` renders the namespace, `core-agent-gcp-env` ConfigMap, and per-namespace `Role`/`RoleBinding` matching `deploy/components/gated-apply/`. `.github/workflows/release.yml` and `.github/workflows/release-images.yml` generate SLSA build provenance attestations via `actions/attest-build-provenance@v4` and verify them with `dev/release/verify-provenance.sh`, and `dev/release/install-verify-footer.md.tmpl` documents `gh attestation verify` for both release archives and OCI images. ([#1408](https://github.com/go-steer/core-agent/issues/1408))
 
 ## [3.1.0-dev.1] — 2026-11-01
 

@@ -491,7 +491,7 @@ type Agent struct {
 	// transient read failure retries on the next turn instead of
 	// disarming the backstop for the rest of the process's life.
 	// See guardrail_persist.go.
-	pendingOutOfBandEvents []*session.Event
+	pendingOutOfBandEvents []queuedOutOfBandEvent
 	guardrailRestored      bool
 	// outOfBandDrainMu serializes drainOutOfBandEvents end to end, so
 	// two drains racing (an operator's reset on an HTTP goroutine and

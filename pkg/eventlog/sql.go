@@ -28,6 +28,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	adkdatabase "google.golang.org/adk/v2/session/database"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -50,12 +51,12 @@ const sqliteBusyTimeoutMs = 5000
 // string and surface as Entry.Metadata = nil.
 type agentEventRow struct {
 	Seq          int64  `gorm:"primaryKey;autoIncrement"`
-	AppName      string `gorm:"not null;index:idx_agent_eventlog_session,priority:1"`
-	UserID       string `gorm:"not null;index:idx_agent_eventlog_session,priority:2"`
-	SessionID    string `gorm:"not null;index:idx_agent_eventlog_session,priority:3"`
+	AppName      string `gorm:"not null;index:idx_agent_eventlog_session,priority:1;index:idx_agent_eventlog_session_author,priority:1"`
+	UserID       string `gorm:"not null;index:idx_agent_eventlog_session,priority:2;index:idx_agent_eventlog_session_author,priority:2"`
+	SessionID    string `gorm:"not null;index:idx_agent_eventlog_session,priority:3;index:idx_agent_eventlog_session_author,priority:3"`
 	EventID      string `gorm:"not null;uniqueIndex:idx_agent_eventlog_event"`
 	Branch       string `gorm:"index:idx_agent_eventlog_branch"`
-	Author       string `gorm:"index:idx_agent_eventlog_author"`
+	Author       string `gorm:"index:idx_agent_eventlog_author;index:idx_agent_eventlog_session_author,priority:4"`
 	Timestamp    time.Time
 	InvocationID string
 	Metadata     string `gorm:"type:text"`
@@ -371,6 +372,41 @@ func (s *gormStream) Append(ctx context.Context, sess session.Session, ev *sessi
 	}
 	if err := s.db.WithContext(ctx).Create(row).Error; err != nil {
 		return 0, fmt.Errorf("eventlog: insert overlay row: %w", err)
+	}
+	return row.Seq, nil
+}
+
+// appendIdempotent inserts the overlay row for ev on fallback-path recovery,
+// treating an existing event_id conflict as already written (#1438).
+func (s *gormStream) appendIdempotent(ctx context.Context, sess session.Session, ev *session.Event) (int64, error) {
+	if s.closed.Load() {
+		return 0, ErrClosed
+	}
+	if sess == nil {
+		return 0, errors.New("eventlog: Append: session is required")
+	}
+	if ev == nil {
+		return 0, errors.New("eventlog: Append: event is required")
+	}
+	row, err := s.buildOverlayRow(ctx, sess, ev)
+	if err != nil {
+		return 0, err
+	}
+	res := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "event_id"}},
+		DoNothing: true,
+	}).Create(row)
+	if res.Error != nil {
+		return 0, fmt.Errorf("eventlog: insert overlay row: %w", res.Error)
+	}
+	if res.RowsAffected == 0 || row.Seq == 0 {
+		if err := s.db.WithContext(ctx).
+			Model(&agentEventRow{}).
+			Select("seq").
+			Where("event_id = ?", row.EventID).
+			Scan(&row.Seq).Error; err != nil {
+			return 0, fmt.Errorf("eventlog: lookup existing overlay seq: %w", err)
+		}
 	}
 	return row.Seq, nil
 }

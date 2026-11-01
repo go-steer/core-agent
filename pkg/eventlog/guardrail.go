@@ -54,8 +54,12 @@ func (GuardrailState) TableName() string { return "agent_guardrail_state" }
 
 // GuardrailStore persists guardrail trip, reset, and budget-extension
 // state synchronously to the database so a tripped session remains
-// tripped across restarts and RestoreGuardrails can read current state
-// in O(1) without hydrating the full session history (#1360).
+// tripped across restarts and RestoreGuardrails reads current state by
+// primary key without hydrating the session history (#1360, #1438).
+// Sessions created through eventlog.Handle.Service seed a zero state
+// row on creation; pre-upgrade sessions without a state row perform a
+// one-time indexed check on agent_eventlog and backfill or seed the row
+// so subsequent reads are O(1) primary-key lookups.
 type GuardrailStore struct {
 	db *gorm.DB
 }
@@ -290,18 +294,33 @@ func (s *GuardrailStore) SaveState(ctx context.Context, st GuardrailState) error
 	return nil
 }
 
-// Load returns the current GuardrailState for the session, or a zero
-// GuardrailState when no row has been recorded.
+// Load returns the current GuardrailState for the session in O(1) by
+// primary key, or a zero GuardrailState when no row has been recorded.
 func (s *GuardrailStore) Load(ctx context.Context, appName, userID, sessionID string) (GuardrailState, error) {
-	st, _, err := s.LoadWithLegacyCheck(ctx, appName, userID, sessionID)
-	return st, err
+	if s == nil || s.db == nil {
+		return GuardrailState{}, errors.New("eventlog: GuardrailStore is nil")
+	}
+	var row GuardrailState
+	err := s.db.WithContext(ctx).
+		Where("app_name = ? AND user_id = ? AND session_id = ?", appName, userID, sessionID).
+		First(&row).Error
+	if err == nil {
+		return row, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return GuardrailState{AppName: appName, UserID: userID, SessionID: sessionID}, nil
+	}
+	return GuardrailState{}, fmt.Errorf("eventlog: load guardrail state: %w", err)
 }
 
 // LoadWithLegacyCheck returns the session's GuardrailState from
-// agent_guardrail_state. When no row exists in agent_guardrail_state,
-// it performs an O(1) indexed check on agent_eventlog to report whether
-// the session has pre-upgrade guardrail events that need a one-time
-// fold and backfill (#1360).
+// agent_guardrail_state in O(1) by primary key when a state or sentinel
+// row is present. When no row exists yet (e.g. a pre-upgrade session),
+// it probes agent_eventlog via idx_agent_eventlog_session_author in
+// O(log N) to report whether pre-upgrade guardrail events need a
+// one-time fold and backfill; when none exist and the session is
+// present in storage, it seeds a zero sentinel row so future calls hit
+// the primary key directly (#1360, #1438).
 func (s *GuardrailStore) LoadWithLegacyCheck(ctx context.Context, appName, userID, sessionID string) (GuardrailState, bool, error) {
 	if s == nil || s.db == nil {
 		return GuardrailState{}, false, errors.New("eventlog: GuardrailStore is nil")
@@ -326,7 +345,73 @@ func (s *GuardrailStore) LoadWithLegacyCheck(ctx context.Context, appName, userI
 		Scan(&seq).Error; qErr != nil {
 		return GuardrailState{}, false, fmt.Errorf("eventlog: check legacy guardrail rows: %w", qErr)
 	}
+	if seq == 0 {
+		_ = s.seedZeroSentinelIfSessionExists(ctx, appName, userID, sessionID)
+	}
 	return GuardrailState{}, seq > 0, nil
+}
+
+// ensureState inserts a zero sentinel GuardrailState row when none exists yet,
+// leaving any existing row untouched (ON CONFLICT DO NOTHING) so concurrent
+// trip or budget writes can never be overwritten (#1438).
+func (s *GuardrailStore) ensureState(ctx context.Context, appName, userID, sessionID string) error {
+	if s == nil || s.db == nil || appName == "" || userID == "" || sessionID == "" {
+		return nil
+	}
+	return ensureStateOnDB(s.db.WithContext(ctx), appName, userID, sessionID)
+}
+
+func ensureStateOnDB(db *gorm.DB, appName, userID, sessionID string) error {
+	row := GuardrailState{
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: sessionID,
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "app_name"}, {Name: "user_id"}, {Name: "session_id"}},
+		DoNothing: true,
+	}).Create(&row).Error; err != nil {
+		return fmt.Errorf("eventlog: ensure guardrail state: %w", err)
+	}
+	return nil
+}
+
+// seedZeroSentinelIfSessionExists checks whether the session is persisted in
+// ADK's sessions table or has rows in agent_eventlog inside a transaction and
+// seeds the zero sentinel row only when present (#1438), avoiding orphan rows
+// when callers query arbitrary nonexistent or concurrently deleted session IDs.
+func (s *GuardrailStore) seedZeroSentinelIfSessionExists(ctx context.Context, appName, userID, sessionID string) error {
+	if s == nil || s.db == nil || appName == "" || userID == "" || sessionID == "" {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if !sessionExistsOnDB(tx, appName, userID, sessionID) {
+			return nil
+		}
+		return ensureStateOnDB(tx, appName, userID, sessionID)
+	})
+}
+
+func sessionExistsOnDB(db *gorm.DB, appName, userID, sessionID string) bool {
+	var exists int
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Table("sessions").
+		Select("1").
+		Where("app_name = ? AND user_id = ? AND id = ?", appName, userID, sessionID).
+		Limit(1).
+		Scan(&exists).Error; err == nil && exists == 1 {
+		return true
+	}
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Model(&agentEventRow{}).
+		Select("1").
+		Where("app_name = ? AND user_id = ? AND session_id = ?", appName, userID, sessionID).
+		Limit(1).
+		Scan(&exists).Error; err == nil && exists == 1 {
+		return true
+	}
+	return false
 }
 
 // deleteSession removes any guardrail state row for the deleted session.

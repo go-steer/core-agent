@@ -62,7 +62,10 @@ func pricingTable() *priceTable {
 	if profileRegistry.prices != nil {
 		return profileRegistry.prices
 	}
-	opts := pricing.Options{Declared: pricing.DeclaredFromProfiles(declaringProfiles(profileRegistry.declared))}
+	opts := pricing.Options{
+		Declared: pricing.DeclaredFromProfiles(declaringProfiles(profileRegistry.declared)),
+		Profiles: profileRegistry.declared,
+	}
 	c, err := pricing.NewCatalog(opts)
 	if err != nil {
 		panic(fmt.Sprintf("evalcompose: pricing catalog: %v", err))

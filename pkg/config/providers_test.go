@@ -126,7 +126,7 @@ func TestProfileContextWindows(t *testing.T) {
 func TestKnownProvider(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
-	for _, name := range []string{"", ProviderGemini, ProviderAnthropicVertex, ProviderScripted, "vertex-maas", "vllm", "ollama", "sglang", "openai-compatible"} {
+	for _, name := range []string{"", ProviderGemini, ProviderAnthropicVertex, ProviderScripted, "vertex-maas", "vllm", "ollama", "sglang", "openai-compatible", "sap-ai-core"} {
 		if !cfg.KnownProvider(name) {
 			t.Errorf("KnownProvider(%q) = false", name)
 		}
@@ -141,17 +141,34 @@ func TestKnownProvider(t *testing.T) {
 	}
 }
 
+func TestProfileRates_SkipsIsolatedProfiles(t *testing.T) {
+	t.Parallel()
+	sap := `{"name":"sap-custom","extends":"sap-ai-core","models":[{"id":"gpt-5-mini","rates":{"input_per_mtok":99,"output_per_mtok":99}}]}`
+	cfg, _, err := loadBody(t, `{"version":1,"model":{"name":"gpt-5-mini","provider":"sap-custom"},"providers":[`+sap+`, `+houseVLLM+`]}`)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rates := cfg.ProfileRates()
+	if _, ok := rates["gpt-5-mini"]; ok {
+		t.Errorf("ProfileRates leaked isolated profile's bare model rate: %+v", rates["gpt-5-mini"])
+	}
+	if r := rates["google/gemma-4-26B-A4B-it"]; r.InputPerMTok != 0.1 {
+		t.Errorf("ProfileRates missing shared profile's rate: %+v", rates)
+	}
+}
+
 func TestLoad_RejectsBadProfiles(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		providers string
 		want      string
 	}{
-		"core name":      {`{"name":"anthropic","extends":"vllm","base_url":"http://x/v1"}`, "core-agent's own providers"},
-		"no name":        {`{"extends":"vllm","base_url":"http://x/v1"}`, "has no name"},
-		"duplicate":      {houseVLLM + `,` + houseVLLM, "declared twice"},
-		"unknown extend": {`{"name":"x","extends":"nope","base_url":"http://x/v1"}`, "not a built-in"},
-		"misspelt key":   {`{"name":"x","extends":"vllm","base_url":"http://x/v1","tierz":{"mid":"m"}}`, "tierz"},
+		"core name":        {`{"name":"anthropic","extends":"vllm","base_url":"http://x/v1"}`, "core-agent's own providers"},
+		"no name":          {`{"extends":"vllm","base_url":"http://x/v1"}`, "has no name"},
+		"duplicate":        {houseVLLM + `,` + houseVLLM, "declared twice"},
+		"unknown extend":   {`{"name":"x","extends":"nope","base_url":"http://x/v1"}`, "not a built-in"},
+		"misspelt key":     {`{"name":"x","extends":"vllm","base_url":"http://x/v1","tierz":{"mid":"m"}}`, "tierz"},
+		"pricing conflict": {`{"name":"a","extends":"vllm","backend":"shared-b","base_url":"http://x/v1","pricing":"isolated"},{"name":"b","extends":"vllm","backend":"shared-b","base_url":"http://y/v1","pricing":"shared"}`, "disagree on pricing"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

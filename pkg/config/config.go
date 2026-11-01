@@ -2560,6 +2560,12 @@ func (c *Config) validateSubagentFields(i int, sa SubagentSpec) error {
 		return fmt.Errorf("config: subagents[%d]: scheduler %q cannot be combined with mode %q (standing schedulers require chat mode)",
 			i, sa.Scheduler, sa.EffectiveMode())
 	}
+	if sa.EffectiveMode() == SubagentModeSingleTurn {
+		if len(sa.Tools) > 0 || len(sa.MCP) > 0 || len(sa.MCPTools) > 0 || len(sa.Skills) > 0 {
+			return fmt.Errorf("config: subagents[%d] (%s): mode %q allows no tools, mcp, mcp_tools, or skills",
+				i, sa.Name, SubagentModeSingleTurn)
+		}
+	}
 	if sa.Tier != "" {
 		if err := modeltier.Tier(sa.Tier).Validate(); err != nil {
 			return fmt.Errorf("config: subagents[%d].tier: %w", i, err)
@@ -2575,10 +2581,17 @@ func (c *Config) validateSubagentFields(i int, sa SubagentSpec) error {
 		return fmt.Errorf("config: subagents[%d].capability %q is unknown (want %q or %q)",
 			i, sa.Capability, CapabilityReadOnly, CapabilityChangeExecutor)
 	}
-	return validateSubagentMCPTools(i, sa.MCPTools)
+	return validateSubagentMCPTools(i, sa.MCP, sa.MCPTools)
 }
 
-func validateSubagentMCPTools(i int, mcpTools []MCPToolAllowlist) error {
+func validateSubagentMCPTools(i int, mcpServers []string, mcpTools []MCPToolAllowlist) error {
+	var inMCP map[string]bool
+	if mcpServers != nil {
+		inMCP = make(map[string]bool, len(mcpServers))
+		for _, srv := range mcpServers {
+			inMCP[srv] = true
+		}
+	}
 	seen := make(map[string]struct{}, len(mcpTools))
 	for j, mt := range mcpTools {
 		if strings.TrimSpace(mt.Server) == "" {
@@ -2588,6 +2601,10 @@ func validateSubagentMCPTools(i int, mcpTools []MCPToolAllowlist) error {
 			return fmt.Errorf("config: subagents[%d].mcp_tools[%d]: duplicate server %q", i, j, mt.Server)
 		}
 		seen[mt.Server] = struct{}{}
+		if inMCP != nil && !inMCP[mt.Server] {
+			return fmt.Errorf("config: subagents[%d].mcp_tools[%d]: server %q is not in subagents[%d].mcp (%v)",
+				i, j, mt.Server, i, mcpServers)
+		}
 		for k, tName := range mt.Tools {
 			if strings.TrimSpace(tName) == "" {
 				return fmt.Errorf("config: subagents[%d].mcp_tools[%d].tools[%d] is empty", i, j, k)

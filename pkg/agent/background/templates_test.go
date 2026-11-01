@@ -661,3 +661,41 @@ func TestSpawnAgentTool_RoutingRationale(t *testing.T) {
 		t.Errorf("buildSpawnSpec(template name) err = %v, want ErrUnknownSubagent", err)
 	}
 }
+
+// TestSpawnTemplate_TaskModeStallReportsNoReturn pins #1450: when a
+// mode:"task" template stalls without calling finish_task, FinishOnStall
+// closes the turn with a StallMarker; autonomous.Run and background.Manager
+// must preserve Returned=false so StopReason is StopNoReturn ("no_return")
+// rather than StopReturned ("returned").
+func TestSpawnTemplate_TaskModeStallReportsNoReturn(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{llm: &declRecordingLLM{}}
+	mgr := newTemplateManager(t, prov, []SubagentTemplate{{
+		Name:         "stalled-task",
+		Instruction:  "investigate",
+		ModelFactory: tmplFactory(prov, "task-model"),
+		ModelID:      "task-model",
+		SubagentMode: agent.SubagentModeTask,
+	}}, WithDefaultBudgets(Budgets{MaxTurns: 1}))
+	attachEchoParent(t, mgr)
+	defer mgr.Close()
+
+	h, err := mgr.SpawnTemplate(context.Background(), "", "stalled-task", RefOverrides{Goal: "investigate pod"}, "")
+	if err != nil {
+		t.Fatalf("SpawnTemplate: %v", err)
+	}
+	waitDone(t, h)
+	res := h.Result()
+	if res == nil {
+		t.Fatal("h.Result() = nil")
+	}
+	if res.Returned {
+		t.Errorf("stalled task subagent Returned = true, want false")
+	}
+	if got := completionResult(h).StopReason; got != "no_return" {
+		t.Errorf("stalled task subagent StopReason = %q, want \"no_return\"", got)
+	}
+	if !agent.Stalled(res.FinalText) {
+		t.Errorf("stalled task subagent FinalText = %q, want StallMarker prefix", res.FinalText)
+	}
+}

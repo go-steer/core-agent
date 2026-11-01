@@ -18,9 +18,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -32,6 +35,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
+	"gopkg.in/yaml.v3"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/toolcalls"
 )
@@ -171,6 +175,7 @@ func NewTaskAgent(cfg TaskAgentConfig) (adkagent.Agent, error) {
 		DisallowTransferToParent: true,
 		DisallowTransferToPeers:  true,
 		BeforeModelCallbacks:     gated(cfg.Name, cfg.OutputSchema, true, cfg.BeforeModelCallbacks),
+		BeforeToolCallbacks:      finishTaskToolCallbacks(cfg.OutputSchema),
 		AfterModelCallbacks:      cfg.AfterModelCallbacks,
 	})
 }
@@ -564,6 +569,7 @@ func buildInnerLLMAgent(o *options, model adkmodel.LLM, instruction string) (inn
 		cfg.DisallowTransferToParent = true
 		cfg.DisallowTransferToPeers = true
 		cfg.BeforeModelCallbacks = gated(o.name, o.outputSchema, true, o.beforeModelCallbacks)
+		cfg.BeforeToolCallbacks = finishTaskToolCallbacks(o.outputSchema)
 		if o.outputSchema == nil && len(o.afterModelCallbacks) == 0 {
 			cfg.AfterModelCallbacks = []llmagent.AfterModelCallback{FinishOnStall(o.name, nil)}
 		}
@@ -625,6 +631,11 @@ func (r subagentTaskResult) withCalls(rec *toolcalls.Recorder) subagentTaskResul
 func formatTaskOutput(lastOutput any, fallbackText string, hasSchema bool) (string, map[string]any) {
 	switch v := lastOutput.(type) {
 	case map[string]any:
+		if !hasSchema {
+			if res, ok := v["result"].(string); ok && len(v) == 1 {
+				return res, nil
+			}
+		}
 		raw, err := json.Marshal(v)
 		if err != nil {
 			return fallbackText, v
@@ -652,19 +663,22 @@ func formatTaskOutput(lastOutput any, fallbackText string, hasSchema bool) (stri
 	}
 }
 
-var supportedSchemaTypes = map[genai.Type]bool{
-	genai.TypeString:  true,
-	genai.TypeInteger: true,
-	genai.TypeNumber:  true,
-	genai.TypeBoolean: true,
-	genai.TypeArray:   true,
-	genai.TypeObject:  true,
-}
+var (
+	supportedSchemaTypes = map[genai.Type]bool{
+		genai.TypeString:  true,
+		genai.TypeInteger: true,
+		genai.TypeNumber:  true,
+		genai.TypeBoolean: true,
+		genai.TypeArray:   true,
+		genai.TypeObject:  true,
+	}
+	schemaExts = map[string]bool{".json": true, ".yaml": true, ".yml": true}
+)
 
 // ParseOutputSchema parses an inline JSON Schema string ("{...}") or loads
-// a .json schema file resolved against baseDirs, normalizes type names to
-// uppercase genai.Type constants, and validates that every node is supported
-// by ADK's output validator (#1401).
+// a .json/.yaml/.yml schema file resolved against baseDirs, normalizes type
+// names to uppercase genai.Type constants, and validates that every node is
+// supported by ADK's output validator (#1401, #1450).
 func ParseOutputSchema(raw string, baseDirs ...string) (*genai.Schema, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -674,14 +688,31 @@ func ParseOutputSchema(raw string, baseDirs ...string) (*genai.Schema, error) {
 	if strings.HasPrefix(trimmed, "{") {
 		data = []byte(trimmed)
 	} else {
-		path := resolveSchemaPath(trimmed, baseDirs)
-		var err error
+		ext := strings.ToLower(filepath.Ext(trimmed))
+		if !schemaExts[ext] {
+			return nil, fmt.Errorf("output_schema %q has extension %q (want .json, .yaml, or .yml)", raw, ext)
+		}
+		path, err := resolveSchemaPath(trimmed, baseDirs)
+		if err != nil {
+			return nil, err
+		}
 		data, err = os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("output_schema %q: %w", raw, err)
 		}
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
+	var doc any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("output_schema: parse: %w", err)
+	}
+	if doc == nil {
+		return nil, errors.New("output_schema: document is empty")
+	}
+	buf, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("output_schema: re-encode: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(buf))
 	dec.DisallowUnknownFields()
 	var schema genai.Schema
 	if err := dec.Decode(&schema); err != nil {
@@ -694,30 +725,88 @@ func ParseOutputSchema(raw string, baseDirs ...string) (*genai.Schema, error) {
 	return &schema, nil
 }
 
-func resolveSchemaPath(ref string, baseDirs []string) string {
+func resolveSchemaPath(ref string, baseDirs []string) (string, error) {
 	if filepath.IsAbs(ref) {
-		return ref
+		if len(baseDirs) > 0 {
+			return "", fmt.Errorf("output_schema %q must be a relative path, not absolute", ref)
+		}
+		return ref, nil
 	}
 	fromSlash := filepath.FromSlash(ref)
+	var firstScopeErr error
 	for _, base := range baseDirs {
 		if base == "" {
 			continue
 		}
-		cand := filepath.Join(base, fromSlash)
-		if _, err := os.Stat(cand); err == nil {
-			return cand
+		absBase, err := filepath.Abs(base)
+		if err != nil {
+			continue
 		}
-		if filepath.Base(base) == "subagents" && !strings.HasPrefix(filepath.ToSlash(ref), "../") {
-			alt := filepath.Join(filepath.Dir(base), fromSlash)
-			if _, err := os.Stat(alt); err == nil {
-				return alt
+		scopeRoot := absBase
+		if b := filepath.Base(absBase); (b == "subagents" || b == "specialists") && filepath.Base(filepath.Dir(absBase)) == ".agents" {
+			scopeRoot = filepath.Dir(absBase)
+		}
+		cand := filepath.Join(absBase, fromSlash)
+		if scopeRoot != absBase && !strings.HasPrefix(filepath.ToSlash(ref), "../") {
+			if _, err := os.Stat(cand); errors.Is(err, os.ErrNotExist) {
+				alt := filepath.Join(scopeRoot, fromSlash)
+				if _, aerr := os.Stat(alt); aerr == nil {
+					cand = alt
+				}
 			}
 		}
+		if err := ensureAgentSchemaWithinScope(cand, scopeRoot); err != nil {
+			if firstScopeErr == nil {
+				firstScopeErr = fmt.Errorf("output_schema %q: %w", ref, err)
+			}
+			continue
+		}
+		if _, err := os.Stat(cand); err == nil {
+			return cand, nil
+		}
+	}
+	if firstScopeErr != nil {
+		return "", firstScopeErr
 	}
 	if len(baseDirs) > 0 && baseDirs[0] != "" {
-		return filepath.Join(baseDirs[0], fromSlash)
+		return filepath.Join(baseDirs[0], fromSlash), nil
 	}
-	return fromSlash
+	if strings.HasPrefix(filepath.ToSlash(filepath.Clean(fromSlash)), "../") || filepath.Clean(fromSlash) == ".." {
+		return "", fmt.Errorf("output_schema %q: path escapes base directory", ref)
+	}
+	return fromSlash, nil
+}
+
+func ensureAgentSchemaWithinScope(target, scopeRoot string) error {
+	canonScope := evalSymlinksPrefix(scopeRoot)
+	canonTarget := evalSymlinksPrefix(target)
+	rel, err := filepath.Rel(canonScope, canonTarget)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes scope root (%s)", canonScope)
+	}
+	return nil
+}
+
+func evalSymlinksPrefix(p string) string {
+	cur := filepath.Clean(p)
+	var tail []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return filepath.Clean(p)
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 func normalizeOutputSchema(s *genai.Schema) {
@@ -747,6 +836,14 @@ func checkOutputSchema(s *genai.Schema, path string) error {
 	if path == "$" && s.Type != genai.TypeObject {
 		return fmt.Errorf("$: top-level type must be object, got %q", s.Type)
 	}
+	if len(s.Enum) > 0 && s.Type != genai.TypeString {
+		return fmt.Errorf("%s: enum is only supported on string type, got %q", path, s.Type)
+	}
+	for i, branch := range s.AnyOf {
+		if err := checkOutputSchema(branch, fmt.Sprintf("%s.anyOf[%d]", path, i)); err != nil {
+			return err
+		}
+	}
 	switch s.Type {
 	case genai.TypeArray:
 		if s.Items == nil {
@@ -756,7 +853,7 @@ func checkOutputSchema(s *genai.Schema, path string) error {
 			return err
 		}
 	case genai.TypeObject:
-		if len(s.Properties) == 0 {
+		if len(s.Properties) == 0 && len(s.AnyOf) == 0 {
 			return fmt.Errorf("%s: object has no properties", path)
 		}
 		keys := make([]string, 0, len(s.Properties))
@@ -776,4 +873,152 @@ func checkOutputSchema(s *genai.Schema, path string) error {
 		}
 	}
 	return nil
+}
+
+func finishTaskToolCallbacks(schema *genai.Schema) []llmagent.BeforeToolCallback {
+	if schema == nil {
+		return nil
+	}
+	return []llmagent.BeforeToolCallback{
+		func(_ adkagent.Context, t tool.Tool, args map[string]any) (map[string]any, error) {
+			if t == nil || t.Name() != FinishTaskToolName {
+				return nil, nil
+			}
+			if err := ValidateOutputValue(schema, args); err != nil {
+				return map[string]any{"error": fmt.Sprintf("invalid %s arguments: %v", FinishTaskToolName, err)}, nil
+			}
+			return nil, nil
+		},
+	}
+}
+
+// ValidateOutputValue checks val against schema, including enum and anyOf
+// constraints that ADK's built-in ValidateMapOnSchema skips (#1450).
+func ValidateOutputValue(schema *genai.Schema, val any) error {
+	if schema == nil {
+		return nil
+	}
+	if s, ok := val.(string); ok {
+		var parsed any
+		if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+			return fmt.Errorf("invalid JSON output: %w", err)
+		}
+		val = parsed
+	}
+	return validateSchemaNode(schema, val, "$")
+}
+
+func validateSchemaNode(s *genai.Schema, val any, path string) error {
+	if s == nil {
+		return nil
+	}
+	if val == nil {
+		if s.Nullable != nil && *s.Nullable {
+			return nil
+		}
+		return fmt.Errorf("%s: value is null", path)
+	}
+	if len(s.AnyOf) > 0 {
+		var branchErrs []string
+		matched := false
+		for _, branch := range s.AnyOf {
+			if err := validateSchemaNode(branch, val, path); err == nil {
+				matched = true
+				break
+			} else {
+				branchErrs = append(branchErrs, err.Error())
+			}
+		}
+		if !matched {
+			return fmt.Errorf("%s: value %v did not match anyOf (%s)", path, val, strings.Join(branchErrs, "; "))
+		}
+		if s.Type == "" {
+			return nil
+		}
+	}
+	if len(s.Enum) > 0 {
+		strVal, ok := val.(string)
+		if !ok || !slices.Contains(s.Enum, strVal) {
+			return fmt.Errorf("%s: value %v is not one of enum %v", path, val, s.Enum)
+		}
+	}
+	switch s.Type {
+	case genai.TypeString:
+		if _, ok := val.(string); !ok {
+			return fmt.Errorf("%s: expected string, got %T", path, val)
+		}
+	case genai.TypeBoolean:
+		if _, ok := val.(bool); !ok {
+			return fmt.Errorf("%s: expected boolean, got %T", path, val)
+		}
+	case genai.TypeInteger:
+		if !isIntegerValue(val) {
+			return fmt.Errorf("%s: expected integer, got %v (%T)", path, val, val)
+		}
+	case genai.TypeNumber:
+		if !isNumberValue(val) {
+			return fmt.Errorf("%s: expected number, got %v (%T)", path, val, val)
+		}
+	case genai.TypeArray:
+		arr, ok := val.([]any)
+		if !ok {
+			return fmt.Errorf("%s: expected array, got %T", path, val)
+		}
+		for i, elem := range arr {
+			if err := validateSchemaNode(s.Items, elem, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case genai.TypeObject:
+		obj, ok := val.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s: expected object, got %T", path, val)
+		}
+		for _, req := range s.Required {
+			if _, present := obj[req]; !present {
+				return fmt.Errorf("%s: missing required field %q", path, req)
+			}
+		}
+		for k, v := range obj {
+			propSchema, ok := s.Properties[k]
+			if !ok {
+				return fmt.Errorf("%s: unexpected property %q", path, k)
+			}
+			if err := validateSchemaNode(propSchema, v, path+"."+k); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func isIntegerValue(v any) bool {
+	switch n := v.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	case float64:
+		return !math.IsNaN(n) && !math.IsInf(n, 0) && math.Trunc(n) == n
+	case json.Number:
+		_, err := n.Int64()
+		return err == nil
+	default:
+		return false
+	}
+}
+
+func isNumberValue(v any) bool {
+	if isIntegerValue(v) {
+		return true
+	}
+	switch n := v.(type) {
+	case float32:
+		return !math.IsNaN(float64(n)) && !math.IsInf(float64(n), 0)
+	case float64:
+		return !math.IsNaN(n) && !math.IsInf(n, 0)
+	case json.Number:
+		_, err := n.Float64()
+		return err == nil
+	default:
+		return false
+	}
 }

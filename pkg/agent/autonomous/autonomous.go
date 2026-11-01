@@ -472,6 +472,7 @@ type turnResult struct {
 	text             string
 	doneSignaled     bool
 	doneDetail       string
+	stalledDetail    string
 	scheduleSignaled bool
 	scheduleEvent    coretools.ScheduleEvent
 	// requestedTools records whether the model's LAST response in this
@@ -529,7 +530,7 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		// schedule_next_turn on every idle turn — counting it would
 		// mark every turn substantive and undo #731 for exactly the
 		// population that keeps the re-drive loop.
-		driverTools = append(append([]string(nil), doneToolNames...), coretools.ScheduleToolName(cfg.scheduleToolName))
+		driverTools = append(append([]string{agent.FinishTaskToolName}, doneToolNames...), coretools.ScheduleToolName(cfg.scheduleToolName))
 	)
 
 	// Provenance for the delegation boundary (#1014). Skipping
@@ -612,8 +613,30 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 			cfg.progress(turnNo, ev)
 		}
 		if ev.Output != nil {
-			out.doneSignaled = true
-			out.doneDetail = formatEventOutput(ev.Output)
+			outText := formatEventOutput(ev.Output, a.OutputSchema() != nil)
+			switch {
+			case agent.Stalled(outText):
+				out.stalledDetail = outText
+			case agent.Refused(outText):
+				// RefuseOnGate emits a synthetic model reply when a single_turn
+				// or task subagent hits a permissions denial; AgentNode.Run
+				// copies that reply into ev.Output on single_turn. Leave
+				// doneSignaled false so the refusal is not validated against
+				// OutputSchema or reported as a normal completion (#1450).
+			case a.OutputSchema() != nil && strings.TrimSpace(outText) == "":
+				// AgentNode.Run synthesizes ev.Output = "" on an empty final
+				// model event; leave doneSignaled false so the post-loop
+				// single_turn schema guard reports the empty response.
+			default:
+				if a.OutputSchema() != nil {
+					if err := agent.ValidateOutputValue(a.OutputSchema(), ev.Output); err != nil {
+						out.text = collectedText(&buf, &partials, sawFinals)
+						return out, fmt.Errorf("subagent %q: output_schema validation failed: %w", a.AgentName(), err)
+					}
+				}
+				out.doneSignaled = true
+				out.doneDetail = outText
+			}
 		}
 		// We are already over the cost bound and only still here to let
 		// the done tool run (see the check at the bottom of the loop).
@@ -733,7 +756,7 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 			// so let the loop take one more step and the done signal
 			// wins below. Bounded by deferredForDone: a model that
 			// keeps emitting done calls can't extend the turn twice.
-			if !deferredForDone && callsAnyTool(ev, doneToolNames) {
+			if !deferredForDone && callsAnyTool(ev, append(doneToolNames, agent.FinishTaskToolName)) {
 				deferredForDone = true
 				continue
 			}
@@ -761,17 +784,40 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 	}
 
 	out.text = collectedText(&buf, &partials, sawFinals)
-	if a.SubagentMode() == agent.SubagentModeSingleTurn && !out.doneSignaled && out.text != "" {
-		out.doneSignaled = true
-		out.doneDetail = out.text
+	if out.stalledDetail != "" {
+		out.text = out.stalledDetail
+		out.requestedTools = false
+	} else if a.SubagentMode() == agent.SubagentModeTask && !out.doneSignaled && !out.requestedTools && !out.scheduleSignaled {
+		if !agent.Refused(out.text) && !agent.Stalled(out.text) {
+			out.text = agent.StallText(a.AgentName(), out.text)
+		}
+	}
+	if a.SubagentMode() == agent.SubagentModeSingleTurn && !out.doneSignaled {
+		if a.OutputSchema() != nil && !agent.Refused(out.text) {
+			return out, fmt.Errorf("subagent %q: empty response did not satisfy output_schema", a.AgentName())
+		}
+		if out.text != "" {
+			out.doneSignaled = true
+			out.doneDetail = out.text
+		}
 	}
 	return out, nil
 }
 
-func formatEventOutput(out any) string {
+func formatEventOutput(out any, hasSchema bool) string {
 	switch v := out.(type) {
 	case string:
 		return v
+	case map[string]any:
+		if !hasSchema {
+			if res, ok := v["result"].(string); ok && len(v) == 1 {
+				return res
+			}
+		}
+		if raw, err := json.Marshal(v); err == nil {
+			return string(raw)
+		}
+		return fmt.Sprint(v)
 	default:
 		if raw, err := json.Marshal(v); err == nil {
 			return string(raw)

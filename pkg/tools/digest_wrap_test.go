@@ -353,7 +353,7 @@ func TestDigester_ProcessRequestPacksTheWrapper(t *testing.T) {
 
 // TestDigester_ReadOnlyHintIsForwarded — every tool in the set is
 // read-only, so dropping the forward would reclassify the whole set
-// as mutating for dispatch purposes (#460).
+// as mutating for dispatch purposes (#460, #1450).
 func TestDigester_ReadOnlyHintIsForwarded(t *testing.T) {
 	t.Parallel()
 	wrapped := NewDigester(&DigestOptions{}).Wrap([]adktool.Tool{&hintingSurveyTool{surveyTool{name: "grep"}}})
@@ -363,6 +363,58 @@ func TestDigester_ReadOnlyHintIsForwarded(t *testing.T) {
 	}
 	if !h.ReadOnlyHint() {
 		t.Error("ReadOnlyHint was not forwarded from the inner tool")
+	}
+}
+
+// TestDigesterAndTiming_PreservesBuiltinReadOnlyClassification pins #1450:
+// built-in read-only tools (grep, glob, list_dir, read_many_files,
+// retrieve_raw, agentic_*) do not implement ReadOnlyHinter directly,
+// because functiontool.New returns an unexported struct. Wrapping them
+// with NewDigester or DurationInstrumenter must delegate ReadOnlyHint to
+// IsReadOnlyTool(inner) and WritesSharedFilesystem must unwrap them.
+func TestDigesterAndTiming_PreservesBuiltinReadOnlyClassification(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{
+		"grep",
+		"glob",
+		"list_dir",
+		"read_many_files",
+		"retrieve_raw",
+		"agentic_read_file",
+		"agentic_fetch_url",
+		"agentic_grep",
+		"agentic_research",
+	} {
+		inner := &surveyTool{name: name}
+		digested := NewDigester(&DigestOptions{}).Wrap([]adktool.Tool{inner})
+		if !IsReadOnlyTool(digested[0]) {
+			t.Errorf("IsReadOnlyTool(%q after digest wrap) = false, want true", name)
+		}
+		timed := []adktool.Tool{&timedTool{inner: digested[0]}}
+		if !IsReadOnlyTool(timed[0]) {
+			t.Errorf("IsReadOnlyTool(%q after digest+timing wrap) = false, want true", name)
+		}
+		serialized := SerializeMutating(timed, &MutationSerializer{})
+		got := serialized[0]
+		if got != timed[0] {
+			t.Errorf("SerializeMutating(%q) wrapped a read-only tool in %T", name, got)
+		}
+		if WritesSharedFilesystem(got) {
+			t.Errorf("WritesSharedFilesystem(%q after digest+timing+serialize wrap) = true, want false", name)
+		}
+		gated := &gatedTool{inner: got}
+		if !IsReadOnlyTool(gated) {
+			t.Errorf("IsReadOnlyTool(%q after gatedTool wrap) = false, want true", name)
+		}
+		if WritesSharedFilesystem(gated) {
+			t.Errorf("WritesSharedFilesystem(%q after gatedTool wrap) = true, want false", name)
+		}
+	}
+	for _, name := range []string{"todo", "alert", "list_skills", "load_skill", "load_skill_resource", "spawn_agent"} {
+		gated := &gatedTool{inner: &surveyTool{name: name}}
+		if WritesSharedFilesystem(gated) {
+			t.Errorf("WritesSharedFilesystem(gatedTool(%q)) = true, want false (nonFilesystemMutator)", name)
+		}
 	}
 }
 

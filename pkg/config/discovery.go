@@ -80,42 +80,89 @@ func Load(agentsDir string) (*Config, error) {
 			return nil, fmt.Errorf("config: read %q: %w", path, err)
 		}
 	} else {
-		// Decode into the existing defaults so unspecified fields keep their
-		// default values. Non-critical unknown fields warn and survive Save
-		// round-trips (forward-compat: an older binary still loads a config a
-		// newer binary wrote), while unknown keys inside safety, permission,
-		// scope, attach, provider, or budget sections fail closed in
-		// strictProviders / checkUnknownKeys (#1375, #1442).
-		if err := json.Unmarshal(data, cfg); err != nil {
-			return nil, fmt.Errorf("config: parse %q: %w", path, err)
-		}
-		// Provider profiles first, naming the file: a profile error points
-		// at a nested block whose index alone is hard to find. Strict where
-		// the rest of the file is tolerant: a misspelt key inside a profile
-		// (base_ur) is a profile that silently lacks the field, with no
-		// forward-compat case to protect — the schema is core-models'.
-		if err := strictProviders(data); err != nil {
-			return nil, fmt.Errorf("config: %s: %w", path, err)
-		}
-		if err := checkUnknownKeys(path, data); err != nil {
+		if err := decodeConfigBytes(path, data, cfg); err != nil {
 			return nil, err
 		}
-		if err := cfg.validateProviders(); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
 	}
-	for i := range cfg.Subagents {
-		if cfg.Subagents[i].baseDir == "" {
-			cfg.Subagents[i].baseDir = agentsDir
-		}
-	}
-	if err := cfg.loadMarkdownSubagents(agentsDir); err != nil {
-		return nil, err
-	}
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.ApplyAgentsDir(agentsDir); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// LoadFile reads an explicit config file path (such as -c <path>), runs
+// the same unknown-key and provider checks as Load, discovers Markdown
+// subagents under filepath.Dir(path)/subagents/*.md, and validates the
+// resulting Config (#1450).
+func LoadFile(path string) (*Config, error) {
+	return LoadFileWithAgentsDir(path, filepath.Dir(path))
+}
+
+// LoadFileWithAgentsDir reads an explicit config file path and binds
+// subagent baseDir resolution and <agentsDir>/subagents/*.md discovery to
+// agentsDir (#1450).
+func LoadFileWithAgentsDir(path, agentsDir string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("config: read %q: %w", path, err)
+	}
+	cfg := DefaultConfig()
+	if err := decodeConfigBytes(path, data, cfg); err != nil {
+		return nil, err
+	}
+	if err := cfg.ApplyAgentsDir(agentsDir); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func decodeConfigBytes(path string, data []byte, cfg *Config) error {
+	// Decode into the existing defaults so unspecified fields keep their
+	// default values. Non-critical unknown fields warn and survive Save
+	// round-trips (forward-compat: an older binary still loads a config a
+	// newer binary wrote), while unknown keys inside safety, permission,
+	// scope, attach, provider, or budget sections fail closed in
+	// strictProviders / checkUnknownKeys (#1375, #1442).
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return fmt.Errorf("config: parse %q: %w", path, err)
+	}
+	// Provider profiles first, naming the file: a profile error points
+	// at a nested block whose index alone is hard to find. Strict where
+	// the rest of the file is tolerant: a misspelt key inside a profile
+	// (base_ur) is a profile that silently lacks the field, with no
+	// forward-compat case to protect — the schema is core-models'.
+	if err := strictProviders(data); err != nil {
+		return fmt.Errorf("config: %s: %w", path, err)
+	}
+	if err := checkUnknownKeys(path, data); err != nil {
+		return err
+	}
+	if err := cfg.validateProviders(); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+// ApplyAgentsDir binds inline subagents' baseDir to agentsDir, reloads
+// Markdown subagent definitions from <agentsDir>/subagents/*.md, and
+// validates the resulting Config (#1450). Safe to call again when
+// --agents-dir overrides the initially discovered .agents/ directory.
+func (c *Config) ApplyAgentsDir(agentsDir string) error {
+	kept := c.Subagents[:0]
+	for _, sa := range c.Subagents {
+		if sa.fromMarkdown {
+			continue
+		}
+		if agentsDir != "" {
+			sa.baseDir = agentsDir
+		}
+		kept = append(kept, sa)
+	}
+	c.Subagents = kept
+	if err := c.loadMarkdownSubagents(agentsDir); err != nil {
+		return err
+	}
+	return c.Validate()
 }
 
 // checkUnknownKeys walks the raw JSON config recursively against the
@@ -333,6 +380,8 @@ var fatalPathSegments = []string{
 	".pricing.",
 	".builtin_tools.",
 	".remote.",
+	".mcp_tools.",
+	".mcp_tools[",
 }
 
 var fatalLeafTargets = []string{
@@ -411,6 +460,11 @@ func isFatalScopedTypo(lowerPath, lowerLeaf string) bool {
 		}
 	}
 	if isDirectSubagentField(lowerPath) {
+		for _, target := range []string{"capability", "mcp_tools", "output_schema", "mode", "tier", "scheduler", "max_depth"} {
+			if editDistance(lowerLeaf, target) <= 2 {
+				return true
+			}
+		}
 		if editDistance(lowerLeaf, "tools") <= 1 ||
 			editDistance(lowerLeaf, "mcp") <= 1 ||
 			lowerLeaf == "mcp_servers" ||

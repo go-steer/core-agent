@@ -20,7 +20,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -525,7 +524,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	installLogFilter(os.Stderr)
 
 	cwd, _ := os.Getwd()
-	cfg, agentsDir, err := loadConfig(cfgPath, cwd)
+	cfg, agentsDir, err := loadConfig(cfgPath, agentsDirFlag, cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
@@ -2885,25 +2884,38 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 
 // loadConfig resolves the config from cfgPath (when set) or by walking
 // up from cwd looking for .agents/. Returns the config plus the
-// resolved agentsDir (empty when none was found).
-func loadConfig(cfgPath, cwd string) (*config.Config, string, error) {
+// resolved agentsDir (empty when none was found). When agentsDirFlag is
+// a valid directory, Markdown subagent discovery and relative schema
+// resolution bind to it (#1450).
+func loadConfig(cfgPath, agentsDirFlag, cwd string) (*config.Config, string, error) {
+	var overrideAgentsDir string
+	if agentsDirFlag != "" {
+		if info, err := os.Stat(agentsDirFlag); err == nil && info.IsDir() {
+			overrideAgentsDir = agentsDirFlag
+		}
+	}
 	if cfgPath != "" {
-		cfg := config.DefaultConfig()
-		body, err := os.ReadFile(cfgPath)
+		derived := filepath.Dir(cfgPath)
+		effectiveDir := derived
+		if overrideAgentsDir != "" {
+			effectiveDir = overrideAgentsDir
+		}
+		cfg, err := config.LoadFileWithAgentsDir(cfgPath, effectiveDir)
 		if err != nil {
-			return nil, "", fmt.Errorf("read %s: %w", cfgPath, err)
-		}
-		if err := json.Unmarshal(body, cfg); err != nil {
-			return nil, "", fmt.Errorf("parse %s: %w", cfgPath, err)
-		}
-		if err := cfg.Validate(); err != nil {
 			return nil, "", err
 		}
-		// Treat the directory containing -c as the agentsDir so MCP /
-		// skills resolve relative to it.
-		return cfg, filepath.Dir(cfgPath), nil
+		return cfg, derived, nil
 	}
-	return config.LoadOrDefault(cwd)
+	cfg, dir, err := config.LoadOrDefault(cwd)
+	if err != nil {
+		return nil, "", err
+	}
+	if overrideAgentsDir != "" && !sameDir(overrideAgentsDir, dir) {
+		if err := cfg.ApplyAgentsDir(overrideAgentsDir); err != nil {
+			return nil, "", err
+		}
+	}
+	return cfg, dir, nil
 }
 
 // installLogFilter replaces log.Default()'s output with

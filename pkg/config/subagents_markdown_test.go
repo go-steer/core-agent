@@ -518,3 +518,134 @@ func TestResolveTierModel(t *testing.T) {
 		t.Errorf("ResolveTierModel(mid) = %+v, want claude-sonnet-5-5", mid)
 	}
 }
+
+func TestSubagentHardening_1450(t *testing.T) {
+	t.Parallel()
+
+	t.Run("LoadFile and ApplyAgentsDir discover Markdown subagents and reject unknown keys", func(t *testing.T) {
+		tmp := t.TempDir()
+		cfgDir := filepath.Join(tmp, "etc")
+		agentsDir := filepath.Join(tmp, "bundle", ".agents")
+		subDir := filepath.Join(agentsDir, "subagents")
+		if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\ndescription: Discovered specialist\nmode: task\n---\nInspect cluster.\n"
+		if err := os.WriteFile(filepath.Join(subDir, "inspector.md"), []byte(md), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(cfgDir, "config.json")
+		if err := os.WriteFile(cfgPath, []byte(`{"model":{"provider":"gemini","name":"gemini-3.7-flash"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadFileWithAgentsDir(cfgPath, agentsDir)
+		if err != nil {
+			t.Fatalf("LoadFileWithAgentsDir: %v", err)
+		}
+		if len(cfg.Subagents) != 1 || cfg.Subagents[0].Name != "inspector" || !cfg.Subagents[0].FromMarkdown() {
+			t.Fatalf("Subagents = %+v, want [inspector (FromMarkdown)]", cfg.Subagents)
+		}
+
+		badCfgPath := filepath.Join(cfgDir, "bad.json")
+		if err := os.WriteFile(badCfgPath, []byte(`{"subagents":[{"name":"x","capabilty":"read_only"}]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(badCfgPath); err == nil || !strings.Contains(err.Error(), "capabilty") {
+			t.Fatalf("LoadFile(typo capabilty) = %v, want unknown key error", err)
+		}
+
+		badMCPToolsPath := filepath.Join(cfgDir, "bad_mcp_tools.json")
+		if err := os.WriteFile(badMCPToolsPath, []byte(`{"subagents":[{"name":"x","mcp_tools":[{"server":"k8s","tools":["get"],"allow_extra":true}]}]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(badMCPToolsPath); err == nil || !strings.Contains(err.Error(), "allow_extra") {
+			t.Fatalf("LoadFile(unknown key in mcp_tools) = %v, want unknown key error", err)
+		}
+	})
+
+	t.Run("frontmatter fence edge cases: empty frontmatter, indented --- in YAML scalar, and ---foo rejected", func(t *testing.T) {
+		tmp := t.TempDir()
+		indentedPath := filepath.Join(tmp, "indented.md")
+		indented := "---\ndescription: |\n  line one\n  ---\n  line two\nmode: chat\n---\nBody text.\n"
+		if err := os.WriteFile(indentedPath, []byte(indented), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		spec, err := LoadSubagentMarkdownFile(indentedPath)
+		if err != nil {
+			t.Fatalf("LoadSubagentMarkdownFile(indented ---): %v", err)
+		}
+		if !strings.Contains(spec.Description, "line two") || spec.Instructions != "Body text." {
+			t.Errorf("spec = %+v, want multiline description and Body text", spec)
+		}
+
+		emptyFMPath := filepath.Join(tmp, "empty.md")
+		if err := os.WriteFile(emptyFMPath, []byte("---\n---\nBody.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSubagentMarkdownFile(emptyFMPath); err == nil || !strings.Contains(err.Error(), "mode is required") {
+			t.Fatalf("LoadSubagentMarkdownFile(empty frontmatter) = %v, want 'mode is required' (not unclosed frontmatter)", err)
+		}
+
+		badOpenPath := filepath.Join(tmp, "badopen.md")
+		if err := os.WriteFile(badOpenPath, []byte("---foo\ndescription: d\n---\nBody.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSubagentMarkdownFile(badOpenPath); err == nil || !strings.Contains(err.Error(), "missing frontmatter") {
+			t.Fatalf("LoadSubagentMarkdownFile(---foo) = %v, want frontmatter opening error", err)
+		}
+
+		badClosePath := filepath.Join(tmp, "badclose.md")
+		if err := os.WriteFile(badClosePath, []byte("---\ndescription: d\n---foo\nBody.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSubagentMarkdownFile(badClosePath); err == nil || !strings.Contains(err.Error(), "missing frontmatter terminator") {
+			t.Fatalf("LoadSubagentMarkdownFile(---foo close) = %v, want missing frontmatter terminator error", err)
+		}
+	})
+
+	t.Run("anyOf output_schema validation", func(t *testing.T) {
+		validAnyOf := `{"type":"object","required":["val"],"properties":{"val":{"type":"string","anyOf":[{"type":"string","enum":["ok"]},{"type":"string","enum":["warn"]}]}}}`
+		if s, err := LoadOutputSchema("", validAnyOf); err != nil || s == nil {
+			t.Fatalf("LoadOutputSchema(valid anyOf) = (%v, %v), want valid schema", s, err)
+		}
+		invalidAnyOf := `{"type":"object","required":["val"],"properties":{"val":{"type":"string","anyOf":[{"type":"array"}]}}}`
+		if _, err := LoadOutputSchema("", invalidAnyOf); err == nil || !strings.Contains(err.Error(), "array has no items") {
+			t.Fatalf("LoadOutputSchema(invalid anyOf branch) = %v, want array items error", err)
+		}
+	})
+
+	t.Run("single_turn tool/mcp/skills rejection and mcp+mcp_tools server mismatch rejection", func(t *testing.T) {
+		cfgSingleTurnTools := DefaultConfig()
+		cfgSingleTurnTools.Subagents = []SubagentSpec{{
+			Name:  "classifier",
+			Mode:  SubagentModeSingleTurn,
+			Tools: []string{"read_file"},
+		}}
+		if err := cfgSingleTurnTools.Validate(); err == nil || !strings.Contains(err.Error(), "single_turn") {
+			t.Fatalf("Validate(single_turn with tools) = %v, want single_turn rejection", err)
+		}
+
+		cfgSingleTurnMCPTools := DefaultConfig()
+		cfgSingleTurnMCPTools.Subagents = []SubagentSpec{{
+			Name:     "classifier",
+			Mode:     SubagentModeSingleTurn,
+			MCPTools: []MCPToolAllowlist{{Server: "k8s", Tools: []string{"get_pods"}}},
+		}}
+		if err := cfgSingleTurnMCPTools.Validate(); err == nil || !strings.Contains(err.Error(), "single_turn") {
+			t.Fatalf("Validate(single_turn with mcp_tools) = %v, want single_turn rejection", err)
+		}
+
+		cfgMismatch := DefaultConfig()
+		cfgMismatch.Subagents = []SubagentSpec{{
+			Name:     "diag",
+			MCP:      []string{"k8s"},
+			MCPTools: []MCPToolAllowlist{{Server: "gcloud", Tools: []string{"list"}}},
+		}}
+		if err := cfgMismatch.Validate(); err == nil || !strings.Contains(err.Error(), "is not in subagents[0].mcp") {
+			t.Fatalf("Validate(mcp + mcp_tools mismatch) = %v, want server mismatch error", err)
+		}
+	})
+}

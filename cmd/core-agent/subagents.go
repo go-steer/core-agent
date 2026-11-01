@@ -16,7 +16,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -449,9 +451,7 @@ func buildDeclaredSubagents(
 			}
 			scopeDesc = subToolsets.desc
 			if spec.Instructions != "" {
-				// Inline refs share the project scope: @include resolves
-				// against projectRoot exactly like the parent's memory.
-				userInstruction, _, err = instruction.Expand(spec.Instructions, projectRoot, projectRoot, instruction.WithInterpolator(deps.interp))
+				userInstruction, err = expandInlineSubagentInstruction(spec, projectRoot, deps.interp)
 				if err != nil {
 					return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
 				}
@@ -590,7 +590,11 @@ func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, backend, userI
 		opts = append(opts, agent.WithSubagentMode(agent.SubagentMode(spec.Mode)))
 	}
 	if spec.OutputSchema != "" {
-		schema, err := loadSubagentOutputSchema(spec.OutputSchema, spec.BaseDir(), rootAbs, rootBase, projectRoot)
+		schemaDirs := []string{spec.BaseDir(), rootAbs, rootBase}
+		if spec.BaseDir() == "" && rootAbs == "" && rootBase == "" {
+			schemaDirs = append(schemaDirs, projectRoot)
+		}
+		schema, err := loadSubagentOutputSchema(spec.OutputSchema, schemaDirs...)
 		if err != nil {
 			return nil, err
 		}
@@ -624,6 +628,9 @@ func loadSubagentOutputSchema(ref string, baseDirs ...string) (*genai.Schema, er
 		if err == nil {
 			return s, nil
 		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
 		lastErr = err
 	}
 	if lastErr != nil {
@@ -633,7 +640,7 @@ func loadSubagentOutputSchema(ref string, baseDirs ...string) (*genai.Schema, er
 }
 
 func checkSubagentCapability(ctx context.Context, spec config.SubagentSpec, subTools []adktool.Tool, mcpSets []adktool.Toolset) error {
-	if (spec.Capability != config.CapabilityReadOnly && spec.Capability != "diagnoser") || spec.EffectiveMode() == config.SubagentModeSingleTurn {
+	if spec.Capability != config.CapabilityReadOnly || spec.EffectiveMode() == config.SubagentModeSingleTurn {
 		return nil
 	}
 	for _, t := range subTools {
@@ -795,21 +802,62 @@ func rootInventory(surface parentSurface) string {
 	return fmt.Sprintf("%s, %s", mcpDesc, skillDesc)
 }
 
+// expandInlineSubagentInstruction resolves @include directives in an
+// inline subagent's instruction body and checks the expanded text for
+// stale ADK-style placeholders (#1450). Markdown-authored subagents
+// (.agents/subagents/<name>.md) resolve relative @include targets against
+// their own directory first, falling back to projectRoot when the target
+// lives at project scope.
+func expandInlineSubagentInstruction(spec config.SubagentSpec, projectRoot string, interp func(string) string) (string, error) {
+	var expanded string
+	var err error
+	if spec.FromMarkdown() && spec.BaseDir() != "" {
+		scopeRoot := filepath.Dir(spec.BaseDir())
+		if projectRoot != "" {
+			if rel, relErr := filepath.Rel(projectRoot, spec.BaseDir()); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				scopeRoot = projectRoot
+			}
+		}
+		expanded, _, err = instruction.Expand(spec.Instructions, spec.BaseDir(), scopeRoot, instruction.WithInterpolator(interp))
+		if err != nil && errors.Is(err, fs.ErrNotExist) && projectRoot != "" {
+			expanded, _, err = instruction.Expand(spec.Instructions, projectRoot, projectRoot, instruction.WithInterpolator(interp))
+		}
+	} else {
+		expanded, _, err = instruction.Expand(spec.Instructions, projectRoot, projectRoot, instruction.WithInterpolator(interp))
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := config.CheckSubagentPlaceholders(spec.Name, expanded); err != nil {
+		return "", err
+	}
+	return expanded, nil
+}
+
 // rootedSubagentInstruction resolves a rooted subagent's persona. An inline
 // spec.Instructions overrides the root's memory files (with @include confined
 // to the root); otherwise the persona auto-assembles from the root's own
 // AGENTS.md + AGENTS.d/, loaded as a self-contained content root so an
 // @include cannot escape it.
 func rootedSubagentInstruction(spec config.SubagentSpec, rootAbs string, interp func(string) string) (string, error) {
+	var text string
 	if spec.Instructions != "" {
 		expanded, _, err := instruction.Expand(spec.Instructions, rootAbs, rootAbs, instruction.WithInterpolator(interp))
-		return expanded, err
+		if err != nil {
+			return "", err
+		}
+		text = expanded
+	} else {
+		loaded, err := instruction.Load("", "", instruction.WithContentRoots([]string{rootAbs}), instruction.WithInterpolator(interp))
+		if err != nil {
+			return "", err
+		}
+		text = loaded.Instruction
 	}
-	loaded, err := instruction.Load("", "", instruction.WithContentRoots([]string{rootAbs}), instruction.WithInterpolator(interp))
-	if err != nil {
+	if err := config.CheckSubagentPlaceholders(spec.Name, text); err != nil {
 		return "", err
 	}
-	return loaded.Instruction, nil
+	return text, nil
 }
 
 // spawnToolCarveOut is what an inheriting subagent does NOT get: the
@@ -912,13 +960,31 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 	// take records both halves at once: a toolset the subagent runs with,
 	// and the operator-visible names inside it. A failed server has a nil
 	// toolset and no infos, so it contributes neither.
-	take := func(s namedToolset) {
+	take := func(s namedToolset) error {
 		if s.toolset == nil {
-			return
+			return nil
 		}
 		if allowed, hasFilter := mcpToolsByServer[s.name]; hasFilter {
 			if len(allowed) == 0 {
-				return
+				return nil
+			}
+			if len(s.infos) > 0 {
+				for _, want := range allowed {
+					matched := false
+					for _, ti := range s.infos {
+						if mcp.MatchesToolAllowlist(ti.Name, s.name, []string{want}) {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						avail := make([]string, 0, len(s.infos))
+						for _, ti := range s.infos {
+							avail = append(avail, ti.Name)
+						}
+						return fmt.Errorf("mcp_tools: server %q has no tool matching %q (available: %s)", s.name, want, strings.Join(avail, ", "))
+					}
+				}
 			}
 			ts := mcp.FilterToolset(s.toolset, s.name, allowed)
 			out.sets = append(out.sets, ts)
@@ -933,7 +999,7 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 					})
 				}
 			}
-			return
+			return nil
 		}
 		out.sets = append(out.sets, s.toolset)
 		out.mcpSets = append(out.mcpSets, s.toolset)
@@ -945,6 +1011,7 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 				Server:      s.name,
 			})
 		}
+		return nil
 	}
 
 	// MCP: reuse each already-started server's toolset — never a second
@@ -955,13 +1022,17 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 	case spec.MCP == nil && len(spec.MCPTools) > 0:
 		names := make([]string, 0, len(spec.MCPTools))
 		for _, mt := range spec.MCPTools {
-			take(byName[mt.Server])
+			if err := take(byName[mt.Server]); err != nil {
+				return subagentToolsets{}, err
+			}
 			names = append(names, mt.Server)
 		}
 		desc = append(desc, fmt.Sprintf("mcp=[%s]", strings.Join(names, " ")))
 	case spec.MCP == nil:
 		for _, s := range surface.mcpToolsets {
-			take(s)
+			if err := take(s); err != nil {
+				return subagentToolsets{}, err
+			}
 		}
 		desc = append(desc, "mcp=inherit")
 	default:
@@ -970,7 +1041,9 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 			if !ok {
 				return subagentToolsets{}, fmt.Errorf("mcp: unknown server %q (not in mcp.json)", name)
 			}
-			take(s)
+			if err := take(s); err != nil {
+				return subagentToolsets{}, err
+			}
 		}
 		desc = append(desc, fmt.Sprintf("mcp=[%s]", strings.Join(spec.MCP, " ")))
 	}
@@ -1030,7 +1103,11 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 // internally, so per-spawn calls are cheap.
 func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider, spec config.SubagentSpec, noPromptCache bool, promptCacheTTL string, send func(string)) (models.Provider, string, error) {
 	if spec.Tier != "" {
-		tierModel, err := cfg.ResolveTierModel(spec.Tier)
+		subCfg := *cfg
+		if subCfg.Model.Provider == "" && parentProvider != nil {
+			subCfg.Model.Provider = parentProvider.Name()
+		}
+		tierModel, err := subCfg.ResolveTierModel(spec.Tier)
 		if err != nil {
 			return nil, "", err
 		}

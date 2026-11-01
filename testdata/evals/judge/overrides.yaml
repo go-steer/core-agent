@@ -1,0 +1,258 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# overrides.yaml — hand-written fixture observations for the corpus
+# scenarios the mechanical rule cannot serve well enough.
+#
+# The rule (internal/evals/judge/fixture.go) takes only single-quoted
+# spans of a scenario's expected response into the fixture cluster. Nine
+# of the 31 rows quote nothing: their diagnostic facts are numeric
+# (LC-03's 490Mi against a 512Mi limit), structural (LC-19's
+# PodDisruptionBudget), or environmental (LC-30's security-group rules),
+# and prose is the only place the corpus records them. Deriving nothing
+# would leave those scenarios scoring the fixture's poverty rather than
+# mast, so they are written by hand.
+#
+# The last five entries were added after the first live board, for rows
+# that quote a bare identifier and nothing else. They are the same
+# failure with a thinner disguise: 'worker' or 'team-a' clears the
+# is-it-empty check, but hands the agent an identifier with no facts
+# attached. On that board the model said so in as many words — "the read
+# tools are returning only the subject echo" — and declined to diagnose,
+# which scored as mast reasoning badly rather than as a fixture with
+# nothing in it. Adding them is not tuning: the trigger was the agent
+# reporting the cluster was empty, not the agent getting an answer wrong.
+#
+# BE HONEST ABOUT WHAT THIS IS. These are authored *from* the expected
+# response — they have to be, or the reference answer is unreachable and
+# the judge grades an agent for not knowing something nothing told it.
+# Three things keep that from becoming an answer key:
+#
+#   1. Every entry supplies raw artifacts, never the inference drawn
+#      from them. LC-30 lists the node security group's inbound rules
+#      and leaves the agent to notice 32100 is not among them. LC-19
+#      gives disruptionsAllowed=0 and leaves the agent to connect it to
+#      the stalled scale-down. The reasoning step the judge scores is
+#      still the agent's.
+#   2. judge.Guard runs over these exactly as it runs over derived
+#      observations, and rejects any severity grade or remedial
+#      phrasing. An override that drifts into explaining fails the
+#      suite rather than quietly inflating it.
+#   3. An override may enrich a thin derived fixture but may not drop a
+#      span the quoting rule vouched for; judge.Fixtures refuses one
+#      that does. So a hand-written entry can only ever add to what the
+#      mechanical rule already established.
+#
+# Every entry states a reason. An override without one is
+# indistinguishable from an override added to make a scenario score
+# better, so the loader refuses it.
+
+version: 1
+
+overrides:
+  LC-03-oomkilled:
+    reason: >-
+      Quotes nothing. The diagnostic fact is the gap between the 512Mi
+      limit and observed peak usage, which the corpus states only in
+      prose ("kubectl top shows peak usage of ~490Mi").
+    messages:
+      - "Last state: terminated, reason=OOMKilled, exit code 137, finished 4m ago"
+    fields:
+      - "resources.limits.memory=512Mi"
+      - "resources.requests.memory: unset"
+      - "container ml-inference peak working set over last 24h: 490Mi"
+      - "restart count 96, most recent 11 minutes apart"
+
+  LC-05-pending-pods-insufficient-resources:
+    reason: >-
+      Quotes nothing. The fact that decides it is per-node allocatable
+      capacity versus the pod's request, which appears in the corpus
+      only as the prose claim that "no single node has that free".
+    messages:
+      - "0/3 nodes are available: 3 Insufficient cpu, 3 Insufficient memory."
+      - "FailedScheduling reported 14 times in the last 20 minutes"
+    fields:
+      - "spec.containers[0].resources.requests: cpu=4000m, memory=8Gi"
+      - "node ip-10-0-1-11 allocatable: cpu=3860m, memory=7.3Gi (allocated cpu=1200m, memory=2.1Gi)"
+      - "node ip-10-0-1-12 allocatable: cpu=3860m, memory=7.3Gi (allocated cpu=900m, memory=1.4Gi)"
+      - "node ip-10-0-1-13 allocatable: cpu=3860m, memory=7.3Gi (allocated cpu=1500m, memory=3.0Gi)"
+
+  LC-08-hpa-at-max-replicas:
+    reason: >-
+      Quotes nothing. Saturation is a relation between currentReplicas,
+      maxReplicas and the utilisation target — three spec/status fields
+      the corpus renders as a sentence.
+    messages:
+      - "horizontal-pod-autoscaler: unable to get further scale, desired replica count exceeds maximum"
+    fields:
+      - "spec.minReplicas=3, spec.maxReplicas=20"
+      - "status.currentReplicas=20, status.desiredReplicas=20"
+      - "current CPU utilization 95% against target 70%"
+      - "at 20 replicas continuously for 31 minutes"
+
+  LC-09-node-notready:
+    reason: >-
+      Quotes nothing. The condition that explains NotReady
+      (DiskPressure=True) is stated in prose, and node conditions are
+      exactly the structured field a read tool would return.
+    messages:
+      - "Kubelet has disk pressure"
+      - "Evicting pod etl/data-processor-4b2 due to DiskPressure"
+    fields:
+      - "status.conditions: Ready=Unknown (kubelet stopped posting status 8m ago), DiskPressure=True, MemoryPressure=False, PIDPressure=False"
+      - "ephemeral-storage: capacity 100Gi, available 1.2Gi"
+      - "3 deployments have pods scheduled here: checkout, etl, metrics-agent"
+
+  LC-12-high-restart-count:
+    reason: >-
+      Quotes nothing. The distinguishing observation is exit code 0
+      against restartPolicy=Always — a healthy process under the wrong
+      workload kind — which the corpus states as a conclusion.
+    messages:
+      - "Last state: terminated, reason=Completed, exit code 0"
+      - "Back-off restarting failed container"
+    fields:
+      - "kind=Deployment, spec.template.spec.restartPolicy=Always"
+      - "restart count 47 over 6h14m"
+      - "container lifetime across last 6 restarts: 5m02s, 4m48s, 5m11s, 4m55s, 5m07s, 4m51s"
+
+  LC-19-horizontal-scaling-scale-down:
+    reason: >-
+      Quotes nothing. Both candidate explanations the corpus names —
+      stabilisation window and a PodDisruptionBudget — are structural
+      facts, so the fixture must state the PDB numbers and let the
+      agent decide which applies.
+    messages:
+      - "horizontal-pod-autoscaler: New size not applied; 0 disruptions allowed"
+    fields:
+      - "spec.minReplicas=2, status.currentReplicas=12"
+      - "current CPU utilization 5% against target 60%"
+      - "behavior.scaleDown.stabilizationWindowSeconds: unset (default 300)"
+      - "PodDisruptionBudget rec-engine-pdb: minAvailable=12, currentHealthy=12, disruptionsAllowed=0"
+      - "no pods in Terminating state"
+
+  LC-20-full-cluster-health-check:
+    reason: >-
+      Quotes nothing, and is the corpus's only all-clear row. It needs a
+      fixture that is genuinely clean, because the observation under
+      test is the absence of findings — a scenario whose tools returned
+      nothing would score the same way for the wrong reason.
+    messages:
+      - "No Warning events recorded in the last 60 minutes"
+    fields:
+      - "nodes: 3/3 Ready, no pressure conditions"
+      - "pods: 47/47 Running or Succeeded across 8 namespaces"
+      - "no pods in CrashLoopBackOff, OOMKilled, Pending, Evicted or ImagePullBackOff"
+      - "HPAs: 2, at 4/20 and 6/25 replicas"
+      - "PersistentVolumeClaims: 11/11 Bound"
+      - "no ResourceQuota above 70% on any dimension"
+
+  LC-27-pod-to-pod-connectivity:
+    reason: >-
+      Quotes nothing. The mismatch is between the Service's targetPort
+      and the port the container actually binds, and neither number
+      appears quoted anywhere in the row.
+    messages:
+      - "dial tcp 10.4.2.11:6379: connect: connection refused"
+    fields:
+      - "Service cache-svc: port=6379, targetPort=6379, selector app=cache"
+      - "Endpoints cache-svc: 2 ready addresses"
+      - "container redis env: REDIS_PORT=6380"
+      - "container redis listening sockets: 0.0.0.0:6380"
+
+  LC-02-crashloopbackoff:
+    reason: >-
+      Quotes only the bare container name 'worker'. The fact that
+      decides it is the memory limit the container is being killed
+      against, which the corpus states in prose ("current memory limit
+      is 256Mi"), so the derived fixture is an identifier with nothing
+      attached to it.
+    messages:
+      - "Last state: terminated, reason=OOMKilled, exit code 137, finished 38s ago"
+      - "Back-off restarting failed container worker"
+    fields:
+      - "container worker: resources.limits.memory=256Mi, resources.requests.memory=128Mi"
+      - "container worker peak working set before last termination: 256Mi"
+      - "restart count 14 over 12m, identical across all 3 replicas"
+
+  LC-11-evicted-pods:
+    reason: >-
+      Quotes only the node name 'ip-10-0-2-77'. Which node is short of
+      disk, and by how much, is the observation the diagnosis turns on,
+      and the corpus states the 92% only in prose.
+    messages:
+      - "Evicted: The node was low on resource: ephemeral-storage. Container app was using 4.2Gi, which exceeds its request of 0"
+      - "kubelet on ip-10-0-2-77 is attempting to reclaim ephemeral-storage"
+    fields:
+      - "node ip-10-0-2-77 ephemeral-storage: capacity 80Gi, available 6.4Gi, 92% used"
+      - "nodes ip-10-0-2-78 and ip-10-0-2-79 ephemeral-storage: 41% and 37% used"
+      - "10 pods in phase Failed with reason Evicted across namespaces staging and dev, all scheduled on ip-10-0-2-77"
+      - "no container in staging or dev declares an ephemeral-storage limit"
+
+  LC-17-resource-quota-exceeded:
+    reason: >-
+      Quotes only the namespace 'team-a'. The quota arithmetic —
+      18 used of 20, 8 requested — is in the alert and the prose but
+      never as a reading, so the derived fixture hands the agent a
+      namespace name and no quota object.
+    messages:
+      - "exceeded quota: team-a-quota, requested: pods=8, used: pods=18, limited: pods=20"
+    fields:
+      - "ResourceQuota team-a-quota in namespace team-a: pods 18/20, requests.cpu 12/32, requests.memory 40Gi/128Gi"
+      - "Deployment batch-runner in team-a: spec.replicas=2, status.readyReplicas=2"
+      - "namespace team-a pods by phase: Running 14, Succeeded 3, Failed 1"
+
+  LC-21-dns-resolution-failure:
+    reason: >-
+      Quotes two hostnames and nothing else. Everything that
+      distinguishes a broken CoreDNS from an app querying the wrong name
+      — CoreDNS's own state, the Service's namespace, the value the app
+      is actually resolving — is prose in the corpus.
+    messages:
+      - "dial tcp: lookup postgres.data.svc.cluster.local on 10.96.0.10:53: no such host"
+      - "coredns has logged no SERVFAIL or NXDOMAIN upstream failures in the last 60 minutes"
+    fields:
+      - "Service postgres in namespace data: type=ClusterIP, clusterIP=10.100.4.31, 1 ready endpoint"
+      - "no Service named postgres in namespace backend"
+      - "Deployment api in namespace backend, container env DB_HOST=postgres"
+      - "coredns Deployment in kube-system: 2/2 replicas Running, no restarts in 9d"
+
+  LC-26-tls-certificate-expired:
+    reason: >-
+      Quotes the Secret name and the cert-manager message, but not the
+      certificate's validity window — the corpus gives the expiry date
+      in prose and the "2 days ago" only relative to an unstated today.
+      Without both dates the agent can see a renewal failing and still
+      not know the certificate has lapsed.
+    messages:
+      - "failed to renew — ACME challenge HTTP-01 failed: connection refused on port 80"
+      - "TLS handshake error from 10.0.3.14: remote error: tls: bad certificate"
+    fields:
+      - "Ingress store-ingress in namespace ecommerce: tls[0].secretName=store-tls, host=store.example.com"
+      - "Secret store-tls type=kubernetes.io/tls: notBefore=2025-12-11, notAfter=2026-03-11"
+      - "cert-manager Certificate store-cert: status.renewalTime=2026-02-09, condition Ready=False"
+      - "cluster time at read: 2026-03-13T09:14:00Z"
+
+  LC-30-nodeport-not-reachable-externally:
+    reason: >-
+      Quotes nothing, and the deciding fact is outside Kubernetes
+      entirely — a cloud security-group rule. The fixture states the
+      rules; noticing 32100 is not among them is the agent's step.
+    messages:
+      - "curl: (28) Failed to connect to 54.201.14.9 port 32100 after 130002 ms: Connection timed out"
+    fields:
+      - "Service debug-api: type=NodePort, nodePort=32100, port=80, targetPort=8080"
+      - "Endpoints debug-api: 2 ready addresses"
+      - "kube-proxy on all 3 nodes: listening on 0.0.0.0:32100"
+      - "node group security group sg-0f31ab7c inbound rules: TCP 22 from 10.0.0.0/8, TCP 443 from 0.0.0.0/0"

@@ -1,0 +1,251 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# intents.yaml — the W0.1a intent table.
+#
+# Why this is an intent table and not a tool-name table: lookout answers
+# in one call what the upstream agent answers in four. A scenario
+# expecting get_cluster_summary + kubectl_get_nodes + kubectl_top_nodes
+# + kubectl_get_pods is a single k8s_cluster_health call. Name-level set
+# overlap scores that 1/4 and reports a better-factored read path as a
+# regression. Lookout also has no inventory surface by design — it
+# reports what is abnormal, not what exists — so upstream's list-shaped
+# tools have no name-for-name counterpart even where the diagnostic
+# intent is fully served.
+#
+# So: every upstream tool name maps to one intent id, every lookout tool
+# declares the set of intents it satisfies, and a scenario satisfies an
+# intent when any trace call claiming it appears.
+#
+# Lookout tool names are the MCPName values registered in
+# k8s-lookout/pkg/checks/**; verified against that registry 2026-08-12.
+
+version: 1
+
+upstream:
+  repo: langchain-ai/langchain-samples
+  path: sre-agent
+  registry: tools/__init__.py
+  verified: 2026-08-12
+
+intents:
+  - id: discover.cluster_health
+    description: Is anything wrong anywhere in this cluster?
+  - id: discover.abnormal_pods
+    description: Which pods are unhealthy right now?
+  - id: discover.abnormal_workloads
+    description: Which Deployments/DaemonSets/StatefulSets are not converged?
+  - id: inspect.workload_spec
+    description: One resource's spec, status and conditions.
+  - id: inspect.logs
+    description: Container logs for the failing workload.
+  - id: inspect.events
+    description: Recent events for an object or its owner tree.
+  - id: inspect.node_health
+    description: Node readiness, pressure and taints.
+  - id: inspect.node_saturation
+    description: Node CPU/memory usage against allocatable.
+  - id: inspect.pod_saturation
+    description: Pod/container CPU/memory usage against limits.
+  - id: inspect.autoscaler
+    description: HPA state, bounds and recent scaling decisions.
+  - id: inspect.service_routing
+    description: Service selector, endpoints and targetPort wiring.
+  - id: inspect.ingress
+    description: Ingress rules, backends and TLS.
+  - id: inspect.network_policy
+    description: NetworkPolicy rules governing traffic to a workload.
+  - id: inspect.secret_refs
+    description: ConfigMap/Secret references a workload depends on.
+  - id: inspect.storage_binding
+    description: PVC/PV binding state and StorageClass provisioning.
+  - id: inspect.quota
+    description: ResourceQuota / LimitRange headroom.
+  - id: inspect.custom_resource
+    description: Instances of a custom resource definition.
+  - id: inspect.rollout_history
+    description: Revision history needed to choose a rollback target.
+  - id: remediate.rollback
+    description: Roll a Deployment back to a previous revision.
+    write: true
+
+# ---------------------------------------------------------------------
+# Upstream tool name -> intent
+#
+# All 23 distinct names appearing in expected_tools across the 31
+# scenarios in scenarios/langchain-sre.jsonl.
+#
+# unreachable_upstream: true marks a name that does not exist in
+# upstream's own 64-name registry (READ_TOOLS + WRITE_TOOLS, helm
+# included) — no upstream run can satisfy it, so upstream's own
+# tool_coverage has a hard ceiling below 1.0. That ceiling is recorded
+# here rather than folded silently into a score. Where the unwired
+# .json sidecar names a real registry tool for the same scenario, it is
+# recorded as sidecar_repair: that is evidence for the intent
+# assignment, not a merge of the two datasets.
+# ---------------------------------------------------------------------
+
+upstream_tools:
+  get_cluster_summary:
+    intent: discover.cluster_health
+  kubectl_get_pods:
+    intent: discover.abnormal_pods
+  kubectl_get_deployments:
+    intent: discover.abnormal_workloads
+  kubectl_get_daemonsets:
+    intent: discover.abnormal_workloads
+  kubectl_describe_pod:
+    intent: inspect.workload_spec
+  kubectl_get_pod_logs:
+    intent: inspect.logs
+  kubectl_get_events:
+    intent: inspect.events
+  kubectl_get_nodes:
+    intent: inspect.node_health
+  kubectl_top_nodes:
+    intent: inspect.node_saturation
+  kubectl_top_pods:
+    intent: inspect.pod_saturation
+  kubectl_get_hpa:
+    intent: inspect.autoscaler
+  kubectl_get_network_policies:
+    intent: inspect.network_policy
+  kubectl_get_resource_quotas:
+    intent: inspect.quota
+  kubectl_get_custom_resources:
+    intent: inspect.custom_resource
+  kubectl_rollout_history:
+    intent: inspect.rollout_history
+
+  # The single non-mapping, and a deliberate one: lookout mcp serves
+  # read-path checks only. This belongs to W2.4's change-executor
+  # roster, not to lookout.
+  kubectl_rollback_deployment:
+    intent: remediate.rollback
+    write: true
+    lookout_excluded: true
+    exclusion_reason: >-
+      Write tool. lookout's MCP surface is read-path only by design;
+      remediation is mast's effect-outbox path, evaluated by
+      effect_ordering and exactly_once rather than by intent coverage.
+
+  # The 7 phantoms: referenced by the authoritative .jsonl, absent from
+  # upstream's registry. 16 of 71 tool references, ~23%.
+  kubectl_describe_node:
+    intent: inspect.node_health
+    unreachable_upstream: true
+    sidecar_repair: kubectl_get_nodes
+  kubectl_describe_hpa:
+    intent: inspect.autoscaler
+    unreachable_upstream: true
+    sidecar_repair: ""
+  kubectl_get_service:
+    intent: inspect.service_routing
+    unreachable_upstream: true
+    registry_near_miss: kubectl_get_services
+    sidecar_repair: kubectl_get_services
+  kubectl_describe_service:
+    intent: inspect.service_routing
+    unreachable_upstream: true
+    sidecar_repair: kubectl_get_services
+  kubectl_describe_ingress:
+    intent: inspect.ingress
+    unreachable_upstream: true
+    sidecar_repair: kubectl_get_ingress
+  kubectl_get_secrets:
+    intent: inspect.secret_refs
+    unreachable_upstream: true
+    sidecar_repair: ""
+  kubectl_get_pvcs:
+    intent: inspect.storage_binding
+    unreachable_upstream: true
+    registry_near_miss: kubectl_get_pvc
+    sidecar_repair: kubectl_get_pvc
+
+# ---------------------------------------------------------------------
+# Lookout tool -> the intents it satisfies
+#
+# Only tools that satisfy at least one intent in this table are listed;
+# lookout's surface is wider than this dataset exercises.
+# ---------------------------------------------------------------------
+
+lookout_tools:
+  k8s_triage_workload:
+    satisfies:
+      - inspect.workload_spec
+      - inspect.logs
+      - inspect.events
+      - inspect.service_routing
+      - inspect.secret_refs
+      - discover.abnormal_pods
+    note: >-
+      The consolidation case in one tool: a correlated snapshot of one
+      workload — sanitized spec, everything abnormal, broken dependency
+      edges, blast radius, distilled logs.
+  k8s_cluster_health:
+    satisfies:
+      - discover.cluster_health
+      - discover.abnormal_pods
+      - discover.abnormal_workloads
+      - inspect.node_health
+      - inspect.quota
+      - inspect.storage_binding
+    note: Ten-category scorecard in one call.
+  k8s_triage_delta:
+    satisfies:
+      - discover.cluster_health
+      - discover.abnormal_pods
+      - discover.abnormal_workloads
+      - inspect.node_health
+  k8s_resource_spec:
+    satisfies:
+      - inspect.workload_spec
+      - inspect.autoscaler
+      - inspect.service_routing
+      - inspect.ingress
+      - inspect.network_policy
+      - inspect.custom_resource
+      - inspect.storage_binding
+      - inspect.quota
+    note: >-
+      Reads one resource's spec by kind. Covers netpol via the triage
+      spec kind alias and CRDs via API discovery, which is why
+      kubectl_get_network_policies and kubectl_get_custom_resources are
+      not gaps.
+  k8s_triage_logs:
+    satisfies:
+      - inspect.logs
+    note: 150k->350 token distillation rather than raw log retrieval.
+  k8s_event_timeline:
+    satisfies:
+      - inspect.events
+      - inspect.autoscaler
+  k8s_resource_top:
+    satisfies:
+      - inspect.node_saturation
+      - inspect.pod_saturation
+  k8s_state_edges:
+    satisfies:
+      - inspect.service_routing
+      - inspect.secret_refs
+      - inspect.ingress
+  k8s_volume_conflicts:
+    satisfies:
+      - inspect.storage_binding
+  k8s_recent_changes:
+    satisfies:
+      - inspect.rollout_history
+  k8s_cloud_quota:
+    satisfies:
+      - inspect.quota

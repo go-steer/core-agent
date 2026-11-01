@@ -1500,6 +1500,29 @@ Nested under `attach`, enables the multi-tenant surface where distinct callers e
 
 ---
 
+## `schedule` (v3.1+, #1405)
+
+Configures in-process periodic fires behind the single fleet scheduling lease (closing [#202](https://github.com/go-steer/core-agent/issues/202)). Fires land on an anchored cadence (`anchor + k × interval`) persisted in the durable event log (`mast-scheduler:mast-ops`), so daemon restarts preserve the schedule's phase rather than resetting to boot time, and windows missed while the daemon was down advance to the next future lattice tick with `skipped=N` reported on the next fire.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `every` | duration | `""` | Cadence as a Go duration string (`"15m"`, `"1h"`, `"24h"`). Synonym for `interval`; must be `>= 1s`. At least one of `every` or `interval` is required when `schedule` is present. |
+| `interval` | duration | `""` | Cadence as a Go duration string (`"15m"`, `"1h"`, `"24h"`). Synonym for `every`; must be `>= 1s`. |
+| `jitter` | duration | `min(interval/10, 30s)` | Random offset in `[0, jitter)` added to each fire (never accumulated into the anchor). Must be `< interval`. Set `"0s"` for an exact on-the-tick cadence. |
+| `prompt` | string | `""` | Instruction text appended to the `SCHEDULED {...}` envelope on each fire. |
+
+```json
+{
+  "schedule": {
+    "every": "15m",
+    "jitter": "30s",
+    "prompt": "Sweep all namespaces for pods in CrashLoopBackOff and report any new findings."
+  }
+}
+```
+
+---
+
 ## Discovery and merge
 
 `core-agent` finds your config like this:
@@ -1591,6 +1614,7 @@ Key mappings:
 - `budget` (`max_cost_usd`, `max_turns`, `max_wallclock_seconds`, `final_report`) → `agent.max_session_cost_usd`, `agent.max_steps`, `agent.max_wallclock_seconds`, `agent.final_report`.
 - `builtin_tools` → `model.builtin_tools` (all three server-side built-ins default to `false` when importing a workload bundle unless explicitly enabled).
 - `mode: single_session` / `multi_session` → `attach.multi_session.enabled`.
+- `edge_trigger.scheduled` / `schedule` → `schedule` (`interval` / `every`, `jitter`, `prompt`).
 - `specialists/*.specialist.md` → `.agents/subagents/<name>.md` (`mode`, `tier`, `capability`, `output_schema`, `budgets`, `tools`, `mcp_tools`, `skills`), enforcing the capability-split invariant (`capability: change_executor` vs read-only diagnosers) at import time.
 
 ---

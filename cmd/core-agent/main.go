@@ -2436,6 +2436,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 					fmt.Fprintf(os.Stderr, "core-agent: shutdown: session wake loops still running after %s; closing the session db anyway\n", wakeLoopDrainTimeout)
 				}
 			}()
+			isReadOnly, subAgentNames := buildDaemonEffectControls(cfg)
 			factoryDeps := compose.SessionFactoryDeps{
 				DaemonCtx:    wakeCtx,
 				WakeLoops:    wakeLoops,
@@ -2472,6 +2473,8 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 				WatchdogMode:          guard.Watchdog,
 				AutoContinueEnabled:   autoContinueEnabled,
 				AutoContinueFreshness: autoContinueFreshness,
+				IsReadOnly:            isReadOnly,
+				SubAgentNames:         subAgentNames,
 				SessionBackground:     bgRecipe.factory(),
 				// Nil-safe: approvalNotifier is nil unless the operator
 				// set permissions.approval_notify, and a nil *Notifier's
@@ -2761,25 +2764,16 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// agent_boot_log rows would double-count boots in the
 		// breaker math (its bootstrap `default` session has no ACL
 		// row and stays uncovered — status quo since #539).
-		if autoContinueEnabled && !cfg.Attach.MultiSession.Enabled {
-			compose.AutoContinueStartupSession(ctx, eventlogHandle, a, autoContinueFreshness)
-			// In-lifetime retry driver (#575 defect B) for the headless
-			// single-user session: re-runs the startup-session pass so a
-			// stranded continuation self-heals without a reboot. Same
-			// breaker + cap bounds; joined via autoContinueWG before the
-			// eventlog closes. Runs concurrently with the WakeLoop below,
-			// which blocks until ctx cancels.
-			if autoContinueRetry {
-				startupAgent := a
-				autoContinueWG.Add(1)
-				go func() {
-					defer autoContinueWG.Done()
-					compose.AutoContinueRetryLoop(autoContinueDriverCtx, autoContinueRetryInterval, func() {
-						compose.AutoContinueStartupRetry(autoContinueDriverCtx, eventlogHandle, startupAgent, autoContinueFreshness)
-					})
-				}()
-			}
+		schedHandle, schedErr := startSingleSessionScheduleAndAutoContinue(
+			ctx, autoContinueDriverCtx, &autoContinueWG, cfg, eventlogHandle, a,
+			autoContinueEnabled, autoContinueRetry,
+			autoContinueFreshness, autoContinueRetryInterval,
+		)
+		if schedErr != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", schedErr)
+			return runner.ExitConfigError
 		}
+		defer schedHandle.Stop()
 		// Wake-driven inbox loop, consolidated behind
 		// runner.WakeLoop (#386 PR 4): blocks until an attach
 		// client's POST /inject fires WakeRequested, drains the

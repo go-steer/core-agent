@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testFindingSchema = `{
@@ -450,6 +451,202 @@ func TestImportWorkload_RealShipmindAndMastBundles(t *testing.T) {
 			}
 			if len(cfg.Subagents) == 0 {
 				t.Fatalf("ImportWorkload(%q) produced 0 subagents", src)
+			}
+		})
+	}
+}
+
+func writeScheduledWorkloadFixture(t *testing.T, yamlBody string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "specialists"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "schemas"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "schemas", "finding.json"), []byte(testFindingSchema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "specialists", "_fallback.specialist.md"), []byte(testFallbackSpecialist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workload.yaml"), []byte(yamlBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestLoadWorkload_ScheduledTrigger(t *testing.T) {
+	t.Parallel()
+	srcDir := writeScheduledWorkloadFixture(t, `name: x
+specialists: [_fallback]
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer
+  scheduled:
+    interval: 15m
+    jitter: 45s
+    prompt: Sweep every namespace for pods in CrashLoopBackOff.
+`)
+	b, err := LoadWorkload(srcDir)
+	if err != nil {
+		t.Fatalf("LoadWorkload: %v", err)
+	}
+	s := b.EdgeTrigger.Scheduled
+	if s == nil {
+		t.Fatal("edge_trigger.scheduled did not survive the load")
+	}
+	if b.EdgeTrigger.HTTP == nil || b.EdgeTrigger.HTTP.Path != "/inject" {
+		t.Errorf("edge_trigger.http = %+v, want the declared HTTP trigger alongside the schedule", b.EdgeTrigger.HTTP)
+	}
+	if got, err := s.EffectiveInterval(); err != nil || got != 15*time.Minute {
+		t.Errorf("EffectiveInterval() = %v, %v; want 15m", got, err)
+	}
+	if got, err := s.EffectiveJitter(); err != nil || got != 45*time.Second {
+		t.Errorf("EffectiveJitter() = %v, %v; want 45s", got, err)
+	}
+	if !strings.HasPrefix(s.Prompt, "Sweep every namespace") {
+		t.Errorf("prompt = %q, want the declared text", s.Prompt)
+	}
+
+	outDir := t.TempDir()
+	cfg, err := ImportWorkload(srcDir, outDir)
+	if err != nil {
+		t.Fatalf("ImportWorkload: %v", err)
+	}
+	if cfg.Schedule == nil {
+		t.Fatal("cfg.Schedule = nil after ImportWorkload")
+	}
+	if got, err := cfg.Schedule.EffectiveInterval(); err != nil || got != 15*time.Minute {
+		t.Errorf("cfg.Schedule.EffectiveInterval() = %v, %v; want 15m", got, err)
+	}
+	if got, err := cfg.Schedule.EffectiveJitter(); err != nil || got != 45*time.Second {
+		t.Errorf("cfg.Schedule.EffectiveJitter() = %v, %v; want 45s", got, err)
+	}
+}
+
+func TestLoadWorkload_NoScheduledTriggerIsNil(t *testing.T) {
+	t.Parallel()
+	srcDir := writeScheduledWorkloadFixture(t, "name: x\nspecialists: [_fallback]\nedge_trigger:\n  http:\n    path: /inject\n")
+	b, err := LoadWorkload(srcDir)
+	if err != nil {
+		t.Fatalf("LoadWorkload: %v", err)
+	}
+	if b.EdgeTrigger.Scheduled != nil {
+		t.Fatalf("edge_trigger.scheduled = %+v, want nil", b.EdgeTrigger.Scheduled)
+	}
+	if sc, err := b.ParsedSchedule(); sc != nil || err != nil {
+		t.Errorf("ParsedSchedule() = %+v, %v; want nil, nil", sc, err)
+	}
+	if d, err := b.EdgeTrigger.Scheduled.EffectiveInterval(); d != 0 || err != nil {
+		t.Errorf("EffectiveInterval() on nil trigger = %v, %v; want 0, nil", d, err)
+	}
+	if d, err := b.EdgeTrigger.Scheduled.EffectiveJitter(); d != 0 || err != nil {
+		t.Errorf("EffectiveJitter() on nil trigger = %v, %v; want 0, nil", d, err)
+	}
+}
+
+func TestLoadWorkload_ScheduledJitterDefaultAndZero(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, interval, jitter string
+		want                   time.Duration
+	}{
+		{"a tenth of the interval", "5m", "", 30 * time.Second},
+		{"capped for a long interval", "24h", "", 30 * time.Second},
+		{"scales down for a short interval", "10s", "", time.Second},
+		{"explicit zero is honored", "5m", "0s", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := "name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    interval: " + tc.interval + "\n"
+			if tc.jitter != "" {
+				body += "    jitter: " + tc.jitter + "\n"
+			}
+			srcDir := writeScheduledWorkloadFixture(t, body)
+			b, err := LoadWorkload(srcDir)
+			if err != nil {
+				t.Fatalf("LoadWorkload: %v", err)
+			}
+			got, err := b.EdgeTrigger.Scheduled.EffectiveJitter()
+			if err != nil {
+				t.Fatalf("EffectiveJitter: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("EffectiveJitter() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadWorkload_ScheduledErrors(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, body, wantErr string }{
+		{
+			"no interval",
+			"name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    prompt: sweep\n",
+			"names no interval",
+		},
+		{
+			"unparseable interval",
+			"name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    interval: every 15 minutes\n",
+			"is not a duration",
+		},
+		{
+			"zero interval",
+			"name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    interval: 0s\n",
+			"is a bill, not a cadence",
+		},
+		{
+			"sub-second interval",
+			"name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    interval: 250ms\n",
+			"is a bill, not a cadence",
+		},
+		{
+			"negative interval",
+			"name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    interval: -15m\n",
+			"is a bill, not a cadence",
+		},
+		{
+			"unparseable jitter",
+			"name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    interval: 15m\n    jitter: a bit\n",
+			"jitter \"a bit\" is not a duration",
+		},
+		{
+			"negative jitter",
+			"name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    interval: 15m\n    jitter: -1s\n",
+			"cannot pull one earlier",
+		},
+		{
+			"jitter as wide as the interval",
+			"name: x\nspecialists: [_fallback]\nedge_trigger:\n  scheduled:\n    interval: 15m\n    jitter: 15m\n",
+			"no cadence left to keep",
+		},
+		{
+			"both every and interval disagree",
+			"name: x\nspecialists: [_fallback]\nschedule:\n  every: 5m\n  interval: 10m\n",
+			"schedule sets both every",
+		},
+		{
+			"both schedule and edge_trigger.scheduled",
+			"name: x\nspecialists: [_fallback]\nschedule:\n  every: 5m\nedge_trigger:\n  scheduled:\n    interval: 5m\n",
+			"both schedule: and edge_trigger.scheduled: are set",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srcDir := writeScheduledWorkloadFixture(t, tc.body)
+			_, err := LoadWorkload(srcDir)
+			if err == nil {
+				t.Fatalf("LoadWorkload accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), WorkloadFileName) {
+				t.Errorf("error = %v, want it to name %q", err, WorkloadFileName)
 			}
 		})
 	}

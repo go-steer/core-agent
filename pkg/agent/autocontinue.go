@@ -319,6 +319,9 @@ func classifyInterruptedTail(events []*session.Event) TailVerdict {
 		if ev.Content == nil || ev.Content.Role == "" {
 			continue // annotation events (checkpoints, notes, audit rows)
 		}
+		if _, isAck := ev.Actions.StateDelta[eventlog.EffectsAckTimeKey]; isAck {
+			continue // operator effects-ack watermark annotation (#1405)
+		}
 		if _, isSummary := ev.CustomMetadata[CompactionMetadataKey]; isSummary {
 			continue // compaction/checkpoint summary — meta, not conversation
 		}

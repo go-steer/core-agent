@@ -37,7 +37,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
@@ -56,15 +56,15 @@ type pendingAlertManager struct{ pending bool }
 func (m *pendingAlertManager) AttachParent(*Agent)                  {}
 func (m *pendingAlertManager) PrependPendingAlerts(p string) string { return p }
 func (m *pendingAlertManager) HasPendingAlerts() bool               { return m.pending }
-func (m *pendingAlertManager) ListSubagents() []attach.AgentInfo    { return nil }
-func (m *pendingAlertManager) ListSubagentCatalog() []attach.SubagentCatalogInfo {
+func (m *pendingAlertManager) ListSubagents() []wire.AgentInfo      { return nil }
+func (m *pendingAlertManager) ListSubagentCatalog() []wire.SubagentCatalogInfo {
 	return nil
 }
-func (m *pendingAlertManager) SpawnSubagent(context.Context, attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
-	return attach.SubagentSpawnResponse{}, nil
+func (m *pendingAlertManager) SpawnSubagent(context.Context, wire.SubagentSpec) (wire.SubagentSpawnResponse, error) {
+	return wire.SubagentSpawnResponse{}, nil
 }
-func (m *pendingAlertManager) StopSubagent(string) (attach.StopAgentOutcome, error) {
-	return attach.StopAgentOutcome{}, nil
+func (m *pendingAlertManager) StopSubagent(string) (wire.StopAgentOutcome, error) {
+	return wire.StopAgentOutcome{}, nil
 }
 
 // woke reports whether a wake is latched on the default subscription,
@@ -295,7 +295,7 @@ func TestRequestWake_WhileHalted_FencesButStillEmits(t *testing.T) {
 	}
 	var sawWake bool
 	for _, k := range kinds {
-		if k == attach.EventWake {
+		if k == wire.EventWake {
 			sawWake = true
 		}
 	}
@@ -328,8 +328,8 @@ func TestPreflightRefusal_IsNotReadAsAFreshTrip(t *testing.T) {
 	}
 	// And the classification must not have moved — a refused turn that
 	// stops being labelled `watchdog` is invisible on a dashboard.
-	if got := attach.ClassifyTurnError(err); got.Kind != attach.TurnErrorWatchdog {
-		t.Errorf("Kind = %q, want %q", got.Kind, attach.TurnErrorWatchdog)
+	if got := wire.ClassifyTurnError(err); got.Kind != wire.TurnErrorWatchdog {
+		t.Errorf("Kind = %q, want %q", got.Kind, wire.TurnErrorWatchdog)
 	}
 
 	c := &Agent{costCeilingExceeded: true, costCeilingReason: "per-turn cost ceiling exceeded: this turn cost $0.2000"}
@@ -340,8 +340,8 @@ func TestPreflightRefusal_IsNotReadAsAFreshTrip(t *testing.T) {
 	if !strings.HasPrefix(cerr.Error(), refusalPrefix) {
 		t.Errorf("the cost-ceiling refusal must announce itself too; got %q", cerr.Error())
 	}
-	if got := attach.ClassifyTurnError(cerr); got.Kind != attach.TurnErrorCostCeiling {
-		t.Errorf("Kind = %q, want %q", got.Kind, attach.TurnErrorCostCeiling)
+	if got := wire.ClassifyTurnError(cerr); got.Kind != wire.TurnErrorCostCeiling {
+		t.Errorf("Kind = %q, want %q", got.Kind, wire.TurnErrorCostCeiling)
 	}
 }
 

@@ -18,14 +18,14 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // firstGuardrailTrip returns the payload of the first guardrail-trip
 // the emitter recorded, or fails the test.
-func firstGuardrailTrip(t *testing.T, events []attach.GuardrailTrip) attach.GuardrailTrip {
+func firstGuardrailTrip(t *testing.T, events []wire.GuardrailTrip) wire.GuardrailTrip {
 	t.Helper()
 	if len(events) == 0 {
 		t.Fatalf("no guardrail-trip was emitted")
@@ -35,13 +35,13 @@ func firstGuardrailTrip(t *testing.T, events []attach.GuardrailTrip) attach.Guar
 
 // captureGuardrailTrips wires an emitter that keeps every
 // guardrail-trip payload, in order.
-func captureGuardrailTrips(a *Agent) *[]attach.GuardrailTrip {
-	var got []attach.GuardrailTrip
+func captureGuardrailTrips(a *Agent) *[]wire.GuardrailTrip {
+	var got []wire.GuardrailTrip
 	a.SetOperatorEventEmitter(func(kind string, payload any) {
-		if kind != attach.EventGuardrailTrip {
+		if kind != wire.EventGuardrailTrip {
 			return
 		}
-		if gt, ok := payload.(attach.GuardrailTrip); ok {
+		if gt, ok := payload.(wire.GuardrailTrip); ok {
 			got = append(got, gt)
 		}
 	})
@@ -69,8 +69,8 @@ func captureGuardrailTrips(a *Agent) *[]attach.GuardrailTrip {
 // descriptions of one halt from wandering apart.
 //
 // Guardrail and Kind are asserted equal as strings, not merely
-// corresponding. attach.GuardrailCostCeiling and
-// attach.TurnErrorCostCeiling are separately-declared constants that
+// corresponding. wire.GuardrailCostCeiling and
+// wire.TurnErrorCostCeiling are separately-declared constants that
 // happen to hold the same text, and an operator UI keying one off the
 // other would break silently if either were renamed.
 //
@@ -82,7 +82,7 @@ func captureGuardrailTrips(a *Agent) *[]attach.GuardrailTrip {
 // source, still no drift, and now distinguishable. Asserting the
 // relationship rather than equality is what keeps that from decaying
 // into two independently-worded strings.
-func assertRefusalMatchesTrip(t *testing.T, trip attach.GuardrailTrip, refusal attach.TurnError) {
+func assertRefusalMatchesTrip(t *testing.T, trip wire.GuardrailTrip, refusal wire.TurnError) {
 	t.Helper()
 	if want := refusalPrefix + trip.Reason; refusal.Message != want {
 		t.Errorf("refusal message is not the trip's, prefixed:\n got  = %q\n want = %q", refusal.Message, want)
@@ -123,10 +123,10 @@ func TestClassifyRefusal_CostCeiling(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a tripped ceiling must refuse the next turn")
 	}
-	got := attach.ClassifyTurnError(err)
-	if got.Kind != attach.TurnErrorCostCeiling {
+	got := wire.ClassifyTurnError(err)
+	if got.Kind != wire.TurnErrorCostCeiling {
 		t.Errorf("Kind = %q, want %q — a refused turn labelled anything else is invisible on a spend dashboard (full: %+v)",
-			got.Kind, attach.TurnErrorCostCeiling, got)
+			got.Kind, wire.TurnErrorCostCeiling, got)
 	}
 	if got.Retryable {
 		t.Errorf("Retryable = true, want false — only an operator reset clears a ceiling (full: %+v)", got)
@@ -156,9 +156,9 @@ func TestClassifyRefusal_Watchdog(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a tripped watchdog must refuse the next turn")
 	}
-	got := attach.ClassifyTurnError(err)
-	if got.Kind != attach.TurnErrorWatchdog {
-		t.Errorf("Kind = %q, want %q (full: %+v)", got.Kind, attach.TurnErrorWatchdog, got)
+	got := wire.ClassifyTurnError(err)
+	if got.Kind != wire.TurnErrorWatchdog {
+		t.Errorf("Kind = %q, want %q (full: %+v)", got.Kind, wire.TurnErrorWatchdog, got)
 	}
 	if got.Retryable {
 		t.Errorf("Retryable = true, want false — re-driving a refused turn is what the watchdog exists to stop (full: %+v)", got)
@@ -187,9 +187,9 @@ func TestClassifyRefusal_WatchdogReasonCarriesModelText(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a tripped watchdog must refuse the next turn")
 	}
-	if got := attach.ClassifyTurnError(err); got.Kind != attach.TurnErrorWatchdog {
+	if got := wire.ClassifyTurnError(err); got.Kind != wire.TurnErrorWatchdog {
 		t.Errorf("Kind = %q, want %q — the classifier is scanning text the model chose (full: %+v)",
-			got.Kind, attach.TurnErrorWatchdog, got)
+			got.Kind, wire.TurnErrorWatchdog, got)
 	}
 }
 
@@ -204,13 +204,13 @@ func TestClassifyRefusal_SurvivesWrapping(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"ceiling", fmt.Errorf("agent: run turn: %w", &costCeilingError{reason: "per-turn cost ceiling exceeded"}), attach.TurnErrorCostCeiling},
-		{"watchdog", fmt.Errorf("agent: run turn: %w", &watchdogError{reason: "watchdog halted the agent"}), attach.TurnErrorWatchdog},
+		{"ceiling", fmt.Errorf("agent: run turn: %w", &costCeilingError{reason: "per-turn cost ceiling exceeded"}), wire.TurnErrorCostCeiling},
+		{"watchdog", fmt.Errorf("agent: run turn: %w", &watchdogError{reason: "watchdog halted the agent"}), wire.TurnErrorWatchdog},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := attach.ClassifyTurnError(tc.err); got.Kind != tc.want {
+			if got := wire.ClassifyTurnError(tc.err); got.Kind != tc.want {
 				t.Errorf("Kind = %q, want %q (full: %+v)", got.Kind, tc.want, got)
 			}
 		})

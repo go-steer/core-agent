@@ -28,7 +28,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
@@ -109,8 +109,8 @@ func rowsBy(events []*session.Event, author string) []*session.Event {
 // kind, and the event_id is what these tests are about).
 type failureFrames struct {
 	mu    sync.Mutex
-	errs  []attach.TurnError
-	trips []attach.GuardrailTrip
+	errs  []wire.TurnError
+	trips []wire.GuardrailTrip
 }
 
 func (c *failureFrames) attachTo(a *Agent) {
@@ -118,24 +118,24 @@ func (c *failureFrames) attachTo(a *Agent) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		switch eventType {
-		case attach.EventTurnError:
-			c.errs = append(c.errs, payload.(attach.TurnError))
-		case attach.EventGuardrailTrip:
-			c.trips = append(c.trips, payload.(attach.GuardrailTrip))
+		case wire.EventTurnError:
+			c.errs = append(c.errs, payload.(wire.TurnError))
+		case wire.EventGuardrailTrip:
+			c.trips = append(c.trips, payload.(wire.GuardrailTrip))
 		}
 	})
 }
 
-func (c *failureFrames) turnErrors() []attach.TurnError {
+func (c *failureFrames) turnErrors() []wire.TurnError {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]attach.TurnError(nil), c.errs...)
+	return append([]wire.TurnError(nil), c.errs...)
 }
 
-func (c *failureFrames) guardrailTrips() []attach.GuardrailTrip {
+func (c *failureFrames) guardrailTrips() []wire.GuardrailTrip {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]attach.GuardrailTrip(nil), c.trips...)
+	return append([]wire.GuardrailTrip(nil), c.trips...)
 }
 
 // burnToCut drives one turn of burnLoopLLM against a $0.05 per-turn
@@ -196,21 +196,21 @@ func TestTurnFailure_PerTurnCutIsDurable(t *testing.T) {
 	yielded := burnToCut(t, a, tr, llm)
 
 	events := sessionEvents(t, a)
-	trips := rowsBy(events, attach.GuardrailTurnTripEventAuthor)
-	errs := rowsBy(events, attach.TurnErrorEventAuthor)
+	trips := rowsBy(events, wire.GuardrailTurnTripEventAuthor)
+	errs := rowsBy(events, wire.TurnErrorEventAuthor)
 	if len(trips) != 1 || len(errs) != 1 {
 		t.Fatalf("durable rows: %d guardrail-turn-trip, %d turn-error; want 1 and 1", len(trips), len(errs))
 	}
-	if n := len(rowsBy(events, attach.GuardrailTripEventAuthor)); n != 0 {
+	if n := len(rowsBy(events, wire.GuardrailTripEventAuthor)); n != 0 {
 		t.Errorf("a per-turn cut wrote %d halt rows; a restart would re-arm a halt that never happened", n)
 	}
 
-	gt, ok := attach.GuardrailTurnTrip(trips[0])
-	if !ok || gt.Guardrail != attach.GuardrailCostCeiling || !gt.HaltedTurn || !strings.Contains(gt.Reason, "per-turn") {
+	gt, ok := wire.GuardrailTurnTrip(trips[0])
+	if !ok || gt.Guardrail != wire.GuardrailCostCeiling || !gt.HaltedTurn || !strings.Contains(gt.Reason, "per-turn") {
 		t.Errorf("trip row reads back as %+v (ok=%v)", gt, ok)
 	}
-	te, cutBy, ok := attach.TurnErrorRow(errs[0])
-	if !ok || te.Kind != attach.TurnErrorCanceled || cutBy != attach.TurnErrorCostCeiling {
+	te, cutBy, ok := wire.TurnErrorRow(errs[0])
+	if !ok || te.Kind != wire.TurnErrorCanceled || cutBy != wire.TurnErrorCostCeiling {
 		t.Errorf("turn-error row reads back as %+v cut_by=%q (ok=%v)", te, cutBy, ok)
 	}
 	if _, ok := errs[0].CustomMetadata["prompt_id"].(string); !ok {
@@ -228,7 +228,7 @@ func TestTurnFailure_PerTurnCutIsDurable(t *testing.T) {
 	// Must NOT reach FinalText: everything that collects a turn's text
 	// reads Run's yielded events, and the rows are written out of band.
 	for _, ev := range yielded {
-		if ev.Author == attach.TurnErrorEventAuthor || ev.Author == attach.GuardrailTurnTripEventAuthor {
+		if ev.Author == wire.TurnErrorEventAuthor || ev.Author == wire.GuardrailTurnTripEventAuthor {
 			t.Errorf("Run yielded a failure row (%s) to its caller", ev.Author)
 		}
 	}
@@ -258,14 +258,14 @@ func TestTurnFailure_HaltWritesOnlyTheHaltRow(t *testing.T) {
 	runTurnToCompletion(t, a)
 
 	events := sessionEvents(t, a)
-	halts := rowsBy(events, attach.GuardrailTripEventAuthor)
+	halts := rowsBy(events, wire.GuardrailTripEventAuthor)
 	if len(halts) != 1 {
 		t.Fatalf("halt rows = %d, want 1", len(halts))
 	}
-	if n := len(rowsBy(events, attach.GuardrailTurnTripEventAuthor)); n != 0 {
+	if n := len(rowsBy(events, wire.GuardrailTurnTripEventAuthor)); n != 0 {
 		t.Errorf("a halt also wrote %d per-turn trip rows; one trip would count twice", n)
 	}
-	if n := len(rowsBy(events, attach.TurnErrorEventAuthor)); n != 0 {
+	if n := len(rowsBy(events, wire.TurnErrorEventAuthor)); n != 0 {
 		t.Errorf("a turn that completed wrote %d turn-error rows", n)
 	}
 	if typed := frames.guardrailTrips(); len(typed) != 1 || typed[0].EventID != halts[0].ID {
@@ -296,15 +296,15 @@ func TestTurnFailure_TurnScopedWatchdogCutIsDurable(t *testing.T) {
 	runTurnToCompletion(t, a)
 
 	events := sessionEvents(t, a)
-	trips := rowsBy(events, attach.GuardrailTurnTripEventAuthor)
+	trips := rowsBy(events, wire.GuardrailTurnTripEventAuthor)
 	if len(trips) != 1 {
 		t.Fatalf("guardrail-turn-trip rows = %d, want 1", len(trips))
 	}
-	gt, _ := attach.GuardrailTurnTrip(trips[0])
-	if gt.Guardrail != attach.GuardrailWatchdog || gt.HaltedTurn {
+	gt, _ := wire.GuardrailTurnTrip(trips[0])
+	if gt.Guardrail != wire.GuardrailWatchdog || gt.HaltedTurn {
 		t.Errorf("row = %+v, want watchdog with halted_turn false (fired at the boundary)", gt)
 	}
-	if n := len(rowsBy(events, attach.GuardrailTripEventAuthor)); n != 0 {
+	if n := len(rowsBy(events, wire.GuardrailTripEventAuthor)); n != 0 {
 		t.Errorf("a turn-scoped cut wrote %d halt rows", n)
 	}
 }
@@ -327,12 +327,12 @@ func TestTurnFailure_ModelErrorIsDurable(t *testing.T) {
 	for range a.Run(context.Background(), "hi") { //nolint:revive // draining the failed turn
 	}
 
-	errs := rowsBy(sessionEvents(t, a), attach.TurnErrorEventAuthor)
+	errs := rowsBy(sessionEvents(t, a), wire.TurnErrorEventAuthor)
 	if len(errs) != 1 {
 		t.Fatalf("turn-error rows = %d, want 1", len(errs))
 	}
-	te, cutBy, _ := attach.TurnErrorRow(errs[0])
-	want := attach.ClassifyTurnError(llm.err)
+	te, cutBy, _ := wire.TurnErrorRow(errs[0])
+	want := wire.ClassifyTurnError(llm.err)
 	want.EventID = errs[0].ID
 	if te != want {
 		t.Errorf("row = %+v, want the classifier's payload %+v", te, want)
@@ -376,13 +376,13 @@ func TestTurnFailure_RefusedTurnIsDurable(t *testing.T) {
 	if !IsCostCeilingExceeded(gotErr) {
 		t.Fatalf("turn was not refused: %v", gotErr)
 	}
-	errs := rowsBy(sessionEvents(t, a), attach.TurnErrorEventAuthor)
+	errs := rowsBy(sessionEvents(t, a), wire.TurnErrorEventAuthor)
 	if len(errs) != 1 {
 		t.Fatalf("turn-error rows for a refused turn = %d, want 1", len(errs))
 	}
-	te, _, _ := attach.TurnErrorRow(errs[0])
-	if te.Kind != attach.TurnErrorCostCeiling {
-		t.Errorf("refusal row kind = %q, want %q", te.Kind, attach.TurnErrorCostCeiling)
+	te, _, _ := wire.TurnErrorRow(errs[0])
+	if te.Kind != wire.TurnErrorCostCeiling {
+		t.Errorf("refusal row kind = %q, want %q", te.Kind, wire.TurnErrorCostCeiling)
 	}
 	if _, has := errs[0].CustomMetadata["prompt_id"]; has {
 		t.Error("a refused turn never got a prompt id, but its row claims one")
@@ -426,7 +426,7 @@ func TestTurnFailure_RowsNeverEnterModelContext(t *testing.T) {
 	}
 	for range a.Run(context.Background(), "first") { //nolint:revive // draining the failed turn
 	}
-	if n := len(rowsBy(sessionEvents(t, a), attach.TurnErrorEventAuthor)); n != 1 {
+	if n := len(rowsBy(sessionEvents(t, a), wire.TurnErrorEventAuthor)); n != 1 {
 		t.Fatalf("precondition: %d turn-error rows, want 1", n)
 	}
 	for _, err := range a.Run(context.Background(), "second") {
@@ -435,7 +435,7 @@ func TestTurnFailure_RowsNeverEnterModelContext(t *testing.T) {
 		}
 	}
 	got := flattenText(llm.lastRequest().Contents)
-	for _, leak := range []string{"marker-1258-quota", attach.TurnErrorEventAuthor, "rate_limited"} {
+	for _, leak := range []string{"marker-1258-quota", wire.TurnErrorEventAuthor, "rate_limited"} {
 		if strings.Contains(got, leak) {
 			t.Errorf("next turn's model request contains %q from the failure row:\n%s", leak, got)
 		}
@@ -462,7 +462,7 @@ func TestTurnFailure_RowsAreNotConversation(t *testing.T) {
 	var rows, rest []*session.Event
 	for _, ev := range events {
 		switch ev.Author {
-		case attach.GuardrailTurnTripEventAuthor, attach.TurnErrorEventAuthor:
+		case wire.GuardrailTurnTripEventAuthor, wire.TurnErrorEventAuthor:
 			rows = append(rows, ev)
 		default:
 			rest = append(rest, ev)
@@ -530,8 +530,8 @@ func TestTurnFailure_RowsChangeNoTailVerdict(t *testing.T) {
 	resp.Author = "agent"
 	resp.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{{FunctionResponse: &genai.FunctionResponse{ID: "c1", Name: "read_file"}}}}
 	rows := []*session.Event{
-		attach.NewGuardrailTurnTripEvent(attach.GuardrailCostCeiling, "per-turn cost ceiling exceeded", true),
-		attach.NewTurnErrorEvent(attach.TurnError{Kind: attach.TurnErrorRateLimited, Code: "429", Message: "quota", Retryable: true}, "p-1", ""),
+		wire.NewGuardrailTurnTripEvent(wire.GuardrailCostCeiling, "per-turn cost ceiling exceeded", true),
+		wire.NewTurnErrorEvent(wire.TurnError{Kind: wire.TurnErrorRateLimited, Code: "429", Message: "quota", Retryable: true}, "p-1", ""),
 	}
 	for name, tail := range map[string][]*session.Event{
 		"completed": {text("user", genai.RoleUser, "hi"), text("agent", genai.RoleModel, "done")},
@@ -555,7 +555,7 @@ func TestTurnFailure_PerTurnRowNeverRestoresAsHalt(t *testing.T) {
 	llm := &burnLoopLLM{perCallIn: 1000}
 	first := newCutAgent(t, h, "s-1258-restore", llm, tr)
 	burnToCut(t, first, tr, llm)
-	if n := len(rowsBy(sessionEvents(t, first), attach.GuardrailTurnTripEventAuthor)); n != 1 {
+	if n := len(rowsBy(sessionEvents(t, first), wire.GuardrailTurnTripEventAuthor)); n != 1 {
 		t.Fatalf("precondition: %d trip rows", n)
 	}
 
@@ -597,14 +597,14 @@ func TestTurnFailure_StreakHaltIsOneHaltRowThatSaysItCut(t *testing.T) {
 		t.Fatalf("precondition: %d per-turn trips in a row did not halt the session", maxConsecutiveTurnCeilingTrips)
 	}
 	events := sessionEvents(t, a)
-	trips := rowsBy(events, attach.GuardrailTurnTripEventAuthor)
-	halts := rowsBy(events, attach.GuardrailTripEventAuthor)
-	errs := rowsBy(events, attach.TurnErrorEventAuthor)
+	trips := rowsBy(events, wire.GuardrailTurnTripEventAuthor)
+	halts := rowsBy(events, wire.GuardrailTripEventAuthor)
+	errs := rowsBy(events, wire.TurnErrorEventAuthor)
 	if len(trips) != maxConsecutiveTurnCeilingTrips-1 || len(halts) != 1 || len(errs) != maxConsecutiveTurnCeilingTrips {
 		t.Fatalf("rows: %d per-turn, %d halt, %d turn-error; want %d, 1, %d",
 			len(trips), len(halts), len(errs), maxConsecutiveTurnCeilingTrips-1, maxConsecutiveTurnCeilingTrips)
 	}
-	gt, ok := attach.GuardrailHaltRow(halts[0])
+	gt, ok := wire.GuardrailHaltRow(halts[0])
 	if !ok || !gt.HaltedTurn {
 		t.Errorf("halt row = %+v (ok=%v), want halted_turn true: the streak's last trip cut its turn", gt, ok)
 	}
@@ -648,8 +648,8 @@ func TestDrainOutOfBandEvents_ConcurrentDrainsKeepQueueOrder(t *testing.T) {
 		eventLog: &eventlog.Handle{Service: gate, Stream: h.Stream},
 		appName:  "core-agent", userID: "u", sessionID: "s-1258-order",
 	}
-	first := attach.NewGuardrailTurnTripEvent(attach.GuardrailCostCeiling, "per-turn", true)
-	second := attach.NewTurnErrorEvent(attach.TurnError{Kind: attach.TurnErrorCanceled, Message: "turn canceled"}, "p", "")
+	first := wire.NewGuardrailTurnTripEvent(wire.GuardrailCostCeiling, "per-turn", true)
+	second := wire.NewTurnErrorEvent(wire.TurnError{Kind: wire.TurnErrorCanceled, Message: "turn canceled"}, "p", "")
 
 	firstDone := make(chan struct{})
 	go func() { a.queueOutOfBandEvent(first); close(firstDone) }()

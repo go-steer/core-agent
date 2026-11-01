@@ -19,7 +19,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
@@ -37,13 +37,13 @@ func TestSetOperatorEventEmitter_UsageUpdatePopulatesLastTurn(t *testing.T) {
 	// Capture whatever gets emitted so we can inspect it.
 	var (
 		mu       sync.Mutex
-		captured []attach.UsageUpdate
+		captured []wire.UsageUpdate
 	)
 	a.SetOperatorEventEmitter(func(eventType string, payload any) {
-		if eventType != attach.EventUsageUpdate {
+		if eventType != wire.EventUsageUpdate {
 			return
 		}
-		p, ok := payload.(attach.UsageUpdate)
+		p, ok := payload.(wire.UsageUpdate)
 		if !ok {
 			t.Errorf("payload wrong type: %T", payload)
 			return

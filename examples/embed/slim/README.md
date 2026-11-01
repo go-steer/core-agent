@@ -44,15 +44,18 @@ import matches the slim-embed denylist:
 - `github.com/glebarez/sqlite`, `github.com/glebarez/go-sqlite`,
   `modernc.org/...`, `github.com/mattn/go-sqlite3`
 
-Note: `pkg/agent` imports `pkg/attach` and `pkg/eventlog` for its option and
+Note: `pkg/agent` imports `pkg/attach/wire` and `pkg/eventlog` for its option and
 audit-event types (`WithAttachEmitter`, `WithEventLog`), and `google.golang.org/genai`
 plus `pkg/agent` import the OpenTelemetry API (`go.opentelemetry.io/otel`,
 `/trace`, `/metric`). Neither pulls in SQLite drivers, Prometheus, or the
 OpenTelemetry SDK unless `pkg/telemetry` or `github.com/glebarez/sqlite` is
-imported by the host binary. Those type-only edges do bring `gorm.io/gorm`,
-`github.com/gorilla/websocket` and `github.com/itchyny/gojq` into the graph
-today ([#1415](https://github.com/go-steer/core-agent/issues/1415) tracks
-splitting them out). Because the denylist cannot see that kind of arrival,
+imported by the host binary. `pkg/attach/wire` is the attach protocol's
+vocabulary only ([#1415](https://github.com/go-steer/core-agent/issues/1415)):
+the HTTP/SSE server in `pkg/attach` is not in this graph. Two heavy edges
+remain by decision: `gorm.io/gorm` core (driverless), because
+`eventlog.Handle` is part of `pkg/agent`'s contract, and
+`github.com/gorilla/websocket`, which `google.golang.org/genai` imports for
+the Live API. Because the denylist cannot see that kind of arrival,
 the script also enforces a transitive package-count ceiling
-(`SLIM_MAX_PACKAGES`, 570 against a measured 546); a PR that knowingly adds
+(`SLIM_MAX_PACKAGES`, 560 against a measured 543); a PR that knowingly adds
 weight raises it in the same change and says what came in.

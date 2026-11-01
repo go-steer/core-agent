@@ -22,7 +22,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
@@ -660,7 +660,7 @@ func TestPreTurn_643_TheOutOfBandFlushMustPrecedeTheRefusal(t *testing.T) {
 		a.costCeilingExceeded = true
 		a.costCeilingReason = "per-session cost ceiling exceeded"
 		a.pendingOutOfBandEvents = []*session.Event{
-			attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, a.costCeilingReason),
+			wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, a.costCeilingReason),
 		}
 		return a
 	}
@@ -670,7 +670,7 @@ func TestPreTurn_643_TheOutOfBandFlushMustPrecedeTheRefusal(t *testing.T) {
 		if _, err := runPrep(t, a, preTurnSteps, ""); !IsCostCeilingExceeded(err) {
 			t.Fatalf("err = %v, want a cost-ceiling refusal", err)
 		}
-		if got := countGuardrailRows(t, a, attach.GuardrailTripEventAuthor); got != 1 {
+		if got := countGuardrailRows(t, a, wire.GuardrailTripEventAuthor); got != 1 {
 			t.Errorf("durable trip rows = %d, want 1 — a restart would hand the runaway a fresh budget", got)
 		}
 	})
@@ -681,7 +681,7 @@ func TestPreTurn_643_TheOutOfBandFlushMustPrecedeTheRefusal(t *testing.T) {
 		if _, err := runPrep(t, a, steps, ""); !IsCostCeilingExceeded(err) {
 			t.Fatalf("err = %v, want a cost-ceiling refusal", err)
 		}
-		if got := countGuardrailRows(t, a, attach.GuardrailTripEventAuthor); got != 0 {
+		if got := countGuardrailRows(t, a, wire.GuardrailTripEventAuthor); got != 0 {
 			t.Fatalf("durable trip rows = %d, want 0 — this subtest exists to prove the one above can fail", got)
 		}
 	})

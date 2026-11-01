@@ -28,7 +28,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
@@ -196,8 +196,8 @@ func TestOversizedToolResult_CutsTheTurnAndSaysSo(t *testing.T) {
 	a.observeContextGrowth(toolResultEvent("kubectl", bytesForTokens(int(0.10*float64(window)))))
 
 	op, detail := findContextReductionDegradedRow(t, a)
-	if op != attach.ContextReductionTurnCut {
-		t.Fatalf("degraded row operation = %q, want %q", op, attach.ContextReductionTurnCut)
+	if op != wire.ContextReductionTurnCut {
+		t.Fatalf("degraded row operation = %q, want %q", op, wire.ContextReductionTurnCut)
 	}
 	// An operator reading only this line has to be able to tell how
 	// close to the wall it got and that recovery is automatic.
@@ -288,7 +288,7 @@ func TestContextBudget_UsesTheAssumedWindowForAnUncataloguedModel(t *testing.T) 
 
 	var sawCut bool
 	for _, ev := range allEventLogEvents(t, a) {
-		if op, _, ok := attach.ContextReductionDegraded(ev); ok && op == attach.ContextReductionTurnCut {
+		if op, _, ok := wire.ContextReductionDegraded(ev); ok && op == wire.ContextReductionTurnCut {
 			sawCut = true
 		}
 	}

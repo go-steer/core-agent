@@ -52,7 +52,7 @@ package agent
 import (
 	"log"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // emitGuardrailTrip reports a trip: to the log always, and to the attach
@@ -90,11 +90,11 @@ func (a *Agent) emitGuardrailTrip(guardrail, reason string, haltedTurn, haltedSe
 	} else {
 		log.Printf("agent:%s %s guardrail tripped: %s", a.logSessionSuffix(), guardrail, reason)
 	}
-	row := attach.NewGuardrailTurnTripEvent(guardrail, reason, haltedTurn)
+	row := wire.NewGuardrailTurnTripEvent(guardrail, reason, haltedTurn)
 	if haltedSession {
-		row = attach.NewGuardrailHaltEvent(guardrail, reason, haltedTurn)
+		row = wire.NewGuardrailHaltEvent(guardrail, reason, haltedTurn)
 	}
-	a.emit(attach.EventGuardrailTrip, attach.GuardrailTrip{
+	a.emit(wire.EventGuardrailTrip, wire.GuardrailTrip{
 		Guardrail:  guardrail,
 		Reason:     reason,
 		HaltedTurn: haltedTurn,
@@ -216,8 +216,8 @@ func (a *Agent) logSessionSuffix() string {
 // currently in flight, so Run's cleanup can label the turn's metric point
 // with the guardrail instead of the bare cancellation it sees. Called
 // immediately before Interrupt by the in-turn enforcement arms; kind is
-// the guardrail's turn-error kind (attach.TurnErrorCostCeiling,
-// attach.TurnErrorWatchdog or attach.TurnErrorRefusalStorm), which is
+// the guardrail's turn-error kind (wire.TurnErrorCostCeiling,
+// wire.TurnErrorWatchdog or wire.TurnErrorRefusalStorm), which is
 // the vocabulary `error.type` on gen_ai.agent.invocation.duration
 // already speaks.
 //
@@ -272,7 +272,7 @@ func (a *Agent) consumeGuardrailHalt(turnErr error) string {
 	if kind == "" || turnErr == nil {
 		return ""
 	}
-	if attach.ClassifyTurnError(turnErr).Kind != attach.TurnErrorCanceled {
+	if wire.ClassifyTurnError(turnErr).Kind != wire.TurnErrorCanceled {
 		return ""
 	}
 	return kind

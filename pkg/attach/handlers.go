@@ -28,6 +28,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
@@ -646,7 +647,7 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 	)
 	ctx := r.Context()
 	if req.TaskBytes != nil {
-		ctx = context.WithValue(ctx, injectTaskCtxKey{}, req.Message[:*req.TaskBytes])
+		ctx = wire.WithInjectTask(ctx, req.Message[:*req.TaskBytes])
 	}
 	if wake {
 		promptID, err = injectWithContext(ctx, entry.Agent, req.Message, caller)
@@ -921,19 +922,8 @@ func appendInterruptAudit(ctx context.Context, entry *Entry) {
 	_ = log.Service.AppendEvent(ctx, getResp.Session, NewInterruptAuditEvent())
 }
 
-// NewInterruptAuditEvent builds the eventlog row that records an
-// operator-initiated interrupt. Author + CustomMetadata identify the
-// source so a later audit query (or attach /events tail) can
-// distinguish operator cancels from any other ctx.Canceled flowing
-// through the agent loop. Shared by the handler's out-of-band fallback
-// (appendInterruptAudit) and by self-auditing registrants
-// (InterruptSelfAuditor) so the two paths can never drift (#565).
-func NewInterruptAuditEvent() *session.Event {
-	ev := session.NewEvent(context.Background(), "attach-interrupt")
-	ev.Author = "attach/interrupt"
-	ev.CustomMetadata = map[string]any{"source": "operator"}
-	return ev
-}
+// NewInterruptAuditEvent is declared in pkg/attach/wire and re-exported
+// from wire.go; the agent's self-auditing path writes the same row.
 
 // readJSON decodes JSON into v with a size cap. Returns an error
 // usable as an HTTP body.

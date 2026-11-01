@@ -19,7 +19,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
@@ -138,8 +138,8 @@ func (a *Agent) ResumeWithMode(mode string) bool {
 	// closing under the lock would make every blocked driver contend
 	// with the resumer for no reason.
 	close(ch)
-	a.Emit(attach.EventPause, attach.PauseEvent{
-		State: attach.PauseStateResumed,
+	a.Emit(wire.EventPause, wire.PauseEvent{
+		State: wire.PauseStateResumed,
 		Mode:  mode,
 		At:    time.Now().UTC(),
 	})
@@ -194,7 +194,7 @@ func (a *Agent) ResumeWith(mode, message string, caller auth.Caller) (bool, erro
 		// without new text. Cheap and idempotent either way.
 		return resumed, nil
 	}
-	if mode != attach.ResumeModeAbandon {
+	if mode != wire.ResumeModeAbandon {
 		a.RequestWake()
 	}
 	return resumed, nil
@@ -205,8 +205,8 @@ func (a *Agent) ResumeWith(mode, message string, caller auth.Caller) (bool, erro
 // the HTTP endpoints, autonomous.Handle.Pause, a library caller —
 // reaches connected operators identically.
 func (a *Agent) emitPause(reason string, interrupted bool) {
-	a.Emit(attach.EventPause, attach.PauseEvent{
-		State:       attach.PauseStatePaused,
+	a.Emit(wire.EventPause, wire.PauseEvent{
+		State:       wire.PauseStatePaused,
 		Reason:      reason,
 		Interrupted: interrupted,
 		At:          time.Now().UTC(),

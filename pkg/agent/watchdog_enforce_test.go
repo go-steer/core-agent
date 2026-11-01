@@ -26,7 +26,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
@@ -107,19 +107,19 @@ func TestDrainWatchdogAlerts_EnforceTripsOnCritical(t *testing.T) {
 	// A guardrail-trip naming the watchdog must have gone out.
 	var found bool
 	for _, e := range events {
-		if e.kind == attach.EventTurnError {
+		if e.kind == wire.EventTurnError {
 			t.Errorf("a drain outside a turn emitted a turn-error %+v; there is no turn "+
 				"for it to be the outcome of (#891)", e.payload)
 			continue
 		}
-		if e.kind != attach.EventGuardrailTrip {
+		if e.kind != wire.EventGuardrailTrip {
 			continue
 		}
-		gt, ok := e.payload.(attach.GuardrailTrip)
+		gt, ok := e.payload.(wire.GuardrailTrip)
 		if !ok {
-			t.Fatalf("guardrail-trip payload is %T, want attach.GuardrailTrip", e.payload)
+			t.Fatalf("guardrail-trip payload is %T, want wire.GuardrailTrip", e.payload)
 		}
-		if gt.Guardrail == attach.GuardrailWatchdog {
+		if gt.Guardrail == wire.GuardrailWatchdog {
 			found = true
 			if !strings.Contains(gt.Reason, "read_file") {
 				t.Errorf("trip reason should carry the alert reason; got %q", gt.Reason)
@@ -131,7 +131,7 @@ func TestDrainWatchdogAlerts_EnforceTripsOnCritical(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected a guardrail-trip naming %q; got events %+v", attach.GuardrailWatchdog, events)
+		t.Errorf("expected a guardrail-trip naming %q; got events %+v", wire.GuardrailWatchdog, events)
 	}
 }
 

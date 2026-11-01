@@ -23,7 +23,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
@@ -90,7 +90,7 @@ func TestGuardrailPersist_WatchdogTripSurvivesRestart(t *testing.T) {
 	if tripped, _ := first.WatchdogTripped(); !tripped {
 		t.Fatalf("watchdog should have tripped at the post-turn drain")
 	}
-	if got := countGuardrailRows(t, first, attach.GuardrailTripEventAuthor); got != 1 {
+	if got := countGuardrailRows(t, first, wire.GuardrailTripEventAuthor); got != 1 {
 		t.Fatalf("durable trip rows = %d, want 1", got)
 	}
 
@@ -208,8 +208,8 @@ func TestGuardrailPersist_ResetSurvivesRestart(t *testing.T) {
 	runTurnToCompletion(t, first)
 
 	first.ResetWatchdog()
-	first.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 0, "alice@example.com")
-	if got := countGuardrailRows(t, first, attach.GuardrailResetEventAuthor); got != 1 {
+	first.RecordGuardrailReset([]string{wire.GuardrailWatchdog}, 0, "alice@example.com")
+	if got := countGuardrailRows(t, first, wire.GuardrailResetEventAuthor); got != 1 {
 		t.Fatalf("durable reset rows = %d, want 1", got)
 	}
 
@@ -243,7 +243,7 @@ func TestRecordGuardrailReset_NoOpWritesNothing(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	a.RecordGuardrailReset(nil, 0, "alice@example.com")
-	if got := countGuardrailRows(t, a, attach.GuardrailResetEventAuthor); got != 0 {
+	if got := countGuardrailRows(t, a, wire.GuardrailResetEventAuthor); got != 0 {
 		t.Errorf("reset rows = %d, want 0 for a reset that cleared nothing", got)
 	}
 }
@@ -408,7 +408,7 @@ func TestGuardrailPersist_NoEventLogIsNoOp(t *testing.T) {
 	if tripped, _ := a.WatchdogTripped(); !tripped {
 		t.Error("in-memory enforce should still trip")
 	}
-	a.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 5, "alice")
+	a.RecordGuardrailReset([]string{wire.GuardrailWatchdog}, 5, "alice")
 	if err := a.RestoreGuardrails(context.Background()); err != nil {
 		t.Errorf("RestoreGuardrails with no eventlog = %v, want nil", err)
 	}
@@ -472,9 +472,9 @@ func TestGuardrailPersist_SurvivesAReopenedDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
-	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
-	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "looping"))
-	a.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 5, "alice@example.com")
+	a.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "blew the budget"))
+	a.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailWatchdog, "looping"))
+	a.RecordGuardrailReset([]string{wire.GuardrailWatchdog}, 5, "alice@example.com")
 	if err := first.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -536,7 +536,7 @@ func TestRestoreGuardrails_RetriesAfterAFailedRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
-	writer.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
+	writer.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "blew the budget"))
 
 	// The restart, with a first read that cannot succeed: the session
 	// ID it looks for does not exist yet.
@@ -636,7 +636,7 @@ func TestGuardrailPersist_PerTurnTripDoesNotSurviveARestart(t *testing.T) {
 	if !first.maybeEnforceCostCeiling(false) {
 		t.Fatalf("setup: the per-turn ceiling should have tripped")
 	}
-	if got := countGuardrailRows(t, first, attach.GuardrailTripEventAuthor); got != 0 {
+	if got := countGuardrailRows(t, first, wire.GuardrailTripEventAuthor); got != 0 {
 		t.Errorf("a per-turn trip wrote %d durable guardrail rows, want 0 — "+
 			"one turn's spend must not outlive the pod that spent it", got)
 	}
@@ -693,7 +693,7 @@ func TestGuardrailPersist_PerTurnStreakEscalationSurvivesARestart(t *testing.T) 
 	}
 	// Exactly one row for the whole streak: the escalation. The trips
 	// before it ended their own turns and nothing else.
-	if got := countGuardrailRows(t, first, attach.GuardrailTripEventAuthor); got != 1 {
+	if got := countGuardrailRows(t, first, wire.GuardrailTripEventAuthor); got != 1 {
 		t.Errorf("durable trip rows = %d, want exactly 1 (the escalation)", got)
 	}
 

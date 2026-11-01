@@ -48,7 +48,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/models"
@@ -314,7 +314,7 @@ type Agent struct {
 	compactionsDone atomic.Int64
 	checkpointsDone atomic.Int64
 	// pendingInterruptAudit is set by MarkInterruptPending (the agent
-	// side of attach.InterruptSelfAuditor) when an operator interrupt
+	// side of wire.InterruptSelfAuditor) when an operator interrupt
 	// fires, and drained in the post-turn cleanup once the interrupted
 	// turn has fully unwound — the one window with no live runner handle
 	// racing the audit write (#565). Atomic: set from the /interrupt
@@ -1348,15 +1348,15 @@ func (a *Agent) MeterProvider() metric.MeterProvider {
 func (a *Agent) AppName() string { return a.appName }
 
 // Description returns the one-line description set via WithDescription.
-// Empty when unset. Satisfies attach.DescriptionProvider — the
+// Empty when unset. Satisfies wire.DescriptionProvider — the
 // /.well-known/agent-card.json handler falls back to this when no
 // explicit AgentCardConfig.Description override is supplied.
 func (a *Agent) Description() string { return a.description }
 
-// Compile-time check: *Agent satisfies attach.DescriptionProvider.
+// Compile-time check: *Agent satisfies wire.DescriptionProvider.
 // If this assertion ever fails, the card endpoint's automatic
 // description fallback would silently stop working in production.
-var _ attach.DescriptionProvider = (*Agent)(nil)
+var _ wire.DescriptionProvider = (*Agent)(nil)
 
 // UserID returns the user identifier the agent was constructed with.
 func (a *Agent) UserID() string { return a.userID }
@@ -1468,16 +1468,16 @@ func (a *Agent) SetOperatorEventEmitter(f func(eventType string, payload any)) {
 	}
 	a.tracker.SetOnAppend(func() {
 		totals := a.tracker.Totals()
-		update := attach.UsageUpdate{
+		update := wire.UsageUpdate{
 			TokensInTotal:  totals.InputTokens,
 			TokensOutTotal: totals.OutputTokens,
 			CostUSDTotal:   totals.CostUSD,
 			TurnsTotal:     totals.Turns,
 		}
 		if byModel := a.tracker.TotalsByModel(); len(byModel) > 0 {
-			update.ByModel = make(map[string]attach.UsageByModel, len(byModel))
+			update.ByModel = make(map[string]wire.UsageByModel, len(byModel))
 			for model, t := range byModel {
-				update.ByModel[model] = attach.UsageByModel{
+				update.ByModel[model] = wire.UsageByModel{
 					TokensIn:  t.InputTokens,
 					TokensOut: t.OutputTokens,
 					CostUSD:   t.CostUSD,
@@ -1492,7 +1492,7 @@ func (a *Agent) SetOperatorEventEmitter(f func(eventType string, payload any)) {
 		// overrides applied server-side) without the client having to
 		// duplicate the pricing catalog lookup.
 		if last, ok := a.tracker.Last(); ok {
-			update.LastTurn = &attach.UsageLastTurn{
+			update.LastTurn = &wire.UsageLastTurn{
 				TokensIn:           last.InputTokens,
 				TokensInCached:     last.CachedInputTokens,
 				TokensInCacheWrite: last.CacheCreationInputTokens,
@@ -1501,7 +1501,7 @@ func (a *Agent) SetOperatorEventEmitter(f func(eventType string, payload any)) {
 				Model:              last.Model,
 			}
 		}
-		a.emit(attach.EventUsageUpdate, update)
+		a.emit(wire.EventUsageUpdate, update)
 	})
 }
 
@@ -1647,7 +1647,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			// gets a transcript row too (#1258). Still no frame: the
 			// refusal never opened a turn, so there is nothing for a
 			// terminal frame to terminate.
-			a.recordTurnError(attach.ClassifyTurnError(err), "", "")
+			a.recordTurnError(wire.ClassifyTurnError(err), "", "")
 			yield(nil, err)
 		}
 	}
@@ -1676,9 +1676,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// Announce the turn entering the streaming state. Only fields
 	// that change since the last emission need to be present
 	// (spec merge semantics); turn_state is always required.
-	a.emit(attach.EventStatusUpdate, attach.StatusUpdate{
+	a.emit(wire.EventStatusUpdate, wire.StatusUpdate{
 		Model:     a.modelName,
-		TurnState: attach.TurnStateStreaming,
+		TurnState: wire.TurnStateStreaming,
 	})
 
 	// Track the cancel func so Interrupt() can fire it during the
@@ -1904,9 +1904,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// is consumed here, not beside the metric, because the row
 		// records which guardrail cut the turn (cut_by).
 		guardrailHalt := a.consumeGuardrailHalt(turnErr)
-		var turnError attach.TurnError
+		var turnError wire.TurnError
 		if turnErr != nil {
-			turnError = a.recordTurnError(attach.ClassifyTurnError(turnErr), promptID, guardrailHalt)
+			turnError = a.recordTurnError(wire.ClassifyTurnError(turnErr), promptID, guardrailHalt)
 		}
 		// Durable guardrail rows (#643, #1258) for anything the hooks
 		// above just tripped, and the turn-error row. Same window and
@@ -1950,9 +1950,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 
 		switch {
 		case turnErr != nil:
-			a.emit(attach.EventTurnError, turnError)
+			a.emit(wire.EventTurnError, turnError)
 		default:
-			a.emit(attach.EventTurnComplete, attach.TurnComplete{
+			a.emit(wire.EventTurnComplete, wire.TurnComplete{
 				PromptID:  promptID,
 				Model:     a.modelName,
 				TokensIn:  promptTokens,
@@ -1968,8 +1968,8 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 				LatencyMs: time.Since(started).Milliseconds(),
 			})
 		}
-		a.emit(attach.EventStatusUpdate, attach.StatusUpdate{
-			TurnState: attach.TurnStateIdle,
+		a.emit(wire.EventStatusUpdate, wire.StatusUpdate{
+			TurnState: wire.TurnStateIdle,
 		})
 	})
 }

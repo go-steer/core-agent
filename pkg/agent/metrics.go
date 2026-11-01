@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // Agent-level metrics (#338 Phase 3). Names and attributes match
@@ -47,7 +47,7 @@ const (
 	AttrGenAIAgentName = "gen_ai.agent.name"
 
 	// AttrErrorType marks failed turns. Only present on error; the
-	// values are the stable attach.ClassifyTurnError kind enum
+	// values are the stable wire.ClassifyTurnError kind enum
 	// (config_error, auth_error, rate_limited, ...), never raw
 	// error text.
 	AttrErrorType = "error.type"
@@ -180,7 +180,7 @@ func RegisterMetrics(mp metric.MeterProvider, src AgentSource) (metric.Registrat
 func (a *Agent) recordInvocation(seconds float64, turnErr error) {
 	kind := ""
 	if turnErr != nil {
-		kind = attach.ClassifyTurnError(turnErr).Kind
+		kind = wire.ClassifyTurnError(turnErr).Kind
 	}
 	a.recordInvocationKind(seconds, kind)
 }

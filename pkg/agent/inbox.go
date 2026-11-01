@@ -25,7 +25,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
@@ -69,13 +69,13 @@ type inboxMessage struct {
 	spanCtx trace.SpanContext
 	quiet   bool
 	// taskCaller is the identity the attach server verified from the
-	// injecting request's own credential (attach.DirectCaller), or ""
+	// injecting request's own credential (wire.DirectCaller), or ""
 	// — anonymous, proxy-asserted, or not an HTTP inject at all. Only
 	// a message with one can be the auto-mode approver's task (#1175).
 	taskCaller string
 	// taskText is the part of text that counts toward the approver's
 	// task when taskCaller qualifies: text itself, unless the injecting
-	// client said which words the operator wrote (attach.InjectTask,
+	// client said which words the operator wrote (wire.InjectTask,
 	// #1230) — core-agent-tui's message carries @-inlined file content
 	// after them.
 	taskText string
@@ -529,7 +529,7 @@ func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 // SSE events, same last-caller-wins originator rule.
 //
 // ctx is read for two values and nothing else: the active span
-// context, and attach.DirectCaller — whether the attach server
+// context, and wire.DirectCaller — whether the attach server
 // verified the caller from the request's own credential, which decides
 // whether the message can be the auto-mode approver's task (#1175).
 // The originator identity is still the caller argument, passed
@@ -701,7 +701,7 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 		return "", errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
 	taskText := message
-	if t, ok := attach.InjectTask(ctx); ok {
+	if t, ok := wire.InjectTask(ctx); ok {
 		taskText = t
 	}
 	id, err := a.inbox.enqueue(inboxMessage{
@@ -709,14 +709,14 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 		caller:     caller,
 		spanCtx:    trace.SpanContextFromContext(ctx),
 		quiet:      !mode.wake,
-		taskCaller: attach.DirectCaller(ctx),
+		taskCaller: wire.DirectCaller(ctx),
 		taskText:   taskText,
 	})
 	if err != nil {
 		return "", err
 	}
-	a.Emit(attach.EventInbox, attach.InboxEvent{
-		State:    attach.InboxStateQueued,
+	a.Emit(wire.EventInbox, wire.InboxEvent{
+		State:    wire.InboxStateQueued,
 		PromptID: id,
 		QueuedAt: time.Now().UTC(),
 	})
@@ -890,8 +890,8 @@ func (a *Agent) drainInboxFull() inboxDrain {
 	}
 	var deferredCaller auth.Caller
 	for i, m := range msgs {
-		a.Emit(attach.EventInbox, attach.InboxEvent{
-			State:    attach.InboxStateDequeued,
+		a.Emit(wire.EventInbox, wire.InboxEvent{
+			State:    wire.InboxStateDequeued,
 			PromptID: m.id,
 		})
 		d.texts[i] = m.text

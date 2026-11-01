@@ -38,7 +38,7 @@
 // accumulates, because two resets that each hand over $5 have handed
 // over $10.
 
-package attach
+package wire
 
 import (
 	"context"

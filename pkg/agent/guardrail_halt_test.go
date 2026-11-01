@@ -24,7 +24,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
@@ -40,7 +40,7 @@ import (
 type terminalRecorder struct {
 	mu    sync.Mutex
 	kind  []string // "turn-complete", or "turn-error:<kind>"
-	trips []attach.GuardrailTrip
+	trips []wire.GuardrailTrip
 	all   []string // every frame above, interleaved, in emission order
 }
 
@@ -49,15 +49,15 @@ func (r *terminalRecorder) attachTo(a *Agent) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		switch eventType {
-		case attach.EventTurnComplete:
+		case wire.EventTurnComplete:
 			r.kind = append(r.kind, "turn-complete")
 			r.all = append(r.all, "turn-complete")
-		case attach.EventTurnError:
-			te, _ := payload.(attach.TurnError)
+		case wire.EventTurnError:
+			te, _ := payload.(wire.TurnError)
 			r.kind = append(r.kind, "turn-error:"+te.Kind)
 			r.all = append(r.all, "turn-error:"+te.Kind)
-		case attach.EventGuardrailTrip:
-			gt, _ := payload.(attach.GuardrailTrip)
+		case wire.EventGuardrailTrip:
+			gt, _ := payload.(wire.GuardrailTrip)
 			r.trips = append(r.trips, gt)
 			r.all = append(r.all, "guardrail-trip:"+gt.Guardrail)
 		}
@@ -80,10 +80,10 @@ func (r *terminalRecorder) order() []string {
 }
 
 // guardrailTrips returns the non-terminal trips, in order.
-func (r *terminalRecorder) guardrailTrips() []attach.GuardrailTrip {
+func (r *terminalRecorder) guardrailTrips() []wire.GuardrailTrip {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]attach.GuardrailTrip(nil), r.trips...)
+	return append([]wire.GuardrailTrip(nil), r.trips...)
 }
 
 // assertOneTrip checks that exactly one guardrail-trip went out, naming
@@ -152,8 +152,8 @@ func TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame(t *testing.T) {
 					WithCostCeiling(CostCeiling{MaxTurnUSD: 0.05}),
 				}
 			},
-			wantGuardrail: attach.GuardrailCostCeiling,
-			wantKind:      attach.TurnErrorCostCeiling,
+			wantGuardrail: wire.GuardrailCostCeiling,
+			wantKind:      wire.TurnErrorCostCeiling,
 		},
 		{
 			// Critical on the first observed tool call, so the halt
@@ -167,8 +167,8 @@ func TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame(t *testing.T) {
 				}}}
 				return []Option{WithWatchdog(w, nil), WithWatchdogEnforce()}
 			},
-			wantGuardrail: attach.GuardrailWatchdog,
-			wantKind:      attach.TurnErrorWatchdog,
+			wantGuardrail: wire.GuardrailWatchdog,
+			wantKind:      wire.TurnErrorWatchdog,
 		},
 	}
 
@@ -212,7 +212,7 @@ func TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame(t *testing.T) {
 					"A trip is not a turn outcome and must not occupy the terminal "+
 					"slot; the cut turn's own `canceled` is the only frame (#818, #891).", len(got), got)
 			}
-			if want := "turn-error:" + attach.TurnErrorCanceled; got[0] != want {
+			if want := "turn-error:" + wire.TurnErrorCanceled; got[0] != want {
 				t.Errorf("terminal frame = %q, want %q — the turn was cut, and since #891 "+
 					"that is what it says", got[0], want)
 			}
@@ -221,7 +221,7 @@ func TestRun_InTurnGuardrailHalt_EmitsExactlyOneTerminalFrame(t *testing.T) {
 			// carry it: it precedes the cut on its own event, flagged as
 			// having taken the turn down with it.
 			assertOneTrip(t, &rec, tc.wantGuardrail, true)
-			wantOrder := []string{"guardrail-trip:" + tc.wantGuardrail, "turn-error:" + attach.TurnErrorCanceled}
+			wantOrder := []string{"guardrail-trip:" + tc.wantGuardrail, "turn-error:" + wire.TurnErrorCanceled}
 			if order := rec.order(); !slices.Equal(order, wantOrder) {
 				t.Errorf("frame order = %v, want %v — the explanation has to arrive before "+
 					"the bare cancellation it explains", order, wantOrder)
@@ -275,8 +275,8 @@ func TestRun_OperatorInterrupt_StillReportsCanceled(t *testing.T) {
 	}
 
 	got := rec.frames()
-	if len(got) != 1 || got[0] != "turn-error:"+attach.TurnErrorCanceled {
-		t.Errorf("terminal frames = %v, want exactly [turn-error:%s]", got, attach.TurnErrorCanceled)
+	if len(got) != 1 || got[0] != "turn-error:"+wire.TurnErrorCanceled {
+		t.Errorf("terminal frames = %v, want exactly [turn-error:%s]", got, wire.TurnErrorCanceled)
 	}
 }
 
@@ -326,9 +326,9 @@ func TestRun_PostTurnGuardrailTrip_KeepsTurnComplete(t *testing.T) {
 		t.Errorf("terminal frames = %v, want %v — the turn finished, and a guardrail "+
 			"tripping at its boundary does not change that", got, want)
 	}
-	assertOneTrip(t, &rec, attach.GuardrailWatchdog, false)
+	assertOneTrip(t, &rec, wire.GuardrailWatchdog, false)
 
-	wantOrder := []string{"guardrail-trip:" + attach.GuardrailWatchdog, "turn-complete"}
+	wantOrder := []string{"guardrail-trip:" + wire.GuardrailWatchdog, "turn-complete"}
 	if got := rec.order(); !slices.Equal(got, wantOrder) {
 		t.Errorf("frame order = %v, want %v", got, wantOrder)
 	}

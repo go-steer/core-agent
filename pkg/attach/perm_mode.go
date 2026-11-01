@@ -15,12 +15,9 @@
 package attach
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
-
-	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
@@ -92,41 +89,9 @@ func ParseRemotePermMode(s string) (permissions.Mode, error) {
 	return "", fmt.Errorf("perms/mode: %q: %w", s, ErrPermModeNotSettable)
 }
 
-// Durable audit row for a mode change.
-const (
-	// PermModeEventName is the event name of a mode-change row.
-	PermModeEventName = "attach-perm-mode"
-	// PermModeEventAuthor authors a mode-change row.
-	PermModeEventAuthor = "attach/perm-mode"
-)
-
-const (
-	permModeMetaSource = "source"
-	permModeMetaFrom   = "from"
-	permModeMetaTo     = "to"
-	permModeMetaCaller = "caller"
-)
-
-// NewPermModeAuditEvent builds the durable row recording an operator's
-// mode change. It is an audit record only: a restarted or resumed
-// session comes back in its configured mode, not the last one an
-// operator picked, so nothing folds these rows back into state.
-// identity is omitted when empty rather than written as a placeholder,
-// so the row never claims an attribution the daemon did not verify.
-func NewPermModeAuditEvent(identity string, from, to permissions.Mode) *session.Event {
-	ev := session.NewEvent(context.Background(), PermModeEventName)
-	ev.Author = PermModeEventAuthor
-	meta := map[string]any{
-		permModeMetaSource: "operator",
-		permModeMetaFrom:   string(from),
-		permModeMetaTo:     string(to),
-	}
-	if identity != "" {
-		meta[permModeMetaCaller] = identity
-	}
-	ev.CustomMetadata = meta
-	return ev
-}
+// The durable audit row for a mode change — PermModeEventName,
+// PermModeEventAuthor and NewPermModeAuditEvent — is declared in
+// pkg/attach/wire and re-exported from wire.go.
 
 // doPermMode — POST /perms/mode.
 func (h *handlers) doPermMode(w http.ResponseWriter, r *http.Request, entry *Entry) {

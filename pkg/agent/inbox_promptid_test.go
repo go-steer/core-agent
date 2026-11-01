@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 )
 
@@ -33,10 +33,10 @@ import (
 func captureInboxIDs(a *Agent) func() []string {
 	var ids []string
 	a.SetOperatorEventEmitter(func(eventType string, payload any) {
-		if eventType != attach.EventInbox {
+		if eventType != wire.EventInbox {
 			return
 		}
-		ev, ok := payload.(attach.InboxEvent)
+		ev, ok := payload.(wire.InboxEvent)
 		if !ok {
 			return
 		}

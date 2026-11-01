@@ -46,7 +46,7 @@
 // and not the other would misread as "checkpointing is fine" during an
 // incident where the shared call is what is broken.
 
-package attach
+package wire
 
 import (
 	"context"

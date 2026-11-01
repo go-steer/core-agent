@@ -85,7 +85,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
@@ -145,7 +145,7 @@ func (e *costCeilingError) Error() string { return e.reason }
 // the caller is ClassifyTurnError running inside Run's deferred
 // cleanup — a panic there takes down the turn's teardown, which is a
 // steep price for the classic typed-nil-in-an-error-chain slip.
-func (e *costCeilingError) AsTurnError() attach.TurnError {
+func (e *costCeilingError) AsTurnError() wire.TurnError {
 	if e == nil {
 		return costCeilingTurnError("")
 	}
@@ -155,16 +155,16 @@ func (e *costCeilingError) AsTurnError() attach.TurnError {
 // costCeilingTurnError is the one construction site for the
 // cost_ceiling payload — shared by the trip emit and by the refusal
 // classification above so the two cannot drift apart.
-func costCeilingTurnError(reason string) attach.TurnError {
-	return attach.TurnError{
-		Kind:      attach.TurnErrorCostCeiling,
+func costCeilingTurnError(reason string) wire.TurnError {
+	return wire.TurnError{
+		Kind:      wire.TurnErrorCostCeiling,
 		Code:      "cost_ceiling",
 		Message:   reason,
 		Retryable: false, // operator must reset, not the host
 	}
 }
 
-var _ attach.SelfClassifyingError = (*costCeilingError)(nil)
+var _ wire.SelfClassifyingError = (*costCeilingError)(nil)
 
 // IsCostCeilingExceeded returns true when err was returned by Run
 // because a previous turn tripped a configured cost ceiling.
@@ -456,7 +456,7 @@ func (a *Agent) maybeEnforceCostCeiling(haltedTurn bool) bool {
 	// The durable row — the halt row when halt, a per-turn trip row
 	// otherwise (#1258) — is written by emitGuardrailTrip, so the log
 	// line, the row and the frame come from one site.
-	a.emitGuardrailTrip(attach.GuardrailCostCeiling, reason, haltedTurn, halt)
+	a.emitGuardrailTrip(wire.GuardrailCostCeiling, reason, haltedTurn, halt)
 	return true
 }
 
@@ -558,7 +558,7 @@ func (a *Agent) enforceCostCeilingInTurn() {
 		// `canceled` turn-error itself now stands as this turn's one
 		// terminal frame — the trip went out on its own non-terminal
 		// event above, so there is nothing left to suppress (#891).
-		a.markGuardrailHalt(attach.TurnErrorCostCeiling)
+		a.markGuardrailHalt(wire.TurnErrorCostCeiling)
 		a.Interrupt()
 	}
 }
@@ -790,8 +790,8 @@ func (a *Agent) tripCostCeilingBeforeRequest(gen uint64, turnCost, inputCost, ce
 		a.costCeilingReason = reason
 		a.mu.Unlock()
 	}
-	a.emitGuardrailTrip(attach.GuardrailCostCeiling, reason, true, halted)
-	a.markGuardrailHalt(attach.TurnErrorCostCeiling)
+	a.emitGuardrailTrip(wire.GuardrailCostCeiling, reason, true, halted)
+	a.markGuardrailHalt(wire.TurnErrorCostCeiling)
 	a.Interrupt()
 	return context.Canceled
 }

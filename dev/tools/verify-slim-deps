@@ -27,10 +27,17 @@
 #     and instruments. The OTel SDK (go.opentelemetry.io/otel/sdk/...)
 #     and exporters (go.opentelemetry.io/otel/exporters/...) live behind
 #     pkg/telemetry and are denylisted below.
-#   - pkg/attach and pkg/eventlog: imported by pkg/agent for its option
-#     and audit-event types (WithAttachEmitter, WithEventLog). Neither
-#     package imports SQLite drivers (glebarez/sqlite, modernc.org),
-#     Prometheus, or the attach bridge (pkg/attachadapter).
+#   - pkg/attach/wire and pkg/eventlog: imported by pkg/agent for its
+#     option and audit-event types (WithAttachEmitter, WithEventLog).
+#     pkg/attach/wire is the attach protocol's vocabulary only (#1415);
+#     the HTTP/SSE server in pkg/attach is no longer in this graph.
+#     Neither package imports SQLite drivers (glebarez/sqlite,
+#     modernc.org), Prometheus, or the attach bridge (pkg/attachadapter).
+#     gorm.io/gorm core (driverless) stays, by decision: eventlog.Handle
+#     is part of pkg/agent's contract (docs/mast-fold-design.md
+#     decision 9). github.com/gorilla/websocket stays too, because
+#     google.golang.org/genai imports it for the Live API; nothing in
+#     this repository does.
 #
 # Usage:
 #   dev/tools/verify-slim-deps [package ...]
@@ -46,12 +53,15 @@ cd "$(repo_root)"
 # denylist below names the heavy subsystems; this number is the tripwire
 # for everything it does not name — an ORM or a websocket client arriving
 # through a type-only import looks like nothing in particular until the
-# count moves (#1415). Measured 546 at the time of writing; the known
+# count moves (#1415). Measured 543 after the attach wire-vocabulary
+# split (546 before it: pkg/attach's server, internal/subagentlog,
+# internal/version and x/sync/singleflight left the graph); the known
 # heavy edges still inside that figure are gorm.io/gorm (via pkg/eventlog
-# and pkg/attach), github.com/gorilla/websocket (pkg/attach),
-# github.com/itchyny/gojq (pkg/tools) and otelhttp (genai). Raise it only
-# in the PR that knowingly adds weight, and say what came in.
-SLIM_MAX_PACKAGES="${SLIM_MAX_PACKAGES:-570}"
+# and adk/session/database), github.com/gorilla/websocket (via
+# google.golang.org/genai), github.com/itchyny/gojq (pkg/tools) and
+# otelhttp (genai). Raise it only in the PR that knowingly adds weight,
+# and say what came in.
+SLIM_MAX_PACKAGES="${SLIM_MAX_PACKAGES:-560}"
 
 DENYLIST=(
   # Binary entrypoints and TUI/daemon internal packages.

@@ -32,6 +32,7 @@
 promised pkg/agent
 promised pkg/agent/autonomous
 promised pkg/agent/background
+promised pkg/attach/wire
 promised pkg/config
 promised pkg/eventlog
 promised pkg/instruction
@@ -57,7 +58,8 @@ promised pkg/watchdog
 unsupported pkg/agentenv
 # Model-backed approver behind experimental permission mode `auto`.
 unsupported pkg/approver
-# HTTP/SSE remote-attach server wire protocol and handler.
+# HTTP/SSE remote-attach server and handlers. Its wire vocabulary is
+# the promised pkg/attach/wire above, re-exported here by alias.
 unsupported pkg/attach
 # Bridge adapting pkg/agent onto pkg/attach.
 unsupported pkg/attachadapter

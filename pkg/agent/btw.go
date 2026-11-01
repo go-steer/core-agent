@@ -25,7 +25,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 )
 
@@ -294,7 +294,7 @@ func (a *Agent) runningSubagentNames() []string {
 	}
 	var out []string
 	for _, info := range mgr.ListSubagents() {
-		if info.Status == attach.AgentStatusRunning {
+		if info.Status == wire.AgentStatusRunning {
 			out = append(out, info.Name)
 		}
 	}

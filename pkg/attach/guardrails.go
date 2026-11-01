@@ -57,16 +57,10 @@ import "errors"
 var ErrGuardrailRetrip = errors.New("attach: reset would immediately re-trip; additional budget required")
 
 // Guardrail names accepted by GuardrailResetRequest.Guardrail and
-// reported in GuardrailResetResponse.Reset.
-const (
-	// GuardrailWatchdog is the behavioral watchdog (enforce mode).
-	GuardrailWatchdog = "watchdog"
-	// GuardrailCostCeiling is the per-turn / per-session spend cap.
-	GuardrailCostCeiling = "cost_ceiling"
-	// GuardrailAll targets every guardrail that is currently tripped.
-	// The default when the request names none.
-	GuardrailAll = "all"
-)
+// reported in GuardrailResetResponse.Reset: GuardrailWatchdog,
+// GuardrailCostCeiling and GuardrailAll. Declared in pkg/attach/wire
+// and re-exported from wire.go, because the agent stamps them on the
+// durable trip rows.
 
 // GuardrailInfo is the response shape of GET /sessions/.../guardrails —
 // the operator-facing answer to "why is this session refusing my

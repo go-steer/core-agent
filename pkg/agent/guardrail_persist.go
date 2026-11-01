@@ -59,7 +59,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
@@ -143,7 +143,7 @@ func (a *Agent) RecordGuardrailReset(reset []string, budgetUSD float64, caller s
 	if a == nil || (len(reset) == 0 && budgetUSD <= 0) {
 		return
 	}
-	a.queueOutOfBandEvent(attach.NewGuardrailResetAuditEvent(caller, reset, budgetUSD))
+	a.queueOutOfBandEvent(wire.NewGuardrailResetAuditEvent(caller, reset, budgetUSD))
 }
 
 // RestoreGuardrails folds this session's durable guardrail rows and
@@ -183,7 +183,7 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	st := attach.FoldGuardrailEvents(eventSeq(getResp.Session))
+	st := wire.FoldGuardrailEvents(eventSeq(getResp.Session))
 
 	a.mu.Lock()
 	if a.guardrailRestored {
@@ -216,7 +216,7 @@ func (a *Agent) ensureGuardrailsRestored(ctx context.Context) {
 // process's configuration. See the package comment: durable state
 // restores a halt the operator hasn't cleared, it does not re-enable a
 // backstop the operator has since turned off.
-func (a *Agent) applyGuardrailState(st attach.GuardrailPersistedState) {
+func (a *Agent) applyGuardrailState(st wire.GuardrailPersistedState) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 

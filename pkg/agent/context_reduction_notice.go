@@ -19,7 +19,7 @@
 package agent
 
 import (
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // recordContextReductionFailure writes the durable row for an automatic
@@ -41,7 +41,7 @@ func (a *Agent) recordContextReductionFailure(operation string, err error, conse
 	if a == nil || err == nil {
 		return
 	}
-	a.queueOutOfBandEvent(attach.NewContextReductionFailedEvent(
+	a.queueOutOfBandEvent(wire.NewContextReductionFailedEvent(
 		operation, err.Error(), consecutiveFailures, cooldownTurns))
 }
 
@@ -59,5 +59,5 @@ func (a *Agent) recordContextReductionDegraded(operation, detail string) {
 	if a == nil || operation == "" {
 		return
 	}
-	a.queueOutOfBandEvent(attach.NewContextReductionDegradedEvent(operation, detail))
+	a.queueOutOfBandEvent(wire.NewContextReductionDegradedEvent(operation, detail))
 }

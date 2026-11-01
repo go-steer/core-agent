@@ -19,3 +19,21 @@
 #   <package> <symbol> # <issue-or-reason>
 #
 # Clear this file when cutting a major release tag.
+
+# #1415: the attach protocol vocabulary moved from pkg/attach to the leaf
+# package pkg/attach/wire; pkg/attach keeps every name as a type alias
+# (attach.AgentInfo = wire.AgentInfo), so for every caller the types below
+# are IDENTICAL before and after and no source or binary break exists.
+# apidiff identifies a type from another package by its import path and
+# so reports the alias as a change. Acknowledged as a tool limitation, not
+# a break; remove when the v4.0 tag clears this file.
+pkg/agent SubagentManager.ListSubagentCatalog # #1415 alias move, not a break
+pkg/agent SubagentManager.ListSubagents # #1415 alias move, not a break
+pkg/agent SubagentManager.SpawnSubagent # #1415 alias move, not a break
+pkg/agent SubagentManager.StopSubagent # #1415 alias move, not a break
+pkg/agent/background (*Manager).Catalog # #1415 alias move, not a break
+pkg/agent/background (*Manager).ListSubagentCatalog # #1415 alias move, not a break
+pkg/agent/background (*Manager).ListSubagents # #1415 alias move, not a break
+pkg/agent/background (*Manager).SpawnSubagent # #1415 alias move, not a break
+pkg/agent/background (*Manager).StopSubagent # #1415 alias move, not a break
+pkg/agent/background SubagentTemplate.ToolsetTools # #1415 alias move, not a break

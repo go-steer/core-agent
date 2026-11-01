@@ -28,7 +28,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/modeltier"
 )
@@ -508,7 +508,7 @@ func (a *Agent) runPendingCompaction(ctx context.Context) {
 		// daemon's stderr (#908). A compaction that silently stops
 		// happening is the failure an operator most needs told about,
 		// because the symptom arrives much later as a context wall.
-		a.recordContextReductionFailure(attach.ContextReductionCompaction, err, failures, cooldown)
+		a.recordContextReductionFailure(wire.ContextReductionCompaction, err, failures, cooldown)
 		// Backing off is the right answer to a summarizer that might
 		// come back. It is the wrong answer to one that will not: the
 		// cooldown grows to 32 turns while history grows the whole

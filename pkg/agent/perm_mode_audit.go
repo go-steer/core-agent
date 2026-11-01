@@ -15,7 +15,7 @@
 package agent
 
 import (
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
@@ -32,5 +32,5 @@ func (a *Agent) RecordPermModeChange(from, to permissions.Mode, caller string) {
 	if a == nil || from == to {
 		return
 	}
-	a.queueOutOfBandEvent(attach.NewPermModeAuditEvent(caller, from, to))
+	a.queueOutOfBandEvent(wire.NewPermModeAuditEvent(caller, from, to))
 }

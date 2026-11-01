@@ -30,7 +30,7 @@ import (
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
@@ -466,7 +466,7 @@ func autoContinueNotesBefore(events []*session.Event, i int) int {
 // transientTurnError reports whether a committed event's ErrorCode
 // names a failure worth another attempt (#969).
 //
-// The classification is delegated to attach.ClassifyTurnError so the
+// The classification is delegated to wire.ClassifyTurnError so the
 // runtime has ONE error vocabulary: the codes an operator reads on the
 // wire as `transient_net` / `rate_limited` are exactly the ones the
 // autonomous driver re-drives, and a new provider code is taught to
@@ -487,7 +487,7 @@ func transientTurnError(code string) bool {
 	if code == "" {
 		return false
 	}
-	return attach.ClassifyTurnError(errors.New("code: " + code)).Retryable
+	return wire.ClassifyTurnError(errors.New("code: " + code)).Retryable
 }
 
 // incompleteFinish reports whether a persisted genai FinishReason string

@@ -958,3 +958,474 @@ func TestTrustCardEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestA2AHandle_StopNonBlockingAndNoCancelAfterTerminal(t *testing.T) {
+	t.Run("stop_does_not_block_on_slow_tasks_cancel", func(t *testing.T) {
+		cancelStarted := make(chan struct{})
+		cancelRelease := make(chan struct{})
+		var cancelHits atomic.Int32
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == A2AWellKnownCardPath {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(A2ACard{
+					Name:         "slow-cancel",
+					URL:          "http://" + r.Host + "/a2a",
+					Capabilities: A2ACapabilities{Streaming: true},
+				})
+				return
+			}
+			var req rpcRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			switch req.Method {
+			case methodMessageStream:
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSEFrame(w, req.ID, A2ATask{
+					Kind:   "task",
+					ID:     "task-slow-cancel",
+					Status: A2ATaskStatus{State: A2ATaskStateWorking},
+				}, nil)
+				<-r.Context().Done()
+			case methodTasksCancel:
+				if cancelHits.Add(1) == 1 {
+					close(cancelStarted)
+				}
+				<-cancelRelease
+				w.Header().Set("Content-Type", "application/json")
+				rawID, _ := json.Marshal(req.ID)
+				rawRes, _ := json.Marshal(A2ATask{
+					Kind:   "task",
+					ID:     "task-slow-cancel",
+					Status: A2ATaskStatus{State: A2ATaskStateCanceled},
+				})
+				_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: "2.0", ID: rawID, Result: rawRes})
+			}
+		}))
+		t.Cleanup(srv.Close)
+
+		c, err := NewA2AClient(A2AConfig{Name: "slow-cancel", AgentCardURL: srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := c.Spawn(context.Background(), RemoteAgentSpec{ID: "sc-1", Name: "sc-1", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		ah := h.(*a2aHandle)
+		deadline := time.Now().Add(2 * time.Second)
+		for ah.getTaskID() == "" && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if ah.getTaskID() != "task-slow-cancel" {
+			t.Fatalf("taskID = %q, want task-slow-cancel", ah.getTaskID())
+		}
+
+		start := time.Now()
+		if err := h.Stop(context.Background()); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+			t.Errorf("Stop blocked for %s, want < 100ms", elapsed)
+		}
+
+		select {
+		case <-cancelStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("background goroutine did not issue tasks/cancel")
+		}
+		close(cancelRelease)
+		for range h.Events() {
+		}
+		if cancelHits.Load() != 1 {
+			t.Errorf("cancelHits = %d, want 1", cancelHits.Load())
+		}
+	})
+
+	t.Run("stop_after_natural_completion_does_not_send_cancel", func(t *testing.T) {
+		f := newFakeA2A(t, func(f *fakeA2AServer) {
+			f.card.Capabilities.Streaming = true
+			f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSEFrame(w, req.ID, A2ATaskStatusUpdateEvent{
+					Kind:   "status-update",
+					TaskID: "task-done",
+					Final:  true,
+					Status: A2ATaskStatus{
+						State:   A2ATaskStateCompleted,
+						Message: &A2AMessage{Kind: "message", MessageID: "m1", Role: "agent", Parts: []A2APart{{Kind: "text", Text: "all done"}}},
+					},
+				}, nil)
+			}
+		})
+		c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := c.Spawn(context.Background(), RemoteAgentSpec{ID: "d-1", Name: "d-1", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		for range h.Events() {
+		}
+		if err := h.Stop(context.Background()); err != nil {
+			t.Fatalf("Stop after completion: %v", err)
+		}
+		if f.cancelHits.Load() != 0 {
+			t.Errorf("cancelHits = %d after natural completion, want 0", f.cancelHits.Load())
+		}
+	})
+}
+
+func TestA2AStream_MultiLineSSEDataAndComments(t *testing.T) {
+	f := newFakeA2A(t, func(f *fakeA2AServer) {
+		f.card.Capabilities.Streaming = true
+		f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			_, _ = fmt.Fprint(w, ": keepalive comment\n\n")
+			flusher.Flush()
+
+			ev := A2ATaskStatusUpdateEvent{
+				Kind:   "status-update",
+				TaskID: "t-multiline",
+				Final:  true,
+				Status: A2ATaskStatus{
+					State:   A2ATaskStateCompleted,
+					Message: &A2AMessage{Kind: "message", MessageID: "m1", Role: "agent", Parts: []A2APart{{Kind: "text", Text: "multiline ok"}}},
+				},
+			}
+			rawID, _ := json.Marshal(req.ID)
+			rawRes, _ := json.Marshal(ev)
+			pretty, err := json.MarshalIndent(rpcResponse{
+				JSONRPC: "2.0",
+				ID:      rawID,
+				Result:  rawRes,
+			}, "", "  ")
+			if err != nil {
+				t.Errorf("MarshalIndent: %v", err)
+				return
+			}
+			_, _ = fmt.Fprint(w, "event: message\nid: 1\n")
+			for _, line := range strings.Split(string(pretty), "\n") {
+				_, _ = fmt.Fprintf(w, "data: %s\n", line)
+			}
+			_, _ = fmt.Fprint(w, "\n")
+			flusher.Flush()
+		}
+	})
+
+	c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+	if err != nil {
+		t.Fatalf("NewA2AClient: %v", err)
+	}
+	h, err := c.Spawn(context.Background(), RemoteAgentSpec{ID: "ml-1", Name: "ml-1", Goal: "work"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	var last RemoteAgentEvent
+	for ev := range h.Events() {
+		last = ev
+	}
+	if last.Kind != "completed" || last.Text != "multiline ok" {
+		t.Errorf("last event = %+v, want completed 'multiline ok'", last)
+	}
+}
+
+func TestA2AStream_ArtifactUpdateAppendAndByteCap(t *testing.T) {
+	t.Run("append_merges_chunks_without_newline_separator", func(t *testing.T) {
+		f := newFakeA2A(t, func(f *fakeA2AServer) {
+			f.card.Capabilities.Streaming = true
+			f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSEFrame(w, req.ID, A2ATaskArtifactUpdateEvent{
+					Kind:   "artifact-update",
+					TaskID: "t-append",
+					Artifact: A2AArtifact{
+						ArtifactID: "art-1",
+						Parts:      []A2APart{{Kind: "text", Text: "hello "}},
+					},
+				}, nil)
+				writeSSEFrame(w, req.ID, A2ATaskArtifactUpdateEvent{
+					Kind:   "artifact-update",
+					TaskID: "t-append",
+					Append: true,
+					Artifact: A2AArtifact{
+						ArtifactID: "art-1",
+						Parts:      []A2APart{{Kind: "text", Text: "world!"}},
+					},
+				}, nil)
+				writeSSEFrame(w, req.ID, A2ATaskArtifactUpdateEvent{
+					Kind:   "artifact-update",
+					TaskID: "t-append",
+					Artifact: A2AArtifact{
+						ArtifactID: "art-2",
+						Parts:      []A2APart{{Kind: "text", Text: "second artifact"}},
+					},
+				}, nil)
+				writeSSEFrame(w, req.ID, A2ATaskStatusUpdateEvent{
+					Kind:   "status-update",
+					TaskID: "t-append",
+					Final:  true,
+					Status: A2ATaskStatus{State: A2ATaskStateCompleted},
+				}, nil)
+			}
+		})
+		c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := c.Spawn(context.Background(), RemoteAgentSpec{ID: "ap-1", Name: "ap-1", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		var last RemoteAgentEvent
+		for ev := range h.Events() {
+			last = ev
+		}
+		want := "hello world!\nsecond artifact"
+		if last.Kind != "completed" || last.Text != want {
+			t.Errorf("last event = %+v, want completed %q", last, want)
+		}
+	})
+
+	t.Run("byte_cap_overflow_cancels_task_and_fails", func(t *testing.T) {
+		origCap := a2aMaxStreamArtifactBytes
+		a2aMaxStreamArtifactBytes = 64
+		t.Cleanup(func() { a2aMaxStreamArtifactBytes = origCap })
+
+		f := newFakeA2A(t, func(f *fakeA2AServer) {
+			f.card.Capabilities.Streaming = true
+			f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSEFrame(w, req.ID, A2ATaskArtifactUpdateEvent{
+					Kind:   "artifact-update",
+					TaskID: "t-cap",
+					Artifact: A2AArtifact{
+						ArtifactID: "art-big",
+						Parts:      []A2APart{{Kind: "text", Text: strings.Repeat("x", 100)}},
+					},
+				}, nil)
+			}
+		})
+		c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := c.Spawn(context.Background(), RemoteAgentSpec{ID: "cap-1", Name: "cap-1", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		var last RemoteAgentEvent
+		for ev := range h.Events() {
+			last = ev
+		}
+		if last.Kind != "failed" || !strings.Contains(last.Text, "streaming artifacts exceed") {
+			t.Errorf("last event = %+v, want failed with byte cap error", last)
+		}
+		if f.cancelHits.Load() != 1 {
+			t.Errorf("cancelHits = %d, want 1", f.cancelHits.Load())
+		}
+	})
+}
+
+func TestA2AAbandonment_CancelAndResilience(t *testing.T) {
+	t.Run("stream_parse_error_cancels_remote_task", func(t *testing.T) {
+		f := newFakeA2A(t, func(f *fakeA2AServer) {
+			f.card.Capabilities.Streaming = true
+			f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				flusher, _ := w.(http.Flusher)
+				writeSSEFrame(w, req.ID, A2ATaskStatusUpdateEvent{
+					Kind:   "status-update",
+					TaskID: "t-corrupt",
+					Status: A2ATaskStatus{State: A2ATaskStateWorking},
+				}, nil)
+				_, _ = fmt.Fprint(w, "data: {corrupt-json}\n\n")
+				flusher.Flush()
+			}
+		})
+		c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := c.Spawn(context.Background(), RemoteAgentSpec{ID: "corrupt-1", Name: "corrupt-1", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		for range h.Events() {
+		}
+		if f.cancelHits.Load() != 1 {
+			t.Errorf("cancelHits = %d, want 1", f.cancelHits.Load())
+		}
+	})
+
+	t.Run("non_terminal_final_status_update_cancels_remote_task", func(t *testing.T) {
+		f := newFakeA2A(t, func(f *fakeA2AServer) {
+			f.card.Capabilities.Streaming = true
+			f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSEFrame(w, req.ID, A2ATaskStatusUpdateEvent{
+					Kind:   "status-update",
+					TaskID: "t-nonterm",
+					Final:  true,
+					Status: A2ATaskStatus{State: A2ATaskStateWorking},
+				}, nil)
+			}
+		})
+		c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := c.Spawn(context.Background(), RemoteAgentSpec{ID: "nt-1", Name: "nt-1", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		var last RemoteAgentEvent
+		for ev := range h.Events() {
+			last = ev
+		}
+		if last.Kind != "failed" || !strings.Contains(last.Text, "non-terminal state") {
+			t.Errorf("last event = %+v, want failed non-terminal state", last)
+		}
+		if f.cancelHits.Load() != 1 {
+			t.Errorf("cancelHits = %d, want 1", f.cancelHits.Load())
+		}
+	})
+
+	t.Run("unread_events_buffer_full_does_not_leak_on_stop_or_completion", func(t *testing.T) {
+		f := newFakeA2A(t, func(f *fakeA2AServer) {
+			f.card.Capabilities.Streaming = true
+			f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				for i := 0; i < 40; i++ {
+					writeSSEFrame(w, req.ID, A2ATaskStatusUpdateEvent{
+						Kind:   "status-update",
+						TaskID: "t-flood",
+						Status: A2ATaskStatus{
+							State:   A2ATaskStateWorking,
+							Message: &A2AMessage{Kind: "message", MessageID: "m", Role: "agent", Parts: []A2APart{{Kind: "text", Text: fmt.Sprintf("step %d", i)}}},
+						},
+					}, nil)
+				}
+				writeSSEFrame(w, req.ID, A2ATaskStatusUpdateEvent{
+					Kind:   "status-update",
+					TaskID: "t-flood",
+					Final:  true,
+					Status: A2ATaskStatus{
+						State:   A2ATaskStateCompleted,
+						Message: &A2AMessage{Kind: "message", MessageID: "m-final", Role: "agent", Parts: []A2APart{{Kind: "text", Text: "all done"}}},
+					},
+				}, nil)
+			}
+		})
+		c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := c.Spawn(context.Background(), RemoteAgentSpec{ID: "fl-1", Name: "fl-1", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		// Wait for h.Status to reach RemoteStatusCompleted WITHOUT draining
+		// h.Events() first — a caller that only polls Status() must not
+		// block emitAlert or emitTerminal on a full 32-element buffer.
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			st, err := h.Status(context.Background())
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			if st == RemoteStatusCompleted {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("h.Status = %q after 2s; h.run blocked when h.Events() buffer was full and unread", st)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		var evs []RemoteAgentEvent
+		for ev := range h.Events() {
+			evs = append(evs, ev)
+		}
+		if len(evs) == 0 || evs[len(evs)-1].Kind != "completed" {
+			t.Fatalf("last buffered event = %+v, want completed", evs)
+		}
+	})
+
+	t.Run("poll_retries_transient_http_502_then_succeeds", func(t *testing.T) {
+		var getCalls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req rpcRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			rawID, _ := json.Marshal(req.ID)
+			switch req.Method {
+			case methodMessageSend:
+				rawRes, _ := json.Marshal(A2ATask{
+					Kind:   "task",
+					ID:     "t-retry",
+					Status: A2ATaskStatus{State: A2ATaskStateWorking},
+				})
+				_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: "2.0", ID: rawID, Result: rawRes})
+			case methodTasksGet:
+				if getCalls.Add(1) <= 2 {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
+				rawRes, _ := json.Marshal(A2ATask{
+					Kind: "task",
+					ID:   "t-retry",
+					Status: A2ATaskStatus{
+						State:   A2ATaskStateCompleted,
+						Message: &A2AMessage{Kind: "message", MessageID: "m", Role: "agent", Parts: []A2APart{{Kind: "text", Text: "recovered"}}},
+					},
+				})
+				_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: "2.0", ID: rawID, Result: rawRes})
+			}
+		}))
+		t.Cleanup(srv.Close)
+
+		c, err := NewA2AClient(
+			A2AConfig{Name: "triage", Endpoint: srv.URL},
+			WithA2APollInterval(5*time.Millisecond),
+		)
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		res, err := c.Send(context.Background(), "", map[string]any{"q": "1"}, 2*time.Second)
+		if err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		if res.Text != "recovered" {
+			t.Errorf("res.Text = %q, want recovered", res.Text)
+		}
+		if getCalls.Load() != 3 {
+			t.Errorf("getCalls = %d, want 3", getCalls.Load())
+		}
+	})
+
+	t.Run("rpc_response_id_mismatch_rejected", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rawRes, _ := json.Marshal(A2AMessage{
+				Kind:      "message",
+				MessageID: "m",
+				Role:      "agent",
+				Parts:     []A2APart{{Kind: "text", Text: "wrong id"}},
+			})
+			_ = json.NewEncoder(w).Encode(rpcResponse{
+				JSONRPC: "2.0",
+				ID:      json.RawMessage(`999999`),
+				Result:  rawRes,
+			})
+		}))
+		t.Cleanup(srv.Close)
+
+		c, err := NewA2AClient(A2AConfig{Name: "triage", Endpoint: srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		_, err = c.Send(context.Background(), "", map[string]any{"q": "1"}, time.Second)
+		if err == nil || !strings.Contains(err.Error(), "does not match request id") {
+			t.Fatalf("Send with mismatched id: err = %v, want 'does not match request id'", err)
+		}
+	})
+}

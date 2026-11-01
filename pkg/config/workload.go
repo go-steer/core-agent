@@ -391,11 +391,36 @@ func (b *WorkloadBundle) validate() error {
 	if err := validateWorkloadRosterAndTools(b.Specialists, b.ToolCatalog.Tools); err != nil {
 		return err
 	}
+	if _, err := b.ParsedA2A(); err != nil {
+		return err
+	}
 	if err := b.validateWorkloadMonitor(); err != nil {
 		return err
 	}
 	_, err := b.ParsedSchedule()
 	return err
+}
+
+// ParsedA2A decodes and validates the workload's raw a2a: map into a typed
+// A2AConfig using strict YAML field checking (#1407).
+func (b *WorkloadBundle) ParsedA2A() (A2AConfig, error) {
+	if b == nil || len(b.A2A) == 0 {
+		return A2AConfig{}, nil
+	}
+	raw, err := yaml.Marshal(b.A2A)
+	if err != nil {
+		return A2AConfig{}, fmt.Errorf("a2a: %w", err)
+	}
+	var out A2AConfig
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&out); err != nil && !errors.Is(err, io.EOF) {
+		return A2AConfig{}, fmt.Errorf("a2a: %w", workloadUnknownKeyHint(err))
+	}
+	if err := (&Config{A2A: out}).validateA2A(); err != nil {
+		return A2AConfig{}, err
+	}
+	return out, nil
 }
 
 func (b *WorkloadBundle) validateWorkloadMonitor() error {
@@ -822,6 +847,17 @@ func buildConfigFromWorkload(b *WorkloadBundle) *Config {
 		cfg.Schedule = sc
 	}
 	cfg.Monitor = workloadMonitorToConfig(b.Monitor)
+	if a2aCfg, err := b.ParsedA2A(); err == nil {
+		if a2aCfg.Expose {
+			if a2aCfg.SkillName == "" {
+				a2aCfg.SkillName = b.Name
+			}
+			if a2aCfg.SkillDescription == "" {
+				a2aCfg.SkillDescription = b.Description
+			}
+		}
+		cfg.A2A = a2aCfg
+	}
 	return cfg
 }
 
@@ -961,6 +997,14 @@ func writeConvertedConfigJSON(path string, cfg *Config) error {
 		Attach      AttachConfig      `json:"attach,omitempty"`
 		Schedule    *ScheduleConfig   `json:"schedule,omitempty"`
 		Monitor     *MonitorConfig    `json:"monitor,omitempty"`
+		A2A         *A2AConfig        `json:"a2a,omitempty"`
+	}
+	var a2aPtr *A2AConfig
+	if cfg.A2A.Expose || cfg.A2A.SkillName != "" || cfg.A2A.SkillDescription != "" ||
+		len(cfg.A2A.InputSchema) > 0 || len(cfg.A2A.OutputSchema) > 0 ||
+		cfg.A2A.Auth.Required || len(cfg.A2A.Auth.Scopes) > 0 {
+		a2aCopy := cfg.A2A
+		a2aPtr = &a2aCopy
 	}
 	disk := diskConfig{
 		Version:     cfg.Version,
@@ -972,6 +1016,7 @@ func writeConvertedConfigJSON(path string, cfg *Config) error {
 		Attach:      cfg.Attach,
 		Schedule:    cfg.Schedule,
 		Monitor:     cfg.Monitor,
+		A2A:         a2aPtr,
 	}
 	data, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {

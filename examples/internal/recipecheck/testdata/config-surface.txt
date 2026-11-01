@@ -13,6 +13,13 @@
 # Grammar: "." joins struct fields, "[]" is a slice of structs, "{}" is
 # a map of structs. A container of scalars is a leaf.
 
+a2a.auth.required
+a2a.auth.scopes
+a2a.expose
+a2a.input_schema
+a2a.output_schema
+a2a.skill_description
+a2a.skill_name
 agent.append_system_prompt
 agent.auto_continue.enabled
 agent.auto_continue.freshness

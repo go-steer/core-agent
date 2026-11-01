@@ -99,6 +99,12 @@ type Options struct {
 	// endpoint (404). See docs/agent-card-design.md.
 	AgentCard AgentCardConfig
 
+	// A2A configures inbound A2A v0.3 JSON-RPC 2.0 server exposure on
+	// POST /a2a and /.well-known/agent-card.json (#1407). Zero value
+	// (Expose=false) leaves POST /a2a unmounted and keeps the Agent Card
+	// in its passive discovery shape.
+	A2A A2AOptions
+
 	// Authenticator resolves the per-request Caller for the
 	// multi-session attach layer. Nil defaults to auth.AnonymousAuth
 	// with DefaultCaller as the identity — every request resolves to
@@ -402,6 +408,9 @@ func NewServer(opts Options) (*Server, error) {
 	h.costLimit = newCostRateLimiter(opts.CostRateLimit)
 	if opts.Resumer != nil {
 		opts.Registry.WithResumer(opts.Resumer)
+	}
+	if err := mountA2A(&opts, mux, h); err != nil {
+		return nil, err
 	}
 	h.register(mux)
 	if opts.PeerRegistry != nil {

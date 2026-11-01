@@ -4,7 +4,7 @@ title: Agent card
 
 `core-agent` can publish a [`/.well-known/agent-card.json`](https://agent2agent.info/docs/concepts/agentcard/) descriptor from its attach-mode listener so external discovery systems — most notably [Google Cloud Agent Registry](https://docs.cloud.google.com/agent-registry/register-agents) — can index the binary's name, description, and skills without a parallel registration channel. The endpoint is opt-in: a binary built without the card config behaves exactly like today's binary plus a card-shaped 404 at the well-known path.
 
-The card is **discovery metadata, not a transport promise.** core-agent does not speak the A2A JSON-RPC transport — the `url` field on the card points at the attach listener, and an A2A client that POSTs JSON-RPC at it gets a 404. GCP Agent Registry, the actual consumer of this endpoint, only reads the card; it never drives the URL as A2A. If you need a non-A2A-shaped registration, GCP also supports `NO_SPEC` which doesn't require a card at all — see the Agent Registry [register-agents docs](https://docs.cloud.google.com/agent-registry/register-agents).
+By default (`a2a.expose: false`), the card is **discovery metadata, not a transport promise:** `url` points at the attach listener root and `POST /a2a` returns 404. GCP Agent Registry only reads the card at registration time; if you need a non-A2A-shaped registration, GCP also supports `NO_SPEC` which doesn't require a card at all — see the Agent Registry [register-agents docs](https://docs.cloud.google.com/agent-registry/register-agents). When [`a2a.expose: true`](/reference/configuration/#a2a) is enabled (v3.1+, [#1407](https://github.com/go-steer/core-agent/issues/1407)), the attach listener mounts the A2A v0.3 JSON-RPC 2.0 handler at `POST /a2a` and the card advertises `"preferredTransport": "JSONRPC"` with `url` set to `<external-url>/a2a`.
 
 ## Enabling the endpoint
 
@@ -123,6 +123,15 @@ The Registry fetches `/.well-known/agent-card.json` once at registration; subseq
 
 The card builder validates every emission against the vendored A2A v0.3.0 JSON Schema (`pkg/attach/testdata/agentcard.schema.json`) in `TestAgentCardSchemaValidation`. The vendored file gets bumped in a dedicated commit each time the A2A spec issues a minor-version bump — see `pkg/attach/testdata/AGENTCARD_SCHEMA_NOTICE.md` for the refresh policy.
 
+## A2A v0.3 JSON-RPC 2.0 transport (`a2a.expose`, v3.1+)
+
+Setting [`a2a.expose: true` in `.agents/config.json`](/reference/configuration/#a2a) (or populating `attach.Options.A2A` in the library API) mounts the A2A v0.3 JSON-RPC 2.0 server at `POST /a2a` on the attach mux ([#1407](https://github.com/go-steer/core-agent/issues/1407)):
+
+- **Card changes when `a2a.expose: true`:** `preferredTransport` is set to `"JSONRPC"`, `url` becomes `<external-url>/a2a`, and the configured A2A skill is added to `skills[]`. When `a2a.input_schema` or `a2a.output_schema` is configured, `attach.RenderA2ASkillDescription` renders the JSON Schema blocks into the skill's `description` field rather than adding non-spec keys to `AgentSkill`, keeping the card valid against `agentcard.schema.json`.
+- **Supported methods (`A2A-Version: 0.3`):** `message/send`, `message/stream` (SSE emitting `status-update`, `artifact-update` with `lastChunk: true`, and at most one closing `status-update` with `final: true`), `tasks/get`, and `tasks/cancel`.
+- **Pre-stream validation & rate limiting:** `message/stream` validates authentication, per-skill scopes (`a2a.auth.scopes`), inbound `input_schema`, caller ACLs, and the per-caller cost rate limiter *before* committing HTTP `200 text/event-stream` headers. `tasks/get` and `tasks/cancel` are never cost rate-limited.
+- **Session mapping & durable parks:** Each A2A `contextId` maps 1:1 to a `core-agent` session. When a turn parks on a write-gate confirmation or operator input request, the A2A task transitions to `"input-required"` (recoverable across daemon restarts from the durable session event log) and resumes when a follow-up `message/send` or `message/stream` supplies the approval verdict or input for that `taskId` / `contextId`.
+
 ## Design background
 
-See [`docs/agent-card-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/agent-card-design.md) for the rationale and trade-offs. Future work — full A2A JSON-RPC transport (`attach/a2a.go`) — stays deferred per [`docs/attach-mode-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/attach-mode-design.md) until a concrete consumer surfaces.
+See [`docs/agent-card-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/agent-card-design.md) for the rationale and trade-offs.

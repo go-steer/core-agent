@@ -1631,6 +1631,22 @@ func (a *Agent) Model() adkmodel.LLM {
 // encodes. Read that file for the ordering; it is the contract, and
 // preturn_test.go permutes it to keep it one (#659).
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
+	return a.runTurn(ctx, prompt, nil)
+}
+
+// RunContent executes one turn of the agent on its existing session using an
+// explicit user Content message (such as a FunctionResponse that resumes a
+// durable write-gate confirmation or input park).
+func (a *Agent) RunContent(ctx context.Context, msg *genai.Content) iter.Seq2[*session.Event, error] {
+	if msg == nil {
+		return func(yield func(*session.Event, error) bool) {
+			yield(nil, fmt.Errorf("agent: RunContent: msg must not be nil"))
+		}
+	}
+	return a.runTurn(ctx, "", msg)
+}
+
+func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) iter.Seq2[*session.Event, error] {
 	// Everything between here and the runner call is the pre-turn
 	// pipeline (#659): an ordered list of small steps whose sequence is
 	// the design, expressed as data in preturn.go and held by the
@@ -1664,7 +1680,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	}
 	prompt = tp.prompt
 	drained := tp.drained
-	msg := genai.NewContentFromText(prompt, genai.RoleUser)
+	if msg == nil {
+		msg = genai.NewContentFromText(prompt, genai.RoleUser)
+	}
 
 	// Per-turn correlation handle: fresh prompt_id assigned at turn
 	// start, threaded into the terminal turn-complete / turn-error

@@ -2421,7 +2421,8 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
 		var autoContinueBootScan, autoContinueRetryScan func()
-		if cfg.Attach.MultiSession.Enabled {
+		var a2aOptions attach.A2AOptions
+		if cfg.Attach.MultiSession.Enabled || cfg.A2A.Expose {
 			// Wake loops query the eventlog handle, and `defer
 			// handle.Close()` was registered ~200 lines above this
 			// point — so on any return from run() it fires while the
@@ -2487,30 +2488,18 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 				// wiring whether or not there is anywhere to escalate.
 				AttachApprovalNotifier: approvalNotifier.AttachSession,
 			}
-			sessionFactory = compose.BuildSessionFactory(factoryDeps)
-			// Session resume: reconstructs sessions persisted in
-			// agent_session_acl that aren't in the in-memory
-			// registry yet (post-daemon-restart, post-eviction).
-			// nil when aclStore is nil — pre-v2.5 deployments
-			// without persisted ACLs keep their legacy 404-on-miss
-			// behavior. Wired into attach.NewServer's Options.Resumer
-			// below.
-			sessionResumer = compose.BuildSessionResumer(factoryDeps)
-			// Boot-time auto-continue scan (#539 PR 2): launched after
-			// the attach listener is serving (below) so continued
-			// sessions are immediately attachable. No-op unless
-			// auto-continue is enabled; internally guarded by the
-			// crash-loop breaker in agent_boot_log.
-			if autoContinueEnabled {
-				maxPerBoot := 0
-				if ac := cfg.Agent.AutoContinue; ac != nil {
-					maxPerBoot = ac.MaxPerBoot
+			a2aOptions = buildDaemonA2AOptions(wakeCtx, cfg, attachReg, &factoryDeps)
+			if cfg.Attach.MultiSession.Enabled {
+				sessionFactory = compose.BuildSessionFactory(factoryDeps)
+				sessionResumer = compose.BuildSessionResumer(factoryDeps)
+				if autoContinueEnabled {
+					maxPerBoot := 0
+					if ac := cfg.Agent.AutoContinue; ac != nil {
+						maxPerBoot = ac.MaxPerBoot
+					}
+					autoContinueBootScan = func() { compose.AutoContinueBootScan(factoryDeps, maxPerBoot) }
+					autoContinueRetryScan = func() { compose.AutoContinueRetryScan(factoryDeps, maxPerBoot) }
 				}
-				autoContinueBootScan = func() { compose.AutoContinueBootScan(factoryDeps, maxPerBoot) }
-				// Same pass, different attribution in the operator
-				// log: the retry driver below fires on a daemon that
-				// has been up the whole time (#1066).
-				autoContinueRetryScan = func() { compose.AutoContinueRetryScan(factoryDeps, maxPerBoot) }
 			}
 		}
 		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
@@ -2538,58 +2527,10 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			uiAssets = f
 			fmt.Fprintln(os.Stderr, "core-agent: --ui: serving embedded mast-web bundle at /ui/")
 		}
-		// Idle-session eviction sweep (Phase 3 of session-resume).
-		// Parse the operator's session_idle_timeout string:
-		//   omitted / empty → default 24h
-		//   explicit "0s"   → disabled (sweep never runs)
-		//   any other       → parsed as time.Duration
-		// Only active when multi-session is enabled AND the sweep
-		// value resolves > 0; single-user daemons skip it entirely.
-		var sessionIdleTimeout time.Duration
-		if cfg.Attach.MultiSession.Enabled {
-			raw := cfg.Attach.MultiSession.SessionIdleTimeout
-			switch raw {
-			case "":
-				sessionIdleTimeout = 24 * time.Hour
-			default:
-				d, perr := time.ParseDuration(raw)
-				if perr != nil {
-					fmt.Fprintf(os.Stderr, "core-agent: parse session_idle_timeout=%q: %v\n", raw, perr)
-					return runner.ExitConfigError
-				}
-				sessionIdleTimeout = d // may be 0 (disabled by design)
-			}
-		}
-		// Per-caller cost rate limit: config-tunable since #463's
-		// follow-up; nil config keeps the library defaults (burst 5,
-		// 10/min per caller), which apply to every daemon.
-		var costLimit attach.CostRateLimit
-		if rl := cfg.Attach.CostRateLimit; rl != nil {
-			costLimit = attach.CostRateLimit{
-				PerMinute: rl.PerMinute,
-				Burst:     rl.Burst,
-				Disabled:  rl.Disabled,
-			}
-		}
-		// Attach graceful-shutdown cap: config-tunable since #538;
-		// empty keeps the library default (5s). Same duration-string
-		// convention as session_idle_timeout above.
-		var attachShutdownTimeout time.Duration
-		if raw := cfg.Attach.ShutdownTimeout; raw != "" {
-			d, perr := time.ParseDuration(raw)
-			if perr != nil {
-				fmt.Fprintf(os.Stderr, "core-agent: parse attach.shutdown_timeout=%q: %v\n", raw, perr)
-				return runner.ExitConfigError
-			}
-			// NewServer promotes 0 to the library default, so an
-			// explicit "0s" would silently become 5s — reject it (and
-			// negatives, which would mean zero drain) instead of
-			// inverting the operator's intent.
-			if d <= 0 {
-				fmt.Fprintf(os.Stderr, "core-agent: attach.shutdown_timeout=%q: must be > 0 (omit the field to keep the 5s default)\n", raw)
-				return runner.ExitConfigError
-			}
-			attachShutdownTimeout = d
+		sessionIdleTimeout, costLimit, attachShutdownTimeout, tuneErr := resolveAttachServerTuning(cfg)
+		if tuneErr != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", tuneErr)
+			return runner.ExitConfigError
 		}
 		attachOptions := attach.Options{
 			Registry:        attachReg,
@@ -2607,6 +2548,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 				ReadOnly:     attachCfg.ReadOnly,
 			},
 			AgentCard:           cardConfig,
+			A2A:                 a2aOptions,
 			Authenticator:       authn,
 			DefaultCaller:       defaultCaller,
 			MultiSessionEnabled: cfg.Attach.MultiSession.Enabled,

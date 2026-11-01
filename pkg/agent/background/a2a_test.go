@@ -814,3 +814,147 @@ func TestA2ASpawner_PrematureStreamEOFFails(t *testing.T) {
 		t.Errorf("Status = %v, want RemoteStatusFailed", st)
 	}
 }
+
+// A card that names a JSON-RPC endpoint on a different host is refused
+// by default: the bearer token goes to whichever endpoint is chosen,
+// and the operator configured the card's host, not the card's content
+// (#1435). The opt-in permits it; the second server must then see the
+// token, which is exactly why it is opt-in.
+func TestA2ACard_EndpointOnOtherHostRefusedUnlessAllowed(t *testing.T) {
+	t.Setenv("A2A_TEST_TOKEN", "s3cret")
+	other := newFakeA2A(t, func(f *fakeA2AServer) {
+		f.onSend = func(_ rpcRequest, _ A2AMessage) (any, *A2ARPCError) {
+			return A2AMessage{Kind: "message", MessageID: "r", Role: "agent",
+				Parts: []A2APart{{Kind: "text", Text: "from other host"}}}, nil
+		}
+	})
+	// The card server hands out the other server's endpoint. Both are
+	// 127.0.0.1 but on different ports, which is a different host:port.
+	cardOnly := newFakeA2A(t, func(f *fakeA2AServer) {
+		f.card.URL = other.srv.URL + "/a2a"
+	})
+	auth := &A2AAuthConfig{Type: A2AAuthTypeBearer, TokenEnv: "A2A_TEST_TOKEN"}
+
+	c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: cardOnly.srv.URL, Auth: auth})
+	if err != nil {
+		t.Fatalf("NewA2AClient: %v", err)
+	}
+	_, err = c.Send(context.Background(), "investigate", nil, 0)
+	if !errors.Is(err, ErrRemoteEndpointUntrusted) {
+		t.Fatalf("Send with a card pointing at another host: err = %v, want ErrRemoteEndpointUntrusted", err)
+	}
+	if other.sendHits.Load() != 0 {
+		t.Fatalf("the other host received %d message/send calls; none may be sent", other.sendHits.Load())
+	}
+	other.mu.Lock()
+	leaked := other.lastAuth
+	other.mu.Unlock()
+	if leaked != "" {
+		t.Fatalf("the other host saw Authorization %q; the token must not leave the configured host", leaked)
+	}
+
+	allowed, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: cardOnly.srv.URL, Auth: auth, AllowCardHostChange: true})
+	if err != nil {
+		t.Fatalf("NewA2AClient: %v", err)
+	}
+	res, err := allowed.Send(context.Background(), "investigate", nil, 0)
+	if err != nil {
+		t.Fatalf("Send with allow_card_host_change: %v", err)
+	}
+	if res.Text != "from other host" {
+		t.Fatalf("Result.Text = %q, want the opted-in host's reply", res.Text)
+	}
+}
+
+// Redirects are not followed, on the card GET or on a JSON-RPC POST.
+// Go keeps Authorization across same-host and subdomain redirects, so
+// following one would carry the token to a URL the operator never
+// configured (#1435).
+func TestA2AClient_DoesNotFollowRedirects(t *testing.T) {
+	t.Setenv("A2A_TEST_TOKEN", "s3cret")
+	target := newFakeA2A(t, func(f *fakeA2AServer) {
+		f.onSend = func(_ rpcRequest, _ A2AMessage) (any, *A2ARPCError) {
+			return A2AMessage{Kind: "message", MessageID: "r", Role: "agent",
+				Parts: []A2APart{{Kind: "text", Text: "redirected"}}}, nil
+		}
+	})
+	var cardHits, rpcHits atomic.Int32
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case A2AWellKnownCardPath:
+			cardHits.Add(1)
+			http.Redirect(w, r, target.srv.URL+A2AWellKnownCardPath, http.StatusFound)
+		case "/a2a":
+			rpcHits.Add(1)
+			http.Redirect(w, r, target.srv.URL+"/a2a", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(redirector.Close)
+	auth := &A2AAuthConfig{Type: A2AAuthTypeBearer, TokenEnv: "A2A_TEST_TOKEN"}
+
+	// Card GET redirected: surfaces as a non-200, nothing fetched from target.
+	c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: redirector.URL, Auth: auth})
+	if err != nil {
+		t.Fatalf("NewA2AClient: %v", err)
+	}
+	if _, err := c.Card(context.Background()); err == nil || !strings.Contains(err.Error(), "HTTP 302") {
+		t.Fatalf("Card through a 302: err = %v, want an HTTP 302 error, not a followed redirect", err)
+	}
+	if target.cardHits.Load() != 0 {
+		t.Fatalf("redirect target served %d card fetches; the redirect must not be followed", target.cardHits.Load())
+	}
+
+	// RPC POST redirected: same.
+	ep, err := NewA2AClient(A2AConfig{Name: "triage", Endpoint: redirector.URL + "/a2a", Auth: auth})
+	if err != nil {
+		t.Fatalf("NewA2AClient: %v", err)
+	}
+	if _, err := ep.Send(context.Background(), "investigate", nil, 0); err == nil || !strings.Contains(err.Error(), "HTTP 302") {
+		t.Fatalf("Send through a 302: err = %v, want an HTTP 302 error", err)
+	}
+	if target.sendHits.Load() != 0 {
+		t.Fatalf("redirect target served %d message/send calls", target.sendHits.Load())
+	}
+	target.mu.Lock()
+	leaked := target.lastAuth
+	target.mu.Unlock()
+	if leaked != "" {
+		t.Fatalf("redirect target saw Authorization %q", leaked)
+	}
+	if cardHits.Load() == 0 || rpcHits.Load() == 0 {
+		t.Fatalf("redirector was not reached (card=%d rpc=%d); the test did not exercise the redirect", cardHits.Load(), rpcHits.Load())
+	}
+}
+
+func TestTrustCardEndpoint(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, card, ep string
+		allow          bool
+		wantErr        bool
+	}{
+		{"same host", "https://a.example/.well-known/agent-card.json", "https://a.example/rpc", false, false},
+		{"same host, case", "https://A.Example", "https://a.example/rpc", false, false},
+		{"other host refused", "https://a.example", "https://b.example/rpc", false, true},
+		{"other host allowed", "https://a.example", "https://b.example/rpc", true, false},
+		{"other port is other host", "http://127.0.0.1:1000", "http://127.0.0.1:2000/rpc", false, true},
+		{"downgrade refused even when allowed", "https://a.example", "http://a.example/rpc", true, true},
+		{"http card may name http", "http://a.example", "http://a.example/rpc", false, false},
+		{"http card may upgrade", "http://a.example", "https://a.example/rpc", false, false},
+		{"bad scheme", "https://a.example", "ftp://a.example/rpc", true, true},
+		{"no host", "https://a.example", "https:///rpc", true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := trustCardEndpoint(tc.card, tc.ep, tc.allow)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("trustCardEndpoint(%q, %q, %v) = %v, wantErr %v", tc.card, tc.ep, tc.allow, err, tc.wantErr)
+			}
+			if err != nil && !errors.Is(err, ErrRemoteEndpointUntrusted) {
+				t.Fatalf("err %v is not ErrRemoteEndpointUntrusted", err)
+			}
+		})
+	}
+}

@@ -38,6 +38,7 @@ dev/
 │   ├── verify-coretui-guards # capability guards vs the pinned core-tui
 │   ├── verify-slim-deps   # slim-embed dependency denylist
 │   ├── verify-apidiff     # promised pkg/ API compatibility vs latest GA tag
+│   ├── verify-terraform   # terraform fmt + validate + test on gke-platform-agent
 │   ├── examples-smoke     # the credential-free examples still run
 │   ├── add-license-headers # bulk-applier for SPDX + copyright headers
 │   ├── common.sh          # shared bash helpers (ensure_tool, run_step)
@@ -54,6 +55,7 @@ dev/
         ├── verify-coretui-guards
         ├── verify-slim-deps
         ├── verify-apidiff
+        ├── verify-terraform
         ├── examples-smoke
         └── verify-vuln
 ```

@@ -53,3 +53,21 @@ cosign verify ghcr.io/go-steer/core-agent:@VERSION@ \
   --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+### SLSA build provenance
+
+Every release archive and container image carries a SLSA build provenance attestation pinning the source repository, commit, and signing workflow:
+
+```bash
+# Release archive (or checksums.txt)
+gh attestation verify "core-agent_@VERSION@_${OS}_${ARCH}.tar.gz" \
+  --repo go-steer/core-agent \
+  --signer-workflow go-steer/core-agent/.github/workflows/release.yml \
+  --source-ref "refs/tags/@TAG@"
+
+# OCI container image (replace @sha256:... with the pulled image digest)
+gh attestation verify oci://ghcr.io/go-steer/core-agent@sha256:... \
+  --repo go-steer/core-agent \
+  --signer-workflow go-steer/core-agent/.github/workflows/release-images.yml \
+  --bundle-from-oci
+```

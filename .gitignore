@@ -68,6 +68,23 @@ profile.cov
 .env
 .env.local
 
+# Terraform working state under examples/gke-platform-agent/deploy/terraform.
+#
+# The lock file is ignored deliberately. examples/ is a configuration
+# people copy and adapt rather than one we apply, and a lock committed
+# from CI records provider hashes for linux_amd64 only — `terraform init`
+# on a macOS laptop then fails on a checksum until the reader knows to run
+# `terraform providers lock -platform=darwin_arm64`. Pinning belongs in
+# the copy, where it can be locked for the platforms that copy is applied
+# from.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+# terraform.tfvars is the file most likely to acquire a real project ID;
+# terraform.tfvars.example does not match this pattern and is committed.
+*.tfvars
+
 # Editor / IDE noise.
 .idea/
 .vscode/

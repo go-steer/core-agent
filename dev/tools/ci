@@ -57,6 +57,7 @@ STEPS=(
   "test            dev/tools/test-unit"
   "examples        dev/tools/examples-smoke"
   "gke-drill       dev/tools/verify-gke-drill"
+  "terraform       dev/tools/verify-terraform"
   "release-notes   dev/tools/verify-release-notes"
   "vuln            dev/tools/verify-vuln"
 )

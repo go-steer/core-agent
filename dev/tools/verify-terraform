@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Originally derived from go-steer/mast:dev/ci/presubmits/terraform.sh.
+
+# verify-terraform — presubmit: fmt, validate and `terraform test` over
+# examples/gke-platform-agent/deploy/terraform.
+#
+# The tests run against mocked providers, so nothing here authenticates,
+# reads a real project or creates anything. `terraform init` does reach
+# registry.terraform.io to fetch the google and kubernetes providers.
+#
+# This FAILS rather than skips when terraform is absent: a check that skips
+# is indistinguishable from a check that passes, and the thing under test —
+# whether an operator's write_scope narrowing actually removes an IAM
+# binding — is not something to discover from a green build that never ran.
+# CORE_AGENT_SKIP_TERRAFORM_TESTS=1 is the local opt-out; CI ignores it.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+tf_root="${root}/examples/gke-platform-agent/deploy/terraform"
+
+if ! command -v terraform >/dev/null 2>&1; then
+  if [[ "${CI:-}" != "true" && "${CORE_AGENT_SKIP_TERRAFORM_TESTS:-}" == "1" ]]; then
+    echo "terraform not installed and CORE_AGENT_SKIP_TERRAFORM_TESTS=1 — skipping locally." >&2
+    echo "CI runs this for real; do not push on the strength of this line." >&2
+    exit 0
+  fi
+  echo "terraform is not installed: https://developer.hashicorp.com/terraform/install" >&2
+  echo "Set CORE_AGENT_SKIP_TERRAFORM_TESTS=1 to skip locally (CI ignores it)." >&2
+  exit 1
+fi
+
+echo "terraform $(terraform version -json | sed -n 's/.*"terraform_version": "\([^"]*\)".*/\1/p')"
+
+# fmt over the whole tree at once: canonical formatting is a property of
+# the source, not of any one module.
+terraform -chdir="${tf_root}" fmt -recursive -check -diff
+
+if [[ "${CI:-}" != "true" && "${CORE_AGENT_SKIP_TERRAFORM_TESTS:-}" == "1" ]]; then
+  echo "CORE_AGENT_SKIP_TERRAFORM_TESTS=1 — skipping terraform init/validate/test locally after fmt check." >&2
+  echo "CI runs this for real; do not push on the strength of this line." >&2
+  exit 0
+fi
+
+# Stage into a scratch directory so `terraform init` never leaves
+# `.terraform/` provider binaries or `.terraform.lock.hcl` inside
+# `examples/gke-platform-agent/deploy/` (which `readonly_grant_test.go`
+# copies via `os.CopyFS` during `go test`).
+workdir="$(mktemp -d "${TMPDIR:-/tmp}/core-agent-terraform-XXXXXX")"
+trap 'rm -rf "${workdir}"' EXIT
+cp -R "${tf_root}/." "${workdir}/"
+find "${workdir}" \( -name '.terraform' -o -name '.terraform.lock.hcl' \) -exec rm -rf {} +
+mkdir -p "${workdir}/.plugin-cache"
+export TF_PLUGIN_CACHE_DIR="${workdir}/.plugin-cache"
+
+# The root and each module are initialized and tested separately —
+# `terraform test` only collects tests/ under the directory it runs in,
+# so a module tested only through the root would have its own runs
+# silently never execute.
+for dir in "." "modules/wif" "modules/release"; do
+  echo ""
+  echo "--- ${dir}"
+  terraform -chdir="${workdir}/${dir}" init -backend=false -input=false -no-color >/dev/null
+  terraform -chdir="${workdir}/${dir}" validate -no-color
+  terraform -chdir="${workdir}/${dir}" test -no-color
+done

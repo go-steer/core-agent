@@ -13,6 +13,7 @@ base/            one namespace, two Deployments, the RBAC they need
 components/      composable add-ons (tracing, gated-apply)
 overlays/        2 × 2 read-only — content delivery × tracing
                  + 2 gated-apply composers
+terraform/       declarative GCP IAM (WIF) + cluster RBAC/ConfigMap module
 content.Dockerfile
 ```
 
@@ -186,3 +187,20 @@ If you are not using `scripts/`:
 Read `kubectl kustomize <overlay>` before applying and grep it for
 `your-`. Every placeholder in this tree is spelled that way so that one
 grep catches an unfilled value before the cluster does.
+
+## `terraform/` — declarative Workload Identity and RBAC
+
+[`terraform/`](terraform/README.md) is the declarative counterpart to
+`../scripts/grant-iam.sh` and `components/gated-apply/`:
+
+- `modules/wif` enables the three base GCP APIs and binds the daemon's
+  Workload Identity Federation `principal://...` using additive
+  `google_project_iam_member` resources. Unlike an imperative `gcloud`
+  script, narrowing `write_scope` from `"cluster-admin"` back to
+  `"namespaced"` (or setting `remediation_namespaces`) **destroys** the
+  earlier `roles/container.admin` binding so per-namespace RBAC becomes
+  the active boundary.
+- `modules/release` creates the target namespace, the `core-agent-gcp-env`
+  ConfigMap, and — for each namespace in `remediation_namespaces` — the
+  `Role` and `RoleBinding` (`patch` on `apps/deployments` for the daemon's
+  Workload Identity RBAC `User`) matching `components/gated-apply/`.

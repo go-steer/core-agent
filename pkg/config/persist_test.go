@@ -242,13 +242,55 @@ func TestLoad_WarnsOnUnknownKey(t *testing.T) {
 	}
 }
 
+type unknownKeyTestCase struct {
+	name      string
+	body      string
+	wantWarn  string
+	wantError string
+}
+
+func runUnknownKeyCases(t *testing.T, cases []unknownKeyTestCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, ConfigFileName)
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			old := warnw
+			warnw = &buf
+			defer func() { warnw = old }()
+
+			_, err := Load(dir)
+			if tc.wantError != "" {
+				if err == nil {
+					t.Fatalf("expected fatal error containing %q, got nil (warn=%q)", tc.wantError, buf.String())
+				}
+				if !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantWarn == "" {
+				if buf.Len() > 0 {
+					t.Fatalf("expected no warnings, got %q", buf.String())
+				}
+				return
+			}
+			if !strings.Contains(buf.String(), tc.wantWarn) {
+				t.Fatalf("warning %q does not contain %q", buf.String(), tc.wantWarn)
+			}
+		})
+	}
+}
+
 func TestLoad_UnknownNestedKeysWarnOrFail(t *testing.T) {
-	cases := []struct {
-		name      string
-		body      string
-		wantWarn  string
-		wantError string
-	}{
+	runUnknownKeyCases(t, []unknownKeyTestCase{
 		{
 			name:     "nested unknown under model warns",
 			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview","unknown_model_knob":true}}`,
@@ -344,42 +386,217 @@ func TestLoad_UnknownNestedKeysWarnOrFail(t *testing.T) {
 			body:      "{\"version\":1,\"model\":{\"name\":\"gemini-3-flash-preview\"},\"subagents\":[{\"name\":\"helper\",\"description\":\"d\",\"instructions\":\"i\",\"budgets\\u200b\":{\"max_cost_usd\":2}}]}",
 			wantError: "subagents[0].budgets",
 		},
-	}
+	})
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, ConfigFileName)
-			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			var buf bytes.Buffer
-			old := warnw
-			warnw = &buf
-			defer func() { warnw = old }()
+func TestLoad_UnknownSafetyAndScopeKeysAreFatal(t *testing.T) {
+	runUnknownKeyCases(t, []unknownKeyTestCase{
+		{
+			name:      "unknown key under safety is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"safety":{"watchdgo":"enforce"}}`,
+			wantError: "safety.watchdgo",
+		},
+		{
+			name:      "mistyped top-level safety container is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"safey":{"watchdog":"enforce"}}`,
+			wantError: "safey",
+		},
+		{
+			name:      "unknown key under url_scope is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"url_scope":{"allow":["*"],"denny":["evil.com"]}}`,
+			wantError: "url_scope.denny",
+		},
+		{
+			name:      "unknown key under path_scope is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"path_scope":{"allow_path":[{"path":"/tmp","access":"r"}]}}`,
+			wantError: "path_scope.allow_path",
+		},
+		{
+			name:      "attach read_only typo is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"attach":{"read_only":true}}`,
+			wantError: "attach.read_only",
+		},
+		{
+			name:      "unknown key under attach.multi_session.auth is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"attach":{"multi_session":{"auth":{"tabel_file":"/etc/users.json"}}}}`,
+			wantError: "attach.multi_session.auth.tabel_file",
+		},
+		{
+			name:      "unknown key under attach.multi_session is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"attach":{"multi_session":{"allow_anon":false}}}`,
+			wantError: "attach.multi_session.allow_anon",
+		},
+		{
+			name:      "unknown key under model.builtin_tools is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview","builtin_tools":{"websearch":false}}}`,
+			wantError: "model.builtin_tools.websearch",
+		},
+		{
+			name:      "unknown key under subagents[0].model.builtin_tools is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"subagents":[{"name":"helper","description":"d","instructions":"i","model":{"name":"gemini-3-flash-preview","builtin_tools":{"urlcontext":false}}}]}`,
+			wantError: "subagents[0].model.builtin_tools.urlcontext",
+		},
+		{
+			name:      "mistyped tools.disabled is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"tools":{"disabled":["bash"]}}`,
+			wantError: "tools.disabled",
+		},
+		{
+			name:      "mistyped subagents[0].tool allowlist is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"subagents":[{"name":"helper","description":"d","instructions":"i","tool":["read_file"]}]}`,
+			wantError: "subagents[0].tool",
+		},
+		{
+			name:      "unknown key under subagents[0].remote.auth is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"subagents":[{"name":"helper","description":"d","remote":{"endpoint":"https://example.com/rpc","auth":{"type":"bearer","token_file":"/tmp/tok"}}}]}`,
+			wantError: "subagents[0].remote.auth.token_file",
+		},
+		{
+			name:      "case-insensitive struct container still catches nested fatal key",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"Attach":{"Cost_Rate_Limit":{"per_minute":1,"brust":2}}}`,
+			wantError: "attach.cost_rate_limit.brust",
+		},
+		{
+			name:      "case-insensitive Permissions container still catches nested fatal key",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"Permissions":{"denny":["bash(rm *)"]}}`,
+			wantError: "permissions.denny",
+		},
+		{
+			name:      "camelCase CostRateLimit typo under attach is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"attach":{"CostRateLimit":{"per_minute":1}}}`,
+			wantError: "attach.CostRateLimit",
+		},
+		{
+			name:     "valid mixed-case Providers block does not emit false unknown-key warning",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview"},"Providers":[{"name":"local","extends":"ollama"}]}`,
+			wantWarn: "",
+		},
+		{
+			name:      "camelCase USD/MTok suffix still matches word boundary",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview","inputPerMTok":0.1}}`,
+			wantError: "model.inputPerMTok",
+		},
+		{
+			name:     "statusd substring containing usd only warns",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview"},"ui":{"statusd":true}}`,
+			wantWarn: "ui.statusd",
+		},
+		{
+			name:      "duplicate Providers + providers blocks still validate first block strictly",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"Providers":[{"name":"local","extends":"ollama","open_modles":false}],"providers":[{"name":"local","extends":"ollama"}]}`,
+			wantError: "open_modles",
+		},
+		{
+			name:      "mistyped top-level tool container with disable is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"tool":{"disable":["bash"]}}`,
+			wantError: "tool",
+		},
+		{
+			name:      "unknown key under subagents[0].remote is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"subagents":[{"name":"helper","description":"d","remote":{"endpoint":"https://example.com/rpc","auht":{"type":"bearer","token_env":"TOK"}}}]}`,
+			wantError: "subagents[0].remote.auht",
+		},
+		{
+			name:      "mistyped subagents[0].mcp_servers is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"subagents":[{"name":"helper","description":"d","instructions":"i","mcp_servers":[]}]}`,
+			wantError: "subagents[0].mcp_servers",
+		},
+		{
+			name:      "acronym USD before TitleCase word matches word boundary",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"agent":{"maxUSDPerTurn":1}}`,
+			wantError: "agent.maxUSDPerTurn",
+		},
+		{
+			name:      "digit before MTok matches word boundary",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview","pricePer1MTok":0.5}}`,
+			wantError: "model.pricePer1MTok",
+		},
+		{
+			name:     "nested provider field in non-critical block only warns",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview"},"compaction":{"provider":"gemini"}}`,
+			wantWarn: "compaction.provider",
+		},
+	})
+}
 
-			_, err := Load(dir)
-			if tc.wantError != "" {
-				if err == nil {
-					t.Fatalf("expected fatal error containing %q, got nil (warn=%q)", tc.wantError, buf.String())
-				}
-				if !strings.Contains(err.Error(), tc.wantError) {
-					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantError)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if tc.wantWarn == "" {
-				if buf.Len() > 0 {
-					t.Fatalf("expected no warnings, got %q", buf.String())
-				}
-				return
-			}
-			if !strings.Contains(buf.String(), tc.wantWarn) {
-				t.Fatalf("warning %q does not contain %q", buf.String(), tc.wantWarn)
-			}
-		})
-	}
+func TestSave_MixedCaseTopLevelKeysCanonicalizeOnRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("resetting mixed-case UI section back to default persists the reset", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ConfigFileName)
+		orig := `{"version":1,"model":{"name":"gemini-3-flash-preview"},"UI":{"theme":"dark"}}`
+		if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := Load(dir)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.UI.Theme != ThemeDark {
+			t.Fatalf("loaded UI.Theme = %q, want %q", cfg.UI.Theme, ThemeDark)
+		}
+
+		cfg.UI.Theme = ThemeAuto
+		if err := Save(path, cfg); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+
+		saved, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(saved), `"UI"`) {
+			t.Errorf("Save left non-canonical \"UI\" block on disk:\n%s", saved)
+		}
+
+		reloaded, err := Load(dir)
+		if err != nil {
+			t.Fatalf("reload Load: %v", err)
+		}
+		if reloaded.UI.Theme != ThemeAuto {
+			t.Errorf("reloaded UI.Theme = %q, want %q (reset to default was lost)", reloaded.UI.Theme, ThemeAuto)
+		}
+	})
+
+	t.Run("mutating mixed-case Permissions section replaces in place without duplicate block", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ConfigFileName)
+		orig := `{"version":1,"model":{"name":"gemini-3-flash-preview"},"Permissions":{"mode":"yolo","use_builtin_allow":false}}`
+		if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := Load(dir)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		cfg.Permissions.Mode = "ask"
+		cfg.Permissions.UseBuiltinAllow = nil
+		cfg.Permissions.Allow = []string{"read_file"}
+
+		if err := Save(path, cfg); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+
+		saved, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(saved), `"Permissions"`) {
+			t.Errorf("Save left duplicate/mixed-case \"Permissions\" block on disk:\n%s", saved)
+		}
+
+		reloaded, err := Load(dir)
+		if err != nil {
+			t.Fatalf("reload Load: %v", err)
+		}
+		if reloaded.Permissions.Mode != "ask" {
+			t.Errorf("reloaded Permissions.Mode = %q, want %q", reloaded.Permissions.Mode, "ask")
+		}
+		if reloaded.Permissions.UseBuiltinAllow != nil {
+			t.Errorf("reloaded Permissions.UseBuiltinAllow = %v, want nil (stale mixed-case block merged back)", *reloaded.Permissions.UseBuiltinAllow)
+		}
+	})
 }

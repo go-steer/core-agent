@@ -181,19 +181,40 @@ func splitSubagentFrontmatter(data []byte) (subagentFrontmatter, string, error) 
 	if nl < 0 {
 		return subagentFrontmatter{}, "", fmt.Errorf("missing frontmatter terminator (no `---` on its own line)")
 	}
+	if len(bytes.TrimRight(rest[:nl], "\r")) != 0 {
+		return subagentFrontmatter{}, "", fmt.Errorf("missing frontmatter (opening `---` must be on its own line)")
+	}
 	rest = rest[nl+1:]
 
-	end := bytes.Index(rest, []byte("\n---"))
+	end := -1
+	afterEnd := 0
+	for pos := 0; pos <= len(rest); {
+		lineEnd := bytes.IndexByte(rest[pos:], '\n')
+		var line []byte
+		var nextPos int
+		if lineEnd < 0 {
+			line = rest[pos:]
+			nextPos = len(rest) + 1
+		} else {
+			line = rest[pos : pos+lineEnd]
+			nextPos = pos + lineEnd + 1
+		}
+		if string(bytes.TrimRight(line, "\r")) == sep {
+			end = pos
+			if lineEnd < 0 {
+				afterEnd = len(rest)
+			} else {
+				afterEnd = pos + lineEnd + 1
+			}
+			break
+		}
+		pos = nextPos
+	}
 	if end < 0 {
 		return subagentFrontmatter{}, "", fmt.Errorf("missing frontmatter terminator (no closing `---`)")
 	}
 	yamlBlock := rest[:end]
-	body := rest[end+len("\n---"):]
-	if len(body) > 0 && body[0] == '\n' {
-		body = body[1:]
-	} else if len(body) > 1 && body[0] == '\r' && body[1] == '\n' {
-		body = body[2:]
-	}
+	body := rest[afterEnd:]
 
 	var fm subagentFrontmatter
 	dec := yaml.NewDecoder(bytes.NewReader(yamlBlock))
@@ -217,13 +238,20 @@ type staleInjection struct {
 	line     int
 }
 
+// CheckSubagentPlaceholders rejects stale ADK-style optional session-state
+// ({key?}, {app:key?}) and artifact ({artifact.name?}) placeholders in
+// subagent instructions (#1401, #1450).
+func CheckSubagentPlaceholders(path, body string) error {
+	return checkPlaceholders(path, body)
+}
+
 func checkPlaceholders(path, body string) error {
 	stale := findStaleInjections(body)
 	if len(stale) == 0 {
 		return nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "config: subagent %q: %s in the Markdown body no longer %s anything — instructions are sent verbatim",
+	fmt.Fprintf(&b, "config: subagent %q: %s in the subagent instruction no longer %s anything — instructions are sent verbatim",
 		path, pluralPlaceholder(len(stale)), verbPlaceholder(len(stale)))
 	for _, p := range stale {
 		what := fmt.Sprintf("asked for session-state key %q", p.key)
@@ -245,7 +273,12 @@ func findStaleInjections(body string) []staleInjection {
 		}
 		key = strings.TrimSuffix(key, "?")
 		artifact := strings.HasPrefix(key, artifactPrefix)
-		if !artifact && !isValidStateName(key) {
+		if artifact {
+			rest := strings.TrimPrefix(key, artifactPrefix)
+			if rest == "" || strings.ContainsAny(rest, " \t\r\n:\",") {
+				continue
+			}
+		} else if !isValidStateName(key) {
 			continue
 		}
 		out = append(out, staleInjection{
@@ -468,6 +501,14 @@ func checkOutputSchema(s *genai.Schema, path string) error {
 	if path == "$" && s.Type != genai.TypeObject {
 		return fmt.Errorf("$: top-level type must be object, got %q", s.Type)
 	}
+	if len(s.Enum) > 0 && s.Type != genai.TypeString {
+		return fmt.Errorf("%s: enum is only supported on string type, got %q", path, s.Type)
+	}
+	for i, branch := range s.AnyOf {
+		if err := checkOutputSchema(branch, fmt.Sprintf("%s.anyOf[%d]", path, i)); err != nil {
+			return err
+		}
+	}
 	switch s.Type {
 	case genai.TypeArray:
 		if s.Items == nil {
@@ -475,7 +516,7 @@ func checkOutputSchema(s *genai.Schema, path string) error {
 		}
 		return checkOutputSchema(s.Items, path+"[]")
 	case genai.TypeObject:
-		if len(s.Properties) == 0 {
+		if len(s.Properties) == 0 && len(s.AnyOf) == 0 {
 			return fmt.Errorf("%s: object has no properties", path)
 		}
 		keys := make([]string, 0, len(s.Properties))

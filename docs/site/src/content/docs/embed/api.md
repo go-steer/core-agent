@@ -86,6 +86,22 @@ func main() {
 
 The blank import on the provider package matters — it triggers the `init()` that registers the provider with `models.Register`. Without it, `models.Resolve` errors with "unknown provider".
 
+### One-call execution (`agent.RunOneShot` / `agent.RunRecipe` / `agent.RunWorkload`)
+
+When you want to run a single turn from a recipe directory (or a programmatic `config.Config` + custom tools) to a typed `*agent.OneShotResult` without manually wiring `config.Load` → `models.Resolve` → `permissions.FromConfig` → `tools.GateTools` → `agent.NewSubagentTool` → `usage.TurnTap` → `agent.New`, call `agent.RunOneShot`, `agent.RunRecipe`, or `agent.RunWorkload`:
+
+```go
+res, err := agent.RunRecipe(ctx, "./my-recipe", agent.OneShotConfig{
+    Tools: []adktool.Tool{lookupTool},
+}, "Check checkout service health.")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(res.Text, res.Output, res.Usage.CostUSD)
+```
+
+`agent.RunOneShot` / `agent.RunRecipe` / `agent.RunWorkload` live in `pkg/agent` so they stay inside the slim dependency boundary (`dev/tools/verify-slim-deps`, exercised by [`examples/embed/recipe`](https://github.com/go-steer/core-agent/tree/main/examples/embed/recipe)). When `Dir` is set and `Instruction` is empty, `pkg/agent` reads `AGENTS.md` (and `.agents/AGENTS.md`) directly; `pkg/compose` exposes the same signatures (`compose.Run`, `compose.RunRecipe`, `compose.RunWorkload`) and additionally expands `.agents/AGENTS.d/*.md` overlays and `@include` directives via `pkg/instruction`.
+
 ---
 
 ## Multi-turn conversation

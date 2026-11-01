@@ -170,7 +170,7 @@ main() {
 
   local targets=("$@")
   if [[ "${#targets[@]}" -eq 0 ]]; then
-    targets=("./examples/embed/slim")
+    targets=("./examples/embed/slim" "./examples/embed/recipe")
   fi
 
   local pattern failed=0

@@ -120,6 +120,7 @@ var Entries = []Entry{
 	{Name: "compose-multi-session", Disposition: Run},
 	{Name: "deploy/ax/entrypoint", Disposition: Skip,
 		Reason: "the AX task-runner wrapper, not a library example: it takes the agent command after `--` and exits 2 without one, and when booted with --wait-for-egress blocks on AX's egress proxy; its own unit tests cover the exit-code, done-marker and egress-wait paths"},
+	{Name: "embed/recipe", Disposition: Run},
 	{Name: "embed/slim", Disposition: Run},
 	{Name: "parallel-spawn", Disposition: Run},
 	{Name: "replay", Disposition: Run},

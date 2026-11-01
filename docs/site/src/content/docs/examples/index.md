@@ -124,6 +124,10 @@ One assistant turn fans out three independent background subagents via the `spaw
 
 The reference **slim embed**: core-agent's governance slice (`pkg/agent`, `pkg/models.Adapt` over a `core-models` `llm.LLM`, `pkg/permissions` in `ModeAllow`, `pkg/tools.GateToolset`, `pkg/usage`) in a host binary with none of the TUI, MCP SDK, Prometheus, OTel SDK/exporters, SQLite drivers or daemon composition packages in the import graph. CI's `verify-slim-deps` gate checks that graph against a denylist on every PR, so the slice stays embeddable; the example asserts on gate denial, gated tool execution and two-turn token/cost accounting. Hermetic — scripted model, no credentials. Start here if you are adding an agent to an existing service and want to know what you are pulling in.
 
+### [`embed/recipe`](https://github.com/go-steer/core-agent/tree/main/examples/embed/recipe)
+
+The **one-call recipe embed** (`agent.RunRecipe` / `agent.RunOneShot` / `agent.RunWorkload`): loads a recipe directory (`AGENTS.md`, `.agents/config.json`, `.agents/subagents/*.md`), gates caller-supplied `adktool.Tool` values through `permissions.Gate`, executes a Markdown-authored `single_turn` subagent with `output_schema`, and returns `OneShotResult` (`Text`, parsed `Output`, and rolled-up `Usage`) in a single call. Also checked by `verify-slim-deps` so the one-call entry point stays inside the slim dependency boundary. Hermetic — scripted model, no credentials.
+
 ### [`scheduled-monitor`](https://github.com/go-steer/core-agent/tree/main/examples/scheduled-monitor)
 
 The supervision-tree topology from [`docs/scheduled-monitoring-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/scheduled-monitoring-design.md) — periodic health sweeps with a scheduler + supervisor + worker layout. Pattern for cron-style monitoring agents.

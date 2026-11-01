@@ -15,7 +15,6 @@
 package background
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -24,9 +23,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,17 @@ import (
 
 // Compile-time check that *A2AClient implements RemoteAgentSpawner.
 var _ RemoteAgentSpawner = (*A2AClient)(nil)
+
+// maxA2ATransientPollErrors caps how many consecutive transient tasks/get
+// failures (5xx, 408, 429, or transport error while ctx is still live) a
+// polling loop tolerates before failing the task.
+const maxA2ATransientPollErrors = 3
+
+// a2aCancelTimeout bounds the detached tasks/cancel RPC sent when a task is
+// stopped or abandoned. Kept below Manager's closeDrainTimeout (5s) so
+// Manager.Close can drain stopped handles cleanly even when a remote server
+// blackholes tasks/cancel. Package-level var so tests can tighten it.
+var a2aCancelTimeout = 3 * time.Second
 
 // A2AClient is an A2A v0.3 client and RemoteAgentSpawner for one
 // configured remote agent. Safe for concurrent use.
@@ -309,6 +321,7 @@ func (c *A2AClient) Send(ctx context.Context, skill string, inputs map[string]an
 }
 
 func (c *A2AClient) pollTaskToTerminal(ctx context.Context, endpoint string, task *A2ATask, lastRaw json.RawMessage, timeout time.Duration) (*A2AResult, error) {
+	transientFailures := 0
 	for !task.Status.State.Terminal() {
 		if task.Status.State == A2ATaskStateInputRequired || task.Status.State == A2ATaskStateAuthRequired {
 			c.cancelTask(ctx, endpoint, task.ID)
@@ -323,17 +336,21 @@ func (c *A2AClient) pollTaskToTerminal(ctx context.Context, endpoint string, tas
 					ErrRemoteTimeout, c.cfg.Name, task.ID, task.Status.State, timeout)
 			}
 			return nil, fmt.Errorf("%s: task %s canceled by caller; tasks/cancel sent: %w", c.cfg.Name, task.ID, context.Cause(ctx))
-		case <-time.After(c.pollInterval):
+		case <-time.After(pollDelay(c.pollInterval)):
 		}
 		raw, err := c.call(ctx, endpoint, methodTasksGet, taskQueryParams{ID: task.ID})
 		if err != nil {
-			if ctx.Err() != nil {
-				c.cancelTask(ctx, endpoint, task.ID)
+			if ctx.Err() == nil && isTransientPollError(err) && transientFailures < maxA2ATransientPollErrors {
+				transientFailures++
+				continue
 			}
+			c.cancelTask(ctx, endpoint, task.ID)
 			return nil, err
 		}
+		transientFailures = 0
 		polled := &A2ATask{}
 		if err := json.Unmarshal(raw, polled); err != nil {
+			c.cancelTask(ctx, endpoint, task.ID)
 			return nil, fmt.Errorf("a2a: %s: malformed tasks/get result: %w", c.cfg.Name, err)
 		}
 		polled.Kind = "task"
@@ -456,7 +473,10 @@ func (h *a2aHandle) Events() <-chan RemoteAgentEvent {
 	return h.events
 }
 
-func (h *a2aHandle) Stop(ctx context.Context) error {
+// Stop marks the handle stopped and cancels its in-flight runCtx without
+// blocking on network I/O. The background h.run goroutine issues tasks/cancel
+// best-effort when it unwinds (#1436).
+func (h *a2aHandle) Stop(_ context.Context) error {
 	h.mu.Lock()
 	h.stopped = true
 	if h.status == RemoteStatusPending || h.status == RemoteStatusRunning {
@@ -464,7 +484,6 @@ func (h *a2aHandle) Stop(ctx context.Context) error {
 	}
 	cancel := h.cancel
 	h.mu.Unlock()
-	h.sendCancelOnce(ctx)
 	if cancel != nil {
 		cancel()
 	}
@@ -483,17 +502,19 @@ func (h *a2aHandle) sendCancelOnce(ctx context.Context) {
 	h.client.cancelTask(ctx, h.endpoint, taskID)
 }
 
+func (h *a2aHandle) markRemoteTerminal() {
+	h.mu.Lock()
+	h.cancelSent = true
+	h.mu.Unlock()
+}
+
 func (h *a2aHandle) setTaskID(id string) {
 	if id == "" {
 		return
 	}
 	h.mu.Lock()
 	h.taskID = id
-	stopped := h.stopped
 	h.mu.Unlock()
-	if stopped {
-		h.sendCancelOnce(context.Background())
-	}
 }
 
 func (h *a2aHandle) getTaskID() string {
@@ -508,75 +529,108 @@ func (h *a2aHandle) isStopped() bool {
 	return h.stopped
 }
 
-func (h *a2aHandle) emitAlert(text string) {
+func (h *a2aHandle) emitAlert(_ context.Context, text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	h.events <- RemoteAgentEvent{
+	h.pushEvent(RemoteAgentEvent{
 		Kind:      "alert",
 		Text:      text,
 		Timestamp: time.Now(),
+	})
+}
+
+func (h *a2aHandle) emitTerminal(_ context.Context, ev RemoteAgentEvent) {
+	h.pushEvent(ev)
+}
+
+// pushEvent enqueues ev onto h.events without blocking. When a caller polls
+// Status() instead of draining Events() (or stops reading Events() mid-run),
+// evicting the oldest unread alert keeps stream/poll progress moving and
+// guarantees the terminal event is delivered before h.events closes (#1436).
+func (h *a2aHandle) pushEvent(ev RemoteAgentEvent) {
+	for {
+		select {
+		case h.events <- ev:
+			return
+		default:
+			select {
+			case <-h.events:
+			default:
+			}
+		}
 	}
 }
 
-func (h *a2aHandle) finishCompleted(text string) {
+func (h *a2aHandle) abandonFailed(ctx context.Context, text string) {
+	h.sendCancelOnce(ctx)
+	h.finishFailed(ctx, text)
+}
+
+func (h *a2aHandle) finishCompleted(ctx context.Context, text string) {
 	h.mu.Lock()
 	if h.stopped {
 		h.status = RemoteStatusStopped
 		h.mu.Unlock()
-		h.events <- RemoteAgentEvent{
+		h.sendCancelOnce(ctx)
+		h.emitTerminal(ctx, RemoteAgentEvent{
 			Kind:      "stopped",
 			Text:      "stopped by parent",
 			Timestamp: time.Now(),
-		}
+		})
 		return
 	}
+	h.cancelSent = true
 	if h.status == RemoteStatusPending || h.status == RemoteStatusRunning {
 		h.status = RemoteStatusCompleted
 	}
 	h.mu.Unlock()
-	h.events <- RemoteAgentEvent{
+	h.emitTerminal(ctx, RemoteAgentEvent{
 		Kind:      "completed",
 		Text:      text,
 		Timestamp: time.Now(),
-	}
+	})
 }
 
-func (h *a2aHandle) finishFailed(text string) {
+func (h *a2aHandle) finishFailed(ctx context.Context, text string) {
 	h.mu.Lock()
 	if h.stopped {
 		h.status = RemoteStatusStopped
 		h.mu.Unlock()
-		h.events <- RemoteAgentEvent{
+		h.sendCancelOnce(ctx)
+		h.emitTerminal(ctx, RemoteAgentEvent{
 			Kind:      "stopped",
 			Text:      "stopped by parent",
 			Timestamp: time.Now(),
-		}
+		})
 		return
 	}
+	h.cancelSent = true
 	if h.status == RemoteStatusPending || h.status == RemoteStatusRunning {
 		h.status = RemoteStatusFailed
 	}
 	h.mu.Unlock()
-	h.events <- RemoteAgentEvent{
+	h.emitTerminal(ctx, RemoteAgentEvent{
 		Kind:      "failed",
 		Text:      text,
 		Timestamp: time.Now(),
-	}
+	})
 }
 
-func (h *a2aHandle) finishStopped() {
+func (h *a2aHandle) finishStopped(ctx context.Context) {
 	h.mu.Lock()
 	h.status = RemoteStatusStopped
 	h.mu.Unlock()
-	h.events <- RemoteAgentEvent{
+	h.sendCancelOnce(ctx)
+	h.emitTerminal(ctx, RemoteAgentEvent{
 		Kind:      "stopped",
 		Text:      "stopped by parent",
 		Timestamp: time.Now(),
-	}
+	})
 }
 
-func (h *a2aHandle) finishTask(task *A2ATask, artifacts []A2AArtifact) {
+func (h *a2aHandle) finishTask(ctx context.Context, task *A2ATask, artifacts []A2AArtifact) {
+	h.markRemoteTerminal()
 	switch task.Status.State {
 	case A2ATaskStateCompleted:
 		var statusParts []A2APart
@@ -584,17 +638,17 @@ func (h *a2aHandle) finishTask(task *A2ATask, artifacts []A2AArtifact) {
 			statusParts = task.Status.Message.Parts
 		}
 		res := resultFromA2AParts(statusParts, artifacts)
-		h.finishCompleted(textOrJSON(res))
+		h.finishCompleted(ctx, textOrJSON(res))
 	case A2ATaskStateCanceled:
 		if h.isStopped() {
-			h.finishStopped()
+			h.finishStopped(ctx)
 			return
 		}
 		detail := taskStatusDetail(task.Status)
-		h.finishFailed(fmt.Sprintf("%v: %s: task %s ended %q%s", ErrRemoteFailed, h.client.cfg.Name, task.ID, task.Status.State, detail))
+		h.finishFailed(ctx, fmt.Sprintf("%v: %s: task %s ended %q%s", ErrRemoteFailed, h.client.cfg.Name, task.ID, task.Status.State, detail))
 	default:
 		detail := taskStatusDetail(task.Status)
-		h.finishFailed(fmt.Sprintf("%v: %s: task %s ended %q%s", ErrRemoteFailed, h.client.cfg.Name, task.ID, task.Status.State, detail))
+		h.finishFailed(ctx, fmt.Sprintf("%v: %s: task %s ended %q%s", ErrRemoteFailed, h.client.cfg.Name, task.ID, task.Status.State, detail))
 	}
 }
 
@@ -618,194 +672,6 @@ func (h *a2aHandle) run(runCtx context.Context, cancel context.CancelFunc, msg *
 	h.runPoll(runCtx, msg, timeout)
 }
 
-func (h *a2aHandle) runStream(ctx context.Context, msg *A2AMessage, timeout time.Duration) {
-	body, err := json.Marshal(rpcRequest{
-		JSONRPC: "2.0",
-		ID:      h.client.nextID.Add(1),
-		Method:  methodMessageStream,
-		Params:  messageSendParams{Message: msg},
-	})
-	if err != nil {
-		h.finishFailed(fmt.Sprintf("a2a: %s: marshal %s: %v", h.client.cfg.Name, methodMessageStream, err))
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.endpoint, bytes.NewReader(body))
-	if err != nil {
-		h.finishFailed(fmt.Sprintf("a2a: %s: build %s request: %v", h.client.cfg.Name, methodMessageStream, err))
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set(A2AVersionHeader, A2AProtocolVersion)
-	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
-	if err := h.client.setAuth(req); err != nil {
-		h.finishFailed(err.Error())
-		return
-	}
-	resp, err := h.client.http.Do(req)
-	if err != nil {
-		h.finishStreamTransportErr(ctx, timeout, err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		h.finishFailed(fmt.Sprintf("%v: %s: %s returned HTTP %d", ErrRemoteAuthFailed, h.client.cfg.Name, methodMessageStream, resp.StatusCode))
-		return
-	}
-	if resp.StatusCode != http.StatusOK {
-		h.finishFailed(fmt.Sprintf("a2a: %s: %s returned HTTP %d", h.client.cfg.Name, methodMessageStream, resp.StatusCode))
-		return
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8<<20)
-	var artifacts []A2AArtifact
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" {
-			continue
-		}
-		done := h.handleStreamFrame(ctx, []byte(payload), &artifacts)
-		if done {
-			return
-		}
-	}
-	h.finishStreamEnd(ctx, timeout, scanner.Err())
-}
-
-func (h *a2aHandle) finishStreamTransportErr(ctx context.Context, timeout time.Duration, err error) {
-	if h.isStopped() {
-		h.finishStopped()
-		return
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		h.finishFailed(fmt.Sprintf("%v: %s: %s timed out after %s", ErrRemoteTimeout, h.client.cfg.Name, methodMessageStream, timeout))
-		return
-	}
-	h.finishFailed(fmt.Errorf("%w: %s: %s: %v", ErrRemoteUnreachable, h.client.cfg.Name, methodMessageStream, err).Error())
-}
-
-func (h *a2aHandle) handleStreamFrame(ctx context.Context, payload []byte, artifacts *[]A2AArtifact) bool {
-	var rpcResp rpcResponse
-	if err := json.Unmarshal(payload, &rpcResp); err != nil {
-		h.finishFailed(fmt.Sprintf("a2a: %s: parse stream frame: %v", h.client.cfg.Name, err))
-		return true
-	}
-	if rpcResp.Error != nil {
-		h.finishFailed(fmt.Sprintf("a2a: %s: %s: %v", h.client.cfg.Name, methodMessageStream, rpcResp.Error))
-		return true
-	}
-	var probe struct {
-		Kind string `json:"kind"`
-	}
-	if err := json.Unmarshal(rpcResp.Result, &probe); err != nil {
-		h.finishFailed(fmt.Sprintf("a2a: %s: malformed stream result: %v", h.client.cfg.Name, err))
-		return true
-	}
-	switch probe.Kind {
-	case "message":
-		var m A2AMessage
-		if err := json.Unmarshal(rpcResp.Result, &m); err != nil {
-			h.finishFailed(fmt.Sprintf("a2a: %s: malformed stream message: %v", h.client.cfg.Name, err))
-			return true
-		}
-		h.finishCompleted(textOrJSON(resultFromA2AParts(m.Parts, nil)))
-		return true
-	case "task":
-		return h.handleStreamTask(ctx, rpcResp.Result, artifacts)
-	case "artifact-update":
-		var au A2ATaskArtifactUpdateEvent
-		if err := json.Unmarshal(rpcResp.Result, &au); err != nil {
-			h.finishFailed(fmt.Sprintf("a2a: %s: malformed artifact-update: %v", h.client.cfg.Name, err))
-			return true
-		}
-		h.setTaskID(au.TaskID)
-		*artifacts = append(*artifacts, au.Artifact)
-		return false
-	case "status-update":
-		return h.handleStreamStatusUpdate(ctx, rpcResp.Result, *artifacts)
-	default:
-		h.finishFailed(fmt.Sprintf("a2a: %s: unknown stream event kind %q", h.client.cfg.Name, probe.Kind))
-		return true
-	}
-}
-
-func (h *a2aHandle) handleStreamTask(ctx context.Context, raw json.RawMessage, artifacts *[]A2AArtifact) bool {
-	var task A2ATask
-	if err := json.Unmarshal(raw, &task); err != nil {
-		h.finishFailed(fmt.Sprintf("a2a: %s: malformed stream task: %v", h.client.cfg.Name, err))
-		return true
-	}
-	h.setTaskID(task.ID)
-	if len(task.Artifacts) > 0 {
-		*artifacts = append(*artifacts, task.Artifacts...)
-	}
-	if task.Status.State == A2ATaskStateInputRequired || task.Status.State == A2ATaskStateAuthRequired {
-		h.sendCancelOnce(ctx)
-		h.finishFailed(fmt.Sprintf("%v: %s: task %s entered %q; task canceled", ErrRemoteFailed, h.client.cfg.Name, task.ID, task.Status.State))
-		return true
-	}
-	if task.Status.State.Terminal() {
-		h.finishTask(&task, *artifacts)
-		return true
-	}
-	if task.Status.Message != nil {
-		h.emitAlert(textOfA2AParts(task.Status.Message.Parts))
-	}
-	return false
-}
-
-func (h *a2aHandle) handleStreamStatusUpdate(ctx context.Context, raw json.RawMessage, artifacts []A2AArtifact) bool {
-	var su A2ATaskStatusUpdateEvent
-	if err := json.Unmarshal(raw, &su); err != nil {
-		h.finishFailed(fmt.Sprintf("a2a: %s: malformed status-update: %v", h.client.cfg.Name, err))
-		return true
-	}
-	h.setTaskID(su.TaskID)
-	if su.Status.State == A2ATaskStateInputRequired || su.Status.State == A2ATaskStateAuthRequired {
-		h.sendCancelOnce(ctx)
-		h.finishFailed(fmt.Sprintf("%v: %s: task %s entered %q; task canceled", ErrRemoteFailed, h.client.cfg.Name, su.TaskID, su.Status.State))
-		return true
-	}
-	if su.Final || su.Status.State.Terminal() {
-		h.finishTask(&A2ATask{ID: su.TaskID, Status: su.Status}, artifacts)
-		return true
-	}
-	if su.Status.Message != nil {
-		h.emitAlert(textOfA2AParts(su.Status.Message.Parts))
-	}
-	return false
-}
-
-func (h *a2aHandle) finishStreamEnd(ctx context.Context, timeout time.Duration, scanErr error) {
-	taskID := h.getTaskID()
-	if h.isStopped() {
-		h.sendCancelOnce(ctx)
-		h.finishStopped()
-		return
-	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		h.sendCancelOnce(ctx)
-		h.finishFailed(fmt.Sprintf("%v: %s: task %s timed out after %s; tasks/cancel sent", ErrRemoteTimeout, h.client.cfg.Name, taskID, timeout))
-		return
-	}
-	if ctx.Err() != nil {
-		h.sendCancelOnce(ctx)
-		h.finishFailed(fmt.Sprintf("a2a: %s: stream canceled: %v", h.client.cfg.Name, ctx.Err()))
-		return
-	}
-	if scanErr != nil {
-		h.finishFailed(fmt.Sprintf("a2a: %s: read stream: %v", h.client.cfg.Name, scanErr))
-		return
-	}
-	h.sendCancelOnce(ctx)
-	h.finishFailed(fmt.Sprintf("%v: %s: stream closed before task %s reached a terminal state", ErrRemoteFailed, h.client.cfg.Name, taskID))
-}
-
 func (h *a2aHandle) runPoll(ctx context.Context, msg *A2AMessage, timeout time.Duration) {
 	blocking := true
 	raw, err := h.client.call(ctx, h.endpoint, methodMessageSend, messageSendParams{
@@ -814,21 +680,25 @@ func (h *a2aHandle) runPoll(ctx context.Context, msg *A2AMessage, timeout time.D
 	})
 	if err != nil {
 		if h.isStopped() {
-			h.finishStopped()
+			h.finishStopped(ctx)
 			return
 		}
-		h.finishFailed(err.Error())
+		h.finishFailed(ctx, err.Error())
 		return
 	}
 	reply, err := decodeSendReply(raw)
 	if err != nil {
-		h.finishFailed(err.Error())
+		h.finishFailed(ctx, err.Error())
 		return
 	}
 	if reply.Message != nil {
+		h.markRemoteTerminal()
 		res := resultFromA2AParts(reply.Message.Parts, nil)
-		h.finishCompleted(textOrJSON(res))
+		h.finishCompleted(ctx, textOrJSON(res))
 		return
+	}
+	if reply.Task.Status.State.Terminal() {
+		h.markRemoteTerminal()
 	}
 	h.setTaskID(reply.Task.ID)
 	h.pollHandleLoop(ctx, reply.Task, timeout)
@@ -836,61 +706,105 @@ func (h *a2aHandle) runPoll(ctx context.Context, msg *A2AMessage, timeout time.D
 
 func (h *a2aHandle) pollHandleLoop(ctx context.Context, task *A2ATask, timeout time.Duration) {
 	lastAlert := ""
+	transientFailures := 0
 	for !task.Status.State.Terminal() {
 		if task.Status.State == A2ATaskStateInputRequired || task.Status.State == A2ATaskStateAuthRequired {
-			h.sendCancelOnce(ctx)
-			h.finishFailed(fmt.Sprintf("%v: %s: task %s entered %q; task canceled", ErrRemoteFailed, h.client.cfg.Name, task.ID, task.Status.State))
+			h.abandonFailed(ctx, fmt.Sprintf("%v: %s: task %s entered %q; task canceled", ErrRemoteFailed, h.client.cfg.Name, task.ID, task.Status.State))
 			return
 		}
 		if task.Status.Message != nil {
 			if txt := textOfA2AParts(task.Status.Message.Parts); txt != "" && txt != lastAlert {
 				lastAlert = txt
-				h.emitAlert(txt)
+				h.emitAlert(ctx, txt)
 			}
 		}
 		select {
 		case <-ctx.Done():
 			h.sendCancelOnce(ctx)
 			if h.isStopped() {
-				h.finishStopped()
+				h.finishStopped(ctx)
 				return
 			}
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				h.finishFailed(fmt.Sprintf("%v: %s: task %s still %q after %s; tasks/cancel sent",
+				h.finishFailed(ctx, fmt.Sprintf("%v: %s: task %s still %q after %s; tasks/cancel sent",
 					ErrRemoteTimeout, h.client.cfg.Name, task.ID, task.Status.State, timeout))
 				return
 			}
-			h.finishFailed(fmt.Sprintf("a2a: %s: task %s canceled; tasks/cancel sent: %v", h.client.cfg.Name, task.ID, ctx.Err()))
+			h.finishFailed(ctx, fmt.Sprintf("a2a: %s: task %s canceled; tasks/cancel sent: %v", h.client.cfg.Name, task.ID, ctx.Err()))
 			return
-		case <-time.After(h.client.pollInterval):
+		case <-time.After(pollDelay(h.client.pollInterval)):
 		}
 		raw, err := h.client.call(ctx, h.endpoint, methodTasksGet, taskQueryParams{ID: task.ID})
 		if err != nil {
-			if ctx.Err() != nil {
-				h.sendCancelOnce(ctx)
+			if ctx.Err() == nil && !h.isStopped() && isTransientPollError(err) && transientFailures < maxA2ATransientPollErrors {
+				transientFailures++
+				continue
 			}
+			h.sendCancelOnce(ctx)
 			if h.isStopped() {
-				h.finishStopped()
+				h.finishStopped(ctx)
 				return
 			}
-			h.finishFailed(err.Error())
+			h.finishFailed(ctx, err.Error())
 			return
 		}
+		transientFailures = 0
 		polled := &A2ATask{}
 		if err := json.Unmarshal(raw, polled); err != nil {
-			h.finishFailed(fmt.Sprintf("a2a: %s: malformed tasks/get result: %v", h.client.cfg.Name, err))
+			h.abandonFailed(ctx, fmt.Sprintf("a2a: %s: malformed tasks/get result: %v", h.client.cfg.Name, err))
 			return
 		}
 		polled.Kind = "task"
 		task = polled
 	}
-	h.finishTask(task, task.Artifacts)
+	h.finishTask(ctx, task, task.Artifacts)
+}
+
+type httpStatusError struct {
+	agentName  string
+	method     string
+	statusCode int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("a2a: %s: %s returned HTTP %d", e.agentName, e.method, e.statusCode)
+}
+
+func isTransientPollError(err error) bool {
+	if errors.Is(err, ErrRemoteUnreachable) {
+		return true
+	}
+	var stErr *httpStatusError
+	if errors.As(err, &stErr) {
+		return stErr.statusCode >= 500 ||
+			stErr.statusCode == http.StatusRequestTimeout ||
+			stErr.statusCode == http.StatusTooManyRequests
+	}
+	return false
+}
+
+// pollDelay returns base with ±20% jitter drawn from crypto/rand so concurrent
+// polling tasks do not synchronize into lockstep waves (#1436).
+func pollDelay(base time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	spread := base / 5
+	if spread <= 0 {
+		return base
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(2*spread)+1))
+	if err != nil {
+		return base
+	}
+	return base - spread + time.Duration(n.Int64())
 }
 
 func (c *A2AClient) call(ctx context.Context, endpoint, method string, params any) (json.RawMessage, error) {
+	reqID := c.nextID.Add(1)
 	body, err := json.Marshal(rpcRequest{
 		JSONRPC: "2.0",
-		ID:      c.nextID.Add(1),
+		ID:      reqID,
 		Method:  method,
 		Params:  params,
 	})
@@ -924,7 +838,7 @@ func (c *A2AClient) call(ctx context.Context, endpoint, method string, params an
 		return nil, fmt.Errorf("%w: %s: %s returned HTTP %d", ErrRemoteAuthFailed, c.cfg.Name, method, resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("a2a: %s: %s returned HTTP %d", c.cfg.Name, method, resp.StatusCode)
+		return nil, &httpStatusError{agentName: c.cfg.Name, method: method, statusCode: resp.StatusCode}
 	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
@@ -933,6 +847,9 @@ func (c *A2AClient) call(ctx context.Context, endpoint, method string, params an
 	var rpcResp rpcResponse
 	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
 		return nil, fmt.Errorf("a2a: %s: parse %s response: %w", c.cfg.Name, method, err)
+	}
+	if err := checkRPCResponseID(reqID, rpcResp.ID, rpcResp.Error != nil); err != nil {
+		return nil, fmt.Errorf("a2a: %s: %s: %w", c.cfg.Name, method, err)
 	}
 	if rpcResp.Error != nil {
 		return nil, fmt.Errorf("a2a: %s: %s: %w", c.cfg.Name, method, rpcResp.Error)
@@ -943,11 +860,30 @@ func (c *A2AClient) call(ctx context.Context, endpoint, method string, params an
 	return rpcResp.Result, nil
 }
 
+func checkRPCResponseID(reqID int64, rawID json.RawMessage, hasError bool) error {
+	trimmed := strings.TrimSpace(string(rawID))
+	if trimmed == "" || trimmed == "null" {
+		if hasError {
+			return nil
+		}
+		return errors.New("JSON-RPC response missing id")
+	}
+	want := strconv.FormatInt(reqID, 10)
+	if trimmed == want || trimmed == `"`+want+`"` {
+		return nil
+	}
+	var gotInt int64
+	if err := json.Unmarshal(rawID, &gotInt); err == nil && gotInt == reqID {
+		return nil
+	}
+	return fmt.Errorf("JSON-RPC response id %s does not match request id %d", trimmed, reqID)
+}
+
 func (c *A2AClient) cancelTask(ctx context.Context, endpoint, taskID string) {
 	if taskID == "" {
 		return
 	}
-	dctx, cancel := context.WithTimeout(contextWithoutCancel(ctx), 5*time.Second)
+	dctx, cancel := context.WithTimeout(contextWithoutCancel(ctx), a2aCancelTimeout)
 	defer cancel()
 	_, _ = c.call(dctx, endpoint, methodTasksCancel, taskIDParams{ID: taskID})
 }

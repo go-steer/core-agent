@@ -127,9 +127,14 @@ permissions.use_builtin_allow
 pricing.refresh
 pricing.source
 providers[].auth.alt_env
+providers[].auth.audience
+providers[].auth.client_auth
+providers[].auth.client_id_env
+providers[].auth.client_secret_env
 providers[].auth.env
 providers[].auth.kind
 providers[].auth.scopes
+providers[].auth.token_url
 providers[].backend
 providers[].base_url
 providers[].capabilities.forced_tool_choice
@@ -141,6 +146,7 @@ providers[].capabilities.streaming
 providers[].dialect
 providers[].extends
 providers[].extra_body
+providers[].headers
 providers[].metrics
 providers[].metrics_url
 providers[].models[].capabilities.forced_tool_choice
@@ -161,6 +167,7 @@ providers[].name
 providers[].open_models
 providers[].params
 providers[].platform
+providers[].pricing
 providers[].reasoning_format
 providers[].tiers
 providers[].usage.cached_tokens

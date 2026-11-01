@@ -668,6 +668,41 @@ This is the operator-vetted way to run a standing worker on a daemon started wit
 
 **Tell the parent it's a standing worker.** The parent's model sees only `name` and `description`. A standing worker never finishes, so if the parent calls `spawn_agent { …, wait: true }`, its turn blocks until the sync-wait cap. It may also spawn a second watcher when one is already running. Say it in `description`, for example: *"Standing watcher: spawn once, don't wait, stop it with stop_agent."*
 
+**Remote A2A v0.3 delegates — the `remote` block (v3.1+, [#1396](https://github.com/go-steer/core-agent/issues/1396)).** A declarative subagent can also point at an out-of-process Agent-to-Agent (A2A) v0.3 service instead of running an in-process model. Set `remote` on the `subagents[]` entry:
+
+```jsonc
+{
+  "subagents": [
+    {
+      "name": "remote-reviewer",
+      "description": "Remote A2A code review service. Delegate PR reviews here.",
+      "remote": {
+        "a2a": "https://reviewer.example.com/.well-known/agent-card.json",
+        "skill": "code-review",
+        "skills": ["code-review", "security-scan"],
+        "auth": { "type": "bearer", "token_env": "REVIEWER_A2A_TOKEN" },
+        "timeout_seconds": 120
+      },
+      "budgets": {
+        "max_wallclock_seconds": 180
+      }
+    }
+  ]
+}
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `a2a` | string | `""` | Base URL or full `/.well-known/agent-card.json` URL for agent card discovery. Either `a2a` or `endpoint` is required. |
+| `endpoint` | string | `""` | Explicit JSON-RPC 2.0 endpoint override. When set without `a2a`, skips agent card discovery. |
+| `skill` | string | `""` | Optional skill ID stamped as `metadata.skill_id` on `message/send` and `message/stream` requests and verified against the agent card. |
+| `skills` | string[] | `[]` | Optional allowlist of remote skill IDs; `skill` (if set) must belong to this list and every entry is verified against the remote card. |
+| `auth.type` | string | `""` | Only `"bearer"` is supported. |
+| `auth.token_env` | string | `""` | Environment variable holding the Bearer token (included in `Config.EnvRefs()`). |
+| `timeout_seconds` | int | `60` | Per-invocation timeout in seconds (`0` uses the 60s default). |
+
+When the parent calls `spawn_agent { agent: "remote-reviewer", goal: "…" }` (either async or with `wait: true`), the background manager routes the spawn through `background.A2AClient` (the shipped `RemoteAgentSpawner`): if the remote agent card advertises `capabilities.streaming: true`, the client uses `message/stream` over Server-Sent Events and feeds `status-update` and `artifact-update` frames into the parent's background alert inbox and `Handle.LastReport()`; otherwise it falls back to `message/send` + `tasks/get` polling. Calling `stop_agent` or exceeding `budgets.max_wallclock_seconds` sends `tasks/cancel` to the remote server. Because a remote A2A subagent runs out of process with its own model, persona, and tools, `remote` cannot be combined with in-process fields (`root`, `instructions`, `model`, `tools`, `mcp`, `skills`, `scheduler`, `max_depth`).
+
 ### REPL keybindings (v1.3.0+)
 
 The bundled CLI's REPL recognizes Claude Code-style mid-turn interrupts:

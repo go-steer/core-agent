@@ -343,6 +343,9 @@ func formatSubagentsLine(cfg *config.Config) string {
 		if s.Root != "" {
 			attrs = append(attrs, "root="+s.Root)
 		}
+		if s.Remote != nil {
+			attrs = append(attrs, "remote=a2a")
+		}
 		if len(attrs) > 0 {
 			desc += " (" + strings.Join(attrs, ", ") + ")"
 		}

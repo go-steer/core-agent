@@ -25,6 +25,8 @@ import (
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
+
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 )
 
 // RemoteAgentSpawner is implemented by consumers who want the parent
@@ -310,9 +312,11 @@ func (m *Manager) fanInRemote(rh RemoteAgentHandle, bh *Handle, name string) {
 			bh.mu.Unlock()
 		})
 	}
+	var sawTerminal bool
 	for ev := range rh.Events() {
 		switch ev.Kind {
 		case "alert", "":
+			bh.noteAlert(ev.Text)
 			m.pushAlert(Alert{
 				From:      name,
 				Text:      ev.Text,
@@ -320,23 +324,75 @@ func (m *Manager) fanInRemote(rh RemoteAgentHandle, bh *Handle, name string) {
 				Timestamp: nowOr(ev.Timestamp),
 			})
 		case "completed":
+			sawTerminal = true
+			bh.mu.Lock()
+			wasStopped := bh.status == StatusStopped
+			if wasStopped {
+				bh.result = &autonomous.RunResult{
+					Reason: autonomous.StopReasonContextCancelled,
+				}
+			} else {
+				bh.result = &autonomous.RunResult{
+					Reason:     autonomous.StopReasonCompleted,
+					Returned:   true,
+					DoneDetail: ev.Text,
+					FinalText:  ev.Text,
+				}
+			}
+			bh.mu.Unlock()
 			finalize(StatusCompleted)
-			m.pushAlert(Alert{
-				From: name, Text: ev.Text,
-				Kind: "completed", Timestamp: nowOr(ev.Timestamp),
-			})
+			kind, text := "completed", ev.Text
+			if wasStopped {
+				kind, text = "stopped", "stopped by parent"
+			}
+			if m.shouldAlert(name, bh) && !bh.takeSyncClaim() {
+				m.pushAlert(Alert{
+					From: name, Text: text,
+					Kind: kind, Timestamp: nowOr(ev.Timestamp),
+				})
+			}
 		case "failed":
+			sawTerminal = true
+			bh.mu.Lock()
+			errText := strings.TrimSpace(ev.Text)
+			if errText == "" {
+				errText = "remote subagent failed"
+			}
+			wasStopped := bh.status == StatusStopped
+			if wasStopped {
+				bh.result = &autonomous.RunResult{
+					Reason: autonomous.StopReasonContextCancelled,
+				}
+			} else {
+				bh.err = errors.New(errText)
+				bh.result = &autonomous.RunResult{}
+			}
+			bh.mu.Unlock()
 			finalize(StatusFailed)
-			m.pushAlert(Alert{
-				From: name, Text: ev.Text,
-				Kind: "failed", Timestamp: nowOr(ev.Timestamp),
-			})
+			kind, text := "failed", ev.Text
+			if wasStopped {
+				kind, text = "stopped", "stopped by parent"
+			}
+			if m.shouldAlert(name, bh) && !bh.takeSyncClaim() {
+				m.pushAlert(Alert{
+					From: name, Text: text,
+					Kind: kind, Timestamp: nowOr(ev.Timestamp),
+				})
+			}
 		case "stopped":
+			sawTerminal = true
+			bh.mu.Lock()
+			bh.result = &autonomous.RunResult{
+				Reason: autonomous.StopReasonContextCancelled,
+			}
+			bh.mu.Unlock()
 			finalize(StatusStopped)
-			m.pushAlert(Alert{
-				From: name, Text: ev.Text,
-				Kind: "stopped", Timestamp: nowOr(ev.Timestamp),
-			})
+			if m.shouldAlert(name, bh) && !bh.takeSyncClaim() {
+				m.pushAlert(Alert{
+					From: name, Text: ev.Text,
+					Kind: "stopped", Timestamp: nowOr(ev.Timestamp),
+				})
+			}
 		case "log":
 			// Logs aren't surfaced as alerts (would drown the
 			// parent's context). Consumers who want them should
@@ -351,8 +407,31 @@ func (m *Manager) fanInRemote(rh RemoteAgentHandle, bh *Handle, name string) {
 			})
 		}
 	}
-	// Channel closed without a terminal kind — treat as completed
-	// so stop_agent + operator surfaces converge.
+	if !sawTerminal {
+		bh.mu.Lock()
+		wasStopped := bh.status == StatusStopped
+		if wasStopped {
+			bh.result = &autonomous.RunResult{
+				Reason: autonomous.StopReasonContextCancelled,
+			}
+		} else {
+			bh.err = errors.New("remote subagent stream closed without a terminal event")
+			bh.result = &autonomous.RunResult{}
+		}
+		bh.mu.Unlock()
+		finalize(StatusFailed)
+		kind, text := "failed", "remote subagent stream closed without a terminal event"
+		if wasStopped {
+			kind, text = "stopped", "stopped by parent"
+		}
+		if m.shouldAlert(name, bh) && !bh.takeSyncClaim() {
+			m.pushAlert(Alert{
+				From: name, Text: text,
+				Kind: kind, Timestamp: time.Now(),
+			})
+		}
+		return
+	}
 	finalize(StatusCompleted)
 }
 

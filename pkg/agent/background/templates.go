@@ -21,13 +21,16 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
@@ -66,8 +69,13 @@ type SubagentTemplate struct {
 	// subagents carry their own content bundle.
 	Root string
 	// ModelFactory builds a fresh LLM for each spawn — session isolation,
-	// same as the catalog path's provider.Model call. Required.
+	// same as the catalog path's provider.Model call. Required unless
+	// Remote is set.
 	ModelFactory func(context.Context) (adkmodel.LLM, error)
+	// Remote, when non-nil, routes spawns of this template to an
+	// out-of-process spawner (such as A2AClient) instead of building an
+	// in-process LLM via ModelFactory.
+	Remote RemoteAgentSpawner
 	// ModelID labels the template's model for /usage pricing attribution.
 	ModelID string
 	// Backend is the backend that bills ModelID (models.BackendOf on the
@@ -222,8 +230,8 @@ func validateTemplate(t SubagentTemplate) error {
 	if err := validateSpawnName(t.Name); err != nil {
 		return err
 	}
-	if t.ModelFactory == nil {
-		return fmt.Errorf("background: subagent template %q needs a ModelFactory", t.Name)
+	if t.ModelFactory == nil && t.Remote == nil {
+		return fmt.Errorf("background: subagent template %q needs a ModelFactory or Remote spawner", t.Name)
 	}
 	switch t.Mode {
 	case ModeAuto, ModeBounded, ModeStanding:
@@ -284,6 +292,15 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 		return nil, errors.New("background: goal is required when spawning a preconfigured subagent")
 	}
 
+	if tmpl.Remote != nil {
+		switch strings.TrimSpace(ov.Model) {
+		case "", "inherit":
+		default:
+			return nil, fmt.Errorf("%w: got %q (remote subagent %q runs out of process and its model cannot be overridden)", ErrModelNotOverridable, ov.Model, name)
+		}
+		return m.launchRemote(ctx, parentBranch, tmpl, goal, ov, explicitName)
+	}
+
 	// Model override: inherit the template's own model, or downshift to
 	// the manager's small tier. A "small" downshift resolves against the
 	// manager's provider — the small tier is defined relative to the
@@ -332,6 +349,81 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 		scheduler:       sched,
 		mode:            tmpl.Mode,
 	})
+}
+
+func (m *Manager) launchRemote(ctx context.Context, parentBranch string, tmpl SubagentTemplate, goal string, ov RefOverrides, explicitName string) (*Handle, error) {
+	instanceName := m.nextInstanceName(tmpl.Name, explicitName)
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, ErrManagerClosed
+	}
+	if m.parent == nil {
+		m.mu.Unlock()
+		return nil, ErrNoParent
+	}
+	if err := validateSpawnName(instanceName); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	if depth := subsession.CurrentDepth(ctx); depth >= m.maxDepth {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w (depth=%d, max=%d)", ErrDepthExceeded, depth, m.maxDepth)
+	}
+	if subsession.InLineage(ctx, tmpl.Name) {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: %q is already running as an ancestor of this spawn — do the work in this run, or delegate to a different subagent", ErrSelfSpawn, tmpl.Name)
+	}
+	if existing, exists := m.agents[instanceName]; exists {
+		if existing.Status() == StatusRunning {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("%w: %q", ErrSubagentExists, instanceName)
+		}
+		delete(m.agents, instanceName)
+	}
+	if m.maxConcurrent > 0 && m.runningCount() >= m.maxConcurrent {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w (running=%d, max=%d)", ErrTooManyConcurrent, m.runningCount(), m.maxConcurrent)
+	}
+	branch := subsession.ComposeBranch(parentBranch, "remote."+instanceName)
+	spawnCtx, cancel := context.WithCancel(contextWithoutCancel(ctx))
+	spawnCtx = subsession.WithDepth(spawnCtx, subsession.CurrentDepth(ctx)+1)
+	spawnCtx = subsession.WithLineage(spawnCtx, tmpl.Name)
+	spawnCtx = permissions.WithSubagentSource(spawnCtx, instanceName)
+	bh := &Handle{
+		Name:      instanceName,
+		Branch:    branch,
+		StartedAt: time.Now(),
+		status:    StatusRunning,
+		done:      make(chan struct{}),
+		cancel:    cancel,
+	}
+	m.agents[instanceName] = bh
+	m.mu.Unlock()
+
+	budgets := tightenBudgets(mergeBudgets(m.defaultBudgets, tmpl.Budgets), ov.Budgets)
+	rh, err := tmpl.Remote.Spawn(spawnCtx, RemoteAgentSpec{
+		ID:      instanceName,
+		Name:    instanceName,
+		Goal:    goal,
+		Budgets: budgets,
+	})
+	if err != nil {
+		m.abortSpawn(instanceName, bh, cancel)
+		return nil, err
+	}
+	bh.mu.Lock()
+	alreadyStopped := bh.status == StatusStopped
+	bh.cancel = func() {
+		cancel()
+		_ = rh.Stop(context.Background())
+	}
+	bh.mu.Unlock()
+	if alreadyStopped {
+		_ = rh.Stop(context.Background())
+	}
+	go m.fanInRemote(rh, bh, instanceName)
+	return bh, nil
 }
 
 // SpawnRef spawns a configured subagent by name — routing a declarative
@@ -418,10 +510,14 @@ func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
 		if _, ok := sync[t.Name]; ok {
 			modes = []string{"sync", "async"}
 		}
+		model := t.ModelID
+		if model == "" && t.Remote != nil {
+			model = "remote (a2a)"
+		}
 		templates = append(templates, attach.SubagentCatalogInfo{
 			Name:        t.Name,
 			Description: t.Description,
-			Model:       t.ModelID,
+			Model:       model,
 			Root:        t.Root,
 			Modes:       modes,
 			Tools:       templateToolInfos(t),

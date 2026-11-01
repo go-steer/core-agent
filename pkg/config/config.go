@@ -1456,6 +1456,52 @@ type SubagentSpec struct {
 	// reads it: calling the subagent as a parent tool runs one
 	// delegation, which has no turns to schedule between.
 	Scheduler string `json:"scheduler,omitempty"`
+
+	// Remote configures this subagent as an out-of-process A2A v0.3
+	// delegate (#1396). When set, spawn_agent {agent: "<name>"} routes
+	// to the configured A2A endpoint (message/stream when the remote
+	// card advertises streaming, else message/send + tasks/get polling)
+	// instead of launching an in-process ADK agent. Mutually exclusive
+	// with in-process fields (root, instructions, model, tools, mcp,
+	// skills, scheduler, max_depth).
+	Remote *SubagentRemoteConfig `json:"remote,omitempty"`
+}
+
+// SubagentRemoteAuthBearer is the supported authentication scheme for
+// remote A2A subagents.
+const SubagentRemoteAuthBearer = "bearer"
+
+// SubagentRemoteConfig configures an out-of-process A2A v0.3 subagent.
+type SubagentRemoteConfig struct {
+	// A2A is the remote agent card URL (or base URL, to which
+	// /.well-known/agent-card.json is appended automatically).
+	A2A string `json:"a2a,omitempty"`
+
+	// Endpoint is the JSON-RPC 2.0 endpoint URL, bypassing card
+	// discovery when A2A is unset.
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Skill is the default skill ID sent in message metadata when
+	// invoking the remote agent.
+	Skill string `json:"skill,omitempty"`
+
+	// Skills is an optional allowlist of skill IDs on the remote agent.
+	Skills []string `json:"skills,omitempty"`
+
+	// Auth configures request authentication; nil means unauthenticated.
+	Auth *SubagentRemoteAuthConfig `json:"auth,omitempty"`
+
+	// TimeoutSeconds bounds each remote invocation; 0 uses the client
+	// default (120s).
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+}
+
+// SubagentRemoteAuthConfig configures authentication for a remote A2A
+// subagent. The secret is referenced via TokenEnv, never stored in
+// config.json.
+type SubagentRemoteAuthConfig struct {
+	Type     string `json:"type"`
+	TokenEnv string `json:"token_env,omitempty"`
 }
 
 // SubagentBudgets caps one delegation. Field names mirror spawn_agent's
@@ -2302,6 +2348,71 @@ func (c *Config) validateSubagents() error {
 				return fmt.Errorf("config: subagents[%d].budgets.max_wallclock_seconds=%d must be >= 0 (0 = no declared cap)", i, b.MaxWallclockSeconds)
 			}
 		}
+		if sa.Remote != nil {
+			if err := validateRemoteSubagent(i, sa); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateRemoteSubagent(i int, sa SubagentSpec) error {
+	r := sa.Remote
+	if strings.TrimSpace(r.A2A) == "" && strings.TrimSpace(r.Endpoint) == "" {
+		return fmt.Errorf("config: subagents[%d].remote requires a2a (agent card URL) or endpoint", i)
+	}
+	if err := validateRemoteHTTPURL(r.A2A); err != nil {
+		return fmt.Errorf("config: subagents[%d].remote.a2a: %w", i, err)
+	}
+	if err := validateRemoteHTTPURL(r.Endpoint); err != nil {
+		return fmt.Errorf("config: subagents[%d].remote.endpoint: %w", i, err)
+	}
+	if sa.Root != "" || sa.Instructions != "" || sa.Model != nil || sa.Tools != nil || sa.MCP != nil || sa.Skills != nil || sa.Scheduler != "" || sa.MaxDepth != 0 {
+		return fmt.Errorf("config: subagents[%d]: remote cannot be combined with in-process fields (root, instructions, model, tools, mcp, skills, scheduler, max_depth)", i)
+	}
+	if r.Auth != nil {
+		if r.Auth.Type != SubagentRemoteAuthBearer {
+			return fmt.Errorf("config: subagents[%d].remote.auth.type %q is unknown (want %q)", i, r.Auth.Type, SubagentRemoteAuthBearer)
+		}
+		if strings.TrimSpace(r.Auth.TokenEnv) == "" {
+			return fmt.Errorf("config: subagents[%d].remote.auth.token_env is required when auth.type is %q", i, SubagentRemoteAuthBearer)
+		}
+	}
+	if r.TimeoutSeconds < 0 {
+		return fmt.Errorf("config: subagents[%d].remote.timeout_seconds=%d must be >= 0", i, r.TimeoutSeconds)
+	}
+	for j, s := range r.Skills {
+		if strings.TrimSpace(s) == "" {
+			return fmt.Errorf("config: subagents[%d].remote.skills[%d] is empty", i, j)
+		}
+	}
+	if s := strings.TrimSpace(r.Skill); s != "" && len(r.Skills) > 0 {
+		allowed := false
+		for _, a := range r.Skills {
+			if a == s {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("config: subagents[%d].remote.skill %q is not in remote.skills %v", i, s, r.Skills)
+		}
+	}
+	return nil
+}
+
+func validateRemoteHTTPURL(raw string) error {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return err
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("must be an http:// or https:// URL with a host, got %q", raw)
 	}
 	return nil
 }

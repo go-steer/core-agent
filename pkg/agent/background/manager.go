@@ -238,6 +238,9 @@ func (h *Handle) claimSync() bool {
 		return false
 	default:
 	}
+	if h.status != StatusRunning {
+		return false
+	}
 	if h.sync != syncNone {
 		// A second concurrent waiter on the same handle can't happen via
 		// spawn_agent (one tool call owns one fresh handle), but SpawnRef

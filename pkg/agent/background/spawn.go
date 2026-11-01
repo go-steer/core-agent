@@ -111,7 +111,8 @@ type resolvedSpawn struct {
 	// WithInstruction for a catalog Spec, WithUserInstruction for a
 	// template (layer 4, matching the sync declarative path). Empty when
 	// the subagent carries no persona layer.
-	instrOpts []agent.Option
+	instrOpts    []agent.Option
+	subagentMode agent.SubagentMode
 	// tools are the built-in tools (already resolved to instances);
 	// toolsets are MCP + skills groups (nil for the catalog path, which
 	// has no toolset dimension). Both are shared, stateless handles safe
@@ -393,6 +394,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	baseTools := rs.tools
 	toolsets := rs.toolsets
 	instrOpts := rs.instrOpts
+	subagentMode := rs.subagentMode
 	maxDepth := rs.maxDepth
 	// Resolved here rather than in the two callers so ModeAuto's rule
 	// has exactly one implementation (#730).
@@ -404,18 +406,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	// goroutine so the construction happens after the goroutine
 	// starts (autonomous.Run calls build).
 	build := func(extraTools []tool.Tool) (*agent.Agent, error) {
-		// extraTools is the return_result tool (plus its aliases) the
-		// autonomous driver injected; merge it with our subagent's
-		// chosen tools and the always-on report_alert tool.
-		//
-		// report_completed used to be built here as its own tool. It
-		// is now one of the driver's return aliases (#728) so calling
-		// it actually returns, instead of acking and leaving the loop
-		// to re-drive the model past its own answer.
-		all := make([]tool.Tool, 0, len(baseTools)+len(extraTools)+1)
-		all = append(all, baseTools...)
-		all = append(all, extraTools...)
-		all = append(all, newReportAlertTool(m, name, handle.noteAlert))
+		all := buildSpawnTools(subagentMode, baseTools, extraTools, newReportAlertTool(m, name, handle.noteAlert))
 		opts := make([]agent.Option, 0, len(instrOpts)+9)
 		opts = append(opts,
 			agent.WithAppName(parent.AppName()),
@@ -446,13 +437,8 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// and a spec's persona may itself be installed via
 		// WithInstruction (which replaces layers 1-3). Appending last
 		// keeps the return contract present under either arrangement.
-		// Both modes name the return tool: bounded registers it too as
-		// of #745, so the contract's tool-naming form is accurate on
-		// every spawned path. (A declarative subagent invoked
-		// synchronously as a parent tool still has none, and renders
-		// the last-message form in cmd/core-agent/subagents.go.)
-		opts = append(opts, agent.WithExtraInstruction(subagentReturnContract))
-		if len(toolsets) > 0 {
+		opts = append(opts, agent.WithExtraInstruction(spawnReturnContract(subagentMode)))
+		if len(toolsets) > 0 && subagentMode != agent.SubagentModeSingleTurn {
 			opts = append(opts, agent.WithToolsets(toolsets))
 		}
 		if maxDepth > 0 {
@@ -974,4 +960,31 @@ func mergeBudgets(defaults, spec Budgets) Budgets {
 // Go 1.21 added context.WithoutCancel for this exact purpose.
 func contextWithoutCancel(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
+}
+
+func buildSpawnTools(mode agent.SubagentMode, baseTools, extraTools []tool.Tool, alertTool tool.Tool) []tool.Tool {
+	switch mode {
+	case agent.SubagentModeSingleTurn:
+		return nil
+	case agent.SubagentModeTask:
+		all := make([]tool.Tool, 0, len(baseTools)+1)
+		all = append(all, baseTools...)
+		return append(all, alertTool)
+	default:
+		all := make([]tool.Tool, 0, len(baseTools)+len(extraTools)+1)
+		all = append(all, baseTools...)
+		all = append(all, extraTools...)
+		return append(all, alertTool)
+	}
+}
+
+func spawnReturnContract(mode agent.SubagentMode) string {
+	switch mode {
+	case agent.SubagentModeSingleTurn:
+		return agent.SubagentReturnContract("")
+	case agent.SubagentModeTask:
+		return agent.SubagentReturnContract(agent.FinishTaskToolName)
+	default:
+		return subagentReturnContract
+	}
 }

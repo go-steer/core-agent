@@ -20,6 +20,7 @@ import (
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -51,3 +52,11 @@ func (emptyState) All() iter.Seq2[string, any] {
 // asReadonly wraps ctx so it can be passed where agent.ReadonlyContext
 // is expected.
 func asReadonly(ctx context.Context) agent.ReadonlyContext { return listCtx{Context: ctx} }
+
+// ListTools calls ts.Tools using a minimal ReadonlyContext backed by ctx.
+func ListTools(ctx context.Context, ts tool.Toolset) ([]tool.Tool, error) {
+	if ts == nil {
+		return nil, nil
+	}
+	return ts.Tools(asReadonly(ctx))
+}

@@ -38,7 +38,29 @@
 // regardless of date suffix (`-20251001`, `@20251101`, etc.).
 package modeltier
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
+
+// Tier is a capability tier label ("frontier", "mid", "small").
+type Tier string
+
+// Validate reports whether t is a recognized capability tier.
+func (t Tier) Validate() error {
+	return ValidateTier(string(t))
+}
+
+// ValidateTier reports whether tier is one of the recognized capability
+// tiers (TierFrontier, TierMid, TierSmall).
+func ValidateTier(tier string) error {
+	switch tier {
+	case TierFrontier, TierMid, TierSmall:
+		return nil
+	default:
+		return fmt.Errorf("unknown model tier %q (want %q, %q, or %q)", tier, TierSmall, TierMid, TierFrontier)
+	}
+}
 
 // Tier labels. Use these constants rather than string literals so
 // future tier renames are mechanically findable.

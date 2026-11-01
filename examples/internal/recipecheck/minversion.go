@@ -216,6 +216,37 @@ var GatedFeatures = []GatedFeature{
 			"of dispatching to the remote A2A service",
 	},
 	{
+		Path: "subagents[].mode",
+		Min:  "3.1.0-dev.1",
+		Why: "bounded `task` (`finish_task` termination) and `single_turn` (toolless single-call) " +
+			"subagent execution modes (#1401). An older daemon ignores the field and runs the " +
+			"subagent in `chat` mode without `finish_task` or single-turn enforcement",
+	},
+	{
+		Path: "subagents[].output_schema",
+		Min:  "3.1.0-dev.1",
+		Why: "structured JSON output schema enforcement on `task` and `single_turn` subagents (#1401). " +
+			"An older daemon drops the schema and returns unstructured prose",
+	},
+	{
+		Path: "subagents[].tier",
+		Min:  "3.1.0-dev.1",
+		Why: "capability-tier model resolution (`small`, `mid`, `frontier`) for subagents (#1401). " +
+			"An older daemon drops `tier` and inherits the parent's model",
+	},
+	{
+		Path: "subagents[].capability",
+		Min:  "3.1.0-dev.1",
+		Why: "the `read_only` / `change_executor` startup capability check (#1401). An older daemon " +
+			"drops `capability` and never verifies that a `read_only` specialist holds no mutating tools",
+	},
+	{
+		Path: "subagents[].mcp_tools",
+		Min:  "3.1.0-dev.1",
+		Why: "per-server MCP tool allowlisting on a subagent (#1401). An older daemon drops `mcp_tools` " +
+			"and exposes the server's entire tool surface to the subagent",
+	},
+	{
 		Path: "model.builtin_tools",
 		Min:  "2.9.0-dev.4",
 		Why: "the provider's server-side built-ins — web search, URL fetching, code execution (#876). " +

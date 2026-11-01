@@ -145,3 +145,61 @@ func unmatchedToolAllowlist(a *allowlistToolset) []string {
 		"tools allowlist names %d tool(s) this server does not expose: %s. Exposed: %s",
 		len(missing), strings.Join(missing, ", "), strings.Join(exposed, ", "))}
 }
+
+type filteredMCPToolset struct {
+	inner      tool.Toolset
+	serverName string
+	allowed    []string
+}
+
+func (f *filteredMCPToolset) Name() string { return f.inner.Name() }
+
+func (f *filteredMCPToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
+	upstream, err := f.inner.Tools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tool.Tool, 0, len(upstream))
+	for _, t := range upstream {
+		if t != nil && MatchesToolAllowlist(t.Name(), f.serverName, f.allowed) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// FilterToolset returns a tool.Toolset that exposes only the tools from
+// inner whose names match allowed (#1401). Each entry in allowed may be
+// either the full namespaced tool name ("<server>_<tool>") or the
+// unprefixed upstream tool name ("<tool>") when serverName is non-empty.
+//
+// An empty allowed slice exposes no tools. Returns nil when inner is nil.
+func FilterToolset(inner tool.Toolset, serverName string, allowed []string) tool.Toolset {
+	if inner == nil {
+		return nil
+	}
+	return &filteredMCPToolset{
+		inner:      inner,
+		serverName: serverName,
+		allowed:    allowed,
+	}
+}
+
+// MatchesToolAllowlist reports whether toolName (on serverName) matches
+// any entry in allowed. Entries may be either the prefixed name
+// ("<sanitizePrefix(serverName)>_<tool>") or the unprefixed name ("<tool>").
+func MatchesToolAllowlist(toolName, serverName string, allowed []string) bool {
+	prefix := ""
+	if serverName != "" {
+		prefix = sanitizePrefix(serverName) + "_"
+	}
+	for _, a := range allowed {
+		if a == toolName {
+			return true
+		}
+		if prefix != "" && strings.HasPrefix(toolName, prefix) && strings.TrimPrefix(toolName, prefix) == a {
+			return true
+		}
+	}
+	return false
+}

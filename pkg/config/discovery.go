@@ -76,33 +76,41 @@ func Load(agentsDir string) (*Config, error) {
 	path := filepath.Join(agentsDir, ConfigFileName)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return cfg, nil
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("config: read %q: %w", path, err)
 		}
-		return nil, fmt.Errorf("config: read %q: %w", path, err)
+	} else {
+		// Decode into the existing defaults so unspecified fields keep their
+		// default values. Non-critical unknown fields warn and survive Save
+		// round-trips (forward-compat: an older binary still loads a config a
+		// newer binary wrote), while unknown keys inside safety, permission,
+		// scope, attach, provider, or budget sections fail closed in
+		// strictProviders / checkUnknownKeys (#1375, #1442).
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("config: parse %q: %w", path, err)
+		}
+		// Provider profiles first, naming the file: a profile error points
+		// at a nested block whose index alone is hard to find. Strict where
+		// the rest of the file is tolerant: a misspelt key inside a profile
+		// (base_ur) is a profile that silently lacks the field, with no
+		// forward-compat case to protect — the schema is core-models'.
+		if err := strictProviders(data); err != nil {
+			return nil, fmt.Errorf("config: %s: %w", path, err)
+		}
+		if err := checkUnknownKeys(path, data); err != nil {
+			return nil, err
+		}
+		if err := cfg.validateProviders(); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
-	// Decode into the existing defaults so unspecified fields keep their
-	// default values. Non-critical unknown fields warn and survive Save
-	// round-trips (forward-compat: an older binary still loads a config a
-	// newer binary wrote), while unknown keys inside safety, permission,
-	// scope, attach, provider, or budget sections fail closed in
-	// strictProviders / checkUnknownKeys (#1375, #1442).
-	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("config: parse %q: %w", path, err)
+	for i := range cfg.Subagents {
+		if cfg.Subagents[i].baseDir == "" {
+			cfg.Subagents[i].baseDir = agentsDir
+		}
 	}
-	// Provider profiles first, naming the file: a profile error points
-	// at a nested block whose index alone is hard to find. Strict where
-	// the rest of the file is tolerant: a misspelt key inside a profile
-	// (base_ur) is a profile that silently lacks the field, with no
-	// forward-compat case to protect — the schema is core-models'.
-	if err := strictProviders(data); err != nil {
-		return nil, fmt.Errorf("config: %s: %w", path, err)
-	}
-	if err := checkUnknownKeys(path, data); err != nil {
+	if err := cfg.loadMarkdownSubagents(agentsDir); err != nil {
 		return nil, err
-	}
-	if err := cfg.validateProviders(); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err

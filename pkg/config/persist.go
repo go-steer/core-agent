@@ -103,8 +103,19 @@ func marshalForSave(existing []byte, cfg *Config) ([]byte, error) {
 	}
 
 	// The full serialization of the (defaults-merged) config, in struct
-	// field order.
-	fullBytes, err := json.Marshal(cfg)
+	// field order. Exclude Markdown-authored subagents (.agents/subagents/*.md)
+	// so Save never copies them into config.json (#1401).
+	cfgToMarshal := *cfg
+	if len(cfg.Subagents) > 0 {
+		var jsonSubagents []SubagentSpec
+		for _, s := range cfg.Subagents {
+			if !s.fromMarkdown {
+				jsonSubagents = append(jsonSubagents, s)
+			}
+		}
+		cfgToMarshal.Subagents = jsonSubagents
+	}
+	fullBytes, err := json.Marshal(&cfgToMarshal)
 	if err != nil {
 		return nil, err
 	}

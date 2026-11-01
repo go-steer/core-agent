@@ -307,6 +307,12 @@ type Gate struct {
 	// approver's instructions file, or "". Writes to it take the
 	// elevated control-plane path (checkFileWrite).
 	approverInstructions string
+
+	// toolClasses and mutatingMode configure the durable write gate
+	// and recorded-effect outbox (#1400). Guarded by mu and inherited
+	// by DeriveForSession.
+	toolClasses  map[string]ToolClass
+	mutatingMode MutatingMode
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
@@ -739,10 +745,14 @@ func (g *Gate) switchableTo(m Mode) error {
 func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gate {
 	template.mu.Lock()
 	mode := template.mode
+	toolClasses := template.toolClasses
+	mutatingMode := template.mutatingMode
 	template.mu.Unlock()
 	return &Gate{
 		sessionID:     sessionID,
 		mode:          mode,
+		toolClasses:   toolClasses,
+		mutatingMode:  mutatingMode,
 		policy:        template.policy,
 		sessionPolicy: &Policy{},
 		scope:         template.scope,

@@ -84,6 +84,7 @@ type WorkloadBundle struct {
 	HITLPolicy    WorkloadHITL        `yaml:"hitl_policy,omitempty"`
 	Planner       WorkloadPlanner     `yaml:"planner,omitempty"`
 	EdgeTrigger   WorkloadEdgeTrigger `yaml:"edge_trigger,omitempty"`
+	Schedule      *ScheduleConfig     `yaml:"schedule,omitempty"`
 	Monitor       WorkloadMonitor     `yaml:"monitor,omitempty"`
 	A2A           map[string]any      `yaml:"a2a,omitempty"`
 	AGUI          map[string]any      `yaml:"agui,omitempty"`
@@ -156,9 +157,59 @@ type WorkloadHTTPTrigger struct {
 
 // WorkloadScheduledTrigger declares a periodic schedule on workload.yaml.
 type WorkloadScheduledTrigger struct {
+	Every    string `yaml:"every,omitempty"`
 	Interval string `yaml:"interval,omitempty"`
 	Jitter   string `yaml:"jitter,omitempty"`
 	Prompt   string `yaml:"prompt,omitempty"`
+}
+
+func (s *WorkloadScheduledTrigger) toScheduleConfig() *ScheduleConfig {
+	if s == nil {
+		return nil
+	}
+	return &ScheduleConfig{
+		Every:    s.Every,
+		Interval: s.Interval,
+		Jitter:   s.Jitter,
+		Prompt:   s.Prompt,
+	}
+}
+
+// EffectiveInterval parses edge_trigger.scheduled.interval. A nil receiver
+// returns (0, nil).
+func (s *WorkloadScheduledTrigger) EffectiveInterval() (time.Duration, error) {
+	return s.toScheduleConfig().EffectiveInterval()
+}
+
+// EffectiveJitter resolves edge_trigger.scheduled.jitter against the interval.
+func (s *WorkloadScheduledTrigger) EffectiveJitter() (time.Duration, error) {
+	return s.toScheduleConfig().EffectiveJitter()
+}
+
+// ParsedSchedule returns the validated ScheduleConfig declared by the workload
+// bundle (from either top-level `schedule:` or `edge_trigger.scheduled:`), or
+// (nil, nil) when the bundle declares no schedule (#1405).
+func (b *WorkloadBundle) ParsedSchedule() (*ScheduleConfig, error) {
+	if b == nil {
+		return nil, nil
+	}
+	if b.Schedule != nil && b.EdgeTrigger.Scheduled != nil {
+		return nil, errors.New("both schedule: and edge_trigger.scheduled: are set; keep one")
+	}
+	var sc *ScheduleConfig
+	switch {
+	case b.Schedule != nil:
+		cp := *b.Schedule
+		sc = &cp
+	case b.EdgeTrigger.Scheduled != nil:
+		sc = b.EdgeTrigger.Scheduled.toScheduleConfig()
+	default:
+		return nil, nil
+	}
+	if err := sc.Validate(); err != nil {
+		return nil, err
+	}
+	return sc, nil
 }
 
 // WorkloadMonitor declares deterministic monitoring cycle hooks.
@@ -301,7 +352,8 @@ func (b *WorkloadBundle) validate() error {
 	if err := validateWorkloadRosterAndTools(b.Specialists, b.ToolCatalog.Tools); err != nil {
 		return err
 	}
-	return validateWorkloadTriggers(b.EdgeTrigger)
+	_, err := b.ParsedSchedule()
+	return err
 }
 
 func validateWorkloadHITL(h WorkloadHITL) error {
@@ -377,26 +429,6 @@ func validateWorkloadToolPolicy(p ToolPolicyConfig) error {
 		}
 		if capCfg.Revert != nil && strings.TrimSpace(capCfg.Revert.Call) == "" {
 			return fmt.Errorf("tool_catalog.tools[%q].capture.revert names no call tool", p.Name)
-		}
-	}
-	return nil
-}
-
-func validateWorkloadTriggers(et WorkloadEdgeTrigger) error {
-	if et.Scheduled == nil {
-		return nil
-	}
-	if strings.TrimSpace(et.Scheduled.Interval) == "" {
-		return errors.New("edge_trigger.scheduled.interval is required")
-	}
-	iv, err := time.ParseDuration(et.Scheduled.Interval)
-	if err != nil || iv < time.Second {
-		return fmt.Errorf("edge_trigger.scheduled.interval %q must be a duration >= 1s", et.Scheduled.Interval)
-	}
-	if strings.TrimSpace(et.Scheduled.Jitter) != "" {
-		j, err := time.ParseDuration(et.Scheduled.Jitter)
-		if err != nil || j < 0 || j > iv {
-			return fmt.Errorf("edge_trigger.scheduled.jitter %q must be in [0, interval]", et.Scheduled.Jitter)
 		}
 	}
 	return nil
@@ -681,6 +713,9 @@ func buildConfigFromWorkload(b *WorkloadBundle) *Config {
 	if len(b.ToolCatalog.Tools) > 0 {
 		cfg.Tools.Policies = expandWorkloadToolPolicies(b)
 	}
+	if sc, err := b.ParsedSchedule(); err == nil && sc != nil {
+		cfg.Schedule = sc
+	}
 	return cfg
 }
 
@@ -818,6 +853,7 @@ func writeConvertedConfigJSON(path string, cfg *Config) error {
 		Tools       ToolsConfig       `json:"tools,omitempty"`
 		Safety      SafetyConfig      `json:"safety,omitempty"`
 		Attach      AttachConfig      `json:"attach,omitempty"`
+		Schedule    *ScheduleConfig   `json:"schedule,omitempty"`
 	}
 	disk := diskConfig{
 		Version:     cfg.Version,
@@ -827,6 +863,7 @@ func writeConvertedConfigJSON(path string, cfg *Config) error {
 		Tools:       cfg.Tools,
 		Safety:      cfg.Safety,
 		Attach:      cfg.Attach,
+		Schedule:    cfg.Schedule,
 	}
 	data, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {

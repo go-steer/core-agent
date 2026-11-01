@@ -740,7 +740,7 @@ func TestMaybeAutoContinue_StandsDownWhileAGuardrailIsTripped(t *testing.T) {
 		t.Fatalf("precondition: a freshly constructed agent has not folded durable state yet")
 	}
 
-	got := lockClassifyInject(context.Background(), h, ag, "core-agent", acUser, acSID, time.Hour)
+	got := lockClassifyInject(context.Background(), AutoContinueConfig{EventLog: h, Freshness: time.Hour}, ag, "core-agent", acUser, acSID)
 
 	if got != acSkippedGuardrailHalt {
 		t.Errorf("outcome = %v, want acSkippedGuardrailHalt (%v)", got, acSkippedGuardrailHalt)
@@ -978,12 +978,12 @@ func TestTwoDaemonsOnOneDBContinueAnInterruptionOnce(t *testing.T) {
 	hb := openACAt(t, path)
 	agA, agB := peerAgent(t, ha), peerAgent(t, hb)
 
-	if got := lockClassifyInject(ctx, ha, agA, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: ha, Freshness: time.Hour}, agA, "core-agent", acUser, acSID); got != acInjected {
 		t.Fatalf("daemon A outcome = %v, want acInjected (%v) — the fixture is not interrupted", got, acInjected)
 	}
 	// Daemon A's lock is long since released and its turn has committed
 	// nothing: from the database, the tail is exactly what A saw.
-	if got := lockClassifyInject(ctx, hb, agB, "core-agent", acUser, acSID, time.Hour); got != acSkippedClaimed {
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: hb, Freshness: time.Hour}, agB, "core-agent", acUser, acSID); got != acSkippedClaimed {
 		t.Errorf("daemon B outcome = %v, want acSkippedClaimed (%v)", got, acSkippedClaimed)
 	}
 
@@ -1006,7 +1006,7 @@ func TestAClaimedSessionIsStillContinuedOnItsNextInterruption(t *testing.T) {
 
 	h := seedACAt(t, filepath.Join(t.TempDir(), "shared.db"), acUserEvent("first question", base))
 	ag := acAgent(t, h)
-	if got := lockClassifyInject(ctx, h, ag, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: h, Freshness: time.Hour}, ag, "core-agent", acUser, acSID); got != acInjected {
 		t.Fatalf("first pass = %v, want acInjected", got)
 	}
 	ag.DrainInbox()
@@ -1026,7 +1026,7 @@ func TestAClaimedSessionIsStillContinuedOnItsNextInterruption(t *testing.T) {
 		}
 	}
 
-	if got := lockClassifyInject(ctx, h, ag, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: h, Freshness: time.Hour}, ag, "core-agent", acUser, acSID); got != acInjected {
 		t.Errorf("second interruption = %v, want acInjected — the claim keyed on the session, not the interruption", got)
 	}
 	if msgs := ag.DrainInbox(); len(msgs) != 1 {
@@ -1049,13 +1049,13 @@ func TestAFailedInjectHandsTheClaimBack(t *testing.T) {
 	// A closed inbox is how InjectAs fails on a session that is shutting
 	// down, and it is the only inject failure this path has.
 	ag.CloseInbox()
-	if got := lockClassifyInject(ctx, h, ag, "core-agent", acUser, acSID, time.Hour); got != acSkippedInjectErr {
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: h, Freshness: time.Hour}, ag, "core-agent", acUser, acSID); got != acSkippedInjectErr {
 		t.Fatalf("outcome = %v, want acSkippedInjectErr (%v)", got, acSkippedInjectErr)
 	}
 
 	hb := openACAt(t, path)
 	agB := peerAgent(t, hb)
-	if got := lockClassifyInject(ctx, hb, agB, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: hb, Freshness: time.Hour}, agB, "core-agent", acUser, acSID); got != acInjected {
 		t.Errorf("after a failed inject = %v, want acInjected — the claim was never handed back", got)
 	}
 	if msgs := agB.DrainInbox(); len(msgs) != 1 {
@@ -1076,13 +1076,13 @@ func TestAStandDownDoesNotClaimTheInterruption(t *testing.T) {
 	h := seedACAt(t, path, acUserEvent("what is wrong with the cluster?", time.Now().Add(-5*time.Minute)))
 	ag := acAgent(t, h)
 	ag.Pause("operator parked this daemon")
-	if got := lockClassifyInject(ctx, h, ag, "core-agent", acUser, acSID, time.Hour); got != acSkippedPaused {
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: h, Freshness: time.Hour}, ag, "core-agent", acUser, acSID); got != acSkippedPaused {
 		t.Fatalf("outcome = %v, want acSkippedPaused (%v)", got, acSkippedPaused)
 	}
 
 	hb := openACAt(t, path)
 	agB := peerAgent(t, hb)
-	if got := lockClassifyInject(ctx, hb, agB, "core-agent", acUser, acSID, time.Hour); got != acInjected {
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: hb, Freshness: time.Hour}, agB, "core-agent", acUser, acSID); got != acInjected {
 		t.Errorf("peer daemon = %v, want acInjected — one daemon's local pause claimed the interruption", got)
 	}
 }
@@ -1103,5 +1103,79 @@ func TestClaimedSkip_IsRefundable(t *testing.T) {
 	}
 	if acSkippedClaimed.injected() || acSkippedClaimErr.injected() {
 		t.Error("a claim skip queued no continuation and must not count as one")
+	}
+}
+
+func TestAutoContinue_SkipsAmbiguousMutatingEffectUntilAcked(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	h := seedAC(t,
+		acUserEvent("deploy service", now.Add(-5*time.Minute)),
+		acCallEvent("bash", now.Add(-1*time.Minute)),
+	)
+	ag := acAgent(t, h)
+
+	if !acSkippedAmbiguousEffect.refundable() {
+		t.Fatal("acSkippedAmbiguousEffect must be refundable")
+	}
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: h, Freshness: time.Hour}, ag, "core-agent", acUser, acSID); got != acSkippedAmbiguousEffect {
+		t.Fatalf("outcome before AckEffects = %v, want acSkippedAmbiguousEffect (%v)", got, acSkippedAmbiguousEffect)
+	}
+	if msgs := ag.DrainInbox(); len(msgs) != 0 {
+		t.Fatalf("inbox before AckEffects = %v, want empty", msgs)
+	}
+
+	// Startup pass must also refund the write-ahead attempt charge when blocked by ambiguous effects.
+	AutoContinueStartupSession(ctx, h, ag, time.Hour)
+	boots, err := h.RecentBoots(ctx, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RecentBoots: %v", err)
+	}
+	if got := countAttempted(boots, acSID); got != 0 {
+		t.Fatalf("charged attempts before AckEffects = %d, want 0 (refunded)", got)
+	}
+
+	// Once operator acknowledges the ambiguous effect, auto-continue unblocks.
+	if _, err := h.AckEffects(ctx, "core-agent", acUser, acSID, "operator", "verified safe"); err != nil {
+		t.Fatalf("AckEffects: %v", err)
+	}
+	AutoContinueStartupSession(ctx, h, ag, time.Hour)
+	if msgs := ag.DrainInbox(); len(msgs) != 1 {
+		t.Fatalf("inbox after AckEffects = %v, want 1 continuation note", msgs)
+	}
+}
+
+func TestAutoContinue_StopsOnLeaseLost(t *testing.T) {
+	t.Parallel()
+	h := openAC(t)
+	seedACSession(t, h, "sid-lease", acUserEvent("hello?", time.Now().Add(-time.Minute)))
+	deps := scanDeps(t, h)
+	putACLRow(t, deps.ACLStore, "sid-lease")
+
+	leaseLost := make(chan struct{})
+	close(leaseLost)
+	deps.LeaseLost = leaseLost
+
+	AutoContinueBootScan(deps, 10)
+	boots, err := h.RecentBoots(context.Background(), time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RecentBoots: %v", err)
+	}
+	if len(boots) != 0 {
+		t.Errorf("AutoContinueBootScan ran after LeaseLost: boots = %+v, want empty", boots)
+	}
+
+	retryLeaseLost := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		AutoContinueRetryLoop(context.Background(), 5*time.Millisecond, func() {}, retryLeaseLost)
+	}()
+	close(retryLeaseLost)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("AutoContinueRetryLoop did not exit when LeaseLost closed")
 	}
 }

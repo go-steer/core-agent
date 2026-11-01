@@ -136,6 +136,10 @@ var builtinClasses = map[string]Class{
 // Predicate classifies a tool by name. See NewPredicate.
 type Predicate func(toolName string) Class
 
+// ReadOnlyPredicate is an alias for Predicate used by auto-resume and
+// auto-continue configuration structs.
+type ReadOnlyPredicate = Predicate
+
 // ReadOnlyHint reports the `readOnlyHint` an MCP server published for
 // toolName. annotated is false when nothing has published annotations
 // for that name.
@@ -428,6 +432,9 @@ type scanAccumulator struct {
 }
 
 func pairScan(events session.Events, pred Predicate, subAgents map[string]bool) *pairedScan {
+	if pred == nil {
+		pred = NewPredicate(nil)
+	}
 	acc := &scanAccumulator{
 		ps:                &pairedScan{completions: map[string]map[string]any{}, lastCallEventIndex: -1, lastEventIndex: -1},
 		pred:              pred,

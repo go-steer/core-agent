@@ -97,7 +97,7 @@ research + friction logs, or handover notes.
 - [`hashed-bearer-tokens-design.md`](hashed-bearer-tokens-design.md) — the multi-session bearer table stores `token_sha256` digests, so an agent that reads it learns nothing that authenticates; why SHA-256 and not a password hash, plaintext rows kept with a startup warning, `core-agent auth hash-token` (soak prerequisite P2, [#1213](https://github.com/go-steer/core-agent/issues/1213))
 - [`gated-apply-design.md`](gated-apply-design.md) — letting `gke-platform-agent` apply the fix it found: one overlay, two legs (`mode: ask` vs `mode: allow`), and why the RoleBinding is the security argument once the human is gone (design, [#1042](https://github.com/go-steer/core-agent/issues/1042) box A3)
 - [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the K8s fleet-monitor topology
-- [`scheduled-ops-design.md`](scheduled-ops-design.md) — `core-agent-cron` companion sidecar firing scheduled prompts into the daemon for proactive autonomous ops (compliance sweeps, drift detection, capacity forecasts) (proposed, [#202](https://github.com/go-steer/core-agent/issues/202))
+- [`scheduled-ops-design.md`](scheduled-ops-design.md) — proactive scheduled operations: settled and closed in-process behind the fleet scheduling lease with a durable schedule anchor (`pkg/compose.ScheduledTrigger`, `pkg/eventlog.ScheduleRecord`, `config.Schedule`) rather than a `core-agent-cron` sidecar (*settled*, [#202](https://github.com/go-steer/core-agent/issues/202), [#1405](https://github.com/go-steer/core-agent/issues/1405))
 
 ### Attach mode, remote + TUI
 

@@ -65,6 +65,7 @@ type Config struct {
 	Checkpoint  CheckpointConfig  `json:"checkpoint,omitempty"`
 	Session     SessionConfig     `json:"session,omitempty"`
 	Safety      SafetyConfig      `json:"safety,omitempty"`
+	Schedule    *ScheduleConfig   `json:"schedule,omitempty" yaml:"schedule,omitempty"`
 
 	// Providers declares provider profiles: ways to reach models beyond
 	// the built-in gemini / vertex / anthropic / anthropic-vertex paths
@@ -2317,6 +2318,9 @@ func (c *Config) Validate() error {
 	if err := c.Hooks.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	if err := c.Schedule.Validate(); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
 	if c.Attach.MultiSession.Enabled {
 		// Only "bearer_table" (or empty → bearer_table default) is
 		// shipped in v2.4. Future kinds (oidc / mtls / k8s_sa) are
@@ -2664,4 +2668,110 @@ func validSubagentName(s string) bool {
 		}
 	}
 	return true
+}
+
+const (
+	minScheduledInterval = time.Second
+	defaultMaxJitter     = 30 * time.Second
+)
+
+// ScheduleConfig declares that the daemon wakes itself on an anchored
+// periodic cadence behind the fleet scheduling lease (#1405, closing #202).
+//
+// Fires land on anchor + k*interval, where the anchor is persisted in the
+// durable event log when the schedule is first observed. A daemon restart
+// resumes the original phase rather than re-phasing to boot time, and ticks
+// missed while the daemon was down are skipped to the next future lattice tick
+// with skipped=N reported on the next fire.
+type ScheduleConfig struct {
+	// Every is the cadence as a Go duration string ("15m", "1h", "24h").
+	// Synonym for Interval; at most one of Every or Interval may be set
+	// (unless both are set to the same value).
+	Every string `json:"every,omitempty" yaml:"every,omitempty"`
+
+	// Interval is the cadence as a Go duration string ("15m", "1h", "24h").
+	Interval string `json:"interval,omitempty" yaml:"interval,omitempty"`
+
+	// Jitter bounds a random offset added to each fire in [tick, tick+jitter).
+	// Defaults to min(interval/10, 30s) when omitted; set "0s" for an exact
+	// on-the-tick cadence.
+	Jitter string `json:"jitter,omitempty" yaml:"jitter,omitempty"`
+
+	// Prompt is the text each scheduled fire opens with.
+	Prompt string `json:"prompt,omitempty" yaml:"prompt,omitempty"`
+}
+
+func (s *ScheduleConfig) rawInterval() (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	every := strings.TrimSpace(s.Every)
+	interval := strings.TrimSpace(s.Interval)
+	if every != "" && interval != "" && every != interval {
+		return "", fmt.Errorf("schedule sets both every (%q) and interval (%q); keep one", s.Every, s.Interval)
+	}
+	if every != "" {
+		return every, nil
+	}
+	return interval, nil
+}
+
+// EffectiveInterval parses the schedule's cadence duration. A nil receiver
+// returns (0, nil).
+func (s *ScheduleConfig) EffectiveInterval() (time.Duration, error) {
+	if s == nil {
+		return 0, nil
+	}
+	raw, err := s.rawInterval()
+	if err != nil {
+		return 0, err
+	}
+	if raw == "" {
+		return 0, errors.New("schedule names no interval (want something like \"15m\"); a schedule without a cadence never fires")
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("schedule.interval %q is not a duration (want something like \"15m\"): %w", raw, err)
+	}
+	if d < minScheduledInterval {
+		return 0, fmt.Errorf("schedule.interval %q is under %s; every fire is a full model run, so this is a bill, not a cadence", raw, minScheduledInterval)
+	}
+	return d, nil
+}
+
+// EffectiveJitter resolves the schedule's jitter duration against its
+// interval. An omitted jitter defaults to min(interval/10, 30s); an explicit
+// "0s" yields 0.
+func (s *ScheduleConfig) EffectiveJitter() (time.Duration, error) {
+	if s == nil {
+		return 0, nil
+	}
+	interval, err := s.EffectiveInterval()
+	if err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(s.Jitter) == "" {
+		return min(interval/10, defaultMaxJitter), nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(s.Jitter))
+	if err != nil {
+		return 0, fmt.Errorf("schedule.jitter %q is not a duration (want something like \"30s\"): %w", s.Jitter, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("schedule.jitter %q is negative; jitter delays a fire, it cannot pull one earlier", s.Jitter)
+	}
+	if d >= interval {
+		raw, _ := s.rawInterval()
+		return 0, fmt.Errorf("schedule.jitter %q is not smaller than the interval %q; a fire that can slip past the next tick has no cadence left to keep", s.Jitter, raw)
+	}
+	return d, nil
+}
+
+// Validate checks that the schedule's interval and jitter are well-formed.
+func (s *ScheduleConfig) Validate() error {
+	if s == nil {
+		return nil
+	}
+	_, err := s.EffectiveJitter()
+	return err
 }

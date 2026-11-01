@@ -43,11 +43,33 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/core-agent/v3/internal/effects"
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
+
+// AutoContinueConfig bundles the eventlog handle, freshness window,
+// ambiguous-effect classification predicates, and scheduling-lease loss
+// signal for auto-continue passes (#1405).
+type AutoContinueConfig struct {
+	EventLog      *eventlog.Handle
+	Freshness     time.Duration
+	IsReadOnly    effects.ReadOnlyPredicate
+	SubAgentNames map[string]bool
+	LeaseLost     <-chan struct{}
+}
+
+func (deps SessionFactoryDeps) autoContinueConfig() AutoContinueConfig {
+	return AutoContinueConfig{
+		EventLog:      deps.EventlogHandle,
+		Freshness:     deps.AutoContinueFreshness,
+		IsReadOnly:    deps.IsReadOnly,
+		SubAgentNames: deps.SubAgentNames,
+		LeaseLost:     deps.LeaseLost,
+	}
+}
 
 // autoContinueScanWindow bounds every tail read. A window this size is
 // classification-safe: the interrupted tail is by definition the last
@@ -95,7 +117,7 @@ const (
 // durable continuation claim (#977) rather than by a longer lease; see
 // lockClassifyInject and pkg/eventlog/claim.go.
 func maybeAutoContinue(deps SessionFactoryDeps, caller auth.Caller, sid string, ag *agent.Agent) {
-	lockClassifyInject(deps.DaemonCtx, deps.EventlogHandle, ag, "core-agent", caller.Identity, sid, deps.AutoContinueFreshness)
+	lockClassifyInject(deps.DaemonCtx, deps.autoContinueConfig(), ag, "core-agent", caller.Identity, sid)
 }
 
 // autoContinueOutcome reports what lockClassifyInject did, so the boot
@@ -107,18 +129,19 @@ func maybeAutoContinue(deps SessionFactoryDeps, caller auth.Caller, sid string, 
 type autoContinueOutcome int
 
 const (
-	acInjected              autoContinueOutcome = iota // note queued: a real attempt
-	acSkippedLocked                                    // run lock held by another daemon/run
-	acSkippedLockErr                                   // AcquireLock failed for another reason
-	acSkippedNotInterrupted                            // tail re-classified clean under the lock
-	acSkippedStale                                     // interruption older than the freshness window
-	acSkippedTurnInFlight                              // a local turn is generating the answer right now (#796)
-	acSkippedOperatorInput                             // operator input already queued — it drives the next turn (#624)
-	acSkippedPaused                                    // operator parked the loop; resume drives the next turn
-	acSkippedGuardrailHalt                             // watchdog or cost ceiling is refusing turns (#1040)
-	acSkippedClaimed                                   // this interruption was already continued by someone (#977)
-	acSkippedClaimErr                                  // the claim write failed; stand down rather than risk a duplicate (#977)
-	acSkippedInjectErr                                 // inject itself failed
+	acInjected               autoContinueOutcome = iota // note queued: a real attempt
+	acSkippedLocked                                     // run lock held by another daemon/run
+	acSkippedLockErr                                    // AcquireLock failed for another reason
+	acSkippedNotInterrupted                             // tail re-classified clean under the lock
+	acSkippedStale                                      // interruption older than the freshness window
+	acSkippedAmbiguousEffect                            // unacknowledged mutating tool call in flight (#1405)
+	acSkippedTurnInFlight                               // a local turn is generating the answer right now (#796)
+	acSkippedOperatorInput                              // operator input already queued — it drives the next turn (#624)
+	acSkippedPaused                                     // operator parked the loop; resume drives the next turn
+	acSkippedGuardrailHalt                              // watchdog or cost ceiling is refusing turns (#1040)
+	acSkippedClaimed                                    // this interruption was already continued by someone (#977)
+	acSkippedClaimErr                                   // the claim write failed; stand down rather than risk a duplicate (#977)
+	acSkippedInjectErr                                  // inject itself failed
 )
 
 // injected reports whether the outcome represents a queued continuation.
@@ -155,7 +178,7 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // conservative, which is the safe direction.
 func (o autoContinueOutcome) refundable() bool {
 	switch o {
-	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedTurnInFlight, acSkippedOperatorInput, acSkippedPaused, acSkippedGuardrailHalt, acSkippedClaimed:
+	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedAmbiguousEffect, acSkippedTurnInFlight, acSkippedOperatorInput, acSkippedPaused, acSkippedGuardrailHalt, acSkippedClaimed:
 		return true
 	default:
 		return false
@@ -187,7 +210,9 @@ func deferAutoContinueInject(ctx context.Context) bool {
 // Every skip path returns silently or with one stderr
 // line; callers must never fail because auto-continue couldn't run. The
 // returned outcome lets the boot scan account only real attempts.
-func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, app, user, sid string, freshness time.Duration) autoContinueOutcome {
+func lockClassifyInject(ctx context.Context, cfg AutoContinueConfig, ag *agent.Agent, app, user, sid string) autoContinueOutcome {
+	h := cfg.EventLog
+	freshness := cfg.Freshness
 	// Lock first — one cheap DB write, and classifying under it means
 	// two daemons can't both read the same interrupted tail.
 	lock, err := h.AcquireLock(ctx, app, user, sid)
@@ -207,7 +232,7 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 	}
 	defer func() { _ = lock.Release() }()
 
-	verdict := classifyTail(ctx, h, app, user, sid)
+	verdict, events := classifyTailWithEvents(ctx, h, app, user, sid)
 	if !verdict.Interrupted {
 		// Most declines are a completed or deliberately-killed turn and
 		// say nothing worth a line. The classifier populates a reason
@@ -225,105 +250,12 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 			sid, time.Since(interruptedAt).Round(time.Second), freshness)
 		return acSkippedStale
 	}
-	// The "interrupted" tail may be a turn that is still generating
-	// (#796). ClassifyInterruptedTail reads committed history, where an
-	// unanswered user message looks the same whether the turn died or is
-	// twenty seconds into a long answer — so on the boot path, where
-	// nothing can be in flight, the verdict is sound, and on the
-	// in-lifetime retry path it is the common case: the retry driver
-	// re-runs this pass on a timer, so any turn a tick happens to land
-	// inside got a continuation note queued behind the answer it was
-	// still producing, which then ran as a second reply. Exposure scales
-	// with turn duration over the interval, not with being slower than
-	// it: the reported case was a ~22-second generation, well inside any
-	// plausible interval, that a tick simply landed in.
-	//
-	// The run lock above does not cover this. It is fleet mutual
-	// exclusion, and the only local caller that takes it is
-	// autonomous.Resume — an ordinary attach-driven or wake-loop turn
-	// holds no lease, so a session busy answering a message acquires the
-	// lock here without contention.
-	//
-	// Agent.TurnInFlight is the fact the lock isn't: the agent driving
-	// the turn is this process's own object, and registration brackets
-	// every event the runner commits for the turn. Checked AFTER
-	// classification deliberately — a turn that starts between the two
-	// reads is then caught by this check rather than injected against,
-	// where the reverse order would clear the check and classify the
-	// user message the new turn just committed.
-	//
-	// In-process only, and that is the honest scope: a peer daemon's turn
-	// against a shared eventlog reports false here. Nothing regresses
-	// versus today (that case is already unguarded, and the fleet run
-	// lock only covers the auto-continue/autonomous callers that take
-	// it), and the bug reported is single-daemon. A durable in-flight
-	// signal is the fix if the cross-daemon shape ever appears in the
-	// wild.
-	if ag.TurnInFlight() {
-		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: a turn is already running; standing down (the tail is mid-turn, not interrupted)\n", sid)
-		return acSkippedTurnInFlight
+	if outcome, skipped := checkLocalAgentStandDown(ctx, ag, sid); skipped {
+		return outcome
 	}
-	// An operator already queued input while the turn was interrupted
-	// (the canonical case: they typed `stop`, then `/interrupt`). That
-	// input must drive the next turn on its own — injecting a "continue
-	// the task" note into the same drained batch would let the note
-	// outrank the operator's stop (#624). Stand down; the wake loop runs
-	// the operator's message as the next turn.
-	if ag.HasPendingOperatorInput() {
-		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: operator input already queued; standing down so it drives the next turn\n", sid)
-		return acSkippedOperatorInput
-	}
-	// An operator parked the loop (POST /interrupt holds by default, and
-	// POST /pause holds outright — docs/operator-interrupt-design.md).
-	// Paused means "start nothing until I say so". No inject un-parks a
-	// loop any more (#878), so this is no longer the guard that keeps
-	// auto-continue off the gate — but standing down is still right,
-	// because InjectAs would otherwise queue a note the operator's
-	// eventual resume drains alongside their steer, arguing with them
-	// one turn late. Stand down entirely — resume synthesizes its own
-	// framing.
-	if ag.Paused() {
-		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: session is paused; standing down until the operator resumes\n", sid)
-		return acSkippedPaused
-	}
-	// A guardrail halt is the strongest possible "start nothing" and,
-	// until #1040, the only one of these four this pass did not check.
-	// Two separate reasons it has to:
-	//
-	// Nothing can deliver the note. Both pre-flights refuse at the top of
-	// Agent.Run, above drainInboxFull, so a note injected now is
-	// unreachable for as long as the halt stands — and the retry driver
-	// re-runs this pass every retry_interval, so a halt that outlives the
-	// freshness window accumulates one undeliverable note per tick. The
-	// inbox is bounded and drops the OLDEST past its cap, which is how a
-	// long halt silently discards the operator's real messages to make
-	// room for our own notes.
-	//
-	// And the note argues with the halt. The restore path prepends a
-	// `restored-watchdog-halt` block that tells the model not to resume
-	// the call pattern that tripped it (guardrail_persist.go); a stack of
-	// "continue the task you were doing" notes draining into that same
-	// turn says the opposite, in the operator's voice, without the
-	// operator.
-	//
-	// Stand down entirely. The reset releases the fenced wake, and
-	// whatever the operator sends with it drives the next turn.
-	//
-	// RestoreGuardrails first, because this pass is reached on exactly
-	// the path where the in-memory flags are still false: both the boot
-	// scan and lazy resume construct the agent through Registry.Lookup
-	// and have run no turn yet, and Agent.Run is the only thing that
-	// folds the durable guardrail events back in. Without this, a pod
-	// restarted while a session was halted queues a continuation note
-	// into it — the one case where "the operator is not watching" is
-	// guaranteed rather than likely. Idempotent and a no-op with no
-	// eventlog wired; the error is deliberately swallowed, because
-	// auto-continue must never break its caller and a read failure here
-	// leaves us exactly where we were before the call.
-	_ = ag.RestoreGuardrails(ctx)
-	if halted, reason := ag.GuardrailHalted(); halted {
-		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: guardrail is tripped (%s); standing down until it is reset\n", sid, reason)
-		return acSkippedGuardrailHalt
+	if hasUnackedAmbiguousEffects(ctx, cfg, app, user, sid, events) {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: unacknowledged mutating tool call in flight; standing down until operator acks effects\n", sid)
+		return acSkippedAmbiguousEffect
 	}
 	// Claim this specific interruption before injecting for it (#977).
 	//
@@ -374,11 +306,52 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 	return acInjected
 }
 
+func checkLocalAgentStandDown(ctx context.Context, ag *agent.Agent, sid string) (autoContinueOutcome, bool) {
+	if ag.TurnInFlight() {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: a turn is already running; standing down (the tail is mid-turn, not interrupted)\n", sid)
+		return acSkippedTurnInFlight, true
+	}
+	if ag.HasPendingOperatorInput() {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: operator input already queued; standing down so it drives the next turn\n", sid)
+		return acSkippedOperatorInput, true
+	}
+	if ag.Paused() {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: session is paused; standing down until the operator resumes\n", sid)
+		return acSkippedPaused, true
+	}
+	_ = ag.RestoreGuardrails(ctx)
+	if halted, reason := ag.GuardrailHalted(); halted {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: guardrail is tripped (%s); standing down until it is reset\n", sid, reason)
+		return acSkippedGuardrailHalt, true
+	}
+	return 0, false
+}
+
+func hasUnackedAmbiguousEffects(ctx context.Context, cfg AutoContinueConfig, app, user, sid string, events session.Events) bool {
+	if events == nil || cfg.EventLog == nil {
+		return false
+	}
+	scan := effects.ScanDangling(events, cfg.IsReadOnly, cfg.SubAgentNames)
+	if len(scan.Mutating) == 0 {
+		return false
+	}
+	ackedAt, ok := cfg.EventLog.EffectsAckedAt(ctx, app, user, sid)
+	if !ok {
+		return true
+	}
+	return len(scan.Unacked(ackedAt)) > 0
+}
+
 // classifyTail does one bounded tail read + classification. Bounded
 // because this runs synchronously on resume/startup paths — a
 // full-session scan on a 100k-event session would break the "resume
 // stays fast" promise.
 func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string) agent.TailVerdict {
+	v, _ := classifyTailWithEvents(ctx, h, app, user, sid)
+	return v
+}
+
+func classifyTailWithEvents(ctx context.Context, h *eventlog.Handle, app, user, sid string) (agent.TailVerdict, session.Events) {
 	resp, err := h.Service.Get(ctx, &session.GetRequest{
 		AppName:         app,
 		UserID:          user,
@@ -395,13 +368,13 @@ func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string
 		if err != nil && !eventlog.IsSessionNotFound(err) {
 			fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: read session: %v\n", sid, err)
 		}
-		return agent.TailVerdict{}
+		return agent.TailVerdict{}, nil
 	}
 	var events []*session.Event
 	for ev := range resp.Session.Events().All() {
 		events = append(events, ev)
 	}
-	return agent.ClassifyInterruptedTailVerdict(events)
+	return agent.ClassifyInterruptedTailVerdict(events), resp.Session.Events()
 }
 
 // autoContinueTrigger names the driver that fired a pass, for the
@@ -468,6 +441,15 @@ func (g attemptGuards) allow(sid string) bool {
 	return !g.attemptedRecently[sid] && g.attemptCount[sid] < maxAttemptsPerSession
 }
 
+func isLeaseLost(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
 // AutoContinueStartupSession is the #558 trigger: the single
 // startup-time session of a headless --no-repl daemon. No ACL rows or
 // scan exist for it — there is exactly one session, whose triple comes
@@ -479,23 +461,37 @@ func (g attemptGuards) allow(sid string) bool {
 // core. Call before the wake loop starts; the injected note latches
 // the wake signal.
 func AutoContinueStartupSession(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, freshness time.Duration) {
-	autoContinueStartupPass(ctx, h, ag, freshness, triggerStartup)
+	autoContinueStartupPass(ctx, AutoContinueConfig{EventLog: h, Freshness: freshness}, ag, triggerStartup)
+}
+
+// AutoContinueStartupSessionWithConfig is AutoContinueStartupSession configured
+// via AutoContinueConfig (#1405).
+func AutoContinueStartupSessionWithConfig(ctx context.Context, cfg AutoContinueConfig, ag *agent.Agent) {
+	autoContinueStartupPass(ctx, cfg, ag, triggerStartup)
 }
 
 // AutoContinueStartupRetry is the same pass fired by the in-lifetime
 // retry loop rather than by boot (#575 defect B). Identical work,
 // different attribution in the log: nothing restarted (#1066).
 func AutoContinueStartupRetry(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, freshness time.Duration) {
-	autoContinueStartupPass(ctx, h, ag, freshness, triggerStartupRetry)
+	autoContinueStartupPass(ctx, AutoContinueConfig{EventLog: h, Freshness: freshness}, ag, triggerStartupRetry)
 }
 
-func autoContinueStartupPass(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, freshness time.Duration, trig autoContinueTrigger) {
+// AutoContinueStartupRetryWithConfig is AutoContinueStartupRetry configured
+// via AutoContinueConfig (#1405).
+func AutoContinueStartupRetryWithConfig(ctx context.Context, cfg AutoContinueConfig, ag *agent.Agent) {
+	autoContinueStartupPass(ctx, cfg, ag, triggerStartupRetry)
+}
+
+func autoContinueStartupPass(ctx context.Context, cfg AutoContinueConfig, ag *agent.Agent, trig autoContinueTrigger) {
 	defer func() {
 		if r := recover(); r != nil {
 			trig.logf("recovered from panic: %v", r)
 		}
 	}()
-	if h == nil || h.Service == nil || ag == nil {
+	h := cfg.EventLog
+	freshness := cfg.Freshness
+	if h == nil || h.Service == nil || ag == nil || isLeaseLost(cfg.LeaseLost) {
 		return
 	}
 	app, user, sid := ag.AppName(), ag.UserID(), ag.SessionID()
@@ -537,7 +533,7 @@ func autoContinueStartupPass(ctx context.Context, h *eventlog.Handle, ag *agent.
 	// same accounting the boot scan does. An inject/lock error stays
 	// charged: a persistent one is a crash loop the cap must bound.
 	// Non-fatal on error: the pessimistic count stands.
-	if lockClassifyInject(ctx, h, ag, app, user, sid, freshness).refundable() {
+	if lockClassifyInject(ctx, cfg, ag, app, user, sid).refundable() {
 		if err := h.UpdateBootAttempted(ctx, bootID, nil); err != nil {
 			trig.logf("narrow boot record: %v (pessimistic count stands)", err)
 		}
@@ -545,27 +541,25 @@ func autoContinueStartupPass(ctx context.Context, h *eventlog.Handle, ag *agent.
 }
 
 // AutoContinueRetryLoop re-runs a guarded auto-continue pass on a fixed
-// interval until ctx cancels. It runs NO pass immediately — callers keep
-// their existing boot-time invocation, so the note-latches-before-wake-
-// loop ordering is unchanged; this loop only adds the in-lifetime
-// *re-tries* that let a stable daemon self-heal a stranded continuation
-// without waiting for a reboot or a human message (#575 defect B).
-//
-// Safety: a continuation turn that kills the daemon kills this loop too,
-// so the loop can only ever re-fire failures that did NOT take the
-// daemon down (transient run-lock contention, a provider blip, a
-// poisoned-but-survivable turn). True crash loops remain bounded by the
-// cross-boot breaker, and every pass is still bounded by the per-session
-// single-retry guard (breakerWindow) + cumulative cap
-// (maxAttemptsPerSession) — so no separate backoff schedule is needed:
-// a session attempted within breakerWindow simply no-ops on the next
-// tick, and the cap terminates a self-renewing session.
+// interval until ctx cancels or an optional leaseLost channel closes.
+// It runs NO pass immediately — callers keep their existing boot-time
+// invocation, so the note-latches-before-wake-loop ordering is unchanged;
+// this loop only adds the in-lifetime *re-tries* that let a stable daemon
+// self-heal a stranded continuation without waiting for a reboot or a
+// human message (#575 defect B).
 //
 // interval <= 0 disables the loop (returns immediately). Callers launch
 // it on a goroutine tracked by a WaitGroup joined before the eventlog
 // closes, so a mid-tick pass never races DB teardown.
-func AutoContinueRetryLoop(ctx context.Context, interval time.Duration, pass func()) {
+func AutoContinueRetryLoop(ctx context.Context, interval time.Duration, pass func(), leaseLost ...<-chan struct{}) {
 	if interval <= 0 || pass == nil {
+		return
+	}
+	var lost <-chan struct{}
+	if len(leaseLost) > 0 {
+		lost = leaseLost[0]
+	}
+	if isLeaseLost(lost) {
 		return
 	}
 	t := time.NewTicker(interval)
@@ -574,7 +568,12 @@ func AutoContinueRetryLoop(ctx context.Context, interval time.Duration, pass fun
 		select {
 		case <-ctx.Done():
 			return
+		case <-lost:
+			return
 		case <-t.C:
+			if isLeaseLost(lost) {
+				return
+			}
 			pass()
 		}
 	}
@@ -617,6 +616,11 @@ func AutoContinueRetryScan(deps SessionFactoryDeps, maxPerBoot int) {
 	autoContinueScanPass(deps, maxPerBoot, triggerRetry)
 }
 
+type autoContinueCandidate struct {
+	app, user, sid string
+	interruptedAt  time.Time
+}
+
 func autoContinueScanPass(deps SessionFactoryDeps, maxPerBoot int, trig autoContinueTrigger) {
 	// The scan drives full agent construction (resume) in this
 	// goroutine; on the lazy path the same work runs under net/http's
@@ -629,7 +633,7 @@ func autoContinueScanPass(deps SessionFactoryDeps, maxPerBoot int, trig autoCont
 		}
 	}()
 	h := deps.EventlogHandle
-	if h == nil || h.Service == nil || deps.Registry == nil || deps.ACLStore == nil || !deps.AutoContinueEnabled {
+	if h == nil || h.Service == nil || deps.Registry == nil || deps.ACLStore == nil || !deps.AutoContinueEnabled || isLeaseLost(deps.LeaseLost) {
 		return
 	}
 	ctx := deps.DaemonCtx
@@ -648,36 +652,9 @@ func autoContinueScanPass(deps SessionFactoryDeps, maxPerBoot int, trig autoCont
 		return
 	}
 
-	// Admin caller sees every ACL row; the identity is the scan's own,
-	// so any Touch/audit side effects attribute correctly.
-	rows, err := deps.ACLStore.ListVisibleTo(ctx, auth.Caller{Identity: agent.AutoContinueOriginator, Admin: true})
-	if err != nil {
-		trig.logf("list sessions: %v", err)
+	candidates, ok := collectAutoContinueCandidates(ctx, deps, guards, maxPerBoot, trig)
+	if !ok {
 		return
-	}
-
-	type candidate struct {
-		app, user, sid string
-		interruptedAt  time.Time
-	}
-	var candidates []candidate
-	for _, row := range rows {
-		if ctx.Err() != nil {
-			return // daemon shutting down mid-scan
-		}
-		if !guards.allow(row.SessionID) {
-			continue
-		}
-		// Silent on a decline: the per-candidate lockClassifyInject below
-		// re-classifies under the run lock and logs any reason there.
-		verdict := classifyTail(ctx, h, row.AppName, row.UserID, row.SessionID)
-		if !verdict.Interrupted {
-			continue
-		}
-		if deps.AutoContinueFreshness > 0 && time.Since(verdict.InterruptedAt) > deps.AutoContinueFreshness {
-			continue
-		}
-		candidates = append(candidates, candidate{app: row.AppName, user: row.UserID, sid: row.SessionID, interruptedAt: verdict.InterruptedAt})
 	}
 	if len(candidates) == 0 {
 		if _, err := h.RecordBoot(ctx, time.Now(), nil); err != nil {
@@ -685,20 +662,7 @@ func autoContinueScanPass(deps SessionFactoryDeps, maxPerBoot int, trig autoCont
 		}
 		return
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].interruptedAt.Before(candidates[j].interruptedAt) })
-	if len(candidates) > maxPerBoot {
-		trig.logf("%d interrupted sessions, continuing the %d oldest (max_per_boot); the rest resume on touch",
-			len(candidates), maxPerBoot)
-		candidates = candidates[:maxPerBoot]
-	}
 
-	// WRITE-AHEAD intent record, before any resume is driven: a
-	// continuation (or resume-time agent construction) that kills the
-	// daemon mid-loop must still count against the breaker and the
-	// per-session guards on the next boot — a write-behind record
-	// would leave both guards blind in exactly the fast-kill
-	// scenarios they exist for. Failing to record intent aborts the
-	// scan: never run unguarded.
 	attempted := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		attempted = append(attempted, c.sid)
@@ -708,31 +672,15 @@ func autoContinueScanPass(deps SessionFactoryDeps, maxPerBoot int, trig autoCont
 		trig.logf("record boot intent: %v — aborting scan (guards must not be blind)", err)
 		return
 	}
-	// The write-ahead record above charged every candidate
-	// pessimistically (so a daemon killed mid-loop still counts them).
-	// We now drive each resume and refund only the benign/contended
-	// skips — chiefly the fleet run-lock case where a peer daemon owns
-	// the session (#575). refunded holds those sids; anything not in it
-	// (a queued note, a failed resume/inject, a candidate we never
-	// reached) stays charged, which is the crash-loop-safe direction.
 	refunded := make(map[string]bool, len(candidates))
 	injectedCount := 0
+	acCfg := deps.autoContinueConfig()
 	for _, c := range candidates {
-		if ctx.Err() != nil {
-			break // daemon shutting down mid-scan; unprocessed candidates stay charged
+		if ctx.Err() != nil || isLeaseLost(deps.LeaseLost) {
+			break // daemon shutting down or lost scheduling lease mid-scan
 		}
-		// Lookup drives the normal miss → resume path, but with the
-		// inject DEFERRED (withDeferAutoContinueInject): ReproduceAgent
-		// constructs + registers + wake-loops the agent without
-		// injecting, so the scan can classify+inject itself and observe
-		// the outcome. Already-in-memory sessions (raced by an operator
-		// touch) return their existing entry; injecting into them is
-		// still correct — a run-lock/clean-tail skip just reports the
-		// matching refundable outcome.
 		entry, err := deps.Registry.Lookup(withDeferAutoContinueInject(ctx), c.app, c.sid)
 		if err != nil {
-			// Resume failed: leave it charged. A persistent reproduction
-			// failure is a crash loop the per-session cap must bound.
 			trig.logf("resume session %s: %v", c.sid, err)
 			continue
 		}
@@ -741,7 +689,7 @@ func autoContinueScanPass(deps SessionFactoryDeps, maxPerBoot int, trig autoCont
 			trig.logf("session %s: unexpected registrant type %T; skipping inject", c.sid, entry.Agent)
 			continue
 		}
-		outcome := lockClassifyInject(ctx, h, ad.Agent(), c.app, c.user, c.sid, deps.AutoContinueFreshness)
+		outcome := lockClassifyInject(ctx, acCfg, ad.Agent(), c.app, c.user, c.sid)
 		if outcome.injected() {
 			injectedCount++
 		}
@@ -749,22 +697,55 @@ func autoContinueScanPass(deps SessionFactoryDeps, maxPerBoot int, trig autoCont
 			refunded[c.sid] = true
 		}
 	}
-	// Narrow the write-ahead row by dropping the refunded sids. Non-fatal
-	// on error: the pessimistic count simply stands, which fails safe
-	// (over-counting only ever makes the guards MORE conservative). Skip
-	// the write when nothing was refunded.
-	if len(refunded) > 0 {
-		kept := make([]string, 0, len(attempted))
-		for _, sid := range attempted {
-			if !refunded[sid] {
-				kept = append(kept, sid)
-			}
-		}
-		if err := h.UpdateBootAttempted(ctx, bootID, kept); err != nil {
-			trig.logf("narrow boot record: %v (pessimistic count stands)", err)
-		}
-	}
+	narrowRefundedBootRecord(ctx, h, bootID, attempted, refunded, trig)
 	if injectedCount > 0 {
 		trig.logf("queued continuations for %d session(s)", injectedCount)
+	}
+}
+
+func collectAutoContinueCandidates(ctx context.Context, deps SessionFactoryDeps, guards attemptGuards, maxPerBoot int, trig autoContinueTrigger) ([]autoContinueCandidate, bool) {
+	rows, err := deps.ACLStore.ListVisibleTo(ctx, auth.Caller{Identity: agent.AutoContinueOriginator, Admin: true})
+	if err != nil {
+		trig.logf("list sessions: %v", err)
+		return nil, false
+	}
+	var candidates []autoContinueCandidate
+	for _, row := range rows {
+		if ctx.Err() != nil || isLeaseLost(deps.LeaseLost) {
+			return nil, false
+		}
+		if !guards.allow(row.SessionID) {
+			continue
+		}
+		verdict := classifyTail(ctx, deps.EventlogHandle, row.AppName, row.UserID, row.SessionID)
+		if !verdict.Interrupted {
+			continue
+		}
+		if deps.AutoContinueFreshness > 0 && time.Since(verdict.InterruptedAt) > deps.AutoContinueFreshness {
+			continue
+		}
+		candidates = append(candidates, autoContinueCandidate{app: row.AppName, user: row.UserID, sid: row.SessionID, interruptedAt: verdict.InterruptedAt})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].interruptedAt.Before(candidates[j].interruptedAt) })
+	if len(candidates) > maxPerBoot {
+		trig.logf("%d interrupted sessions, continuing the %d oldest (max_per_boot); the rest resume on touch",
+			len(candidates), maxPerBoot)
+		candidates = candidates[:maxPerBoot]
+	}
+	return candidates, true
+}
+
+func narrowRefundedBootRecord(ctx context.Context, h *eventlog.Handle, bootID uint, attempted []string, refunded map[string]bool, trig autoContinueTrigger) {
+	if len(refunded) == 0 {
+		return
+	}
+	kept := make([]string, 0, len(attempted))
+	for _, sid := range attempted {
+		if !refunded[sid] {
+			kept = append(kept, sid)
+		}
+	}
+	if err := h.UpdateBootAttempted(ctx, bootID, kept); err != nil {
+		trig.logf("narrow boot record: %v (pessimistic count stands)", err)
 	}
 }

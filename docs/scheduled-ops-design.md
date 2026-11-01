@@ -2,7 +2,7 @@
 
 Design doc for a v2.7 addition: a companion `core-agent-cron` sidecar that fires prompts into the core-agent daemon on a cron schedule, enabling proactive autonomous operations (compliance audits, blueprint drift detection, capacity forecasting, cost sweeps) — the "always-working platform agent" mode that reactive event-driven triage (v2.6 `k8s-event-watcher`) doesn't cover.
 
-**Status:** proposed (2026-07-10). Awaiting approval before implementation. v2.7 candidate. Tracking issue: [#202](https://github.com/go-steer/core-agent/issues/202).
+**Status:** settled (2026-11-01). Closed in-process by [#1405](https://github.com/go-steer/core-agent/issues/1405) (closing [#202](https://github.com/go-steer/core-agent/issues/202)) per [`docs/mast-fold-design.md`](mast-fold-design.md): scheduled fires run in-process behind the single fleet scheduling lease (`pkg/compose.AcquireSchedulingLease` + `pkg/compose.ScheduledTrigger`) with a durable schedule anchor in `pkg/eventlog` (`Handle.Schedule` / `Handle.SaveSchedule`) and `.agents/config.json`'s `schedule` block, rather than an external `core-agent-cron` sidecar. The original v2.7 sidecar proposal is retained below for historical context.
 
 ## Motivation
 

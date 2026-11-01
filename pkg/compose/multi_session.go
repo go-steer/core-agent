@@ -27,6 +27,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
 
+	"github.com/go-steer/core-agent/v3/internal/effects"
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/attachadapter"
@@ -240,6 +241,16 @@ type SessionFactoryDeps struct {
 	// nothing to detect against.
 	AutoContinueEnabled   bool
 	AutoContinueFreshness time.Duration
+	// IsReadOnly classifies whether a tool name is read-only or mutating
+	// when scanning interrupted tails for ambiguous mutating effects (#1405).
+	IsReadOnly effects.ReadOnlyPredicate
+	// SubAgentNames marks tool/author names belonging to delegated subagents
+	// when scanning interrupted tails for dangling calls (#1405).
+	SubAgentNames map[string]bool
+	// LeaseLost, when non-nil, closes when this process loses the fleet
+	// scheduling lease; AutoContinueBootScan and AutoContinueRetryLoop stop
+	// immediately when it fires (#1405).
+	LeaseLost <-chan struct{}
 	// AutoContinueDeferInject suppresses ReproduceAgent's inline
 	// continuation inject on the resumed path. Set per-call by the
 	// resumer from a context marker (withDeferAutoContinueInject) when

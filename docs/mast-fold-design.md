@@ -84,6 +84,16 @@ two repositories answering "which one is the product?".
    governance plugins (gate, outbox, meter, guardrail store) without the
    daemon, extract them from core-agent into a new leaf module — core-models
    is the template — under a new name. Not before, and not as "mast".
+   *What "slim" means, measured (#1415, 2026-11-01):* the slice is
+   `pkg/agent` + `models` + `permissions` + `tools` + `usage`, 546 packages,
+   guarded by `verify-slim-deps`' denylist and ceiling. It carries three
+   heavier edges by decision: `gorm.io/gorm` core (driverless), because
+   `eventlog.Handle` is part of `pkg/agent`'s contract; `gorilla/websocket`,
+   which is genai's Live API and not ours to remove; and `gojq`, because two
+   built-in tools are jq. `pkg/agent`'s type-only edge to the `pkg/attach`
+   server is real but worth three packages; the extraction is parked on
+   `refactor/attach-wire-leaf` for when the A2A server (#1407) wants the wire
+   vocabulary separated from the HTTP server.
 10. **shipmind is the forcing function and the acceptance test.**
     go-steer/shipmind runs mast as an AX task on Agent Substrate and is the
     only production consumer. Its critical path is P1 → P3 → cutover

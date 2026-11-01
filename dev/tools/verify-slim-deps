@@ -44,13 +44,24 @@ cd "$(repo_root)"
 
 # Ceiling on the transitive package count of the slim target. The
 # denylist below names the heavy subsystems; this number is the tripwire
-# for everything it does not name — an ORM or a websocket client arriving
-# through a type-only import looks like nothing in particular until the
-# count moves (#1415). Measured 546 at the time of writing; the known
-# heavy edges still inside that figure are gorm.io/gorm (via pkg/eventlog
-# and pkg/attach), github.com/gorilla/websocket (pkg/attach),
-# github.com/itchyny/gojq (pkg/tools) and otelhttp (genai). Raise it only
-# in the PR that knowingly adds weight, and say what came in.
+# for everything it does not name — weight arriving through a type-only
+# import looks like nothing in particular until the count moves (#1415).
+# Measured 546 at the time of writing. The heavy edges inside that figure
+# are there by decision, not oversight (#1415, settled 2026-11-01):
+#   - gorm.io/gorm core, driverless: pkg/agent's promised options name
+#     eventlog.Handle, and the durable session log is gorm-backed. A
+#     slim embed that still has a durable log is the product; the SQLite
+#     drivers are what the denylist blocks.
+#   - github.com/gorilla/websocket: google.golang.org/genai's Live API,
+#     pulled in by ADK regardless of anything in this repository.
+#   - github.com/itchyny/gojq: two built-in tools (json_query and
+#     wait_and_verify's predicates) are jq.
+#   - otelhttp: genai.
+# pkg/agent → pkg/attach is a type-only edge to the attach server; the
+# extraction that removes it is parked on branch refactor/attach-wire-leaf
+# (546 → 543 packages, no third-party weight, ten apidiff false positives).
+# Raise the ceiling only in the PR that knowingly adds weight, and say
+# what came in.
 SLIM_MAX_PACKAGES="${SLIM_MAX_PACKAGES:-570}"
 
 DENYLIST=(

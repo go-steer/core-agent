@@ -21,6 +21,7 @@ import (
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
@@ -158,5 +159,52 @@ func TestGatedTool_ReadOnlyDoesNotBypassPolicy(t *testing.T) {
 
 	if _, err := gt.Run(&planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}, map[string]any{}); err == nil {
 		t.Fatal("a read-only tool escaped a deny policy — read_only is not an allowlist")
+	}
+}
+
+func TestGateTools_DefaultNamespaceAndIdempotent(t *testing.T) {
+	t.Parallel()
+	policy, err := permissions.NewPolicy([]string{"lookup_service:*"}, []string{"delete_service:*"})
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeAllow, Policy: policy})
+
+	lookup := &fakeInnerTool{name: "lookup_service"}
+	del := &fakeInnerTool{name: "delete_service"}
+	wrapped := GateTools([]adktool.Tool{lookup, del}, gate, "")
+	if len(wrapped) != 2 {
+		t.Fatalf("len(wrapped) = %d, want 2", len(wrapped))
+	}
+	// Wrapping an already-gated tool is a no-op.
+	if again := GateTool(wrapped[0], gate, ""); again != wrapped[0] {
+		t.Errorf("GateTool re-wrapped an already gated tool")
+	}
+
+	ctx := &planToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background())}
+	if _, err := wrapped[0].(runnableTool).Run(ctx, map[string]any{"name": "payments"}); err != nil {
+		t.Errorf("allowed tool rejected: %v", err)
+	}
+	if _, err := wrapped[1].(runnableTool).Run(ctx, map[string]any{"name": "payments"}); err == nil {
+		t.Errorf("denied tool succeeded; expected policy denial")
+	}
+}
+
+func TestGateTool_ReadOnlyNotRegisteredAsPlanGated(t *testing.T) {
+	t.Parallel()
+	gate := permissions.New(permissions.Options{
+		Mode:                permissions.ModeYolo,
+		RequirePlanArtifact: true,
+	})
+	ro := &readOnlyInnerTool{
+		fakeInnerTool: fakeInnerTool{name: "get_pod"},
+		readOnly:      true,
+	}
+	mut := &fakeInnerTool{name: "delete_pod"}
+
+	_ = GateTools([]adktool.Tool{ro, mut}, gate, "")
+	gated, known := gate.PlanGatedTools()
+	if !known || len(gated) != 1 || gated[0] != "delete_pod" {
+		t.Fatalf("PlanGatedTools() = (%v, %v), want ([delete_pod], true)", gated, known)
 	}
 }

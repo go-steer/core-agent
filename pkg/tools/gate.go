@@ -51,6 +51,15 @@ func GateToolset(ts adktool.Toolset, gate *permissions.Gate, namespace string) a
 	if ts == nil || gate == nil {
 		return ts
 	}
+	if _, already := ts.(*gatedToolset); already {
+		return ts
+	}
+	if namespace == "" {
+		namespace = ts.Name()
+	}
+	if namespace == "" {
+		namespace = "custom"
+	}
 	// The namespace IS the name planFirstDenial sees for every tool in
 	// this toolset (Run below checks with gt.namespace), so registering
 	// it is what lets record_plan report "mcp" as plan-gated instead of
@@ -58,6 +67,42 @@ func GateToolset(ts adktool.Toolset, gate *permissions.Gate, namespace string) a
 	// Exempt namespaces — "skill" — are dropped by the gate.
 	gate.RegisterPlanGatedTools(namespace)
 	return &gatedToolset{inner: ts, gate: gate, namespace: namespace}
+}
+
+// GateTool wraps a single tool so every invocation goes through gate
+// under namespace. When namespace is empty, t.Name() is used as the
+// policy bucket. A nil tool, nil gate, or already-gated tool returns t
+// unchanged.
+func GateTool(t adktool.Tool, gate *permissions.Gate, namespace string) adktool.Tool {
+	if t == nil || gate == nil {
+		return t
+	}
+	if _, already := t.(*gatedTool); already {
+		return t
+	}
+	if namespace == "" {
+		namespace = t.Name()
+	}
+	if IsReadOnlyTool(t) {
+		gate.RegisterPlanGatedTools()
+	} else {
+		gate.RegisterPlanGatedTools(namespace)
+	}
+	return &gatedTool{inner: t, gate: gate, namespace: namespace}
+}
+
+// GateTools wraps every tool in ts with GateTool under namespace. When
+// namespace is empty, each tool's own Name() is used as its policy
+// bucket.
+func GateTools(ts []adktool.Tool, gate *permissions.Gate, namespace string) []adktool.Tool {
+	if len(ts) == 0 || gate == nil {
+		return ts
+	}
+	out := make([]adktool.Tool, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, GateTool(t, gate, namespace))
+	}
+	return out
 }
 
 type gatedToolset struct {

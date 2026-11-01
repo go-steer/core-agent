@@ -16,6 +16,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"strings"
 
@@ -133,6 +134,7 @@ func RebuildTrackerFromEvents(
 			continue
 		}
 		if model, u, ok := sideUsageFrom(ev.CustomMetadata); ok {
+			u.EventID = ev.ID
 			t.AppendSideUsage(model, u, resolveRebuildPricing(ev, model, pricingFor))
 			continue
 		}
@@ -147,6 +149,10 @@ func RebuildTrackerFromEvents(
 			// would inflate the turn count without adding real cost.
 			continue
 		}
+		// The replayed turn keeps its event's identity, so a spend
+		// ledger seeded from this replay keys each row on the same
+		// event ID the live TurnTap would have (#1433).
+		u.EventID = ev.ID
 		modelName := resolveRebuildModel(ev, defaultModel)
 		price := resolveRebuildPricing(ev, modelName, pricingFor)
 		if isSubtaskBranch(ev.Branch) {
@@ -207,13 +213,19 @@ func replayToolSavings(t *Tracker, ev *session.Event, pricingFor func(string) Pr
 	if t == nil || ev == nil || ev.Content == nil || ev.Partial {
 		return
 	}
-	for _, p := range ev.Content.Parts {
+	for i, p := range ev.Content.Parts {
 		rec, ok := extractSavingsRecordFromPart(p, pricingFor)
 		if !ok {
 			continue
 		}
 		if rec.SubagentModel != "" && (rec.SubagentInputTokens > 0 || rec.SubagentOutputTokens > 0) {
-			t.AppendSideUsage(rec.SubagentModel, rec.SubagentTurn(), resolveRebuildPricing(ev, rec.SubagentModel, pricingFor))
+			u := rec.SubagentTurn()
+			// One event can carry several sidecars, so the part index
+			// keeps each one's ledger key distinct (#1433).
+			if ev.ID != "" {
+				u.EventID = fmt.Sprintf("%s:savings:%d", ev.ID, i)
+			}
+			t.AppendSideUsage(rec.SubagentModel, u, resolveRebuildPricing(ev, rec.SubagentModel, pricingFor))
 		}
 	}
 }

@@ -185,6 +185,10 @@ Events are committed as they are produced: the model response carrying a tool ca
 
 The agent heals this on its own: at the start of every turn it scans recent history for its own unanswered tool calls and appends a synthesized error result ("tool execution was interrupted…") for each. The repair is a real, durable event — audit and replay see a consistent history — stamped with `kind: tool_tail_repair` in its event metadata so it is distinguishable from a genuine tool result. The model sees the interruption notice and can re-issue the call if the result still matters. No operator action is required.
 
+### Spend survives a resume at the price it was billed
+
+In multi-session mode (`compose.ReproduceAgent`), every priced model call a session makes — its own turns, delegated and `spawn_agent` subagent turns, and side calls such as the auto-mode approver — is appended to `agent_budget_spend` (`eventlog.SpendStore`, on the same database) at the moment it is billed, with the cost the catalog in force charged. When a session is resumed after eviction or a restart, its `usage.Tracker` is restored from those rows verbatim rather than re-priced from the event stream, so `/stats`, the per-model breakdown and the point where `--max-session-cost-usd` trips are the same numbers the session had when it was last live — even if `/pricing/refresh` changed the catalog in between. Event-backed rows are keyed by ADK event ID, so a turn billed twice lands once. A session created before the ledger existed has no rows and is rebuilt from its events at the current catalog, which seeds the ledger for its next resume; the session's stderr line reports which source was used (`spend restored from ledger` or `from events`).
+
 ---
 
 ## Recording vs event log

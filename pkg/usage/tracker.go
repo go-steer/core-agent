@@ -69,6 +69,14 @@ type Turn struct {
 	// backend, or a subagent's turn on another provider re-prices at
 	// the parent's rate.
 	Backend string
+	// EventID identifies the ADK event this turn was committed on
+	// (TurnUsage.EventID, stamped by TurnTap.Commit and tool-savings
+	// observers). It is the idempotency key of the durable spend ledger
+	// (#1433): a row per event, so the same turn billed twice lands
+	// once. Empty for a call with no event at call time (the approver,
+	// internal compaction/side-question calls), which the ledger stores
+	// with a NULL event_id and does not deduplicate.
+	EventID string
 }
 
 // TurnUsage is the per-call token breakdown a provider adapter hands
@@ -100,6 +108,13 @@ type TurnUsage struct {
 	// is why adding it there can't double-charge them.
 	ThoughtsTokens int
 	ToolUseTokens  int
+	// EventID is the identity of the ADK event the turn was committed
+	// on, not a token count. TurnTap.Commit stamps it so every
+	// tap-driven call site threads it to Tracker.AppendUsage without
+	// a signature change, and the Turn carries it on to the durable
+	// spend ledger as its idempotency key (#1433). Not priced, not
+	// clamped, and ignored by every arithmetic method on this type.
+	EventID string
 }
 
 // Clamped returns u with the two cache buckets forced inside
@@ -225,6 +240,11 @@ type Tracker struct {
 	turns     []Turn
 	startedAt time.Time
 	onAppend  func() // optional; fired after each Append, under no lock
+	// onTurn fires after every AppendUsage AND AppendSideUsage with the
+	// stored Turn, under no lock. Unlike onAppend it is a spend
+	// observer, not a conversation-progress one: it sees side calls
+	// and it does not fire for RestoreTurns (#1433).
+	onTurn func(Turn)
 
 	// Digest-savings counters (#223 Phase 4). Cumulative across the
 	// session; rendered by /context. Populated via
@@ -328,6 +348,69 @@ func (t *Tracker) SetOnAppend(f func()) {
 	t.mu.Unlock()
 }
 
+// SetOnTurn registers a spend observer: f fires with the stored Turn
+// after every AppendUsage and AppendSideUsage, once the lock is
+// released, so f may call any Tracker accessor. It differs from
+// SetOnAppend in both directions: it sees side calls (which spend
+// money without being a conversation turn), and it stays silent for
+// RestoreTurns, which replays spend already recorded rather than new
+// spend.
+//
+// The durable spend ledger hangs off this hook (#1433): pkg/compose
+// installs one per session that writes each Turn, at the price it was
+// billed, to eventlog.SpendStore.
+//
+// Pass nil to unregister. Last call wins.
+func (t *Tracker) SetOnTurn(f func(Turn)) {
+	t.mu.Lock()
+	t.onTurn = f
+	t.mu.Unlock()
+}
+
+// RestoreTurns appends turns that were already billed — read back
+// from the durable spend ledger on session resume (#1433) — exactly as
+// stored: CostUSD, At, Side, EventID and the rest are kept, nothing is
+// re-priced, and neither the SetOnAppend nor the SetOnTurn callback
+// fires. Afterwards Totals, TotalsByModel and Last read as they did on
+// the tracker the turns came from.
+func (t *Tracker) RestoreTurns(turns ...Turn) {
+	if len(turns) == 0 {
+		return
+	}
+	t.mu.Lock()
+	t.turns = append(t.turns, turns...)
+	for _, turn := range turns {
+		if !turn.Side {
+			t.pendingContextBytes = 0
+			break
+		}
+	}
+	t.mu.Unlock()
+}
+
+// newTurn builds the stored Turn for one call: clamps the buckets,
+// prices it, and stamps the wall clock. Shared by AppendUsage and
+// AppendSideUsage so the two differ only in Side and in which
+// callbacks fire.
+func newTurn(model string, u TurnUsage, p Pricing, side bool) Turn {
+	u = u.Clamped()
+	return Turn{
+		Model:                    model,
+		InputTokens:              u.InputTokens,
+		CachedInputTokens:        u.CachedInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
+		OutputTokens:             u.OutputTokens,
+		ThoughtsTokens:           u.ThoughtsTokens,
+		ToolUseTokens:            u.ToolUseTokens,
+		CostUSD:                  p.CostUSDForTurn(u),
+		At:                       time.Now(),
+		Unpriced:                 p.Unpriced,
+		Backend:                  p.Backend,
+		Side:                     side,
+		EventID:                  u.EventID,
+	}
+}
+
 // Append records one turn's usage with input/output only. Cost is
 // computed via the supplied Pricing; pass a zero Pricing to skip cost
 // tracking. If SetOnAppend has been called with a non-nil callback,
@@ -352,29 +435,18 @@ func (t *Tracker) Append(model string, inputTokens, outputTokens int, p Pricing)
 // The cache buckets are clamped into InputTokens — see
 // TurnUsage.Clamped for why and in what order.
 func (t *Tracker) AppendUsage(model string, u TurnUsage, p Pricing) Turn {
-	u = u.Clamped()
-	cost := p.CostUSDForTurn(u)
-	turn := Turn{
-		Model:                    model,
-		InputTokens:              u.InputTokens,
-		CachedInputTokens:        u.CachedInputTokens,
-		CacheCreationInputTokens: u.CacheCreationInputTokens,
-		OutputTokens:             u.OutputTokens,
-		ThoughtsTokens:           u.ThoughtsTokens,
-		ToolUseTokens:            u.ToolUseTokens,
-		CostUSD:                  cost,
-		At:                       time.Now(),
-		Unpriced:                 p.Unpriced,
-		Backend:                  p.Backend,
-	}
+	turn := newTurn(model, u, p, false)
 	t.mu.Lock()
 	t.turns = append(t.turns, turn)
 	// This call's InputTokens is a measurement of the whole conversation
 	// as sent, so whatever was appended since the last one is now counted
 	// for real and the estimate standing in for it is spent (#975).
 	t.pendingContextBytes = 0
-	cb := t.onAppend
+	cb, onTurn := t.onAppend, t.onTurn
 	t.mu.Unlock()
+	if onTurn != nil {
+		onTurn(turn)
+	}
 	if cb != nil {
 		cb()
 	}
@@ -406,26 +478,17 @@ func (t *Tracker) lastLocked() (Turn, bool) {
 // the cost ceilings, but Last skips it, the #975 context estimate is
 // left alone, and the SetOnAppend callback does not fire (it would
 // re-ship the previous turn as the last one). The next AppendUsage
-// brings the totals on the wire up to date.
+// brings the totals on the wire up to date. The SetOnTurn spend
+// observer does fire: a side call is spend, and the ledger must see it.
 func (t *Tracker) AppendSideUsage(model string, u TurnUsage, p Pricing) Turn {
-	u = u.Clamped()
-	turn := Turn{
-		Model:                    model,
-		InputTokens:              u.InputTokens,
-		CachedInputTokens:        u.CachedInputTokens,
-		CacheCreationInputTokens: u.CacheCreationInputTokens,
-		OutputTokens:             u.OutputTokens,
-		ThoughtsTokens:           u.ThoughtsTokens,
-		ToolUseTokens:            u.ToolUseTokens,
-		CostUSD:                  p.CostUSDForTurn(u),
-		At:                       time.Now(),
-		Unpriced:                 p.Unpriced,
-		Backend:                  p.Backend,
-		Side:                     true,
-	}
+	turn := newTurn(model, u, p, true)
 	t.mu.Lock()
 	t.turns = append(t.turns, turn)
+	onTurn := t.onTurn
 	t.mu.Unlock()
+	if onTurn != nil {
+		onTurn(turn)
+	}
 	return turn
 }
 

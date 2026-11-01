@@ -25,7 +25,6 @@ import (
 
 	"github.com/google/uuid"
 	adkmodel "google.golang.org/adk/v2/model"
-	"google.golang.org/adk/v2/session"
 	adktool "google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
@@ -591,43 +590,30 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	sessionTracker := newSessionTracker()
 
 	// On resume (session evicted from memory, brought back by
-	// SessionResumer), replay persisted eventlog into the fresh
-	// tracker so /stats + AttachUsage return real historical totals
-	// instead of "0 in / 0 out / $0.00". Fixes the aggregate-totals
-	// regression that shipped alongside #275 — per-turn footers kept
-	// working because they replay from live SSE events, but the
-	// aggregate started at zero on every resume. Only runs when
-	// origin=="resumed"; freshly-created sessions have no history
-	// to rebuild.
-	if origin == "resumed" && deps.EventlogHandle != nil && deps.EventlogHandle.Stream != nil {
-		events := deps.EventlogHandle.Stream.Since(
-			deps.DaemonCtx, 0,
-			eventlog.WithSessionTree("core-agent", caller.Identity, sid),
-		)
-		// Adapter: eventlog yields (Entry, error); tracker rebuild
-		// wants (*session.Event, error). Peel the event field.
-		eventsSeq := func(yield func(*session.Event, error) bool) {
-			for entry, err := range events {
-				if !yield(entry.Event, err) {
-					return
-				}
-			}
-		}
-		if err := usage.RebuildTrackerFromEvents(
-			deps.DaemonCtx, sessionTracker, eventsSeq,
-			cust.Model.Name(),
-			func(model string) usage.Pricing {
-				if model == "" || model == cust.Model.Name() {
-					return pricingRate
-				}
-				return usage.PriceFor(model, deps.Cfg)
-			},
-		); err != nil {
-			// Non-fatal — the session still functions, just with
-			// zero baseline aggregate. Log so operators can spot
-			// silent rebuild failures.
-			fmt.Fprintf(os.Stderr, "core-agent: rebuild tracker for resumed session %s: %v\n", sid, err)
-		}
+	// SessionResumer), restore the fresh tracker's history so /stats
+	// + AttachUsage return real historical totals instead of
+	// "0 in / 0 out / $0.00". Fixes the aggregate-totals regression
+	// that shipped alongside #275 — per-turn footers kept working
+	// because they replay from live SSE events, but the aggregate
+	// started at zero on every resume. The spend ledger is the source
+	// when it has rows (cost as billed, never re-priced, #1433); the
+	// event stream is the fallback for sessions that predate it, and
+	// seeds the ledger atomically once the full replay succeeds. Only
+	// runs when origin=="resumed"; freshly-created sessions have no
+	// history to rebuild.
+	if origin == "resumed" && deps.EventlogHandle != nil {
+		path, n := restoreResumedTracker(deps, caller.Identity, sid, sessionTracker, cust.Model.Name(), pricingRate)
+		fmt.Fprintf(os.Stderr, "core-agent: session %s spend restored from %s (%d turns)\n", sid, path, n)
+	}
+
+	// Durable spend ledger (#1433): every subsequent Turn this tracker
+	// bills is appended to agent_budget_spend at the price it was billed.
+	// Installed after restoreResumedTracker so a mid-stream failure during
+	// event-fallback replay never commits a partial ledger. Nil Spend (no
+	// eventlog, or a non-SQL Handle) installs nothing and the session runs
+	// on the in-memory tracker alone.
+	if deps.EventlogHandle != nil {
+		installSpendLedger(deps.DaemonCtx, deps.EventlogHandle.Spend, sessionTracker, caller.Identity, sid)
 	}
 
 	opts = append(opts, agent.WithUsageTracker(sessionTracker))

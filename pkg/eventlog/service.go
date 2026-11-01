@@ -72,6 +72,7 @@ type service struct {
 	stream    *gormStream
 	guardrail *GuardrailStore
 	spend     *SpendStore
+	decisions *DecisionStore
 
 	writeMu sync.Mutex
 }
@@ -112,7 +113,10 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 	if err := s.guardrail.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
 		return err
 	}
-	return s.spend.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
+	if err := s.spend.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
+		return err
+	}
+	return s.decisions.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
 }
 
 // AppendEvent writes the event through ADK and mirrors it into the

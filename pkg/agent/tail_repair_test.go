@@ -19,9 +19,14 @@ import (
 	"strings"
 	"testing"
 
+	adkagent "google.golang.org/adk/v2/agent"
 	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v3/internal/effects"
 )
 
 // defaultAgentName mirrors defaultOptions().name — the Author ADK
@@ -347,4 +352,153 @@ func TestRun_RepairsDanglingTailBeforeModelCall(t *testing.T) {
 func anyToString(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+func TestTailRepair_StampsSyntheticRepairMetadataSoEffectsStillSeesDanglingMutation(t *testing.T) {
+	t.Parallel()
+	svc := session.InMemoryService()
+	seedTailSession(t, svc,
+		userTextEvent("run the thing"),
+		callEvent(defaultAgentName, "inv-1", nil, &genai.FunctionCall{ID: "call-1", Name: "write_file", Args: map[string]any{"path": "foo.txt"}}),
+	)
+	a := newTailRepairAgent(t, svc)
+	a.repairDanglingToolCalls(context.Background())
+
+	extra := syntheticResponses(t, svc, 2)
+	if len(extra) != 1 {
+		t.Fatalf("appended %d events, want 1", len(extra))
+	}
+	if extra[0].CustomMetadata[effects.SyntheticRepairMetadataKey] != true {
+		t.Errorf("CustomMetadata[%q] = %v, want true", effects.SyntheticRepairMetadataKey, extra[0].CustomMetadata[effects.SyntheticRepairMetadataKey])
+	}
+
+	resp, err := svc.Get(context.Background(), &session.GetRequest{AppName: DefaultAppName, UserID: "tail-user", SessionID: "tail-sid"})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	scan := effects.ScanDangling(resp.Session.Events(), effects.NewPredicate(nil), nil)
+	if len(scan.Mutating) != 1 || scan.Mutating[0].CallID != "call-1" {
+		t.Errorf("effects.ScanDangling after tail repair = %+v, want call-1 still in Mutating", scan.Mutating)
+	}
+}
+
+func TestTailRepair_ConfirmationPlaceholderAndWrappedResponses(t *testing.T) {
+	t.Parallel()
+	// 1. While parked on confirmation, tail repair must NOT synthesize a response for call-1 or conf-1.
+	evCall := callEvent(defaultAgentName, "inv-1", nil, &genai.FunctionCall{ID: "call-1", Name: "write_file", Args: map[string]any{"path": "foo.txt"}})
+	evPlaceholder := session.NewEvent(context.Background(), "inv-1")
+	evPlaceholder.Author = defaultAgentName
+	evPlaceholder.Content = &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{{
+			FunctionResponse: &genai.FunctionResponse{
+				ID:       "call-1",
+				Name:     "write_file",
+				Response: map[string]any{"status": "awaiting_operator_approval"},
+			},
+		}},
+	}
+	evPlaceholder.Actions.RequestedToolConfirmations = map[string]toolconfirmation.ToolConfirmation{
+		"call-1": {Hint: "approve?"},
+	}
+	evConf := callEvent(defaultAgentName, "inv-1", []string{"conf-1"}, &genai.FunctionCall{
+		ID:   "conf-1",
+		Name: confirmationCallName,
+		Args: map[string]any{
+			"originalFunctionCall": map[string]any{"id": "call-1", "name": "write_file"},
+		},
+	})
+
+	svc1 := session.InMemoryService()
+	seedTailSession(t, svc1, userTextEvent("write foo"), evCall, evPlaceholder, evConf)
+	a1 := newTailRepairAgent(t, svc1)
+	a1.repairDanglingToolCalls(context.Background())
+	if extra := syntheticResponses(t, svc1, 4); len(extra) != 0 {
+		t.Fatalf("while parked on confirmation: tail repair appended %d events, want 0", len(extra))
+	}
+
+	// 2. When conf-1 is answered with a JSON-string wrapped rejection
+	// ({"response": "{\"confirmed\":true,\"payload\":{\"verdict\":\"reject\"}}"}),
+	// confirmationParked["call-1"] stays true so tail repair does not synthesize a duplicate response.
+	evWrappedReject := session.NewEvent(context.Background(), "inv-1")
+	evWrappedReject.Author = "user"
+	evWrappedReject.Content = &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{{
+			FunctionResponse: &genai.FunctionResponse{
+				ID:       "conf-1",
+				Name:     confirmationCallName,
+				Response: map[string]any{"response": `{"confirmed":true,"payload":{"verdict":"reject"}}`},
+			},
+		}},
+	}
+	svc2 := session.InMemoryService()
+	seedTailSession(t, svc2, userTextEvent("write foo"), evCall, evPlaceholder, evConf, evWrappedReject)
+	a2 := newTailRepairAgent(t, svc2)
+	a2.repairDanglingToolCalls(context.Background())
+	if extra := syntheticResponses(t, svc2, 5); len(extra) != 0 {
+		t.Fatalf("after wrapped reject confirmation: tail repair appended %d events, want 0", len(extra))
+	}
+
+	// 3. When conf-1 is answered with a JSON-string wrapped approval
+	// ({"response": "{\"confirmed\":true,\"payload\":{\"verdict\":\"approve\"}}"})
+	// and the process crashed before call-1 wrote its real FunctionResponse,
+	// tail repair synthesizes the LLM-history repair event (stamped with SyntheticRepairMetadataKey)
+	// while effects.ScanDangling still sees call-1 as a dangling mutating call.
+	evWrappedApprove := session.NewEvent(context.Background(), "inv-1")
+	evWrappedApprove.Author = "user"
+	evWrappedApprove.Content = &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{{
+			FunctionResponse: &genai.FunctionResponse{
+				ID:       "conf-1",
+				Name:     confirmationCallName,
+				Response: map[string]any{"response": `{"confirmed":true,"payload":{"verdict":"approve"}}`},
+			},
+		}},
+	}
+	svc3 := session.InMemoryService()
+	seedTailSession(t, svc3, userTextEvent("write foo"), evCall, evPlaceholder, evConf, evWrappedApprove)
+	a3 := newTailRepairAgent(t, svc3)
+	a3.repairDanglingToolCalls(context.Background())
+	extra3 := syntheticResponses(t, svc3, 5)
+	if len(extra3) != 1 {
+		t.Fatalf("after wrapped approve crash: tail repair appended %d events, want 1", len(extra3))
+	}
+	resp3, err := svc3.Get(context.Background(), &session.GetRequest{AppName: DefaultAppName, UserID: "tail-user", SessionID: "tail-sid"})
+	if err != nil {
+		t.Fatalf("Get svc3: %v", err)
+	}
+	scan3 := effects.ScanDangling(resp3.Session.Events(), effects.NewPredicate(nil), nil)
+	if len(scan3.Mutating) != 1 || scan3.Mutating[0].CallID != "call-1" {
+		t.Errorf("ScanDangling after wrapped approve crash + tail repair = %+v, want [call-1]", scan3.Mutating)
+	}
+}
+
+func TestWithPlugins_WiresRunnerPlugins(t *testing.T) {
+	t.Parallel()
+	svc := session.InMemoryService()
+	beforeRunCalled := false
+	p, err := plugin.New(plugin.Config{
+		Name: "test-plugin",
+		BeforeRunCallback: func(adkagent.InvocationContext) (*genai.Content, error) {
+			beforeRunCalled = true
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("plugin.New: %v", err)
+	}
+	a, err := New(&recordingLLM{}, WithSessionService(svc), WithPlugins(nil, p))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, err := range a.Run(context.Background(), "hello") {
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	}
+	if !beforeRunCalled {
+		t.Error("expected WithPlugins plugin BeforeRunCallback to fire on Run")
+	}
 }

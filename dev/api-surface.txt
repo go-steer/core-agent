@@ -55,6 +55,8 @@ promised pkg/watchdog
 # --- Unsupported (exported for in-repo / sibling composition only) ---
 # Daemon/sandbox environment variable readers (CORE_AGENT_*).
 unsupported pkg/agentenv
+# Durable write gate and operator approval plugin (#1400).
+unsupported pkg/approval
 # Model-backed approver behind experimental permission mode `auto`.
 unsupported pkg/approver
 # HTTP/SSE remote-attach server wire protocol and handler.

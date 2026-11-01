@@ -795,6 +795,10 @@ const (
 	// pressing stop. The durable account of the cut is an audit row in
 	// the eventlog (see pkg/agent/refusal_storm.go), not a frame.
 	TurnErrorRefusalStorm = "refusal_storm"
+	// TurnErrorRefusalLoop fires when the durable write gate ends a turn
+	// because the model kept re-proposing mutating calls the operator had
+	// already refused in that turn (#1400). Retryable=false.
+	TurnErrorRefusalLoop = "refusal_loop"
 	// TurnErrorCanceled fires when the turn's context was cancelled
 	// (#816): an operator interrupt (POST /interrupt, the TUI's ESC),
 	// a parent-context cancel at shutdown, or a guardrail halting the

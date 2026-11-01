@@ -347,6 +347,10 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// /perms/respond POST); see handlers_prompts.go.
 	h.registerPrompts(mux)
 
+	// Durable parks projection (/parks, /sessions/.../parks) and
+	// ambiguous-effect acknowledgement (/ack-effects); see parks.go.
+	h.registerParks(mux)
+
 	// GET /whoami — session-agnostic caller-identity echo
 	// (SSE spec v1.4.0 companion, see handlers_whoami.go).
 	h.registerWhoAmI(mux)
@@ -644,7 +648,7 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 		promptID string
 		err      error
 	)
-	ctx := r.Context()
+	ctx := h.turnContext(r.Context())
 	if req.TaskBytes != nil {
 		ctx = context.WithValue(ctx, injectTaskCtxKey{}, req.Message[:*req.TaskBytes])
 	}
@@ -725,10 +729,11 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 	var promptID string
 	if req.Prompt != "" {
 		caller, _ := auth.CallerFromContext(r.Context())
+		ctx := h.turnContext(r.Context())
 		// Same trace-context handoff as doInject — a wake carrying a
 		// prompt is an inject.
 		var err error
-		if promptID, err = injectWithContext(r.Context(), entry.Agent, req.Prompt, caller); err != nil {
+		if promptID, err = injectWithContext(ctx, entry.Agent, req.Prompt, caller); err != nil {
 			http.Error(w, fmt.Sprintf("wake: inject prompt: %v", err), http.StatusInternalServerError)
 			return
 		}

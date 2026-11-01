@@ -44,6 +44,7 @@ import (
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
@@ -590,6 +591,7 @@ type options struct {
 	sessionID           string
 	tools               []tool.Tool
 	toolsets            []tool.Toolset
+	plugins             []*plugin.Plugin
 	sessionService      session.Service
 	eventLog            *eventlog.Handle
 	subagents           []*Agent
@@ -732,6 +734,19 @@ func WithTools(ts []tool.Tool) Option {
 // passed to llmagent.Config.Toolsets.
 func WithToolsets(ts []tool.Toolset) Option {
 	return func(o *options) { o.toolsets = append(o.toolsets, ts...) }
+}
+
+// WithPlugins registers ADK runner plugins (such as pkg/approval and
+// internal/effects) on the agent's underlying runner.Config.PluginConfig.
+// Nil entries are ignored.
+func WithPlugins(plugins ...*plugin.Plugin) Option {
+	return func(o *options) {
+		for _, p := range plugins {
+			if p != nil {
+				o.plugins = append(o.plugins, p)
+			}
+		}
+	}
 }
 
 // WithSessionService overrides the session.Service handed to the ADK
@@ -1205,6 +1220,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		AppName:           o.appName,
 		Agent:             inner,
 		SessionService:    runnerSvc,
+		PluginConfig:      runner.PluginConfig{Plugins: o.plugins},
 		AutoCreateSession: true,
 	})
 	if err != nil {

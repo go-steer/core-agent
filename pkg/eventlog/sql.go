@@ -167,6 +167,10 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	if err != nil {
 		return nil, err
 	}
+	decisionStore, err := NewDecisionStore(ctx, db)
+	if err != nil {
+		return nil, err
+	}
 
 	stream := &gormStream{
 		db:                db,
@@ -184,12 +188,13 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	adkDB := adkGormDB(adkSvc)
 	stream.overlayInTx = stream.registerOverlayCallback(adkDB)
 
-	svc := &service{inner: adkSvc, stream: stream, guardrail: guardrailStore, spend: spendStore}
+	svc := &service{inner: adkSvc, stream: stream, guardrail: guardrailStore, spend: spendStore, decisions: decisionStore}
 	return &Handle{
 		Stream:                stream,
 		Service:               svc,
 		Guardrail:             guardrailStore,
 		Spend:                 spendStore,
+		Decisions:             decisionStore,
 		db:                    db,
 		DB:                    db,
 		adkDB:                 adkDB,

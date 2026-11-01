@@ -170,6 +170,10 @@ type Handle struct {
 	// agent_budget_spend on the same database (#1359). Nil on a
 	// non-SQL Handle.
 	Spend *SpendStore
+	// Decisions is the durable write-gate decision store backed by
+	// agent_approval_decisions on the same database (#1400). Nil on a
+	// non-SQL Handle.
+	Decisions *DecisionStore
 	// DB exposes the overlay-table connection so adjacent
 	// substrates (e.g., pkg/attach.SessionACLStore) can share the
 	// same database without re-opening it. Read-only access from

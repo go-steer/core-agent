@@ -48,6 +48,8 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v3/internal/effects"
 )
 
 // tailRepairScanWindow bounds the per-turn history fetch. A dangling
@@ -102,6 +104,56 @@ func originalCallID(args map[string]any) string {
 	return ""
 }
 
+func collectTailCallState(events session.Events) (answered, confirmationParked map[string]bool, callEvents []*session.Event) {
+	answered = map[string]bool{}
+	confirmationParked = map[string]bool{}
+	confirmTargetByID := map[string]string{}
+	for ev := range events.All() {
+		if ev == nil || ev.Content == nil {
+			continue
+		}
+		hasCall := false
+		for _, p := range ev.Content.Parts {
+			if p == nil {
+				continue
+			}
+			if fr := p.FunctionResponse; fr != nil {
+				recordTailFunctionResponse(ev, fr, answered, confirmationParked, confirmTargetByID)
+			}
+			if fc := p.FunctionCall; fc != nil {
+				hasCall = true
+				if fc.Name == confirmationCallName {
+					if id := originalCallID(fc.Args); id != "" {
+						confirmationParked[id] = true
+						if fc.ID != "" {
+							confirmTargetByID[fc.ID] = id
+						}
+					}
+				}
+			}
+		}
+		if hasCall {
+			callEvents = append(callEvents, ev)
+		}
+	}
+	return answered, confirmationParked, callEvents
+}
+
+func recordTailFunctionResponse(ev *session.Event, fr *genai.FunctionResponse, answered, confirmationParked map[string]bool, confirmTargetByID map[string]string) {
+	if ev.Actions.RequestedToolConfirmations != nil {
+		if _, isPlaceholder := ev.Actions.RequestedToolConfirmations[fr.ID]; isPlaceholder {
+			confirmationParked[fr.ID] = true
+			return
+		}
+	}
+	answered[fr.ID] = true
+	if origID, isConfirm := confirmTargetByID[fr.ID]; isConfirm {
+		if effects.IsConfirmationApproved(fr.Response) {
+			delete(confirmationParked, origID)
+		}
+	}
+}
+
 // repairDanglingToolCalls scans recent history for functionCall parts
 // authored by this agent that have no matching functionResponse and
 // appends one synthesized error-response event per damaged call event.
@@ -135,46 +187,7 @@ func (a *Agent) repairDanglingToolCalls(ctx context.Context) {
 		return
 	}
 
-	// Pass 1: every answered call ID in the window, regardless of who
-	// answered (async long-running responses are user-authored), plus
-	// every call ID parked behind ADK's tool-confirmation flow: a
-	// RequireConfirmation tool's original call legitimately sits
-	// unanswered (and not long-running-marked) while its
-	// adk_request_confirmation pseudo-call awaits the user, so
-	// answering it here would break the flow. core-agent itself never
-	// sets RequireConfirmation, but pkg/agent is consumed as a
-	// library. Skipping unconditionally (even for an already-answered
-	// confirmation) means a crash inside the confirmation gap leaves
-	// the tail unrepaired — the pre-repair status quo — rather than
-	// risking a wrong guess about an in-flight approved tool.
-	answered := map[string]bool{}
-	confirmationParked := map[string]bool{}
-	var callEvents []*session.Event
-	for ev := range resp.Session.Events().All() {
-		if ev == nil || ev.Content == nil {
-			continue
-		}
-		hasCall := false
-		for _, p := range ev.Content.Parts {
-			if p == nil {
-				continue
-			}
-			if p.FunctionResponse != nil {
-				answered[p.FunctionResponse.ID] = true
-			}
-			if p.FunctionCall != nil {
-				hasCall = true
-				if p.FunctionCall.Name == confirmationCallName {
-					if id := originalCallID(p.FunctionCall.Args); id != "" {
-						confirmationParked[id] = true
-					}
-				}
-			}
-		}
-		if hasCall {
-			callEvents = append(callEvents, ev)
-		}
-	}
+	answered, confirmationParked, callEvents := collectTailCallState(resp.Session.Events())
 
 	// Pass 2: synthesize per damaged call event.
 	for _, cev := range callEvents {
@@ -220,8 +233,9 @@ func (a *Agent) repairDanglingToolCalls(ctx context.Context) {
 		ev.LLMResponse = adkmodel.LLMResponse{
 			Content: &genai.Content{Role: genai.RoleUser, Parts: parts},
 			CustomMetadata: map[string]any{
-				"kind":              tailRepairKind,
-				"repaired_call_ids": repairedIDs,
+				"kind":                             tailRepairKind,
+				"repaired_call_ids":                repairedIDs,
+				effects.SyntheticRepairMetadataKey: true,
 			},
 		}
 		if err := a.sessionService.AppendEvent(ctx, resp.Session, ev); err != nil {

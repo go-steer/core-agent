@@ -85,6 +85,27 @@ func ClassifyTurnError(err error) TurnError {
 // than an import, as with SelfClassifyingError.
 type retryPrefixer interface{ RetryPrefix() string }
 
+// turnErrorKinder is implemented by errors that declare their
+// TurnError kind string without importing pkg/attach (e.g.
+// approval.RefusalLoopError).
+type turnErrorKinder interface {
+	error
+	TurnErrorKind() string
+}
+
+func classifyDeclaredKind(kind string, err error) (TurnError, bool) {
+	if kind == TurnErrorRefusalLoop {
+		return TurnError{
+			Kind:      TurnErrorRefusalLoop,
+			Code:      "REFUSAL_LOOP",
+			Message:   firstSentence(err.Error()),
+			Retryable: false,
+			Hint:      "The turn ended; nothing is latched and nothing needs resetting. The refusal stands for this turn only. If the change should happen after all, send a new turn and approve the call when it parks.",
+		}, true
+	}
+	return TurnError{}, false
+}
+
 func classifyTurnError(err error) TurnError {
 	if err == nil {
 		return TurnError{Kind: TurnErrorUnknown, Message: "nil error", Retryable: false}
@@ -97,6 +118,12 @@ func classifyTurnError(err error) TurnError {
 	var self SelfClassifyingError
 	if errors.As(err, &self) {
 		return self.AsTurnError()
+	}
+	var kinder turnErrorKinder
+	if errors.As(err, &kinder) {
+		if te, ok := classifyDeclaredKind(kinder.TurnErrorKind(), err); ok {
+			return te
+		}
 	}
 
 	// Context errors come through unwrapped from cancellation /

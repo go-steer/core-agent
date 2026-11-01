@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 )
 
 // warnw is where Load emits unknown-key warnings. Defaults to stderr;
@@ -88,7 +89,6 @@ func Load(agentsDir string) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
 	}
-	warnUnknownKeys(path, data)
 	// Provider profiles first, naming the file: a profile error points
 	// at a nested block whose index alone is hard to find. Strict where
 	// the rest of the file is tolerant: a misspelt key inside a profile
@@ -96,6 +96,9 @@ func Load(agentsDir string) (*Config, error) {
 	// forward-compat case to protect — the schema is core-models'.
 	if err := strictProviders(data); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
+	if err := checkUnknownKeys(path, data); err != nil {
+		return nil, err
 	}
 	if err := cfg.validateProviders(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -106,53 +109,258 @@ func Load(agentsDir string) (*Config, error) {
 	return cfg, nil
 }
 
-// warnUnknownKeys emits a one-line warning per unknown top-level key in
-// the raw config bytes. Unknown keys are not fatal (see Load), but a
-// mistyped "deny"/"allow" would otherwise be silently ignored —
-// dangerous when the mistyped key was meant to gate access.
-func warnUnknownKeys(path string, data []byte) {
-	if warnw == nil {
-		return
+// checkUnknownKeys walks the raw JSON config recursively against the
+// reflect-derived schema of Config. It emits a one-line warning per
+// non-fatal unknown key path and returns an error when an unknown key
+// falls under permissions.* or targets a cost/budget setting, where a
+// silent typo removes a safety or spending guardrail (#1375).
+func checkUnknownKeys(path string, data []byte) error {
+	var raw json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil // not valid JSON; json.Unmarshal(data, cfg) already surfaced it
 	}
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(data, &top); err != nil {
-		return // not an object; Validate/Unmarshal will have surfaced it
-	}
-	known := knownTopLevelKeys()
 	var unknown []string
-	for k := range top {
-		if !known[k] {
-			unknown = append(unknown, k)
+	walkUnknownKeys(raw, reflect.TypeOf(Config{}), "", &unknown)
+	if len(unknown) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(unknown))
+	deduped := make([]string, 0, len(unknown))
+	for _, k := range unknown {
+		if !seen[k] {
+			seen[k] = true
+			deduped = append(deduped, k)
 		}
 	}
-	if len(unknown) == 0 {
+	sort.Strings(deduped)
+	var fatal []string
+	for _, k := range deduped {
+		if isFatalUnknownKey(k) {
+			fatal = append(fatal, k)
+			continue
+		}
+		if warnw != nil {
+			if strings.ContainsAny(k, ".[") {
+				fmt.Fprintf(warnw, "config: %s: unknown key %q ignored (typo? nested unknown keys have no effect)\n", path, k)
+			} else {
+				fmt.Fprintf(warnw, "config: %s: unknown key %q ignored (typo? it is preserved on save but has no effect)\n", path, k)
+			}
+		}
+	}
+	if len(fatal) > 0 {
+		return fmt.Errorf("config: %s: unknown safety/budget key(s) %s (refusing to ignore a typo in permissions or cost ceilings)", path, strings.Join(fatal, ", "))
+	}
+	return nil
+}
+
+func walkUnknownKeys(raw json.RawMessage, t reflect.Type, prefix string, out *[]string) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 		return
 	}
-	sort.Strings(unknown)
-	for _, k := range unknown {
-		fmt.Fprintf(warnw, "config: %s: unknown key %q ignored (typo? it is preserved on save but has no effect)\n", path, k)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		walkUnknownStructKeys(raw, t, prefix, out)
+	case reflect.Slice, reflect.Array:
+		var elems []json.RawMessage
+		if err := json.Unmarshal(raw, &elems); err != nil {
+			return
+		}
+		for i, elem := range elems {
+			walkUnknownKeys(elem, t.Elem(), fmt.Sprintf("%s[%d]", prefix, i), out)
+		}
+	case reflect.Map:
+		elem := t.Elem()
+		for elem.Kind() == reflect.Pointer {
+			elem = elem.Elem()
+		}
+		if elem.Kind() != reflect.Struct && elem.Kind() != reflect.Slice && elem.Kind() != reflect.Array && elem.Kind() != reflect.Map {
+			return
+		}
+		pairs, err := parseOrderedObject(raw)
+		if err != nil {
+			return
+		}
+		for _, p := range pairs {
+			walkUnknownKeys(p.val, t.Elem(), joinKeyPath(prefix, p.key), out)
+		}
 	}
 }
 
-// knownTopLevelKeys returns the set of JSON keys the Config struct
-// recognizes at the top level, derived from struct tags so it can't
-// drift from the schema.
-func knownTopLevelKeys() map[string]bool {
-	out := make(map[string]bool)
-	t := reflect.TypeOf(Config{})
-	for i := 0; i < t.NumField(); i++ {
-		tag := t.Field(i).Tag.Get("json")
-		if tag == "" || tag == "-" {
+func walkUnknownStructKeys(raw json.RawMessage, t reflect.Type, prefix string, out *[]string) {
+	pairs, err := parseOrderedObject(raw)
+	if err != nil {
+		return
+	}
+	known := structFieldsByJSONKey(t)
+	for _, p := range pairs {
+		full := joinKeyPath(prefix, p.key)
+		// Top-level "providers" is validated strictly by strictProviders(data).
+		if full == "providers" {
 			continue
 		}
-		if comma := bytes.IndexByte([]byte(tag), ','); comma >= 0 {
-			tag = tag[:comma]
+		ft, ok := known[p.key]
+		if !ok {
+			*out = append(*out, full)
+			walkFatalNestedInUnknownRaw(p.val, full, out)
+			continue
 		}
-		if tag != "" {
-			out[tag] = true
+		walkUnknownKeys(p.val, ft, full, out)
+	}
+}
+
+// walkFatalNestedInUnknownRaw inspects the raw JSON subtree under an
+// unrecognized container key (e.g. "agents" instead of "agent", or
+// "subagent" instead of "subagents") and records any nested path that
+// matches isFatalUnknownKey. Non-fatal nested keys inside an unknown
+// container are not emitted so a forward-compatible top-level extension
+// block still produces a single top-level warning (#387, #1375).
+func walkFatalNestedInUnknownRaw(raw json.RawMessage, prefix string, out *[]string) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return
+	}
+	switch raw[0] {
+	case '{':
+		pairs, err := parseOrderedObject(raw)
+		if err != nil {
+			return
+		}
+		for _, p := range pairs {
+			full := joinKeyPath(prefix, p.key)
+			if isFatalUnknownKey(full) {
+				*out = append(*out, full)
+			}
+			walkFatalNestedInUnknownRaw(p.val, full, out)
+		}
+	case '[':
+		var elems []json.RawMessage
+		if err := json.Unmarshal(raw, &elems); err != nil {
+			return
+		}
+		for i, elem := range elems {
+			walkFatalNestedInUnknownRaw(elem, fmt.Sprintf("%s[%d]", prefix, i), out)
 		}
 	}
+}
+
+func structFieldsByJSONKey(t reflect.Type) map[string]reflect.Type {
+	out := make(map[string]reflect.Type, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		tag := f.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" {
+			if f.Anonymous {
+				for k, ft := range structFieldsByJSONKey(derefType(f.Type)) {
+					out[k] = ft
+				}
+				continue
+			}
+			name = f.Name
+		}
+		out[name] = f.Type
+	}
 	return out
+}
+
+func derefType(t reflect.Type) reflect.Type {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t
+}
+
+func joinKeyPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+// isFatalUnknownKey reports whether an unknown key path must fail Load
+// rather than warn. Unknown keys under permissions.*, inside budget /
+// cost_rate_limit / pricing blocks, or whose key name targets a cost,
+// budget, or permission setting are fatal so a typo cannot silently
+// disarm a gate or spending ceiling (#1375).
+func isFatalUnknownKey(keyPath string) bool {
+	if strings.HasPrefix(keyPath, "permissions.") ||
+		strings.HasPrefix(keyPath, "pricing.") ||
+		strings.HasPrefix(keyPath, "attach.cost_rate_limit.") ||
+		strings.Contains(keyPath, ".budgets.") ||
+		strings.Contains(keyPath, ".pricing.") {
+		return true
+	}
+	leaf := keyPath
+	if idx := strings.LastIndexByte(keyPath, '.'); idx >= 0 {
+		leaf = keyPath[idx+1:]
+	}
+	lower := strings.ToLower(leaf)
+	for _, token := range []string{"cost", "budget", "usd", "mtok", "rate_limit"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	for _, target := range []string{
+		"permissions",
+		"pricing",
+		"max_session_cost_usd",
+		"max_turn_cost_usd",
+		"budgets",
+		"max_cost_usd",
+		"max_turns",
+		"max_wallclock_seconds",
+		"cost_rate_limit",
+	} {
+		if editDistance(lower, target) <= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func editDistance(a, b string) int {
+	if a == b {
+		return 0
+	}
+	ra, rb := []rune(a), []rune(b)
+	la, lb := len(ra), len(rb)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+	prev := make([]int, lb+1)
+	curr := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		curr[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			curr[j] = min(
+				prev[j]+1,
+				curr[j-1]+1,
+				prev[j-1]+cost,
+			)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[lb]
 }
 
 // LoadOrDefault is the convenience entry point used by main: it walks up

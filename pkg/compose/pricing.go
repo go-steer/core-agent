@@ -95,6 +95,7 @@ func RebuildPricingCatalog(cfg *config.Config, agentsDir, coreHome string) error
 		AgentsDir:   agentsDir,
 		UserHome:    coreHome,
 		Declared:    usage.DeclaredRates(cfg),
+		Profiles:    cfg.Providers,
 	})
 	if err != nil {
 		return err

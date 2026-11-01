@@ -92,6 +92,11 @@ func (c *Config) providerChoices() string {
 // never fails a run for want of its API key.
 func (c *Config) validateProviders() error {
 	seen := map[string]bool{}
+	type backendMode struct {
+		profile  string
+		isolated bool
+	}
+	modes := map[string]backendMode{}
 	for i, p := range c.Providers {
 		if p.Name == "" {
 			return fmt.Errorf("config: providers[%d] has no name", i)
@@ -110,6 +115,13 @@ func (c *Config) validateProviders() error {
 		if err != nil {
 			return fmt.Errorf("config: providers[%d] (%s): %w", i, p.Name, err)
 		}
+		backend := strings.ToLower(expanded.BackendName())
+		isolated := expanded.IsolatedPricing()
+		if prev, ok := modes[backend]; ok && prev.isolated != isolated {
+			return fmt.Errorf("config: profiles %q and %q share backend %q but disagree on pricing (isolated or shared); give one its own backend",
+				prev.profile, expanded.Name, backend)
+		}
+		modes[backend] = backendMode{profile: expanded.Name, isolated: isolated}
 	}
 	return nil
 }
@@ -179,10 +191,20 @@ func (c *Config) ProfileContextWindows() map[string]int {
 // carry, keyed by model id, for pkg/pricing's lowest-precedence layer:
 // the operator's price for a model no published catalog covers, such
 // as a self-hosted one. The first profile to declare a model wins.
+// Profiles with isolated pricing (such as sap-ai-core) are excluded from
+// the bare-key map so their backend-specific rates are only consulted
+// under "<backend>/<model>".
 func (c *Config) ProfileRates() PricingMap {
 	var out PricingMap
 	for _, p := range c.Providers {
-		for _, m := range p.Models {
+		expanded := p
+		if x, err := profile.Expand(p); err == nil {
+			expanded = x
+		}
+		if expanded.IsolatedPricing() {
+			continue
+		}
+		for _, m := range expanded.Models {
 			if m.Rates == nil {
 				continue
 			}

@@ -1404,6 +1404,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		AgentsDir:   agentsDir,
 		UserHome:    coreHome,
 		Declared:    usage.DeclaredRates(cfg),
+		Profiles:    cfg.Providers,
 	}); perr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: pricing: %v\n", perr)
 		// Non-fatal: missing/corrupt files fall back to builtin via

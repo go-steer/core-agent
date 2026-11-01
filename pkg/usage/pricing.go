@@ -168,6 +168,7 @@ func PriceForWithSource(modelID string, cfg *config.Config) (Pricing, string) {
 	c, _ := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToOverride(cfg),
 		Declared:    DeclaredRates(cfg),
+		Profiles:    cfgProviders(cfg),
 	})
 	r, src, found := c.LookupForWithSource(backend, modelID)
 	return ratesToPricing(r, found, backend), src
@@ -202,6 +203,7 @@ func PriceFor(modelID string, cfg *config.Config) Pricing {
 	c, _ := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToOverride(cfg),
 		Declared:    DeclaredRates(cfg),
+		Profiles:    cfgProviders(cfg),
 	})
 	r, found := c.LookupFor(backend, modelID)
 	return ratesToPricing(r, found, backend)
@@ -304,6 +306,13 @@ func cfgToOverride(cfg *config.Config) map[string]pricing.ModelRates {
 		return nil
 	}
 	return pricingMapToRates(cfg.Model.Pricing)
+}
+
+func cfgProviders(cfg *config.Config) []profile.Profile {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Providers
 }
 
 // DeclaredRates is the provider profiles' declared rates, for the

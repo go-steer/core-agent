@@ -14,7 +14,15 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
+_No unreleased changes since [3.1.0-dev.1]._
+
+## [3.1.0-dev.1] — 2026-11-01
+
 #### Feature
+
+- **`core-models` upgraded to `v0.15.1` (`github.com/go-steer/core-models` and `github.com/go-steer/core-models/adkv2`).**
+  - **What was missing:** `core-agent` pinned `core-models v0.13.5`, predating `oauth2_client_credentials` authentication (`providers[].auth.client_id_env`, `client_secret_env`, `token_url`, `scopes`, `audience`, `client_auth`), per-profile custom request `headers` (`providers[].headers`), the SAP AI Core orchestration platform (`platform: sap-orchestration` and the built-in `sap-ai-core` profile), isolated backend pricing (`pricing: isolated`), and the 2026-11-01 LiteLLM built-in price catalog regeneration.
+  - **What landed:** `go.mod` bumps `github.com/go-steer/core-models` and `github.com/go-steer/core-models/adkv2` from `v0.13.5` to `v0.15.1`, `pricing.NewCatalog` receives `Profiles: cfg.Providers` across `cmd/core-agent`, `pkg/compose`, `pkg/usage`, and `internal/evals/evalcompose`, `Config.ProfileRates()` excludes isolated profiles from bare-key fallback, `Config.validateProviders()` rejects conflicting per-backend `pricing` modes at load time, and `pkg/config`'s `EnvRefs` inventory registers `providers[].auth.client_id_env` and `providers[].auth.client_secret_env`. ([#1411](https://github.com/go-steer/core-agent/issues/1411))
 
 - **Trajectory, differentiator, LLM-judge, and live-cluster outcome eval suite (`internal/evals`, `internal/evals/differentiators`, `internal/evals/judge`, `internal/evals/harness`, `internal/evals/outcome`, and `testdata/evals/`).**
   - **What was missing:** `core-agent`'s `internal/evals` held only a minimal rubric grader (`Rubric`, `Grade`, `RunBatch`), without `go-steer/mast`'s 25-scenario GKE incident corpus (`testdata/evals/dataset.yaml` and `intents.yaml`), 17-scenario differentiator suite (`internal/evals/differentiators/`), LLM-as-judge graders (`internal/evals/judge/`: `IntentCoverageGrader`, `ResponseQualityGrader`), deterministic + live-judge harness (`internal/evals/harness/` and `internal/evals/cmd/evals`), or the 12-case live-`kind` outcome evaluation suite (`internal/evals/outcome/` and `internal/evals/cmd/outcome`).

@@ -66,6 +66,7 @@ type Config struct {
 	Session     SessionConfig     `json:"session,omitempty"`
 	Safety      SafetyConfig      `json:"safety,omitempty"`
 	Schedule    *ScheduleConfig   `json:"schedule,omitempty" yaml:"schedule,omitempty"`
+	Monitor     *MonitorConfig    `json:"monitor,omitempty" yaml:"monitor,omitempty"`
 
 	// Providers declares provider profiles: ways to reach models beyond
 	// the built-in gemini / vertex / anthropic / anthropic-vertex paths
@@ -2321,6 +2322,13 @@ func (c *Config) Validate() error {
 	if err := c.Schedule.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	if err := c.validateMonitor(); err != nil {
+		return err
+	}
+	return c.validateMultiSession()
+}
+
+func (c *Config) validateMultiSession() error {
 	if c.Attach.MultiSession.Enabled {
 		// Only "bearer_table" (or empty → bearer_table default) is
 		// shipped in v2.4. Future kinds (oidc / mtls / k8s_sa) are
@@ -2699,6 +2707,12 @@ type ScheduleConfig struct {
 
 	// Prompt is the text each scheduled fire opens with.
 	Prompt string `json:"prompt,omitempty" yaml:"prompt,omitempty"`
+
+	// MaxFires caps the total number of scheduled fires (0 = unlimited).
+	MaxFires int `json:"max_fires,omitempty" yaml:"max_fires,omitempty"`
+
+	// Timeout bounds each scheduled turn's wall-clock duration.
+	Timeout string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
 func (s *ScheduleConfig) rawInterval() (string, error) {

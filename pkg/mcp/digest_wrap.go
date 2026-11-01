@@ -245,6 +245,12 @@ func (d digestingTool) Declaration() *genai.FunctionDeclaration { return d.inner
 // arrived dead on the shipped path.
 func (d digestingTool) ReadOnlyHint() bool { return d.inner.ReadOnlyHint() }
 
+// Unwrap returns the underlying namespaced tool without the digest wrapper,
+// allowing runtime callers outside the model's dispatch path (precondition
+// reads, prior-state captures, monitor collection, monitor ack) to receive raw
+// untruncated tool output (#1406).
+func (d digestingTool) Unwrap() tool.Tool { return d.inner }
+
 // Run calls the wrapped tool, marshals the response, runs it through
 // digest.Process, and returns a synthetic map:
 //

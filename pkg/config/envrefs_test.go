@@ -133,6 +133,7 @@ func TestEnvRefTagInventory(t *testing.T) {
 		"alerts.targets[].auth.bearer_env",
 		"alerts.targets[].url_env",
 		"attach.token_env",
+		"monitor.notify.token_env",
 		"providers[].auth.client_id_env",
 		"providers[].auth.client_secret_env",
 		"subagents[].remote.auth.token_env",

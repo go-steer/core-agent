@@ -2403,6 +2403,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			fmt.Fprintf(os.Stderr, "core-agent: multi-session auth: %v\n", authErr)
 			return runner.ExitConfigError
 		}
+		monitorAckHandler, monErr := buildMonitorAckHandler(cfg, eventlogHandle, allToolsets, len(mcpServers) > 0)
+		if monErr != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", monErr)
+			return runner.ExitConfigError
+		}
 		// SessionFactory enables POST /sessions — on-demand creation
 		// of caller-owned sessions. Only wired when multi-session is
 		// enabled, since the endpoint relies on per-caller auth to
@@ -2612,6 +2617,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			Resumer:             sessionResumer,
 			SessionIdleTimeout:  sessionIdleTimeout,
 			HealthChecks:        daemonHealthChecks(eventlogHandle, loopHealth),
+			MonitorAck:          monitorAckHandler,
 		}
 		attachSrv, err := attach.NewServer(attachOptions)
 		if err != nil {
@@ -2765,7 +2771,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// breaker math (its bootstrap `default` session has no ACL
 		// row and stays uncovered — status quo since #539).
 		schedHandle, schedErr := startSingleSessionScheduleAndAutoContinue(
-			ctx, autoContinueDriverCtx, &autoContinueWG, cfg, eventlogHandle, a,
+			ctx, autoContinueDriverCtx, &autoContinueWG, cfg, eventlogHandle, a, allToolsets,
 			autoContinueEnabled, autoContinueRetry,
 			autoContinueFreshness, autoContinueRetryInterval,
 		)
@@ -2786,10 +2792,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		singleLoopHealth, unregisterLoopHealth := loopHealth.Register(a.SessionID())
 		defer unregisterLoopHealth()
 		runner.WakeLoop(ctx, a, runner.WakeLoopOptions{
-			Tracker: tracker,
-			Model:   m.Name(),
-			Pricing: pricingRate,
-			Health:  singleLoopHealth,
+			Tracker:    tracker,
+			Model:      m.Name(),
+			Pricing:    pricingRate,
+			Health:     singleLoopHealth,
+			OnTurnDone: schedHandle.AfterTurn,
 			OnTurnError: func(err error) {
 				fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", err)
 			},

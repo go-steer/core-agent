@@ -71,6 +71,8 @@ type handlers struct {
 	// daemonCtx is the daemon's lifetime context (Options.DaemonCtx);
 	// consulted by draining(). Nil = shutdown gating disabled.
 	daemonCtx context.Context
+	// monitorAck, when non-nil, backs POST /monitor-ack (#1406).
+	monitorAck MonitorAckHandler
 }
 
 func newHandlers(reg *SessionRegistry, pool *broadcasterPool) *handlers {
@@ -354,6 +356,10 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// GET /whoami — session-agnostic caller-identity echo
 	// (SSE spec v1.4.0 companion, see handlers_whoami.go).
 	h.registerWhoAmI(mux)
+
+	// POST /monitor-ack — operator acknowledgement of active monitor
+	// subjects (#1406, see monitorack.go).
+	h.registerMonitorAck(mux)
 }
 
 // sessionDescriptor is one row in the GET /sessions response.

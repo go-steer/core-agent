@@ -226,6 +226,10 @@ type Options struct {
 	// the detail goes instead. Nil defaults to os.Stderr, matching
 	// where the daemon writes its other operational lines.
 	HealthLog io.Writer
+
+	// MonitorAck, when non-nil, enables POST /monitor-ack (#1406).
+	// When nil, POST /monitor-ack returns 404.
+	MonitorAck MonitorAckHandler
 }
 
 // Authenticated reports whether these Options put any credential gate
@@ -392,6 +396,7 @@ func NewServer(opts Options) (*Server, error) {
 	h.daemonCtx = opts.DaemonCtx
 	h.enforceACL = opts.MultiSessionEnabled
 	h.factory = opts.SessionFactory
+	h.monitorAck = opts.MonitorAck
 	// Per-caller cost limiter (#463). nil when Disabled — handlers
 	// skip enforcement entirely on a nil limiter.
 	h.costLimit = newCostRateLimiter(opts.CostRateLimit)

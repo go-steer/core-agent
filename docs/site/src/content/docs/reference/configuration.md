@@ -1523,6 +1523,50 @@ Configures in-process periodic fires behind the single fleet scheduling lease (c
 
 ---
 
+## `monitor` (v3.1+, #1406)
+
+Configures deterministic pre-turn collection, transition gating, outbound notifications, and operator acknowledgements for scheduled daemons.
+
+```json
+{
+  "monitor": {
+    "collect": {
+      "tool": "lookout_diff_findings",
+      "args": { "cluster": "prod-us-central1" }
+    },
+    "transitions_from": "lookout_diff_findings",
+    "wake_on": ["opened", "re_opened", "degraded"],
+    "notify": {
+      "channel": "#sre-alerts",
+      "endpoint": "https://switchboard.internal/api",
+      "token_env": "SWITCHBOARD_TOKEN",
+      "update": "timeline",
+      "remind_after": "4h",
+      "digest_after": "24h"
+    },
+    "ack": {
+      "tool": "lookout_ack_finding"
+    }
+  }
+}
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `collect.tool` | string | `""` | Deterministic MCP tool executed by the runtime before waking the model on each scheduled fire. Requires `schedule.every` or `schedule.interval`. Must not be reachable by any tool-calling subagent (`CheckMonitorCollectSurface`). |
+| `collect.args` | object | `{}` | Literal arguments passed to `collect.tool`. |
+| `transitions_from` | string | `""` | Must match `collect.tool` when set. Parses the tool's key=value transition stream (`transition=<class> subject_key=<key> ...` terminated by `scanned=<N> findings=<M>`). Quiet cycles (`0` matching transitions) skip the model turn completely (zero LLM calls). |
+| `wake_on` | string[] | `[]` | Transition edges that wake the model: `"opened"`, `"remained"`, `"closed"`, `"re_opened"`, `"degraded"`. Requires `transitions_from`. |
+| `notify.channel` | string | `""` | Outbound switchboard conversation or channel identifier. |
+| `notify.endpoint` | string | `""` | Base URL (`http` or `https`) of the switchboard notification endpoint. |
+| `notify.token_env` | string | `""` | **Env var *name*** holding the bearer token for `notify.endpoint`. |
+| `notify.update` | string | `"timeline"` | `"timeline"` (append consecutive speaking cycles to the active message; close on quiet cycle) or `"replace"` (overwrite the active message in place). |
+| `notify.remind_after` | duration | `""` | Re-notify on `remained` subjects after this duration (`time.ParseDuration`). |
+| `notify.digest_after` | duration | `""` | Deadman heartbeat duration (`time.ParseDuration`) after which a quiet monitor emits an all-quiet digest. |
+| `ack.tool` | string | `""` | Optional MCP tool invoked when an operator posts to `POST /monitor-ack`. Receives `subject_key` and `ack_by` (derived strictly from the authenticated credential, never from the request body). Must not be reachable by any tool-calling subagent. |
+
+---
+
 ## Discovery and merge
 
 `core-agent` finds your config like this:

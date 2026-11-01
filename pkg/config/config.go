@@ -31,6 +31,8 @@ import (
 	"github.com/go-steer/core-models/profile"
 
 	"github.com/go-steer/core-agent/v3/pkg/hooks"
+	"github.com/go-steer/core-agent/v3/pkg/modeltier"
+	"github.com/go-steer/core-agent/v3/pkg/taskclass"
 )
 
 // SchemaVersion is the current major version of the on-disk config format.
@@ -1416,16 +1418,41 @@ type WaitAndVerifyConfig struct {
 // A declarative subagent is operator-authored and trusted, but still bound
 // by the same permission gate (and require_plan_artifact) as the parent, so
 // it cannot escalate.
+// Subagent execution modes for SubagentSpec.Mode (#1401).
+const (
+	SubagentModeChat       = "chat"
+	SubagentModeTask       = "task"
+	SubagentModeSingleTurn = "single_turn"
+)
+
+// Subagent capability declarations for SubagentSpec.Capability (#1401).
+const (
+	CapabilityReadOnly       = "read_only"
+	CapabilityChangeExecutor = "change_executor"
+)
+
+// MCPToolAllowlist narrows a subagent's access to a specific MCP server
+// down to an explicit list of upstream tool names (#1401).
+type MCPToolAllowlist struct {
+	Server string   `json:"server" yaml:"server"`
+	Tools  []string `json:"tools" yaml:"tools"`
+}
+
 type SubagentSpec struct {
-	Name         string       `json:"name"`
-	Description  string       `json:"description,omitempty"`
-	Instructions string       `json:"instructions,omitempty"`
-	Model        *ModelConfig `json:"model,omitempty"`
-	MaxDepth     int          `json:"max_depth,omitempty"`
-	Tools        []string     `json:"tools,omitempty"`
-	MCP          []string     `json:"mcp,omitempty"`
-	Skills       []string     `json:"skills,omitempty"`
-	Root         string       `json:"root,omitempty"`
+	Name         string             `json:"name" yaml:"name,omitempty"`
+	Description  string             `json:"description,omitempty" yaml:"description,omitempty"`
+	Instructions string             `json:"instructions,omitempty" yaml:"instructions,omitempty"`
+	Mode         string             `json:"mode,omitempty" yaml:"mode,omitempty"`
+	OutputSchema string             `json:"output_schema,omitempty" yaml:"output_schema,omitempty"`
+	Tier         string             `json:"tier,omitempty" yaml:"tier,omitempty"`
+	Capability   string             `json:"capability,omitempty" yaml:"capability,omitempty"`
+	Model        *ModelConfig       `json:"model,omitempty" yaml:"model,omitempty"`
+	MaxDepth     int                `json:"max_depth,omitempty" yaml:"max_depth,omitempty"`
+	Tools        []string           `json:"tools,omitempty" yaml:"tools,omitempty"`
+	MCP          []string           `json:"mcp,omitempty" yaml:"mcp,omitempty"`
+	MCPTools     []MCPToolAllowlist `json:"mcp_tools,omitempty" yaml:"mcp_tools,omitempty"`
+	Skills       []string           `json:"skills,omitempty" yaml:"skills,omitempty"`
+	Root         string             `json:"root,omitempty" yaml:"root,omitempty"`
 
 	// Budgets bounds one delegation to this subagent. Honored on BOTH
 	// doors the subagent is reachable through — as a parent tool call
@@ -1437,7 +1464,7 @@ type SubagentSpec struct {
 	// back to the manager's defaults (50 turns / $1 / 10m), and the
 	// synchronous door stays unbounded, which is what it has always
 	// been. A per-spawn override may only tighten what is declared here.
-	Budgets *SubagentBudgets `json:"budgets,omitempty"`
+	Budgets *SubagentBudgets `json:"budgets,omitempty" yaml:"budgets,omitempty"`
 
 	// Scheduler picks the between-turn scheduler for a spawn_agent
 	// spawn of this subagent: "sleep" (sleep in-process until the wake
@@ -1454,7 +1481,7 @@ type SubagentSpec struct {
 	// scheduler because ad-hoc spawns are off. Only the spawn_agent door
 	// reads it: calling the subagent as a parent tool runs one
 	// delegation, which has no turns to schedule between.
-	Scheduler string `json:"scheduler,omitempty"`
+	Scheduler string `json:"scheduler,omitempty" yaml:"scheduler,omitempty"`
 
 	// Remote configures this subagent as an out-of-process A2A v0.3
 	// delegate (#1396). When set, spawn_agent {agent: "<name>"} routes
@@ -1463,7 +1490,83 @@ type SubagentSpec struct {
 	// instead of launching an in-process ADK agent. Mutually exclusive
 	// with in-process fields (root, instructions, model, tools, mcp,
 	// skills, scheduler, max_depth).
-	Remote *SubagentRemoteConfig `json:"remote,omitempty"`
+	Remote *SubagentRemoteConfig `json:"remote,omitempty" yaml:"remote,omitempty"`
+
+	fromMarkdown bool   `json:"-" yaml:"-"`
+	baseDir      string `json:"-" yaml:"-"`
+}
+
+// EffectiveMode returns the subagent's execution mode, defaulting to
+// SubagentModeChat ("chat") when Mode is unset.
+func (s SubagentSpec) EffectiveMode() string {
+	if s.Mode == "" {
+		return SubagentModeChat
+	}
+	return s.Mode
+}
+
+// FromMarkdown reports whether this SubagentSpec was loaded from a
+// .agents/subagents/<name>.md file rather than inline in config.json.
+func (s SubagentSpec) FromMarkdown() bool {
+	return s.fromMarkdown
+}
+
+// BaseDir returns the directory against which relative file references
+// on this SubagentSpec (such as OutputSchema) resolve.
+func (s SubagentSpec) BaseDir() string {
+	return s.baseDir
+}
+
+// SetBaseDir sets the base directory used to resolve relative paths on
+// this SubagentSpec (such as OutputSchema).
+func (s *SubagentSpec) SetBaseDir(dir string) {
+	s.baseDir = dir
+}
+
+// ResolveTierModel resolves a subagent tier ("small", "mid", "frontier")
+// against the parent's provider (or model family when provider is empty)
+// and returns a ModelConfig inheriting the parent's provider/credentials
+// with the resolved model ID (#1401).
+func (c *Config) ResolveTierModel(tier string) (*ModelConfig, error) {
+	if err := modeltier.Tier(tier).Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	provider := c.Model.Provider
+	if provider == ProviderEcho || provider == ProviderScripted || c.Model.Name == "echo" {
+		mc := c.Model
+		return &mc, nil
+	}
+	if p, ok := c.Profile(provider); ok {
+		expanded, err := profile.Expand(p)
+		if err != nil {
+			return nil, fmt.Errorf("config: tier %q: %w", tier, err)
+		}
+		id := expanded.Tiers[profile.Tier(tier)]
+		if id == "" {
+			return nil, fmt.Errorf("config: provider profile %q declares no %q tier (declare tiers.%s in the profile, or name the model)", p.Name, tier, tier)
+		}
+		mc := c.Model
+		mc.Name = id
+		return &mc, nil
+	}
+	family := provider
+	if family == "" {
+		switch {
+		case strings.HasPrefix(c.Model.Name, "gemini-"):
+			family = ProviderGemini
+		case strings.HasPrefix(c.Model.Name, "claude-"):
+			family = ProviderAnthropic
+		default:
+			return nil, fmt.Errorf("config: tier %q: cannot determine provider family from root model %q (set model.provider)", tier, c.Model.Name)
+		}
+	}
+	name := taskclass.ModelForTier(family, tier)
+	if name == "" {
+		return nil, fmt.Errorf("config: tier %q: no model mapped for provider %q", tier, family)
+	}
+	mc := c.Model
+	mc.Name = name
+	return &mc, nil
 }
 
 // SubagentRemoteAuthBearer is the supported authentication scheme for
@@ -1474,40 +1577,40 @@ const SubagentRemoteAuthBearer = "bearer"
 type SubagentRemoteConfig struct {
 	// A2A is the remote agent card URL (or base URL, to which
 	// /.well-known/agent-card.json is appended automatically).
-	A2A string `json:"a2a,omitempty"`
+	A2A string `json:"a2a,omitempty" yaml:"a2a,omitempty"`
 
 	// Endpoint is the JSON-RPC 2.0 endpoint URL, bypassing card
 	// discovery when A2A is unset.
-	Endpoint string `json:"endpoint,omitempty"`
+	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 
 	// Skill is the default skill ID sent in message metadata when
 	// invoking the remote agent.
-	Skill string `json:"skill,omitempty"`
+	Skill string `json:"skill,omitempty" yaml:"skill,omitempty"`
 
 	// Skills is an optional allowlist of skill IDs on the remote agent.
-	Skills []string `json:"skills,omitempty"`
+	Skills []string `json:"skills,omitempty" yaml:"skills,omitempty"`
 
 	// Auth configures request authentication; nil means unauthenticated.
-	Auth *SubagentRemoteAuthConfig `json:"auth,omitempty"`
+	Auth *SubagentRemoteAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
 
 	// TimeoutSeconds bounds each remote invocation; 0 uses the client
 	// default (120s).
-	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	TimeoutSeconds int `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
 
 	// AllowCardHostChange permits the JSON-RPC endpoint named by the
 	// agent card to be on a different host than the card. Off by
 	// default: the bearer token goes to whichever endpoint is chosen, so
 	// a card pointing elsewhere is refused. An https→http downgrade is
 	// refused regardless.
-	AllowCardHostChange bool `json:"allow_card_host_change,omitempty"`
+	AllowCardHostChange bool `json:"allow_card_host_change,omitempty" yaml:"allow_card_host_change,omitempty"`
 }
 
 // SubagentRemoteAuthConfig configures authentication for a remote A2A
 // subagent. The secret is referenced via TokenEnv, never stored in
 // config.json.
 type SubagentRemoteAuthConfig struct {
-	Type     string `json:"type"`
-	TokenEnv string `json:"token_env,omitempty"`
+	Type     string `json:"type" yaml:"type"`
+	TokenEnv string `json:"token_env,omitempty" yaml:"token_env,omitempty"`
 }
 
 // SubagentBudgets caps one delegation. Field names mirror spawn_agent's
@@ -1526,9 +1629,9 @@ type SubagentRemoteAuthConfig struct {
 // specifics, where a discarded partial makes it pay twice for the same
 // work (#691).
 type SubagentBudgets struct {
-	MaxTurns            int     `json:"max_turns,omitempty"`
-	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
-	MaxWallclockSeconds int     `json:"max_wallclock_seconds,omitempty"`
+	MaxTurns            int     `json:"max_turns,omitempty" yaml:"max_turns,omitempty"`
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty" yaml:"max_cost_usd,omitempty"`
+	MaxWallclockSeconds int     `json:"max_wallclock_seconds,omitempty" yaml:"max_wallclock_seconds,omitempty"`
 }
 
 // MockConfig configures the mock providers (echo, scripted) and the
@@ -2354,9 +2457,81 @@ func (c *Config) validateSubagents() error {
 				return fmt.Errorf("config: subagents[%d].budgets.max_wallclock_seconds=%d must be >= 0 (0 = no declared cap)", i, b.MaxWallclockSeconds)
 			}
 		}
+		if err := c.validateSubagentFields(i, sa); err != nil {
+			return err
+		}
 		if sa.Remote != nil {
 			if err := validateRemoteSubagent(i, sa); err != nil {
 				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateSubagentFields(i int, sa SubagentSpec) error {
+	if sa.fromMarkdown && sa.Mode == "" {
+		return fmt.Errorf("config: subagents[%d] (%s): mode is required in Markdown subagent files (want %q, %q, or %q)",
+			i, sa.Name, SubagentModeChat, SubagentModeTask, SubagentModeSingleTurn)
+	}
+	switch sa.Mode {
+	case "", SubagentModeChat, SubagentModeTask, SubagentModeSingleTurn:
+	default:
+		return fmt.Errorf("config: subagents[%d].mode %q is unknown (want %q, %q, or %q)",
+			i, sa.Mode, SubagentModeChat, SubagentModeTask, SubagentModeSingleTurn)
+	}
+	if sa.OutputSchema != "" {
+		if strings.TrimSpace(sa.OutputSchema) == "" {
+			return fmt.Errorf("config: subagents[%d].output_schema is whitespace-only", i)
+		}
+		if sa.EffectiveMode() == SubagentModeChat {
+			return fmt.Errorf("config: subagents[%d].output_schema requires mode %q or %q (got mode %q)",
+				i, SubagentModeTask, SubagentModeSingleTurn, sa.EffectiveMode())
+		}
+		if filepath.IsAbs(sa.OutputSchema) {
+			return fmt.Errorf("config: subagents[%d].output_schema %q must be a relative path, not absolute", i, sa.OutputSchema)
+		}
+		if sa.baseDir != "" {
+			if _, err := LoadOutputSchema(sa.baseDir, sa.OutputSchema); err != nil {
+				return fmt.Errorf("config: subagents[%d].output_schema: %w", i, err)
+			}
+		}
+	}
+	if sa.Scheduler != "" && sa.Scheduler != "none" && (sa.EffectiveMode() == SubagentModeTask || sa.EffectiveMode() == SubagentModeSingleTurn) {
+		return fmt.Errorf("config: subagents[%d]: scheduler %q cannot be combined with mode %q (standing schedulers require chat mode)",
+			i, sa.Scheduler, sa.EffectiveMode())
+	}
+	if sa.Tier != "" {
+		if err := modeltier.Tier(sa.Tier).Validate(); err != nil {
+			return fmt.Errorf("config: subagents[%d].tier: %w", i, err)
+		}
+		if sa.Model != nil {
+			return fmt.Errorf("config: subagents[%d]: tier %q and model cannot both be set (tier resolves per provider; model pins an exact ID)",
+				i, sa.Tier)
+		}
+	}
+	switch sa.Capability {
+	case "", CapabilityReadOnly, CapabilityChangeExecutor:
+	default:
+		return fmt.Errorf("config: subagents[%d].capability %q is unknown (want %q or %q)",
+			i, sa.Capability, CapabilityReadOnly, CapabilityChangeExecutor)
+	}
+	return validateSubagentMCPTools(i, sa.MCPTools)
+}
+
+func validateSubagentMCPTools(i int, mcpTools []MCPToolAllowlist) error {
+	seen := make(map[string]struct{}, len(mcpTools))
+	for j, mt := range mcpTools {
+		if strings.TrimSpace(mt.Server) == "" {
+			return fmt.Errorf("config: subagents[%d].mcp_tools[%d].server is required", i, j)
+		}
+		if _, dup := seen[mt.Server]; dup {
+			return fmt.Errorf("config: subagents[%d].mcp_tools[%d]: duplicate server %q", i, j, mt.Server)
+		}
+		seen[mt.Server] = struct{}{}
+		for k, tName := range mt.Tools {
+			if strings.TrimSpace(tName) == "" {
+				return fmt.Errorf("config: subagents[%d].mcp_tools[%d].tools[%d] is empty", i, j, k)
 			}
 		}
 	}
@@ -2374,8 +2549,8 @@ func validateRemoteSubagent(i int, sa SubagentSpec) error {
 	if err := validateRemoteHTTPURL(r.Endpoint); err != nil {
 		return fmt.Errorf("config: subagents[%d].remote.endpoint: %w", i, err)
 	}
-	if sa.Root != "" || sa.Instructions != "" || sa.Model != nil || sa.Tools != nil || sa.MCP != nil || sa.Skills != nil || sa.Scheduler != "" || sa.MaxDepth != 0 {
-		return fmt.Errorf("config: subagents[%d]: remote cannot be combined with in-process fields (root, instructions, model, tools, mcp, skills, scheduler, max_depth)", i)
+	if sa.Root != "" || sa.Instructions != "" || sa.Model != nil || sa.Tools != nil || sa.MCP != nil || sa.Skills != nil || sa.Scheduler != "" || sa.MaxDepth != 0 || sa.Mode != "" || sa.OutputSchema != "" || sa.Tier != "" || sa.Capability != "" || sa.MCPTools != nil {
+		return fmt.Errorf("config: subagents[%d]: remote cannot be combined with in-process fields (root, instructions, mode, output_schema, tier, capability, model, tools, mcp, mcp_tools, skills, scheduler, max_depth)", i)
 	}
 	if r.Auth != nil {
 		if r.Auth.Type != SubagentRemoteAuthBearer {

@@ -25,6 +25,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
@@ -1165,5 +1166,292 @@ func TestBuildDeclaredSubagents_RemoteA2A(t *testing.T) {
 	}
 	if len(lines) != 1 || !strings.Contains(lines[0], "remote=a2a") || !strings.Contains(lines[0], "skill=code-review") {
 		t.Errorf("boot lines = %q, want remote=a2a and skill=code-review", lines)
+	}
+}
+
+type fakeMCPTool struct {
+	name     string
+	readOnly bool
+}
+
+func (f fakeMCPTool) Name() string        { return f.name }
+func (f fakeMCPTool) Description() string { return f.name }
+func (f fakeMCPTool) IsLongRunning() bool { return false }
+func (f fakeMCPTool) ReadOnlyHint() bool  { return f.readOnly }
+
+type fakeMCPToolset struct {
+	name  string
+	tools []adktool.Tool
+}
+
+func (f fakeMCPToolset) Name() string { return f.name }
+func (f fakeMCPToolset) Tools(adkagent.ReadonlyContext) ([]adktool.Tool, error) {
+	return f.tools, nil
+}
+
+type recordingProvider struct {
+	backend string
+	asked   []string
+}
+
+func (p *recordingProvider) Name() string { return p.backend }
+func (p *recordingProvider) Model(ctx context.Context, modelID string) (adkmodel.LLM, error) {
+	p.asked = append(p.asked, modelID)
+	return mock.NewEcho().Model(ctx, modelID)
+}
+
+func TestBuildDeclaredSubagents_HonorsTierAndMCPTools(t *testing.T) {
+	t.Parallel()
+
+	k8sToolset := fakeMCPToolset{
+		name: "k8s",
+		tools: []adktool.Tool{
+			fakeMCPTool{name: "k8s_get_pods", readOnly: true},
+			fakeMCPTool{name: "k8s_list_events", readOnly: true},
+			fakeMCPTool{name: "k8s_delete_pod", readOnly: false},
+		},
+	}
+	surface := parentSurface{
+		builtinTools: []adktool.Tool{
+			fakeTool{name: "read_file"},
+			fakeTool{name: "write_file"},
+		},
+		mcpToolsets: []namedToolset{{
+			name:    "k8s",
+			toolset: k8sToolset,
+			infos: []mcp.ToolInfo{
+				{Name: "k8s_get_pods", Description: "get pods"},
+				{Name: "k8s_list_events", Description: "list events"},
+				{Name: "k8s_delete_pod", Description: "delete pod"},
+			},
+		}},
+	}
+
+	t.Run("resolves tier, narrows mcp_tools, and passes read_only capability check on read-only subset", func(t *testing.T) {
+		prov := &recordingProvider{backend: "anthropic"}
+		cfg := &config.Config{
+			Model: config.ModelConfig{Provider: "anthropic", Name: "claude-sonnet-5-5"},
+			Subagents: []config.SubagentSpec{{
+				Name:        "pod-inspector",
+				Description: "Inspect pods",
+				Tier:        "small",
+				Mode:        config.SubagentModeTask,
+				Capability:  config.CapabilityReadOnly,
+				Tools:       []string{"read_file"},
+				MCP:         []string{"k8s"},
+				MCPTools: []config.MCPToolAllowlist{{
+					Server: "k8s",
+					Tools:  []string{"get_pods"},
+				}},
+				OutputSchema: `{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`,
+			}},
+		}
+		subs, templates, _, err := buildDeclaredSubagents(
+			context.Background(), cfg, prov, t.TempDir(), surface, testDeps(),
+		)
+		if err != nil {
+			t.Fatalf("buildDeclaredSubagents: %v", err)
+		}
+		if len(prov.asked) != 1 || prov.asked[0] != "claude-haiku-5-5" {
+			t.Errorf("provider Model called with %v, want [claude-haiku-5-5]", prov.asked)
+		}
+		if len(subs) != 1 {
+			t.Fatalf("got %d subs, want 1", len(subs))
+		}
+		if got := subs[0].SubagentMode(); got != agent.SubagentModeTask {
+			t.Errorf("SubagentMode = %q, want %q", got, agent.SubagentModeTask)
+		}
+		if subs[0].OutputSchema() == nil {
+			t.Error("OutputSchema is nil, want parsed schema")
+		}
+		if len(templates) != 1 || len(templates[0].ToolsetTools) != 1 || templates[0].ToolsetTools[0].Name != "k8s_get_pods" {
+			t.Errorf("template ToolsetTools = %+v, want [k8s_get_pods]", templates[0].ToolsetTools)
+		}
+		filteredTools, err := mcp.ListTools(context.Background(), templates[0].Toolsets[0])
+		if err != nil {
+			t.Fatalf("ListTools: %v", err)
+		}
+		if len(filteredTools) != 1 || filteredTools[0].Name() != "k8s_get_pods" {
+			t.Errorf("filtered MCP toolset exposed %v, want [k8s_get_pods]", filteredTools)
+		}
+	})
+
+	t.Run("read_only capability rejects mutating MCP tool", func(t *testing.T) {
+		cfg := &config.Config{
+			Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+			Subagents: []config.SubagentSpec{{
+				Name:       "bad-diagnoser",
+				Capability: config.CapabilityReadOnly,
+				Tools:      []string{"read_file"},
+				MCP:        []string{"k8s"},
+				MCPTools: []config.MCPToolAllowlist{{
+					Server: "k8s",
+					Tools:  []string{"get_pods", "delete_pod"},
+				}},
+			}},
+		}
+		_, _, _, err := buildDeclaredSubagents(
+			context.Background(), cfg, mock.NewEcho(), t.TempDir(), surface, testDeps(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "k8s_delete_pod") {
+			t.Fatalf("expected error naming mutating MCP tool k8s_delete_pod, got %v", err)
+		}
+	})
+
+	t.Run("read_only capability rejects mutating built-in tool", func(t *testing.T) {
+		cfg := &config.Config{
+			Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+			Subagents: []config.SubagentSpec{{
+				Name:       "bad-builtin",
+				Capability: config.CapabilityReadOnly,
+				Tools:      []string{"read_file", "write_file"},
+				MCP:        []string{},
+			}},
+		}
+		_, _, _, err := buildDeclaredSubagents(
+			context.Background(), cfg, mock.NewEcho(), t.TempDir(), surface, testDeps(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "write_file") {
+			t.Fatalf("expected error naming mutating built-in tool write_file, got %v", err)
+		}
+	})
+
+	t.Run("loads yaml output_schema from disk via config.Load and fails closed when MCP ListTools errors under read_only", func(t *testing.T) {
+		tmp := t.TempDir()
+		agentsDir := filepath.Join(tmp, ".agents")
+		schemasDir := filepath.Join(agentsDir, "schemas")
+		if err := os.MkdirAll(schemasDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		yamlSchema := "type: object\nrequired:\n  - summary\nproperties:\n  summary:\n    type: string\n"
+		if err := os.WriteFile(filepath.Join(schemasDir, "finding.yaml"), []byte(yamlSchema), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgJSON := `{
+			"model": {"provider": "echo", "name": "echo"},
+			"subagents": [{
+				"name": "yaml-diag",
+				"description": "yaml schema test",
+				"mode": "task",
+				"capability": "read_only",
+				"output_schema": "schemas/finding.yaml",
+				"tools": ["read_file"],
+				"mcp": []
+			}]
+		}`
+		if err := os.WriteFile(filepath.Join(agentsDir, "config.json"), []byte(cfgJSON), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := config.Load(agentsDir)
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		subs, _, _, err := buildDeclaredSubagents(
+			context.Background(), loaded, mock.NewEcho(), tmp, surface, testDeps(),
+		)
+		if err != nil {
+			t.Fatalf("buildDeclaredSubagents with yaml schema: %v", err)
+		}
+		if len(subs) != 1 || subs[0].OutputSchema() == nil {
+			t.Fatalf("expected parsed YAML OutputSchema on subagent, got %v", subs)
+		}
+	})
+}
+
+// TestNewSubagentTool_ModeUnsetIsChat verifies the #1401 zero-regression
+// requirement across shipped recipes (.agents and examples/gke-platform-agent):
+// every declared subagent with mode unset builds an identical tool surface
+// and NewSubagentTool declaration to explicit mode: "chat".
+func TestNewSubagentTool_ModeUnsetIsChat(t *testing.T) {
+	t.Parallel()
+	recipes := []string{
+		filepath.Join("..", "..", ".agents"),
+		filepath.Join("..", "..", "examples", "gke-platform-agent", ".agents"),
+	}
+	builtin := []adktool.Tool{
+		fakeTool{name: "read_file"},
+		fakeTool{name: "read_many_files"},
+		fakeTool{name: "grep"},
+		fakeTool{name: "glob"},
+		fakeTool{name: "list_dir"},
+		fakeTool{name: "bash"},
+		fakeTool{name: "todo"},
+		fakeTool{name: "json_query"},
+		fakeTool{name: "retrieve_raw"},
+		fakeTool{name: "record_plan"},
+	}
+	for _, agentsDir := range recipes {
+		t.Run(agentsDir, func(t *testing.T) {
+			absAgents, err := filepath.Abs(agentsDir)
+			if err != nil {
+				t.Fatalf("Abs(%s): %v", agentsDir, err)
+			}
+			cfgUnset, err := config.Load(absAgents)
+			if err != nil {
+				t.Fatalf("config.Load(%s): %v", absAgents, err)
+			}
+			cfgUnset.Model = config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"}
+			for i := range cfgUnset.Subagents {
+				cfgUnset.Subagents[i].Model = nil
+			}
+			cfgChat := *cfgUnset
+			cfgChat.Subagents = slices.Clone(cfgUnset.Subagents)
+			for i := range cfgChat.Subagents {
+				if cfgChat.Subagents[i].Mode == "" {
+					cfgChat.Subagents[i].Mode = config.SubagentModeChat
+				}
+			}
+
+			deps := testDeps()
+			deps.rootBase = absAgents
+			projectRoot := filepath.Dir(absAgents)
+			surface := parentSurface{builtinTools: builtin}
+
+			subsUnset, tmplUnset, srvUnset, err := buildDeclaredSubagents(
+				context.Background(), cfgUnset, mock.NewEcho(), projectRoot, surface, deps,
+			)
+			for _, s := range srvUnset {
+				if s != nil {
+					s.Close()
+				}
+			}
+			if err != nil {
+				t.Fatalf("buildDeclaredSubagents(unset): %v", err)
+			}
+			subsChat, tmplChat, srvChat, err := buildDeclaredSubagents(
+				context.Background(), &cfgChat, mock.NewEcho(), projectRoot, surface, deps,
+			)
+			for _, s := range srvChat {
+				if s != nil {
+					s.Close()
+				}
+			}
+			if err != nil {
+				t.Fatalf("buildDeclaredSubagents(chat): %v", err)
+			}
+			if len(subsUnset) != len(subsChat) || len(subsUnset) == 0 {
+				t.Fatalf("subagent count = %d vs %d, want >0 and equal", len(subsUnset), len(subsChat))
+			}
+			for i := range subsUnset {
+				if got, want := toolNames(subsUnset[i].Tools()), toolNames(subsChat[i].Tools()); !slices.Equal(got, want) {
+					t.Errorf("subagent %q tools unset=%v != chat=%v", subsUnset[i].AgentName(), got, want)
+				}
+				if got, want := tmplUnset[i].SubagentMode, tmplChat[i].SubagentMode; got != want {
+					t.Errorf("template %q SubagentMode unset=%q != chat=%q", tmplUnset[i].Name, got, want)
+				}
+				tUnset, err := agent.NewSubagentTool(agent.SubagentOptions{Inner: subsUnset[i]})
+				if err != nil {
+					t.Fatalf("NewSubagentTool(unset): %v", err)
+				}
+				tChat, err := agent.NewSubagentTool(agent.SubagentOptions{Inner: subsChat[i]})
+				if err != nil {
+					t.Fatalf("NewSubagentTool(chat): %v", err)
+				}
+				if tUnset.Name() != tChat.Name() || tUnset.Description() != tChat.Description() {
+					t.Errorf("subagent tool metadata mismatch: (%q, %q) vs (%q, %q)",
+						tUnset.Name(), tUnset.Description(), tChat.Name(), tChat.Description())
+				}
+			}
+		})
 	}
 }

@@ -16,6 +16,7 @@ package autonomous
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -610,6 +611,10 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		if cfg.progress != nil {
 			cfg.progress(turnNo, ev)
 		}
+		if ev.Output != nil {
+			out.doneSignaled = true
+			out.doneDetail = formatEventOutput(ev.Output)
+		}
 		// We are already over the cost bound and only still here to let
 		// the done tool run (see the check at the bottom of the loop).
 		// The moment it has, stop — otherwise the runner would issue
@@ -756,7 +761,23 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 	}
 
 	out.text = collectedText(&buf, &partials, sawFinals)
+	if a.SubagentMode() == agent.SubagentModeSingleTurn && !out.doneSignaled && out.text != "" {
+		out.doneSignaled = true
+		out.doneDetail = out.text
+	}
 	return out, nil
+}
+
+func formatEventOutput(out any) string {
+	switch v := out.(type) {
+	case string:
+		return v
+	default:
+		if raw, err := json.Marshal(v); err == nil {
+			return string(raw)
+		}
+		return fmt.Sprint(v)
+	}
 }
 
 // bankReturn records a return the model made in a turn that then

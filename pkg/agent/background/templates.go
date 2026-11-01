@@ -25,6 +25,7 @@ import (
 
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
@@ -110,6 +111,12 @@ type SubagentTemplate struct {
 	// Mode selects how the run terminates. Empty derives it from the
 	// resolved Scheduler; see Mode.
 	Mode Mode
+	// SubagentMode selects the subagent execution mode (chat, task,
+	// single_turn; #1401). Empty defaults to chat.
+	SubagentMode agent.SubagentMode
+	// OutputSchema constrains the final assistant output for task and
+	// single_turn templates (#1401).
+	OutputSchema *genai.Schema
 }
 
 // WithSubagentTemplates registers the declarative-subagent roster at
@@ -327,7 +334,13 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 
 	var instrOpts []agent.Option
 	if strings.TrimSpace(tmpl.Instruction) != "" {
-		instrOpts = []agent.Option{agent.WithUserInstruction(tmpl.Instruction)}
+		instrOpts = append(instrOpts, agent.WithUserInstruction(tmpl.Instruction))
+	}
+	if tmpl.SubagentMode != "" {
+		instrOpts = append(instrOpts, agent.WithSubagentMode(tmpl.SubagentMode))
+	}
+	if tmpl.OutputSchema != nil {
+		instrOpts = append(instrOpts, agent.WithOutputSchema(tmpl.OutputSchema))
 	}
 
 	return m.launch(ctx, parentBranch, resolvedSpawn{
@@ -335,6 +348,7 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 		specName:     name,
 		goal:         goal,
 		instrOpts:    instrOpts,
+		subagentMode: tmpl.SubagentMode,
 		tools:        tmpl.Tools,
 		toolsets:     tmpl.Toolsets,
 		toolsetTools: tmpl.ToolsetTools,

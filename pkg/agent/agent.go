@@ -356,6 +356,8 @@ type Agent struct {
 	// wrapped as a subagent tool (set via WithSubagentBudgets). Read by
 	// a parent's WithSubagents resolution; zero = unbounded.
 	subagentBudgets SubagentBudgets
+	subagentMode    SubagentMode
+	outputSchema    *genai.Schema
 	// billingBackend is the backend that bills this agent's model
 	// (WithBillingBackend); "" means the process backend.
 	billingBackend string
@@ -612,7 +614,14 @@ type options struct {
 	// wrapped as a subagent tool (WithSubagentBudgets). Like
 	// subagentMaxDepth, it is read by the PARENT at construction and is
 	// inert when this agent runs as a parent.
-	subagentBudgets SubagentBudgets
+	subagentBudgets          SubagentBudgets
+	subagentMode             SubagentMode
+	outputSchema             *genai.Schema
+	beforeModelCallbacks     []llmagent.BeforeModelCallback
+	afterModelCallbacks      []llmagent.AfterModelCallback
+	disallowTransferSet      bool
+	disallowTransferToParent bool
+	disallowTransferToPeers  bool
 	// billingBackend prices this agent's own model calls
 	// (WithBillingBackend). "" falls back to the process backend
 	// usage.SetBackend installed, which is right whenever the agent
@@ -1074,6 +1083,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		}
 		st, err := NewSubagentTool(SubagentOptions{
 			Inner:           sa,
+			Mode:            sa.subagentMode,
 			MaxDepth:        sa.subagentMaxDepth, // 0 → NewSubagentTool default
 			Budgets:         sa.subagentBudgets,  // zero → unbounded
 			Gate:            o.gate,
@@ -1178,26 +1188,9 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		instruction = assembleInstruction(model.Name(), o.mode, o.noQuirks, o.userInstruction, o.extraInstructions)
 	}
 
-	cfg := llmagent.Config{
-		Name:        o.name,
-		Model:       model,
-		Description: o.description,
-		Tools:       o.tools,
-		Toolsets:    o.toolsets,
-	}
-	// Left nil when there is no prompt, which is not the same as a
-	// provider that returns "". ADK's Instruction branch skips an empty
-	// string; the provider branch does not, so setting it
-	// unconditionally would append an empty system part where a
-	// consumer previously got no system instruction at all — reachable
-	// via WithInstruction("") or a whitespace-only --system-prompt-file.
-	// The Anthropic adapter drops empty parts; Gemini forwards them.
-	if instruction != "" {
-		cfg.InstructionProvider = literalInstruction(instruction)
-	}
-	inner, err := llmagent.New(cfg)
+	inner, runnerRoot, err := buildInnerLLMAgent(&o, model, instruction)
 	if err != nil {
-		return nil, fmt.Errorf("agent: build llmagent: %w", err)
+		return nil, err
 	}
 
 	// o.sessionService was guaranteed non-nil by the subagent
@@ -1218,7 +1211,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 
 	r, err := runner.New(runner.Config{
 		AppName:           o.appName,
-		Agent:             inner,
+		Agent:             runnerRoot,
 		SessionService:    runnerSvc,
 		PluginConfig:      runner.PluginConfig{Plugins: o.plugins},
 		AutoCreateSession: true,
@@ -1247,6 +1240,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		subagentToolNames:    o.subagentToolNames,
 		subagentMaxDepth:     o.subagentMaxDepth,
 		subagentBudgets:      o.subagentBudgets,
+		subagentMode:         o.subagentMode,
+		outputSchema:         o.outputSchema,
 		billingBackend:       o.billingBackend,
 		invocationHist:       invocationHist,
 		toolInstrumenter:     toolInstrumenter,

@@ -25,6 +25,7 @@ import (
 
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/background"
@@ -36,6 +37,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/skills"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // defaultSyncWaitTimeout caps how long a synchronous spawn (spawn_agent
@@ -418,9 +420,12 @@ func buildDeclaredSubagents(
 			subToolsets     subagentToolsets
 			userInstruction string
 			scopeDesc       string
+			rootAbs         string
 		)
 		if spec.Root != "" {
-			rootAbs, rootSurface, servers, err := loadSubagentRoot(ctx, spec, deps)
+			var rootSurface parentSurface
+			var servers []*mcp.Server
+			rootAbs, rootSurface, servers, err = loadSubagentRoot(ctx, spec, deps)
 			// servers may be non-nil even on a later error (skills load fails
 			// after mcp.Build succeeded) — collect them for shutdown either way.
 			rootedServers = append(rootedServers, servers...)
@@ -453,11 +458,15 @@ func buildDeclaredSubagents(
 			}
 		}
 
+		if err := checkSubagentCapability(ctx, spec, subTools, subToolsets.mcpSets); err != nil {
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+		}
+
 		// The backend that bills the subagent's model: its own provider's,
 		// which differs from the parent's when spec.Model names another
 		// provider. Both doors price on it.
 		backend := models.BackendOf(subProvider)
-		sub, err := assembleSubagent(spec, llm, backend, userInstruction, subTools, subToolsets.sets)
+		sub, err := assembleSubagent(spec, llm, backend, userInstruction, subTools, subToolsets.sets, projectRoot, rootAbs, deps.rootBase)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
@@ -490,7 +499,9 @@ func buildDeclaredSubagents(
 			// Validated against the accepted set at config load; Mode is
 			// left empty so it derives from this (a scheduler makes a
 			// standing worker).
-			Scheduler: spec.Scheduler,
+			Scheduler:    spec.Scheduler,
+			SubagentMode: sub.SubagentMode(),
+			OutputSchema: sub.OutputSchema(),
 		})
 		if spec.Scheduler != "" {
 			scopeDesc += ", scheduler=" + spec.Scheduler
@@ -554,7 +565,11 @@ func buildRemoteSubagentTemplate(spec config.SubagentSpec, send func(string)) (b
 
 // assembleSubagent builds the *agent.Agent from a resolved model, persona,
 // and tool surface — the common tail shared by the inline and rooted paths.
-func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset) (*agent.Agent, error) {
+func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset, projectRoot, rootAbs, rootBase string) (*agent.Agent, error) {
+	returnContract := agent.SubagentReturnContract("")
+	if spec.EffectiveMode() == config.SubagentModeTask {
+		returnContract = agent.SubagentReturnContract(agent.FinishTaskToolName)
+	}
 	opts := []agent.Option{
 		agent.WithName(spec.Name),
 		agent.WithBillingBackend(backend),
@@ -566,11 +581,20 @@ func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, backend, userI
 		agent.WithTools(subTools),
 		agent.WithToolsets(subToolsets),
 		// #727: the same return contract the async spawn path installs.
-		// A subagent reached as a tool has no return tool at all — its
-		// last message IS the value — so the contract is rendered
-		// without one rather than naming a gesture that doesn't exist
-		// here. Same roster, same instruction, either way it's reached.
-		agent.WithExtraInstruction(agent.SubagentReturnContract("")),
+		// A chat/single_turn subagent reached as a tool has no return
+		// tool (its last message IS the value); a task subagent reports
+		// through ADK's finish_task tool (#1401).
+		agent.WithExtraInstruction(returnContract),
+	}
+	if spec.Mode != "" {
+		opts = append(opts, agent.WithSubagentMode(agent.SubagentMode(spec.Mode)))
+	}
+	if spec.OutputSchema != "" {
+		schema, err := loadSubagentOutputSchema(spec.OutputSchema, spec.BaseDir(), rootAbs, rootBase, projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, agent.WithOutputSchema(schema))
 	}
 	if userInstruction != "" {
 		// Layer 4 (user memory), same slot the parent's AGENTS.md lands in
@@ -585,6 +609,59 @@ func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, backend, userI
 		opts = append(opts, agent.WithSubagentBudgets(syncBudgets(spec.Budgets)))
 	}
 	return agent.New(llm, opts...)
+}
+
+func loadSubagentOutputSchema(ref string, baseDirs ...string) (*genai.Schema, error) {
+	if strings.HasPrefix(strings.TrimSpace(ref), "{") {
+		return config.LoadOutputSchema("", ref)
+	}
+	var lastErr error
+	for _, dir := range baseDirs {
+		if dir == "" {
+			continue
+		}
+		s, err := config.LoadOutputSchema(dir, ref)
+		if err == nil {
+			return s, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return agent.ParseOutputSchema(ref, baseDirs...)
+}
+
+func checkSubagentCapability(ctx context.Context, spec config.SubagentSpec, subTools []adktool.Tool, mcpSets []adktool.Toolset) error {
+	if (spec.Capability != config.CapabilityReadOnly && spec.Capability != "diagnoser") || spec.EffectiveMode() == config.SubagentModeSingleTurn {
+		return nil
+	}
+	for _, t := range subTools {
+		if t == nil {
+			continue
+		}
+		if !tools.IsReadOnlyTool(t) {
+			return fmt.Errorf("capability %q forbids mutating built-in tool %q; drop it or declare capability: %q", spec.Capability, t.Name(), config.CapabilityChangeExecutor)
+		}
+	}
+	for _, ts := range mcpSets {
+		if ts == nil {
+			continue
+		}
+		tsTools, err := mcp.ListTools(ctx, ts)
+		if err != nil {
+			return fmt.Errorf("capability %q: failed to list tools on MCP server %q: %w", spec.Capability, ts.Name(), err)
+		}
+		for _, t := range tsTools {
+			if t == nil {
+				continue
+			}
+			if !tools.IsReadOnlyTool(t) {
+				return fmt.Errorf("capability %q forbids mutating MCP tool %q on server %q; narrow mcp_tools to read-only tools or declare capability: %q", spec.Capability, t.Name(), ts.Name(), config.CapabilityChangeExecutor)
+			}
+		}
+	}
+	return nil
 }
 
 // syncBudgets and asyncBudgets project one declared config.SubagentBudgets
@@ -762,6 +839,9 @@ var spawnToolCarveOut = func() map[string]struct{} {
 // the caller say so in the startup summary, since a carve-out invisible
 // at boot is one an operator rediscovers from a live run.
 func resolveSubagentTools(spec config.SubagentSpec, parent []adktool.Tool) (tools []adktool.Tool, dropped []string, err error) {
+	if spec.Mode == "single_turn" && len(spec.Tools) == 0 {
+		return nil, nil, nil
+	}
 	if spec.Tools == nil {
 		out := make([]adktool.Tool, 0, len(parent))
 		for _, t := range parent {
@@ -792,7 +872,8 @@ func resolveSubagentTools(spec config.SubagentSpec, parent []adktool.Tool) (tool
 // toolsets themselves, a snapshot naming the tools inside them, and a
 // short human-readable scope line for the startup log.
 type subagentToolsets struct {
-	sets []adktool.Toolset
+	sets    []adktool.Toolset
+	mcpSets []adktool.Toolset
 	// infos names every tool the sets expose, classified by source and —
 	// for MCP — attributed to its server. Captured here, at resolution
 	// time, because this is the only place that knows which toolset came
@@ -806,8 +887,27 @@ type subagentToolsets struct {
 // from the shared parent surface, honoring the same nil=inherit /
 // list=scope / empty=none contract per dimension.
 func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surface parentSurface) (subagentToolsets, error) {
+	if spec.EffectiveMode() == config.SubagentModeSingleTurn {
+		return subagentToolsets{desc: "mcp=[], skills=[], tools=[]"}, nil
+	}
 	var out subagentToolsets
 	var desc []string
+
+	byName := make(map[string]namedToolset, len(surface.mcpToolsets))
+	for _, s := range surface.mcpToolsets {
+		byName[s.name] = s
+	}
+
+	var mcpToolsByServer map[string][]string
+	if len(spec.MCPTools) > 0 {
+		mcpToolsByServer = make(map[string][]string, len(spec.MCPTools))
+		for _, mt := range spec.MCPTools {
+			if _, ok := byName[mt.Server]; !ok {
+				return subagentToolsets{}, fmt.Errorf("mcp_tools: unknown server %q (not in mcp.json)", mt.Server)
+			}
+			mcpToolsByServer[mt.Server] = mt.Tools
+		}
+	}
 
 	// take records both halves at once: a toolset the subagent runs with,
 	// and the operator-visible names inside it. A failed server has a nil
@@ -816,7 +916,27 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 		if s.toolset == nil {
 			return
 		}
+		if allowed, hasFilter := mcpToolsByServer[s.name]; hasFilter {
+			if len(allowed) == 0 {
+				return
+			}
+			ts := mcp.FilterToolset(s.toolset, s.name, allowed)
+			out.sets = append(out.sets, ts)
+			out.mcpSets = append(out.mcpSets, ts)
+			for _, ti := range s.infos {
+				if mcp.MatchesToolAllowlist(ti.Name, s.name, allowed) {
+					out.infos = append(out.infos, attach.ToolInfo{
+						Name:        ti.Name,
+						Description: ti.Description,
+						Source:      attach.ToolSourceMCP,
+						Server:      s.name,
+					})
+				}
+			}
+			return
+		}
 		out.sets = append(out.sets, s.toolset)
+		out.mcpSets = append(out.mcpSets, s.toolset)
 		for _, ti := range s.infos {
 			out.infos = append(out.infos, attach.ToolInfo{
 				Name:        ti.Name,
@@ -831,17 +951,20 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 	// mcp.Build. A named server that exists but failed to start has a nil
 	// toolset; skip it silently (the parent skips it too, and its
 	// StatusError is already surfaced in the startup summary).
-	switch spec.MCP {
-	case nil:
+	switch {
+	case spec.MCP == nil && len(spec.MCPTools) > 0:
+		names := make([]string, 0, len(spec.MCPTools))
+		for _, mt := range spec.MCPTools {
+			take(byName[mt.Server])
+			names = append(names, mt.Server)
+		}
+		desc = append(desc, fmt.Sprintf("mcp=[%s]", strings.Join(names, " ")))
+	case spec.MCP == nil:
 		for _, s := range surface.mcpToolsets {
 			take(s)
 		}
 		desc = append(desc, "mcp=inherit")
 	default:
-		byName := make(map[string]namedToolset, len(surface.mcpToolsets))
-		for _, s := range surface.mcpToolsets {
-			byName[s.name] = s
-		}
 		for _, name := range spec.MCP {
 			s, ok := byName[name]
 			if !ok {
@@ -906,6 +1029,13 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 // draw from the same resolution — provider.Model caches auth + transport
 // internally, so per-spawn calls are cheap.
 func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider, spec config.SubagentSpec, noPromptCache bool, promptCacheTTL string, send func(string)) (models.Provider, string, error) {
+	if spec.Tier != "" {
+		tierModel, err := cfg.ResolveTierModel(spec.Tier)
+		if err != nil {
+			return nil, "", err
+		}
+		return parentProvider, tierModel.Name, nil
+	}
 	if spec.Model == nil {
 		// The parent provider already went through MaybeWirePromptCache.
 		return parentProvider, cfg.Model.Name, nil

@@ -149,6 +149,11 @@ type SubagentOptions struct {
 	// Budgets bounds one delegation. Zero dimensions are unbounded,
 	// which is what this door has always been.
 	Budgets SubagentBudgets
+
+	// Mode selects the ADK execution contract (chat, task, single_turn)
+	// for this subagent tool. Empty falls back to Inner.SubagentMode()
+	// (which defaults to SubagentModeChat).
+	Mode SubagentMode
 }
 
 // SubagentBudgets caps one synchronous delegation along the same three
@@ -337,272 +342,342 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 	// (#364).
 	parentSessionID := firstNonEmpty(opts.ParentSessionID, opts.Inner.SessionID())
 
-	handler := func(toolCtx adkagent.Context, args subagentArgs) (subagentResult, error) {
-		// adkagent.Context embeds agent.ReadonlyContext which embeds
-		// context.Context, so we can read context values and pass
-		// it to runner.Run directly.
-		//
-		// Depth is checked before the gate deliberately: it is the
-		// cheaper refusal and the one the caller cannot approve away,
-		// so asking a human to authorize a delegation the next line
-		// would refuse anyway is pure prompt noise.
-		if depth := subsession.CurrentDepth(toolCtx); depth >= maxDepth {
-			return subagentResult{
-				Result: fmt.Sprintf("subagent %q refused: depth limit reached (%d)", name, maxDepth),
-			}, nil
-		}
-		// Gate the delegation itself (#758). Unlike the depth refusal
-		// above — a runtime condition the model is expected to route
-		// around, so it reads better as a result — a permission denial
-		// propagates as a Go error, which is what every other gated
-		// tool in the tree does (see pkg/tools/fetch.go) and what makes
-		// the flow trace, the watchdog and both TUIs treat it as the
-		// failed call it is.
-		if opts.Gate != nil {
-			if err := opts.Gate.CheckToolCallWithArgs(toolCtx, subagentGateBucket, name, name, args); err != nil {
-				return subagentResult{}, err
-			}
-		}
-		// Wrap the parent's session.Service so every event the
-		// inner runner appends gets the right Branch before
-		// landing in storage. ADK's contents-processor uses Branch
-		// to decide which events show up in the LLM request — see
-		// internal/llminternal/contents_processor.go in ADK.
-		parentBranch := toolCtx.Branch()
-		fullBranch := subsession.ComposeBranch(parentBranch, branch)
-		wrapped := &subsession.BranchInjectingService{
-			Inner:   parentService,
-			Branch:  fullBranch,
-			Model:   innerModelName,
-			Backend: opts.Inner.BillingBackend(),
-		}
-
-		// Derive a per-invocation session row. The invocation-unique
-		// component keeps concurrent and sequential invocations of the
-		// same subagent isolated from one another (#364).
-		subagentSessionID := subsession.DeriveSessionID(parentSessionID, branch, subagentInvocationID(toolCtx.FunctionCallID()))
-
-		// Build a fresh runner per invocation so concurrent
-		// subagent calls (ADK dispatches function calls in
-		// parallel goroutines) don't share mutable runner state.
-		// The runner reads from the wrapped service, which
-		// transparently writes to the parent's storage with our
-		// Branch tag.
-		r, err := runner.New(runner.Config{
-			AppName:           innerAppName,
-			Agent:             innerAgent,
-			SessionService:    wrapped,
-			AutoCreateSession: true,
-		})
+	mode := opts.Mode
+	if mode == "" {
+		mode = opts.Inner.SubagentMode()
+	}
+	switch mode {
+	case "", SubagentModeChat:
+	case SubagentModeTask, SubagentModeSingleTurn:
+		dispatched, err := newSubagentDispatcher(name, innerAgent)
 		if err != nil {
-			return subagentResult{}, fmt.Errorf("subagent %q: build runner: %w", name, err)
+			return nil, fmt.Errorf("agent: NewSubagentTool %q: %w", name, err)
 		}
-
-		// Push the new depth into the context value chain so any
-		// further subagent calls from inside this one see the
-		// incremented count.
-		childCtx := subsession.WithDepth(toolCtx, subsession.CurrentDepth(toolCtx)+1)
-		// Record which subagent we're inside so a spawn_agent call made
-		// from in here can't re-launch this same subagent asynchronously
-		// (#732). A declarative subagent is reachable both ways — as a
-		// parent tool call and by reference — under one name, so the
-		// guard has to see the synchronous half of the stack too.
-		childCtx = subsession.WithLineage(childCtx, name)
-		// The parent's served calls say nothing about this subagent's
-		// own instruction and tools, so the delegation gets a record of
-		// its own, marked from the loop below (#1247; prior_success.go).
-		served := models.NewPriorSuccess()
-		childCtx = models.WithPriorSuccess(childCtx, served)
-
-		msg := genai.NewContentFromText(args.Request, genai.RoleUser)
-		var sb strings.Builder
-		// gen_ai.agent.invocation.duration (#338): the sync subagent
-		// drives the inner ADK runner directly here, bypassing the inner
-		// *Agent.Run wrapper that owns recordInvocation — so without this
-		// a synchronously-invoked subagent's turns never land in the
-		// histogram, unlike the async/background path (which runs through
-		// autonomous.Run → *Agent.Run). Record against the inner agent's
-		// own instrument (its metricAgentName, bounded by config), timed
-		// over the run only — the depth refusal and runner-build failure
-		// above are pre-turn, matching RunWithContents' validation-first
-		// posture. turnErr carries error.type on a failed run.
-		started := time.Now()
-		var turnErr error
-		defer func() { opts.Inner.recordInvocation(time.Since(started).Seconds(), turnErr) }()
-		// Bill the delegated turns to the parent (see
-		// SubagentOptions.ParentTracker). TurnTap is the shared
-		// discipline for this: Gemini's UsageMetadata is cumulative
-		// across the chunks of one model turn, so appending per event
-		// would both double-count tokens and inflate the turn count
-		// (#353). Observe every event, commit once on TurnComplete.
-		var tap usage.TurnTap
-
-		// Budget enforcement (SubagentOptions.Budgets). ADK's
-		// runner.RunConfig has no turn or cost cap — only StreamingMode
-		// and SaveInputBlobsAsArtifacts — so all three dimensions are
-		// counted here, the same way pkg/agent/subtask.go counts them
-		// for the agentic wrappers.
-		//
-		// Wall-clock is the one the runner can enforce for us: it rides
-		// a derived context, and its expiry surfaces as an error on the
-		// range, distinguished from a real failure below.
-		runCtx := childCtx
-		if opts.Budgets.MaxWallclock > 0 {
-			var cancel context.CancelFunc
-			runCtx, cancel = context.WithTimeout(childCtx, opts.Budgets.MaxWallclock)
-			defer cancel()
-		}
-		// Provenance for the parent (#1014). No Skip list: unlike the
-		// autonomous door this runner injects no control tools of its
-		// own — there is no done tool here, the delegation ends when
-		// the runner's iteration does — so everything observed is a
-		// look at the world and belongs in the record.
-		var calls toolcalls.Recorder
-
-		var (
-			turns       int
-			spentUSD    float64
-			costMu      sync.Mutex
-			reservedUSD float64
-			history     requestUsageHistory
-			// stopReason is non-empty once a cap has fired. It reads as
-			// prose because its only reader is the parent's model.
-			stopReason string
-			// price is fixed for the whole delegation: one subagent, one
-			// model. Looked up once so the per-turn path is arithmetic.
-			price = opts.Inner.price(innerModelName)
-		)
-		if opts.Budgets.MaxCostUSD > 0 {
-			runCtx = withCostPreflight(runCtx, func(call preflightCall) (preflightRelease, error) {
-				// The budget screens every request under the delegation,
-				// a nested delegation's too. Only the subagent's own
-				// continue the conversation history measures, on its
-				// model; any other request is priced on its own model and
-				// backend from its own size, as the per-turn check does
-				// (preflightCostCeilingRequest).
-				reqModel, reqPrice, reqHistory := innerModelName, price, &history
-				if call.owner != opts.Inner.preflightOwner {
-					reqHistory = nil
-					if call.req != nil && call.req.Model != "" {
-						reqModel = call.req.Model
-					}
-					reqPrice = usage.PriceOn(call.backend, reqModel)
-				}
-				if reqPrice.Unpriced {
-					// Startup refuses a budget on an unpriced model; one
-					// that still arrives is skipped, never refused
-					// (warnUnpricedOnce says why).
-					backend := opts.Inner.BillingBackend()
-					if reqHistory == nil {
-						backend = call.backend
-					}
-					opts.Inner.warnUnpricedOnce(reqModel, backend)
-					return nil, nil
-				}
-				inputCost, err := estimateInputCost(call.req, reqModel, nil, reqHistory, reqPrice)
-				if err != nil {
-					return nil, err
-				}
-				costMu.Lock()
-				projected := spentUSD + reservedUSD + inputCost
-				if projected >= opts.Budgets.MaxCostUSD {
-					spent := spentUSD
-					costMu.Unlock()
-					return nil, &costPreflightError{reason: fmt.Sprintf(
-						"cost budget of $%.4f would be exceeded: $%.4f spent plus estimated input cost $%.4f is $%.4f; request refused before it was sent",
-						opts.Budgets.MaxCostUSD, spent, inputCost, projected,
-					)}
-				}
-				reservedUSD += inputCost
-				costMu.Unlock()
-				var once sync.Once
-				// The delegation keeps no retained estimates: settled
-				// spend is added from the runner's events below, so the
-				// release only frees the reservation.
-				return func(bool) {
-					once.Do(func() {
-						costMu.Lock()
-						reservedUSD -= inputCost
-						if reservedUSD < 0 {
-							reservedUSD = 0
-						}
-						costMu.Unlock()
-					})
-				}, nil
-			})
-		}
-		for ev, err := range r.Run(runCtx, innerUserID, subagentSessionID, msg, adkagent.RunConfig{
-			StreamingMode: opts.Inner.streaming,
-		}) {
+		taskHandler := func(toolCtx adkagent.Context, args subagentArgs) (subagentTaskResult, error) {
+			text, lastOutput, stopReason, calls, refused, err := runSubagentInvocation(
+				toolCtx, args, opts, name, maxDepth, branch, parentService,
+				dispatched, innerAppName, innerUserID, innerModelName, billTo, parentSessionID, true,
+			)
 			if err != nil {
-				// Our own wall-clock cap, not a failure: the deadline is
-				// on runCtx, and childCtx being live is what separates it
-				// from the parent's turn being cancelled out from under
-				// the delegation.
-				if opts.Budgets.MaxWallclock > 0 && errors.Is(runCtx.Err(), context.DeadlineExceeded) && childCtx.Err() == nil {
-					stopReason = fmt.Sprintf("wall-clock budget of %s", opts.Budgets.MaxWallclock)
-					break
-				}
-				if isCostPreflightError(err) {
-					stopReason = err.Error()
-					break
-				}
-				turnErr = fmt.Errorf("subagent %q: run: %w", name, err)
-				return subagentResult{}, turnErr
+				return subagentTaskResult{}, err
 			}
-			history.addPendingContextBytes(contextGrowthBytes(ev))
-			collectFinalText(&sb, ev)
-			markIfServed(served, ev, err)
-			calls.Observe(ev)
-			tap.Observe(ev)
-			u, ok := tap.Commit(ev)
-			if !ok {
-				continue
+			if refused != "" {
+				return subagentTaskResult{Result: refused}, nil
 			}
-			history.record(innerModelName, u)
-			turns++
-			if billTo != nil && innerModelName != "" {
-				billTo.AppendUsage(innerModelName, u, price)
+			resText, outMap := formatTaskOutput(lastOutput, text, opts.Inner.outputSchema != nil)
+			if mode == SubagentModeTask && lastOutput == nil && stopReason == "" && !Refused(resText) && !Stalled(resText) {
+				resText = StallText(name, text)
+				outMap = nil
 			}
-			// Priced whether or not there is a tracker: a cost cap is a
-			// safety limit, and it has to hold for a host that wired no
-			// ledger just as much as for one that did.
-			costMu.Lock()
-			spentUSD += price.CostUSDForTurn(u)
-			spent := spentUSD
-			costMu.Unlock()
-
-			// Turn-count caps are checked after the turn is billed. The
-			// cost cap also has a request preflight above; this settled
-			// check catches output spend the preflight cannot know.
-			if opts.Budgets.MaxTurns > 0 && turns >= opts.Budgets.MaxTurns {
-				stopReason = fmt.Sprintf("turn budget of %d", opts.Budgets.MaxTurns)
-				break
+			if stopReason != "" {
+				return subagentTaskResult{
+					Result: subagentPartial(resText, name, stopReason),
+					Output: outMap,
+				}.withCalls(&calls), nil
 			}
-			if opts.Budgets.MaxCostUSD > 0 && spent >= opts.Budgets.MaxCostUSD {
-				stopReason = fmt.Sprintf("cost budget of $%.4f (spent $%.4f)", opts.Budgets.MaxCostUSD, spent)
-				break
-			}
+			return subagentTaskResult{
+				Result: resText,
+				Output: outMap,
+			}.withCalls(&calls), nil
 		}
-		// A runner that ends its iteration cleanly on a cancelled context
-		// rather than yielding the error would otherwise hand back a
-		// truncated result with nothing saying so. The label is the whole
-		// point of the cap, so it does not depend on which of the two the
-		// runner does.
-		if stopReason == "" && opts.Budgets.MaxWallclock > 0 &&
-			errors.Is(runCtx.Err(), context.DeadlineExceeded) && childCtx.Err() == nil {
-			stopReason = fmt.Sprintf("wall-clock budget of %s", opts.Budgets.MaxWallclock)
+		return functiontool.New(functiontool.Config{
+			Name:        name,
+			Description: desc,
+		}, taskHandler)
+	default:
+		return nil, fmt.Errorf("agent: NewSubagentTool %q: unknown mode %q", name, mode)
+	}
+
+	handler := func(toolCtx adkagent.Context, args subagentArgs) (subagentResult, error) {
+		text, _, stopReason, calls, refused, err := runSubagentInvocation(
+			toolCtx, args, opts, name, maxDepth, branch, parentService,
+			innerAgent, innerAppName, innerUserID, innerModelName, billTo, parentSessionID, false,
+		)
+		if err != nil {
+			return subagentResult{}, err
+		}
+		if refused != "" {
+			return subagentResult{Result: refused}, nil
 		}
 		if stopReason != "" {
-			return subagentResult{Result: subagentPartial(sb.String(), name, stopReason)}.withCalls(&calls), nil
+			return subagentResult{Result: subagentPartial(text, name, stopReason)}.withCalls(&calls), nil
 		}
-		return subagentResult{Result: sb.String()}.withCalls(&calls), nil
+		return subagentResult{Result: text}.withCalls(&calls), nil
 	}
 
 	return functiontool.New(functiontool.Config{
 		Name:        name,
 		Description: desc,
 	}, handler)
+}
+
+func runSubagentInvocation(
+	toolCtx adkagent.Context,
+	args subagentArgs,
+	opts SubagentOptions,
+	name string,
+	maxDepth int,
+	branch string,
+	parentService session.Service,
+	innerAgent adkagent.Agent,
+	innerAppName string,
+	innerUserID string,
+	innerModelName string,
+	billTo *usage.Tracker,
+	parentSessionID string,
+	skipFinishTask bool,
+) (text string, lastOutput any, stopReason string, calls toolcalls.Recorder, refused string, err error) {
+	// adkagent.Context embeds agent.ReadonlyContext which embeds
+	// context.Context, so we can read context values and pass
+	// it to runner.Run directly.
+	//
+	// Depth is checked before the gate deliberately: it is the
+	// cheaper refusal and the one the caller cannot approve away,
+	// so asking a human to authorize a delegation the next line
+	// would refuse anyway is pure prompt noise.
+	if depth := subsession.CurrentDepth(toolCtx); depth >= maxDepth {
+		return "", nil, "", calls, fmt.Sprintf("subagent %q refused: depth limit reached (%d)", name, maxDepth), nil
+	}
+	// Gate the delegation itself (#758). Unlike the depth refusal
+	// above — a runtime condition the model is expected to route
+	// around, so it reads better as a result — a permission denial
+	// propagates as a Go error, which is what every other gated
+	// tool in the tree does (see pkg/tools/fetch.go) and what makes
+	// the flow trace, the watchdog and both TUIs treat it as the
+	// failed call it is.
+	if opts.Gate != nil {
+		if err := opts.Gate.CheckToolCallWithArgs(toolCtx, subagentGateBucket, name, name, args); err != nil {
+			return "", nil, "", calls, "", err
+		}
+	}
+	// Wrap the parent's session.Service so every event the
+	// inner runner appends gets the right Branch before
+	// landing in storage. ADK's contents-processor uses Branch
+	// to decide which events show up in the LLM request — see
+	// internal/llminternal/contents_processor.go in ADK.
+	parentBranch := toolCtx.Branch()
+	fullBranch := subsession.ComposeBranch(parentBranch, branch)
+	wrapped := &subsession.BranchInjectingService{
+		Inner:   parentService,
+		Branch:  fullBranch,
+		Model:   innerModelName,
+		Backend: opts.Inner.BillingBackend(),
+	}
+
+	// Derive a per-invocation session row. The invocation-unique
+	// component keeps concurrent and sequential invocations of the
+	// same subagent isolated from one another (#364).
+	subagentSessionID := subsession.DeriveSessionID(parentSessionID, branch, subagentInvocationID(toolCtx.FunctionCallID()))
+
+	// Build a fresh runner per invocation so concurrent
+	// subagent calls (ADK dispatches function calls in
+	// parallel goroutines) don't share mutable runner state.
+	// The runner reads from the wrapped service, which
+	// transparently writes to the parent's storage with our
+	// Branch tag.
+	r, err := runner.New(runner.Config{
+		AppName:           innerAppName,
+		Agent:             innerAgent,
+		SessionService:    wrapped,
+		AutoCreateSession: true,
+	})
+	if err != nil {
+		return "", nil, "", calls, "", fmt.Errorf("subagent %q: build runner: %w", name, err)
+	}
+
+	// Push the new depth into the context value chain so any
+	// further subagent calls from inside this one see the
+	// incremented count.
+	childCtx := subsession.WithDepth(toolCtx, subsession.CurrentDepth(toolCtx)+1)
+	// Record which subagent we're inside so a spawn_agent call made
+	// from in here can't re-launch this same subagent asynchronously
+	// (#732). A declarative subagent is reachable both ways — as a
+	// parent tool call and by reference — under one name, so the
+	// guard has to see the synchronous half of the stack too.
+	childCtx = subsession.WithLineage(childCtx, name)
+	// The parent's served calls say nothing about this subagent's
+	// own instruction and tools, so the delegation gets a record of
+	// its own, marked from the loop below (#1247; prior_success.go).
+	served := models.NewPriorSuccess()
+	childCtx = models.WithPriorSuccess(childCtx, served)
+
+	msg := genai.NewContentFromText(args.Request, genai.RoleUser)
+	var sb strings.Builder
+	// gen_ai.agent.invocation.duration (#338): the sync subagent
+	// drives the inner ADK runner directly here, bypassing the inner
+	// *Agent.Run wrapper that owns recordInvocation — so without this
+	// a synchronously-invoked subagent's turns never land in the
+	// histogram, unlike the async/background path (which runs through
+	// autonomous.Run → *Agent.Run). Record against the inner agent's
+	// own instrument (its metricAgentName, bounded by config), timed
+	// over the run only — the depth refusal and runner-build failure
+	// above are pre-turn, matching RunWithContents' validation-first
+	// posture. turnErr carries error.type on a failed run.
+	started := time.Now()
+	var turnErr error
+	defer func() { opts.Inner.recordInvocation(time.Since(started).Seconds(), turnErr) }()
+	// Bill the delegated turns to the parent (see
+	// SubagentOptions.ParentTracker). TurnTap is the shared
+	// discipline for this: Gemini's UsageMetadata is cumulative
+	// across the chunks of one model turn, so appending per event
+	// would both double-count tokens and inflate the turn count
+	// (#353). Observe every event, commit once on TurnComplete.
+	var tap usage.TurnTap
+
+	// Budget enforcement (SubagentOptions.Budgets). ADK's
+	// runner.RunConfig has no turn or cost cap — only StreamingMode
+	// and SaveInputBlobsAsArtifacts — so all three dimensions are
+	// counted here, the same way pkg/agent/subtask.go counts them
+	// for the agentic wrappers.
+	//
+	// Wall-clock is the one the runner can enforce for us: it rides
+	// a derived context, and its expiry surfaces as an error on the
+	// range, distinguished from a real failure below.
+	runCtx := childCtx
+	if opts.Budgets.MaxWallclock > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(childCtx, opts.Budgets.MaxWallclock)
+		defer cancel()
+	}
+	if skipFinishTask {
+		calls.Skip = []string{FinishTaskToolName}
+	}
+
+	var (
+		turns       int
+		spentUSD    float64
+		costMu      sync.Mutex
+		reservedUSD float64
+		history     requestUsageHistory
+		// price is fixed for the whole delegation: one subagent, one
+		// model. Looked up once so the per-turn path is arithmetic.
+		price = opts.Inner.price(innerModelName)
+	)
+	if opts.Budgets.MaxCostUSD > 0 {
+		runCtx = withCostPreflight(runCtx, func(call preflightCall) (preflightRelease, error) {
+			// The budget screens every request under the delegation,
+			// a nested delegation's too. Only the subagent's own
+			// continue the conversation history measures, on its
+			// model; any other request is priced on its own model and
+			// backend from its own size, as the per-turn check does
+			// (preflightCostCeilingRequest).
+			reqModel, reqPrice, reqHistory := innerModelName, price, &history
+			if call.owner != opts.Inner.preflightOwner {
+				reqHistory = nil
+				if call.req != nil && call.req.Model != "" {
+					reqModel = call.req.Model
+				}
+				reqPrice = usage.PriceOn(call.backend, reqModel)
+			}
+			if reqPrice.Unpriced {
+				// Startup refuses a budget on an unpriced model; one
+				// that still arrives is skipped, never refused
+				// (warnUnpricedOnce says why).
+				backend := opts.Inner.BillingBackend()
+				if reqHistory == nil {
+					backend = call.backend
+				}
+				opts.Inner.warnUnpricedOnce(reqModel, backend)
+				return nil, nil
+			}
+			inputCost, err := estimateInputCost(call.req, reqModel, nil, reqHistory, reqPrice)
+			if err != nil {
+				return nil, err
+			}
+			costMu.Lock()
+			projected := spentUSD + reservedUSD + inputCost
+			if projected >= opts.Budgets.MaxCostUSD {
+				spent := spentUSD
+				costMu.Unlock()
+				return nil, &costPreflightError{reason: fmt.Sprintf(
+					"cost budget of $%.4f would be exceeded: $%.4f spent plus estimated input cost $%.4f is $%.4f; request refused before it was sent",
+					opts.Budgets.MaxCostUSD, spent, inputCost, projected,
+				)}
+			}
+			reservedUSD += inputCost
+			costMu.Unlock()
+			var once sync.Once
+			// The delegation keeps no retained estimates: settled
+			// spend is added from the runner's events below, so the
+			// release only frees the reservation.
+			return func(bool) {
+				once.Do(func() {
+					costMu.Lock()
+					reservedUSD -= inputCost
+					if reservedUSD < 0 {
+						reservedUSD = 0
+					}
+					costMu.Unlock()
+				})
+			}, nil
+		})
+	}
+	for ev, err := range r.Run(runCtx, innerUserID, subagentSessionID, msg, adkagent.RunConfig{
+		StreamingMode: opts.Inner.streaming,
+	}) {
+		if err != nil {
+			// Our own wall-clock cap, not a failure: the deadline is
+			// on runCtx, and childCtx being live is what separates it
+			// from the parent's turn being cancelled out from under
+			// the delegation.
+			if opts.Budgets.MaxWallclock > 0 && errors.Is(runCtx.Err(), context.DeadlineExceeded) && childCtx.Err() == nil {
+				stopReason = fmt.Sprintf("wall-clock budget of %s", opts.Budgets.MaxWallclock)
+				break
+			}
+			if isCostPreflightError(err) {
+				stopReason = err.Error()
+				break
+			}
+			turnErr = fmt.Errorf("subagent %q: run: %w", name, err)
+			return "", nil, "", calls, "", turnErr
+		}
+		if ev != nil && ev.Output != nil {
+			lastOutput = ev.Output
+		}
+		history.addPendingContextBytes(contextGrowthBytes(ev))
+		collectFinalText(&sb, ev)
+		markIfServed(served, ev, err)
+		calls.Observe(ev)
+		tap.Observe(ev)
+		u, ok := tap.Commit(ev)
+		if !ok {
+			continue
+		}
+		history.record(innerModelName, u)
+		turns++
+		if billTo != nil && innerModelName != "" {
+			billTo.AppendUsage(innerModelName, u, price)
+		}
+		// Priced whether or not there is a tracker: a cost cap is a
+		// safety limit, and it has to hold for a host that wired no
+		// ledger just as much as for one that did.
+		costMu.Lock()
+		spentUSD += price.CostUSDForTurn(u)
+		spent := spentUSD
+		costMu.Unlock()
+
+		// Turn-count caps are checked after the turn is billed. The
+		// cost cap also has a request preflight above; this settled
+		// check catches output spend the preflight cannot know.
+		if opts.Budgets.MaxTurns > 0 && turns >= opts.Budgets.MaxTurns {
+			stopReason = fmt.Sprintf("turn budget of %d", opts.Budgets.MaxTurns)
+			break
+		}
+		if opts.Budgets.MaxCostUSD > 0 && spent >= opts.Budgets.MaxCostUSD {
+			stopReason = fmt.Sprintf("cost budget of $%.4f (spent $%.4f)", opts.Budgets.MaxCostUSD, spent)
+			break
+		}
+	}
+	// A runner that ends its iteration cleanly on a cancelled context
+	// rather than yielding the error would otherwise hand back a
+	// truncated result with nothing saying so. The label is the whole
+	// point of the cap, so it does not depend on which of the two the
+	// runner does.
+	if stopReason == "" && opts.Budgets.MaxWallclock > 0 &&
+		errors.Is(runCtx.Err(), context.DeadlineExceeded) && childCtx.Err() == nil {
+		stopReason = fmt.Sprintf("wall-clock budget of %s", opts.Budgets.MaxWallclock)
+	}
+	return sb.String(), lastOutput, stopReason, calls, "", nil
 }
 
 // subagentPartial labels a delegation that a budget cut short, so the

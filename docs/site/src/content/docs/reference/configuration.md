@@ -671,6 +671,40 @@ This is the operator-vetted way to run a standing worker on a daemon started wit
 
 **Tell the parent it's a standing worker.** The parent's model sees only `name` and `description`. A standing worker never finishes, so if the parent calls `spawn_agent { …, wait: true }`, its turn blocks until the sync-wait cap. It may also spawn a second watcher when one is already running. Say it in `description`, for example: *"Standing watcher: spawn once, don't wait, stop it with stop_agent."*
 
+**Execution modes, structured output, tiers, capabilities, and Markdown authoring (v3.1+, [#1401](https://github.com/go-steer/core-agent/issues/1401)).** A declarative subagent can also declare a bounded specialist mode, a JSON/YAML output schema, a provider-independent capability tier, a read/write capability assertion, per-server MCP tool allowlists, or be authored as `.agents/subagents/<name>.md`:
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `mode` | string | `"chat"` (required in `.md`) | `"chat"` (multi-turn conversational delegation, default in `config.json`), `"task"` (bounded tool loop terminated by `finish_task` with stall synthesis), or `"single_turn"` (one toolless model call). In `.agents/subagents/<name>.md`, `mode` is required. Cannot be combined with `scheduler: "sleep"` when `mode` is `"task"` or `"single_turn"`. |
+| `output_schema` | string | `""` | Relative path (confined to the enclosing `.agents/` scope root, `.json` / `.yaml` / `.yml`) or inline JSON object schema constraining the subagent's final output. Requires `mode: "task"` or `"single_turn"`. In `task` mode `finish_task`'s parameter schema carries the declared schema and rejects non-conforming calls so the model can self-correct; in `single_turn` mode the call sets `GenerateContentConfig.ResponseSchema` and validates the reply. The parent tool return carries both `result` (string) and parsed `output` (`map[string]any`). |
+| `tier` | string | `""` | Capability tier (`"small"`, `"mid"`, `"frontier"`), resolved against the parent's provider (or provider profile's `tiers` map) at startup via `Config.ResolveTierModel`. Mutually exclusive with `model`. |
+| `capability` | string | `""` | Optional startup capability check: `"read_only"` refuses to boot if any resolved built-in or MCP tool is mutating (`!tools.IsReadOnlyTool`); `"change_executor"` declares intentional write capability. Omitted means no check runs. |
+| `mcp_tools` | object[] | `[]` | Per-server MCP tool allowlist: `[{ "server": "gke", "tools": ["get_pod", "describe_pod"] }]`. Each entry narrows that server's toolset to the listed upstream or namespaced tool names (`mcp.FilterToolset`). When `mcp` is omitted and `mcp_tools` is non-empty, only the servers named in `mcp_tools` are attached. |
+
+**Markdown subagent files (`.agents/subagents/<name>.md`).** Instead of inlining every specialist in `config.json`, you can place `<agentsDir>/subagents/<name>.md` files with YAML frontmatter (decoded strictly with `KnownFields(true)`) and a Markdown body that becomes `instructions` verbatim:
+
+```markdown
+---
+description: Diagnoses pod failures in a single GKE cluster.
+mode: task
+tier: small
+capability: read_only
+output_schema: ../schemas/finding.json
+budgets:
+  max_turns: 6
+  max_wallclock_seconds: 90
+mcp_tools:
+  - server: gke
+    tools:
+      - get_pod
+      - describe_pod
+---
+
+You are the pod diagnoser. Inspect the target pod and call `finish_task` with your structured finding.
+```
+
+`config.Load` discovers `.agents/subagents/*.md` in sorted filename order and appends them to `Config.Subagents` (duplicate names between `config.json` and `.agents/subagents/*.md` fail validation), while `config.Save` excludes Markdown-sourced entries so interactive `/allow` or `/model` writes never copy `.md` subagents into `config.json`. Stale ADK optional state/artifact placeholders (`{key?}`, `{artifact.foo?}`) in the Markdown body are rejected at load time with file and line numbers.
+
 **Remote A2A v0.3 delegates — the `remote` block (v3.1+, [#1396](https://github.com/go-steer/core-agent/issues/1396)).** A declarative subagent can also point at an out-of-process Agent-to-Agent (A2A) v0.3 service instead of running an in-process model. Set `remote` on the `subagents[]` entry:
 
 ```jsonc

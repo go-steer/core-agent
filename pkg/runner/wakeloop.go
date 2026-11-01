@@ -56,6 +56,11 @@ type WakeLoopOptions struct {
 	// the historical inline loops.
 	OnTurnError func(error)
 
+	// OnTurnDone, when non-nil, is invoked after each wake-driven turn
+	// drains with the final assistant text (empty when none was emitted)
+	// and the last turn error (nil on a clean turn).
+	OnTurnDone func(text string, err error)
+
 	// Health, when non-nil, is updated with this loop's state after
 	// every turn so GET /healthz can tell "idle, waiting for events"
 	// from "awake and failing repeatedly" (#978). Register it with the
@@ -181,9 +186,18 @@ func WakeLoop(ctx context.Context, a *agent.Agent, opts WakeLoopOptions) {
 			// turn is not a clean one, and the distinction matters:
 			// see turnObeyed.
 			var sawObeyed bool
+			var lastText string
+			var lastErr error
 			for ev, runErr := range a.Run(ctx, "") {
 				evCount++
 				tap.Observe(ev)
+				if ev != nil && !ev.Partial && ev.Author != "user" && ev.Content != nil {
+					for _, p := range ev.Content.Parts {
+						if p != nil && p.Text != "" && !p.Thought {
+							lastText = p.Text
+						}
+					}
+				}
 				if u, ok := tap.Commit(ev); ok && opts.Tracker != nil {
 					// Re-resolved per turn, not taken from
 					// opts.Pricing: a wake loop outlives any number of
@@ -193,6 +207,7 @@ func WakeLoop(ctx context.Context, a *agent.Agent, opts WakeLoopOptions) {
 					opts.Tracker.AppendUsage(opts.Model, u, usage.PriceForRefreshed(opts.Model, opts.Pricing))
 				}
 				if runErr != nil {
+					lastErr = runErr
 					onErr(runErr)
 					if kind := attach.ClassifyTurnError(runErr).Kind; countsAsFailure(kind) {
 						failKind = kind
@@ -200,6 +215,9 @@ func WakeLoop(ctx context.Context, a *agent.Agent, opts WakeLoopOptions) {
 						sawObeyed = true
 					}
 				}
+			}
+			if opts.OnTurnDone != nil {
+				opts.OnTurnDone(lastText, lastErr)
 			}
 			debugf("Run finished (events=%d)", evCount)
 

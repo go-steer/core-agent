@@ -161,6 +161,8 @@ type WorkloadScheduledTrigger struct {
 	Interval string `yaml:"interval,omitempty"`
 	Jitter   string `yaml:"jitter,omitempty"`
 	Prompt   string `yaml:"prompt,omitempty"`
+	MaxFires int    `yaml:"max_fires,omitempty"`
+	Timeout  string `yaml:"timeout,omitempty"`
 }
 
 func (s *WorkloadScheduledTrigger) toScheduleConfig() *ScheduleConfig {
@@ -172,6 +174,8 @@ func (s *WorkloadScheduledTrigger) toScheduleConfig() *ScheduleConfig {
 		Interval: s.Interval,
 		Jitter:   s.Jitter,
 		Prompt:   s.Prompt,
+		MaxFires: s.MaxFires,
+		Timeout:  s.Timeout,
 	}
 }
 
@@ -216,8 +220,38 @@ func (b *WorkloadBundle) ParsedSchedule() (*ScheduleConfig, error) {
 type WorkloadMonitor struct {
 	Collect         []WorkloadMonitorCollect `yaml:"collect,omitempty"`
 	TransitionsFrom string                   `yaml:"transitions_from,omitempty"`
+	WakeOn          []string                 `yaml:"wake_on,omitempty"`
 	Notify          *WorkloadMonitorNotify   `yaml:"notify,omitempty"`
 	Ack             *WorkloadMonitorAck      `yaml:"ack,omitempty"`
+}
+
+// UnmarshalYAML accepts monitor.collect as either a single mapping
+// (tool/args) or a sequence of mappings so legacy mast workload.yaml files of
+// either spelling decode into WorkloadMonitor.Collect.
+func (m *WorkloadMonitor) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			if value.Content[i].Value == "collect" && value.Content[i+1].Kind == yaml.MappingNode {
+				value.Content[i+1] = &yaml.Node{
+					Kind:    yaml.SequenceNode,
+					Content: []*yaml.Node{value.Content[i+1]},
+				}
+			}
+		}
+	}
+	raw, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	type plain WorkloadMonitor
+	var p plain
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&p); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	*m = WorkloadMonitor(p)
+	return nil
 }
 
 // WorkloadMonitorCollect is one collection call in monitor.collect.
@@ -230,6 +264,11 @@ type WorkloadMonitorCollect struct {
 // WorkloadMonitorNotify configures monitor.notify.
 type WorkloadMonitorNotify struct {
 	Conversation string `yaml:"conversation,omitempty"`
+	Channel      string `yaml:"channel,omitempty"`
+	Endpoint     string `yaml:"endpoint,omitempty"`
+	TokenEnv     string `yaml:"token_env,omitempty"`
+	Update       string `yaml:"update,omitempty"`
+	RemindAfter  string `yaml:"remind_after,omitempty"`
 	DigestAfter  string `yaml:"digest_after,omitempty"`
 }
 
@@ -352,8 +391,74 @@ func (b *WorkloadBundle) validate() error {
 	if err := validateWorkloadRosterAndTools(b.Specialists, b.ToolCatalog.Tools); err != nil {
 		return err
 	}
+	if err := b.validateWorkloadMonitor(); err != nil {
+		return err
+	}
 	_, err := b.ParsedSchedule()
 	return err
+}
+
+func (b *WorkloadBundle) validateWorkloadMonitor() error {
+	for i, col := range b.Monitor.Collect {
+		if strings.TrimSpace(col.Tool) == "" {
+			return fmt.Errorf("monitor.collect[%d].tool is required", i)
+		}
+	}
+	var sc *ScheduleConfig
+	switch {
+	case b.Schedule != nil:
+		cp := *b.Schedule
+		sc = &cp
+	case b.EdgeTrigger.Scheduled != nil:
+		sc = b.EdgeTrigger.Scheduled.toScheduleConfig()
+	}
+	tmp := &Config{
+		Schedule: sc,
+		Monitor:  workloadMonitorToConfig(b.Monitor),
+		Tools:    ToolsConfig{Policies: expandWorkloadToolPolicies(b)},
+	}
+	return tmp.validateMonitor()
+}
+
+func workloadMonitorToConfig(m WorkloadMonitor) *MonitorConfig {
+	hasCollect := len(m.Collect) > 0
+	hasTransitions := strings.TrimSpace(m.TransitionsFrom) != ""
+	hasWakeOn := len(m.WakeOn) > 0
+	hasNotify := m.Notify != nil
+	hasAck := m.Ack != nil
+	if !hasCollect && !hasTransitions && !hasWakeOn && !hasNotify && !hasAck {
+		return nil
+	}
+	out := &MonitorConfig{
+		TransitionsFrom: m.TransitionsFrom,
+		WakeOn:          m.WakeOn,
+	}
+	if hasCollect {
+		out.Collect = &MonitorCollectConfig{
+			Tool: m.Collect[0].Tool,
+			Args: m.Collect[0].Args,
+		}
+	}
+	if m.Notify != nil {
+		ch := m.Notify.Channel
+		if ch == "" {
+			ch = m.Notify.Conversation
+		}
+		out.Notify = &MonitorNotifyConfig{
+			Channel:     ch,
+			Endpoint:    m.Notify.Endpoint,
+			TokenEnv:    m.Notify.TokenEnv,
+			Update:      m.Notify.Update,
+			RemindAfter: m.Notify.RemindAfter,
+			DigestAfter: m.Notify.DigestAfter,
+		}
+	}
+	if m.Ack != nil {
+		out.Ack = &MonitorAckConfig{
+			Tool: m.Ack.Tool,
+		}
+	}
+	return out
 }
 
 func validateWorkloadHITL(h WorkloadHITL) error {
@@ -716,6 +821,7 @@ func buildConfigFromWorkload(b *WorkloadBundle) *Config {
 	if sc, err := b.ParsedSchedule(); err == nil && sc != nil {
 		cfg.Schedule = sc
 	}
+	cfg.Monitor = workloadMonitorToConfig(b.Monitor)
 	return cfg
 }
 
@@ -854,6 +960,7 @@ func writeConvertedConfigJSON(path string, cfg *Config) error {
 		Safety      SafetyConfig      `json:"safety,omitempty"`
 		Attach      AttachConfig      `json:"attach,omitempty"`
 		Schedule    *ScheduleConfig   `json:"schedule,omitempty"`
+		Monitor     *MonitorConfig    `json:"monitor,omitempty"`
 	}
 	disk := diskConfig{
 		Version:     cfg.Version,
@@ -864,6 +971,7 @@ func writeConvertedConfigJSON(path string, cfg *Config) error {
 		Safety:      cfg.Safety,
 		Attach:      cfg.Attach,
 		Schedule:    cfg.Schedule,
+		Monitor:     cfg.Monitor,
 	}
 	data, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {

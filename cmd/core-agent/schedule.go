@@ -20,16 +20,44 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	adktool "google.golang.org/adk/v2/tool"
+
 	"github.com/go-steer/core-agent/v3/internal/effects"
+	"github.com/go-steer/core-agent/v3/internal/monitor"
 	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 	"github.com/go-steer/core-agent/v3/pkg/compose"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
+
+func buildMonitorAckHandler(cfg *config.Config, eventlogHandle *eventlog.Handle, toolsets []adktool.Toolset, hasMCPServers bool) (attach.MonitorAckHandler, error) {
+	if cfg == nil || cfg.Monitor == nil {
+		return nil, nil
+	}
+	if err := config.CheckMonitorCollectSurface(cfg, hasMCPServers); err != nil {
+		return nil, err
+	}
+	if cfg.Monitor.Ack == nil && strings.TrimSpace(cfg.Monitor.TransitionsFrom) == "" {
+		return nil, nil
+	}
+	workload := cfg.Agent.DisplayName
+	if workload == "" {
+		workload = "core-agent"
+	}
+	return compose.NewMonitorAcker(compose.MonitorAckerConfig{
+		WorkloadName: workload,
+		AppName:      "core-agent",
+		Monitor:      cfg.Monitor,
+		Toolsets:     toolsets,
+		EventLog:     eventlogHandle,
+	}).Ack, nil
+}
 
 func buildDaemonEffectControls(cfg *config.Config) (effects.ReadOnlyPredicate, map[string]bool) {
 	if cfg == nil {
@@ -62,24 +90,61 @@ func startSingleSessionScheduleAndAutoContinue(
 	cfg *config.Config,
 	eventlogHandle *eventlog.Handle,
 	a *agent.Agent,
+	toolsets []adktool.Toolset,
 	autoContinueEnabled, autoContinueRetry bool,
 	autoContinueFreshness, autoContinueRetryInterval time.Duration,
 ) (*daemonScheduleHandle, error) {
 	var schedHandle *daemonScheduleHandle
 	var leaseLost <-chan struct{}
 	if cfg != nil && cfg.Schedule != nil {
+		workload := cfg.Agent.DisplayName
+		if workload == "" {
+			workload = a.AppName()
+		}
+		var preFire compose.ScheduledPreFireFunc
+		var notifier *compose.Notifier
+		var collector *compose.MonitorCollector
+		if cfg.Monitor != nil {
+			n, err := compose.NewNotifier(compose.NotifierConfig{
+				WorkloadName: workload,
+				AppName:      a.AppName(),
+				Notify:       cfg.Monitor.Notify,
+				WakeOn:       cfg.Monitor.WakeOn,
+				EventLog:     eventlogHandle,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("monitor notify: %w", err)
+			}
+			notifier = n
+			if cfg.Monitor.Collect != nil {
+				collector = compose.NewMonitorCollector(compose.MonitorCollectorConfig{
+					WorkloadName: workload,
+					AppName:      a.AppName(),
+					UserID:       a.UserID(),
+					Monitor:      cfg.Monitor,
+					BasePrompt:   cfg.Schedule.Prompt,
+					Toolsets:     toolsets,
+					EventLog:     eventlogHandle,
+					Notifier:     notifier,
+				})
+				preFire = collector.PreFire
+			}
+		}
+		waiter := &scheduledTurnWaiter{}
 		h, err := startDaemonSchedule(ctx, daemonScheduleDeps{
 			EventLog: eventlogHandle,
 			AppName:  a.AppName(),
-			Workload: a.AppName(),
+			Workload: workload,
 			Schedule: cfg.Schedule,
-			Fire: func(_ context.Context, fire compose.ScheduledFire) error {
-				return a.InjectAs(fire.Payload, auth.Caller{Identity: compose.SchedulerIdentity})
+			PreFire:  preFire,
+			Fire: func(fireCtx context.Context, fire compose.ScheduledFire) error {
+				return waiter.runScheduledTurn(fireCtx, a, fire, collector, notifier)
 			},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("schedule: %w", err)
 		}
+		h.waiter = waiter
 		schedHandle = h
 		if !h.Drives {
 			fmt.Fprintln(os.Stderr, "core-agent: schedule: another replica holds the scheduling lease; standing down passively")
@@ -123,6 +188,53 @@ type daemonScheduleDeps struct {
 	PreFire  compose.ScheduledPreFireFunc
 }
 
+type scheduledTurnResult struct {
+	text string
+	err  error
+}
+
+type scheduledTurnWaiter struct {
+	mu  sync.Mutex
+	out chan scheduledTurnResult
+}
+
+func (w *scheduledTurnWaiter) runScheduledTurn(
+	fireCtx context.Context,
+	a *agent.Agent,
+	fire compose.ScheduledFire,
+	collector *compose.MonitorCollector,
+	notifier *compose.Notifier,
+) error {
+	ch := make(chan scheduledTurnResult, 1)
+	w.mu.Lock()
+	w.out = ch
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		if w.out == ch {
+			w.out = nil
+		}
+		w.mu.Unlock()
+	}()
+	if err := a.InjectAs(fire.Payload, auth.Caller{Identity: compose.SchedulerIdentity}); err != nil {
+		return err
+	}
+	select {
+	case res := <-ch:
+		if notifier != nil {
+			var parsed *monitor.Set
+			if collector != nil {
+				parsed, _ = collector.LastCycle()
+			}
+			_ = notifier.AfterCycle(fireCtx, parsed, res.text, res.err != nil)
+		}
+		return res.err
+	case <-fireCtx.Done():
+		a.Interrupt()
+		return fireCtx.Err()
+	}
+}
+
 // daemonScheduleHandle holds the active scheduling lease and optional
 // scheduled trigger started by startDaemonSchedule.
 type daemonScheduleHandle struct {
@@ -130,6 +242,25 @@ type daemonScheduleHandle struct {
 	Drives  bool
 	Trigger *compose.ScheduledTrigger
 	done    chan struct{}
+	waiter  *scheduledTurnWaiter
+}
+
+// AfterTurn delivers the completed wake-loop turn outcome to any waiting
+// scheduled fire (#1406).
+func (h *daemonScheduleHandle) AfterTurn(text string, turnErr error) {
+	if h == nil || h.waiter == nil {
+		return
+	}
+	h.waiter.mu.Lock()
+	ch := h.waiter.out
+	h.waiter.out = nil
+	h.waiter.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- scheduledTurnResult{text: text, err: turnErr}:
+		default:
+		}
+	}
 }
 
 // Lost returns a channel that closes if the fleet scheduling lease is lost,

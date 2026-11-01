@@ -99,6 +99,17 @@ model.vertex.context_cache.refresh
 model.vertex.context_cache.ttl
 model.vertex.location
 model.vertex.project
+monitor.ack.tool
+monitor.collect.args
+monitor.collect.tool
+monitor.notify.channel
+monitor.notify.digest_after
+monitor.notify.endpoint
+monitor.notify.remind_after
+monitor.notify.token_env
+monitor.notify.update
+monitor.transitions_from
+monitor.wake_on
 otel.endpoint
 otel.exporter
 otel.metrics.exporter
@@ -178,7 +189,9 @@ safety.watchdog
 schedule.every
 schedule.interval
 schedule.jitter
+schedule.max_fires
 schedule.prompt
+schedule.timeout
 session.task_class
 subagents[].budgets.max_cost_usd
 subagents[].budgets.max_turns

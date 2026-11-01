@@ -241,3 +241,145 @@ func TestLoad_WarnsOnUnknownKey(t *testing.T) {
 		t.Errorf("expected warning naming the mistyped key; got %q", buf.String())
 	}
 }
+
+func TestLoad_UnknownNestedKeysWarnOrFail(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		wantWarn  string
+		wantError string
+	}{
+		{
+			name:     "nested unknown under model warns",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview","unknown_model_knob":true}}`,
+			wantWarn: "model.unknown_model_knob",
+		},
+		{
+			name:     "deeply nested unknown under model.vertex.context_cache warns",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview","vertex":{"project":"p","location":"us-central1","context_cache":{"enabled":true,"unknown_cache_knob":1}}}}`,
+			wantWarn: "model.vertex.context_cache.unknown_cache_knob",
+		},
+		{
+			name:     "nested unknown inside slice element subagents[0] warns",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview"},"subagents":[{"name":"helper","description":"d","instructions":"i","future_subagent_knob":true}]}`,
+			wantWarn: "subagents[0].future_subagent_knob",
+		},
+		{
+			name:     "nested unknown inside map of structs tool_output.per_tool warns",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview"},"tool_output":{"per_tool":{"bash":{"max_bytes":1024,"extra_knob":5}}}}`,
+			wantWarn: "tool_output.per_tool.bash.extra_knob",
+		},
+		{
+			name:     "nested unknown inside map of slices of structs hooks warns",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview"},"hooks":{"tool-start":[{"command":"echo ok","extra_hook_field":true}]}}`,
+			wantWarn: "hooks.tool-start[0].extra_hook_field",
+		},
+		{
+			name:     "dynamic map keys with scalar values do not warn",
+			body:     `{"version":1,"model":{"name":"gemini-3-flash-preview"},"compaction":{"threshold_by_tier":{"small":0.3}},"url_scope":{"headers":{"example.com":{"X-Test":"1"}}}}`,
+			wantWarn: "",
+		},
+		{
+			name:      "unknown key under permissions is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"permissions":{"denny":["bash(rm *)"]}}`,
+			wantError: "permissions.denny",
+		},
+		{
+			name:      "unknown key under permissions.auto is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"permissions":{"auto":{"elligible":["bash"]}}}`,
+			wantError: "permissions.auto.elligible",
+		},
+		{
+			name:      "mistyped agent max_sesion_cost_usd is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"agent":{"max_sesion_cost_usd":1}}`,
+			wantError: "agent.max_sesion_cost_usd",
+		},
+		{
+			name:      "mistyped agent max_trun_cost_usd is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"agent":{"max_trun_cost_usd":1}}`,
+			wantError: "agent.max_trun_cost_usd",
+		},
+		{
+			name:      "unknown key under subagents[0].budgets is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"subagents":[{"name":"helper","description":"d","instructions":"i","budgets":{"max_cots_usd":2}}]}`,
+			wantError: "subagents[0].budgets.max_cots_usd",
+		},
+		{
+			name:      "mistyped subagents[0].budget container is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"subagents":[{"name":"helper","description":"d","instructions":"i","budget":{"max_cost_usd":2}}]}`,
+			wantError: "subagents[0].budget",
+		},
+		{
+			name:      "unknown key under model.pricing.<model> is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview","pricing":{"gemini-3-flash-preview":{"input_per_mtok":0.1,"output_per_mtok":0.2,"unknown_rate":0.3}}}}`,
+			wantError: "model.pricing.gemini-3-flash-preview.unknown_rate",
+		},
+		{
+			name:      "unknown key under attach.cost_rate_limit is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"attach":{"cost_rate_limit":{"per_minute":1,"brust":2}}}`,
+			wantError: "attach.cost_rate_limit.brust",
+		},
+		{
+			name:      "mistyped top-level permission container is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"permission":{"deny":["bash(rm *)"]}}`,
+			wantError: "permission",
+		},
+		{
+			name:      "mistyped model.pricng container is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview","pricng":{"gemini-3-flash-preview":{"input_per_mtok":0.1}}}}`,
+			wantError: "model.pricng",
+		},
+		{
+			name:      "unknown outer container wrapping fatal nested cost key is fatal",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"agents":{"max_session_cost_usd":1}}`,
+			wantError: "agents.max_session_cost_usd",
+		},
+		{
+			name:      "duplicate permissions block does not hide fatal typo in first occurrence",
+			body:      `{"version":1,"model":{"name":"gemini-3-flash-preview"},"permissions":{"denny":["bash(rm *)"]},"permissions":{"mode":"ask"}}`,
+			wantError: "permissions.denny",
+		},
+		{
+			name:      "non-ASCII character in budget key still matches edit distance",
+			body:      "{\"version\":1,\"model\":{\"name\":\"gemini-3-flash-preview\"},\"subagents\":[{\"name\":\"helper\",\"description\":\"d\",\"instructions\":\"i\",\"budgets\\u200b\":{\"max_cost_usd\":2}}]}",
+			wantError: "subagents[0].budgets",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, ConfigFileName)
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			old := warnw
+			warnw = &buf
+			defer func() { warnw = old }()
+
+			_, err := Load(dir)
+			if tc.wantError != "" {
+				if err == nil {
+					t.Fatalf("expected fatal error containing %q, got nil (warn=%q)", tc.wantError, buf.String())
+				}
+				if !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantWarn == "" {
+				if buf.Len() > 0 {
+					t.Fatalf("expected no warnings, got %q", buf.String())
+				}
+				return
+			}
+			if !strings.Contains(buf.String(), tc.wantWarn) {
+				t.Fatalf("warning %q does not contain %q", buf.String(), tc.wantWarn)
+			}
+		})
+	}
+}

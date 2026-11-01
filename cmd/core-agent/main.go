@@ -91,6 +91,8 @@ func main() {
 			os.Exit(runLsSubcommand(os.Args[2:]))
 		case "auth":
 			os.Exit(runAuthSubcommand(os.Args[2:]))
+		case "config":
+			os.Exit(runConfigSubcommand(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 

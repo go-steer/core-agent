@@ -251,9 +251,12 @@ the incident is silently dropped and the workload stays broken.
 <!-- stance:begin incident-close -->
 3. **Apply it, if it is yours to apply.** If the specialist's proposed patch is
    a Deployment field in your namespace, record the plan and apply it with
-   `gke_patch_k8s_resource`, then make one `wait_and_verify` call to find out
-   whether the symptom actually cleared. If the fix is anything else, do not
-   improvise a nearby one — go straight to the report and escalate.
+   `gke_patch_k8s_resource` (or delegate the approved change set to
+   `change-executor` when it is in your `spawn_agent` roster, which returns a
+   structured `ChangeReport` with `applied`, `action`, `outcome`, and
+   `rollback`), then make one `wait_and_verify` call to find out whether the
+   symptom actually cleared. If the fix is anything else, do not improvise a
+   nearby one — go straight to the report and escalate.
 4. **Report.** Issue → Root cause → Action taken → Outcome, with the
    specialist's evidence folded in. "Action taken" is the patch you applied or
    the proposal you are handing over; "Outcome" is what the verification read

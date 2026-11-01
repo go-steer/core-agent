@@ -459,11 +459,11 @@ type PathScopeAllowEntry struct {
 // BuiltinTools: optional gate on the provider's server-side built-ins
 // (web search, URL context, code execution).
 type ModelConfig struct {
-	Provider  string           `json:"provider,omitempty"`
-	Name      string           `json:"name"`
-	APIKey    string           `json:"api_key,omitempty"`
-	Vertex    *VertexConfig    `json:"vertex,omitempty"`
-	Anthropic *AnthropicConfig `json:"anthropic,omitempty"`
+	Provider  string           `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Name      string           `json:"name" yaml:"name"`
+	APIKey    string           `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	Vertex    *VertexConfig    `json:"vertex,omitempty" yaml:"vertex,omitempty"`
+	Anthropic *AnthropicConfig `json:"anthropic,omitempty" yaml:"anthropic,omitempty"`
 	// Pricing is a per-model rate override keyed by model name
 	// (case-insensitive). Survives /model switches mid-session —
 	// every model the operator routes to can carry its own rates.
@@ -472,14 +472,14 @@ type ModelConfig struct {
 	// lookup chain. Previously a single *PricingConfig that matched
 	// only Model.Name; PR core-agent/#NN renamed the JSON key
 	// `pricing` from "{input_per_mtok, output_per_mtok}" to a map.
-	Pricing PricingMap `json:"pricing,omitempty"`
+	Pricing PricingMap `json:"pricing,omitempty" yaml:"pricing,omitempty"`
 
 	// BuiltinTools gates the PROVIDER's server-side built-in tools.
 	// Absent (the common case) means every tool keeps its provider
 	// default. See BuiltinToolsConfig — and note this is a different
 	// axis from `tools.disable` / `--no-builtin-tools`, which govern
 	// core-agent's own function tools.
-	BuiltinTools *BuiltinToolsConfig `json:"builtin_tools,omitempty"`
+	BuiltinTools *BuiltinToolsConfig `json:"builtin_tools,omitempty" yaml:"builtin_tools,omitempty"`
 }
 
 // BuiltinToolsConfig gates the provider's server-side built-in tools —
@@ -518,15 +518,15 @@ type ModelConfig struct {
 type BuiltinToolsConfig struct {
 	// WebSearch toggles server-side web search grounding.
 	// Provider defaults: Gemini on, Anthropic off.
-	WebSearch *bool `json:"web_search,omitempty"`
+	WebSearch *bool `json:"web_search,omitempty" yaml:"web_search,omitempty"`
 
 	// URLContext toggles fetching and grounding on URLs the model
 	// decides to visit. Gemini only; default on.
-	URLContext *bool `json:"url_context,omitempty"`
+	URLContext *bool `json:"url_context,omitempty" yaml:"url_context,omitempty"`
 
 	// CodeExecution toggles sandboxed Python execution on the
 	// provider's servers. Gemini only; default off.
-	CodeExecution *bool `json:"code_execution,omitempty"`
+	CodeExecution *bool `json:"code_execution,omitempty" yaml:"code_execution,omitempty"`
 }
 
 // PricingMap is the model-keyed override map used by ModelConfig.
@@ -536,8 +536,8 @@ type PricingMap map[string]PricingConfig
 
 // VertexConfig holds GCP-specific settings for the vertex provider.
 type VertexConfig struct {
-	Project  string `json:"project"`
-	Location string `json:"location"`
+	Project  string `json:"project" yaml:"project,omitempty"`
+	Location string `json:"location" yaml:"location,omitempty"`
 
 	// ContextCache toggles Vertex explicit context caching for the
 	// stable request prefix (system instruction + tools). When nil
@@ -546,7 +546,7 @@ type VertexConfig struct {
 	// every subsequent turn's GenerateContentConfig.CachedContent.
 	// See docs/vertex-context-caching-design.md and
 	// internal/vertexcache/manager.go.
-	ContextCache *ContextCacheConfig `json:"context_cache,omitempty"`
+	ContextCache *ContextCacheConfig `json:"context_cache,omitempty" yaml:"context_cache,omitempty"`
 }
 
 // ContextCacheConfig tunes Vertex explicit context caching. All
@@ -561,14 +561,14 @@ type VertexConfig struct {
 type ContextCacheConfig struct {
 	// Enabled defaults to true (nil = ON). Set to false to disable
 	// caching without touching the other fields.
-	Enabled *bool `json:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// TTL is how long each Create/Update requests the cache live for.
 	// Format: any string time.ParseDuration accepts (e.g. "6h", "30m").
 	// Empty → 6h. Vertex caps at 24h.
-	TTL string `json:"ttl,omitempty"`
+	TTL string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
 	// Refresh triggers a background Update when time-to-expiry drops
 	// below this value. Format matches TTL. Empty → 30min.
-	Refresh string `json:"refresh,omitempty"`
+	Refresh string `json:"refresh,omitempty" yaml:"refresh,omitempty"`
 }
 
 // IsEnabled reports whether caching should be turned on given this
@@ -596,9 +596,9 @@ func (c *ContextCacheConfig) IsEnabled() bool {
 // Messages request — so it applies to both backends in the family.
 // See docs/anthropic-prompt-caching-design.md.
 type AnthropicConfig struct {
-	APIKey      string             `json:"api_key,omitempty"`
-	Vertex      *VertexConfig      `json:"vertex,omitempty"`
-	PromptCache *PromptCacheConfig `json:"prompt_cache,omitempty"`
+	APIKey      string             `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	Vertex      *VertexConfig      `json:"vertex,omitempty" yaml:"vertex,omitempty"`
+	PromptCache *PromptCacheConfig `json:"prompt_cache,omitempty" yaml:"prompt_cache,omitempty"`
 }
 
 // PromptCacheConfig tunes Anthropic prompt caching. An empty struct
@@ -612,7 +612,7 @@ type AnthropicConfig struct {
 type PromptCacheConfig struct {
 	// Enabled defaults to true (nil = ON). Set to false to disable
 	// caching for this provider.
-	Enabled *bool `json:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 
 	// TTL is the breakpoint lifetime requested on cache writes:
 	// "5m" (default) or "1h". Empty means 5m.
@@ -629,7 +629,7 @@ type PromptCacheConfig struct {
 	// Both TTLs are priced separately and the response reports which
 	// one each write used, so the ledger tells the truth either way
 	// (#770).
-	TTL string `json:"ttl,omitempty"`
+	TTL string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
 }
 
 // Prompt-cache breakpoint TTLs accepted by PromptCacheConfig.TTL.
@@ -1184,6 +1184,15 @@ type AgentConfig struct {
 	// and the card endpoint stays off unless --agent-card-description
 	// overrides.
 	Description string `json:"description,omitempty"`
+
+	// MaxWallclockSeconds bounds one turn / session wall-clock runtime
+	// in seconds when imported from a workload bundle (#1402). Zero
+	// means unset.
+	MaxWallclockSeconds int `json:"max_wallclock_seconds,omitempty"`
+
+	// FinalReport grants a task subagent that hits its turn/cost/wallclock
+	// ceiling one tool-less call to emit its final report (#1402).
+	FinalReport bool `json:"final_report,omitempty"`
 }
 
 // AutoContinueConfig tunes opt-in continuation of restart-interrupted
@@ -1279,6 +1288,44 @@ type ToolsConfig struct {
 	WaitAndVerify WaitAndVerifyConfig `json:"wait_and_verify,omitempty"`
 	CallPeer      CallPeerConfig      `json:"call_peer,omitempty"`
 	SpawnAgent    SpawnAgentConfig    `json:"spawn_agent,omitempty"`
+	Policies      []ToolPolicyConfig  `json:"policies,omitempty"`
+}
+
+// ToolPolicyConfig declares a per-tool mutation classification,
+// freshness precondition, and prior-state capture rule (#1402).
+type ToolPolicyConfig struct {
+	Name         string                  `json:"name" yaml:"name"`
+	Mutating     *bool                   `json:"mutating,omitempty" yaml:"mutating,omitempty"`
+	Precondition *ToolPreconditionConfig `json:"precondition,omitempty" yaml:"precondition,omitempty"`
+	Capture      *ToolCaptureConfig      `json:"capture,omitempty" yaml:"capture,omitempty"`
+}
+
+// ToolPreconditionConfig declares a read-only freshness check before a
+// mutating tool call consumes a change-set grant (#1402).
+type ToolPreconditionConfig struct {
+	Read     string            `json:"read" yaml:"read"`
+	Args     map[string]any    `json:"args,omitempty" yaml:"args,omitempty"`
+	ArgsFrom map[string]string `json:"args_from,omitempty" yaml:"args_from,omitempty"`
+	Fields   []string          `json:"fields,omitempty" yaml:"fields,omitempty"`
+}
+
+// ToolCaptureConfig declares prior-state capture and optional revert
+// synthesis before a mutating tool executes (#1402).
+type ToolCaptureConfig struct {
+	Read     string            `json:"read" yaml:"read"`
+	Args     map[string]any    `json:"args,omitempty" yaml:"args,omitempty"`
+	ArgsFrom map[string]string `json:"args_from,omitempty" yaml:"args_from,omitempty"`
+	Fields   []string          `json:"fields,omitempty" yaml:"fields,omitempty"`
+	Revert   *ToolRevertConfig `json:"revert,omitempty" yaml:"revert,omitempty"`
+}
+
+// ToolRevertConfig declares the inverse tool call recorded in a prior-state
+// capture (#1402).
+type ToolRevertConfig struct {
+	Call            string            `json:"call" yaml:"call"`
+	Args            map[string]any    `json:"args,omitempty" yaml:"args,omitempty"`
+	ArgsFromChange  map[string]string `json:"args_from_change,omitempty" yaml:"args_from_change,omitempty"`
+	ArgsFromCapture map[string]string `json:"args_from_capture,omitempty" yaml:"args_from_capture,omitempty"`
 }
 
 // SpawnAgentConfig tunes the `spawn_agent` built-in — in-process

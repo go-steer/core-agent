@@ -24,9 +24,11 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"go.opentelemetry.io/otel/metric/noop"
 	adkagent "google.golang.org/adk/v2/agent"
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/background"
@@ -36,6 +38,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
 	"github.com/go-steer/core-agent/v3/pkg/models/mock"
 	"github.com/go-steer/core-agent/v3/pkg/skills"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // fakeTool is a name-only adktool.Tool for exercising the built-in tool
@@ -1454,4 +1457,204 @@ func TestNewSubagentTool_ModeUnsetIsChat(t *testing.T) {
 			}
 		})
 	}
+}
+
+func newFakeBuiltinFunctionTool(t *testing.T, name string) adktool.Tool {
+	t.Helper()
+	ft, err := functiontool.New(functiontool.Config{Name: name, Description: name},
+		func(_ adkagent.Context, _ struct{}) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
+		})
+	if err != nil {
+		t.Fatalf("functiontool.New(%s): %v", name, err)
+	}
+	return ft
+}
+
+func TestSubagentsHardening_1450(t *testing.T) {
+	t.Parallel()
+
+	t.Run("loadConfig with -c and --agents-dir discovers Markdown subagents", func(t *testing.T) {
+		tmp := t.TempDir()
+		cfgDir := filepath.Join(tmp, "etc")
+		agentsDir := filepath.Join(tmp, "bundle", ".agents")
+		subDir := filepath.Join(agentsDir, "subagents")
+		if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\ndescription: Discovered via loadConfig\nmode: task\n---\nInspect cluster.\n"
+		if err := os.WriteFile(filepath.Join(subDir, "diag.md"), []byte(md), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(cfgDir, "config.json")
+		if err := os.WriteFile(cfgPath, []byte(`{"model":{"provider":"echo","name":"echo"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, _, err := loadConfig(cfgPath, agentsDir, tmp)
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if len(cfg.Subagents) != 1 || cfg.Subagents[0].Name != "diag" {
+			t.Fatalf("loadConfig(-c, --agents-dir) Subagents = %+v, want [diag]", cfg.Subagents)
+		}
+	})
+
+	t.Run("read_only capability accepts digest-wrapped and timed built-in read-only tools", func(t *testing.T) {
+		builtins := []adktool.Tool{
+			newFakeBuiltinFunctionTool(t, "grep"),
+			newFakeBuiltinFunctionTool(t, "glob"),
+			newFakeBuiltinFunctionTool(t, "list_dir"),
+			newFakeBuiltinFunctionTool(t, "read_many_files"),
+			newFakeBuiltinFunctionTool(t, "retrieve_raw"),
+			newFakeBuiltinFunctionTool(t, "agentic_read_file"),
+		}
+		digested := tools.NewDigester(&tools.DigestOptions{}).Wrap(builtins)
+		inst, err := tools.NewDurationInstrumenter(noop.NewMeterProvider())
+		if err != nil {
+			t.Fatalf("NewDurationInstrumenter: %v", err)
+		}
+		timed := inst.Instrument(digested)
+		surface := parentSurface{builtinTools: timed}
+		cfg := &config.Config{
+			Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+			Subagents: []config.SubagentSpec{{
+				Name:        "ro-surveyor",
+				Description: "Survey files",
+				Capability:  config.CapabilityReadOnly,
+				Tools:       []string{"grep", "glob", "list_dir", "read_many_files", "retrieve_raw", "agentic_read_file"},
+				MCP:         []string{},
+			}},
+		}
+		subs, _, _, err := buildDeclaredSubagents(
+			context.Background(), cfg, mock.NewEcho(), t.TempDir(), surface, testDeps(),
+		)
+		if err != nil {
+			t.Fatalf("buildDeclaredSubagents with digest-wrapped read-only tools failed: %v", err)
+		}
+		if len(subs) != 1 {
+			t.Fatalf("got %d subagents, want 1", len(subs))
+		}
+	})
+
+	t.Run("mcp_tools rejects unknown tool name on server", func(t *testing.T) {
+		k8sToolset := fakeMCPToolset{
+			name: "k8s",
+			tools: []adktool.Tool{
+				fakeMCPTool{name: "k8s_get_pods", readOnly: true},
+			},
+		}
+		surface := parentSurface{
+			mcpToolsets: []namedToolset{{
+				name:    "k8s",
+				toolset: k8sToolset,
+				infos: []mcp.ToolInfo{
+					{Name: "k8s_get_pods", Description: "get pods"},
+				},
+			}},
+		}
+		cfg := &config.Config{
+			Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+			Subagents: []config.SubagentSpec{{
+				Name:  "typo-mcp-tool",
+				Tools: []string{},
+				MCP:   []string{"k8s"},
+				MCPTools: []config.MCPToolAllowlist{{
+					Server: "k8s",
+					Tools:  []string{"get_podz"},
+				}},
+			}},
+		}
+		_, _, _, err := buildDeclaredSubagents(
+			context.Background(), cfg, mock.NewEcho(), t.TempDir(), surface, testDeps(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "get_podz") {
+			t.Fatalf("buildDeclaredSubagents(unknown mcp_tools entry) = %v, want error naming get_podz", err)
+		}
+	})
+
+	t.Run("tier uses parentProvider.Name() when cfg.Model.Provider is empty", func(t *testing.T) {
+		prov := &recordingProvider{backend: "gemini"}
+		cfg := &config.Config{
+			Model: config.ModelConfig{}, // empty Provider and Name (env auto-detected at boot)
+			Subagents: []config.SubagentSpec{{
+				Name:        "small-helper",
+				Description: "Helper",
+				Tier:        "small",
+				Tools:       []string{},
+				MCP:         []string{},
+			}},
+		}
+		_, _, _, err := buildDeclaredSubagents(
+			context.Background(), cfg, prov, t.TempDir(), parentSurface{}, testDeps(),
+		)
+		if err != nil {
+			t.Fatalf("buildDeclaredSubagents(tier with empty cfg.Model.Provider): %v", err)
+		}
+		if len(prov.asked) != 1 || prov.asked[0] != "gemini-3.5-flash-lite" {
+			t.Errorf("provider asked = %v, want [gemini-3.5-flash-lite]", prov.asked)
+		}
+	})
+
+	t.Run("Markdown @include resolves relative to subagents dir and rejects stale placeholders after expansion", func(t *testing.T) {
+		tmp := t.TempDir()
+		agentsDir := filepath.Join(tmp, ".agents")
+		subDir := filepath.Join(agentsDir, "subagents")
+		incDir := filepath.Join(subDir, "includes")
+		if err := os.MkdirAll(incDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(incDir, "shared.md"), []byte("Shared checklist line."), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\ndescription: Includes sibling file\nmode: task\n---\nFollow:\n@include includes/shared.md\n"
+		if err := os.WriteFile(filepath.Join(subDir, "inc.md"), []byte(md), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(agentsDir, "config.json"), []byte(`{"model":{"provider":"echo","name":"echo"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(agentsDir)
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		_, templates, _, err := buildDeclaredSubagents(
+			context.Background(), cfg, mock.NewEcho(), tmp, parentSurface{}, testDeps(),
+		)
+		if err != nil {
+			t.Fatalf("buildDeclaredSubagents(@includes/shared.md): %v", err)
+		}
+		if len(templates) != 1 || !strings.Contains(templates[0].Instruction, "Shared checklist line.") {
+			t.Errorf("template Instruction = %q, want included text", templates[0].Instruction)
+		}
+
+		// Now include a file with a stale ADK placeholder {cluster_name?}:
+		if err := os.WriteFile(filepath.Join(incDir, "shared.md"), []byte("Check {cluster_name?}."), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, err = buildDeclaredSubagents(
+			context.Background(), cfg, mock.NewEcho(), tmp, parentSurface{}, testDeps(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "cluster_name") {
+			t.Fatalf("buildDeclaredSubagents(stale placeholder via @include) = %v, want error naming cluster_name", err)
+		}
+	})
+
+	t.Run("loadSubagentOutputSchema does not fall back to projectRoot on scope escape", func(t *testing.T) {
+		tmp := t.TempDir()
+		agentsDir := filepath.Join(tmp, ".agents")
+		subDir := filepath.Join(agentsDir, "subagents")
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tmp, "outside.json"), []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := loadSubagentOutputSchema("../../outside.json", subDir, agentsDir)
+		if err == nil || !strings.Contains(err.Error(), "escapes scope root") {
+			t.Fatalf("loadSubagentOutputSchema(../../outside.json) = %v, want scope escape error", err)
+		}
+	})
 }

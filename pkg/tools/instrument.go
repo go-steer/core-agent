@@ -167,10 +167,7 @@ func (tt *timedTool) IsLongRunning() bool { return tt.inner.IsLongRunning() }
 // a caller composing the other way around would silently reclassify
 // every hinted read-only tool as mutating.
 func (tt *timedTool) ReadOnlyHint() bool {
-	if h, ok := tt.inner.(ReadOnlyHinter); ok {
-		return h.ReadOnlyHint()
-	}
-	return false
+	return IsReadOnlyTool(tt.inner)
 }
 
 func (tt *timedTool) Declaration() *genai.FunctionDeclaration {

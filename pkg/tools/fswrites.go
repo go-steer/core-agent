@@ -94,6 +94,21 @@ var nonFilesystemMutators = map[string]bool{
 // tool of a hint it volunteered would be reading the name instead of the
 // declaration.
 func WritesSharedFilesystem(t adktool.Tool) bool {
+	for t != nil {
+		switch w := t.(type) {
+		case *digestingTool:
+			t = w.inner
+		case *timedTool:
+			t = w.inner
+		case *serializedTool:
+			t = w.inner
+		case *gatedTool:
+			t = w.inner
+		default:
+			goto unwrapped
+		}
+	}
+unwrapped:
 	if t == nil {
 		return false
 	}

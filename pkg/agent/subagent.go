@@ -365,9 +365,20 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 				return subagentTaskResult{Result: refused}, nil
 			}
 			resText, outMap := formatTaskOutput(lastOutput, text, opts.Inner.outputSchema != nil)
+			if mode == SubagentModeSingleTurn && opts.Inner.outputSchema != nil && outMap == nil && stopReason == "" && !Refused(resText) {
+				return subagentTaskResult{}, fmt.Errorf("subagent %q: empty response did not satisfy output_schema", name)
+			}
 			if mode == SubagentModeTask && lastOutput == nil && stopReason == "" && !Refused(resText) && !Stalled(resText) {
 				resText = StallText(name, text)
 				outMap = nil
+			}
+			if opts.Inner.outputSchema != nil && !Refused(resText) && !Stalled(resText) {
+				if outMap == nil {
+					return subagentTaskResult{}, fmt.Errorf("subagent %q: empty response did not satisfy output_schema", name)
+				}
+				if err := ValidateOutputValue(opts.Inner.outputSchema, outMap); err != nil {
+					return subagentTaskResult{}, fmt.Errorf("subagent %q: output_schema validation failed: %w", name, err)
+				}
 			}
 			if stopReason != "" {
 				return subagentTaskResult{

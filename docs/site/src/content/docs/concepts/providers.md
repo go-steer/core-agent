@@ -57,7 +57,7 @@ Each field is a tri-state: omit it to keep the provider's default, and only an e
 core-agent: model: gemini-3.7-flash provider=vertex project=p location=global builtin-tools=url_context
 ```
 
-`builtin-tools=none` means the provider supports them and they are all off; the segment is absent entirely for backends with no server-side built-ins (`echo`, `scripted`). Worth reading rather than assuming — config decoding does not reject unknown fields, so a misspelled key is silently discarded and this line is the only place the discard shows up.
+`builtin-tools=none` means the provider supports them and they are all off; the segment is absent entirely for backends with no server-side built-ins (`echo`, `scripted`). Worth reading to confirm the effective posture across provider defaults; unknown keys inside `builtin_tools` also fail `config.Load`.
 
 A [subagent](/agent-design/subagents-and-wrappers/) that declares its own `model` block inherits each `builtin_tools` field it does not set, per field. An operator who turned web search off for the project meant it for the whole process; declaring a model must not quietly hand it back. Subagents whose effective set differs from the parent's get their own boot line.
 

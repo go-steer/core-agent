@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 )
 
 // defaultConfigFileMode is the mode Save uses when creating a config
@@ -91,9 +92,14 @@ func marshalForSave(existing []byte, cfg *Config) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("existing file is not a JSON object: %w", err)
 	}
+	topFields := structFields(reflect.TypeOf(Config{}))
 	origKeys := make(map[string]bool, len(orig))
 	for _, e := range orig {
-		origKeys[e.key] = true
+		if f, ok := lookupJSONField(topFields, e.key); ok {
+			origKeys[f.name] = true
+		} else {
+			origKeys[e.key] = true
+		}
 	}
 
 	// The full serialization of the (defaults-merged) config, in struct
@@ -130,11 +136,20 @@ func marshalForSave(existing []byte, cfg *Config) ([]byte, error) {
 	}
 
 	var out []kv
-	// 1. Walk the existing file in order. Known keys get the current
-	//    (possibly mutated) value; unknown keys are preserved verbatim.
+	emittedKnown := make(map[string]bool, len(topFields))
+	// 1. Walk the existing file in order. Known keys (matched with the
+	//    same exact-then-folded rule encoding/json uses on Load) get
+	//    the canonical key and current value; unknown keys are
+	//    preserved verbatim.
 	for _, e := range orig {
-		if v, ok := fullByKey[e.key]; ok {
-			out = append(out, kv{key: e.key, val: v})
+		if f, ok := lookupJSONField(topFields, e.key); ok {
+			if emittedKnown[f.name] {
+				continue
+			}
+			emittedKnown[f.name] = true
+			if v, hasVal := fullByKey[f.name]; hasVal {
+				out = append(out, kv{key: f.name, val: v})
+			}
 		} else {
 			out = append(out, e)
 		}

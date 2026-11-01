@@ -15,7 +15,7 @@
 package config
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
 	"slices"
 	"strings"
@@ -203,15 +203,26 @@ func (c *Config) ProfileRates() PricingMap {
 	return out
 }
 
-// strictProviders re-decodes the raw `providers` block of a config file
-// with core-models' strict decoder, which refuses unknown keys.
+// strictProviders re-decodes every top-level `providers` block of a
+// config file (matching case-insensitively like encoding/json, and
+// inspecting duplicate blocks rather than only the last) with
+// core-models' strict decoder, which refuses unknown keys (#1442).
 func strictProviders(data []byte) error {
-	var top struct {
-		Providers json.RawMessage `json:"providers"`
-	}
-	if err := json.Unmarshal(data, &top); err != nil || len(top.Providers) == 0 || string(top.Providers) == "null" {
+	pairs, err := parseOrderedObject(data)
+	if err != nil {
 		return nil // a parse error is the caller's to report; no block is fine
 	}
-	_, err := profile.DecodeJSON(top.Providers)
-	return err
+	for _, p := range pairs {
+		if !strings.EqualFold(p.key, "providers") {
+			continue
+		}
+		trimmed := bytes.TrimSpace(p.val)
+		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+			continue
+		}
+		if _, err := profile.DecodeJSON(trimmed); err != nil {
+			return err
+		}
+	}
+	return nil
 }

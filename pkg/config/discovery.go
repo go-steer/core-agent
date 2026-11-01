@@ -26,6 +26,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // warnw is where Load emits unknown-key warnings. Defaults to stderr;
@@ -81,11 +82,11 @@ func Load(agentsDir string) (*Config, error) {
 		return nil, fmt.Errorf("config: read %q: %w", path, err)
 	}
 	// Decode into the existing defaults so unspecified fields keep their
-	// default values. Unknown fields are deliberately tolerated rather
-	// than rejected (forward-compat: an older binary must still load a
-	// config a newer binary wrote, and Save preserves those keys on
-	// round-trip). But a silently-ignored key is often a typo in a
-	// security-relevant list (a mistyped "deny"/"allow"), so we warn.
+	// default values. Non-critical unknown fields warn and survive Save
+	// round-trips (forward-compat: an older binary still loads a config a
+	// newer binary wrote), while unknown keys inside safety, permission,
+	// scope, attach, provider, or budget sections fail closed in
+	// strictProviders / checkUnknownKeys (#1375, #1442).
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
 	}
@@ -112,8 +113,8 @@ func Load(agentsDir string) (*Config, error) {
 // checkUnknownKeys walks the raw JSON config recursively against the
 // reflect-derived schema of Config. It emits a one-line warning per
 // non-fatal unknown key path and returns an error when an unknown key
-// falls under permissions.* or targets a cost/budget setting, where a
-// silent typo removes a safety or spending guardrail (#1375).
+// falls inside a safety/permission/scope/auth/budget block or targets a
+// safety or spending guardrail (#1375, #1442).
 func checkUnknownKeys(path string, data []byte) error {
 	var raw json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -148,7 +149,7 @@ func checkUnknownKeys(path string, data []byte) error {
 		}
 	}
 	if len(fatal) > 0 {
-		return fmt.Errorf("config: %s: unknown safety/budget key(s) %s (refusing to ignore a typo in permissions or cost ceilings)", path, strings.Join(fatal, ", "))
+		return fmt.Errorf("config: %s: unknown safety/budget key(s) %s (refusing to ignore a typo in safety, permission, scope, auth, or budget settings)", path, strings.Join(fatal, ", "))
 	}
 	return nil
 }
@@ -190,25 +191,31 @@ func walkUnknownKeys(raw json.RawMessage, t reflect.Type, prefix string, out *[]
 	}
 }
 
+type jsonField struct {
+	name string
+	typ  reflect.Type
+}
+
 func walkUnknownStructKeys(raw json.RawMessage, t reflect.Type, prefix string, out *[]string) {
 	pairs, err := parseOrderedObject(raw)
 	if err != nil {
 		return
 	}
-	known := structFieldsByJSONKey(t)
+	fields := structFields(t)
 	for _, p := range pairs {
-		full := joinKeyPath(prefix, p.key)
-		// Top-level "providers" is validated strictly by strictProviders(data).
-		if full == "providers" {
-			continue
-		}
-		ft, ok := known[p.key]
+		f, ok := lookupJSONField(fields, p.key)
 		if !ok {
+			full := joinKeyPath(prefix, p.key)
 			*out = append(*out, full)
 			walkFatalNestedInUnknownRaw(p.val, full, out)
 			continue
 		}
-		walkUnknownKeys(p.val, ft, full, out)
+		canonical := joinKeyPath(prefix, f.name)
+		// Top-level "providers" (any casing) is validated strictly by strictProviders(data).
+		if canonical == "providers" {
+			continue
+		}
+		walkUnknownKeys(p.val, f.typ, canonical, out)
 	}
 }
 
@@ -247,8 +254,8 @@ func walkFatalNestedInUnknownRaw(raw json.RawMessage, prefix string, out *[]stri
 	}
 }
 
-func structFieldsByJSONKey(t reflect.Type) map[string]reflect.Type {
-	out := make(map[string]reflect.Type, t.NumField())
+func structFields(t reflect.Type) []jsonField {
+	out := make([]jsonField, 0, t.NumField())
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if f.PkgPath != "" {
@@ -261,16 +268,33 @@ func structFieldsByJSONKey(t reflect.Type) map[string]reflect.Type {
 		name, _, _ := strings.Cut(tag, ",")
 		if name == "" {
 			if f.Anonymous {
-				for k, ft := range structFieldsByJSONKey(derefType(f.Type)) {
-					out[k] = ft
-				}
+				out = append(out, structFields(derefType(f.Type))...)
 				continue
 			}
 			name = f.Name
 		}
-		out[name] = f.Type
+		out = append(out, jsonField{name: name, typ: f.Type})
 	}
 	return out
+}
+
+// lookupJSONField mirrors encoding/json's struct-key matching: exact
+// tag match wins first, falling back to Unicode simple case-folding
+// (strings.EqualFold) in declaration order so mixed-case containers
+// (e.g. "Attach") still descend into their typed schema rather than
+// stopping at a top-level warning (#1442).
+func lookupJSONField(fields []jsonField, key string) (jsonField, bool) {
+	for _, f := range fields {
+		if f.name == key {
+			return f, true
+		}
+	}
+	for _, f := range fields {
+		if strings.EqualFold(f.name, key) {
+			return f, true
+		}
+	}
+	return jsonField{}, false
 }
 
 func derefType(t reflect.Type) reflect.Type {
@@ -287,45 +311,171 @@ func joinKeyPath(prefix, key string) string {
 	return prefix + "." + key
 }
 
+var fatalPathPrefixes = []string{
+	"permissions.",
+	"pricing.",
+	"safety.",
+	"url_scope.",
+	"path_scope.",
+	"attach.",
+}
+
+var fatalPathSegments = []string{
+	".budgets.",
+	".pricing.",
+	".builtin_tools.",
+	".remote.",
+}
+
+var fatalLeafTargets = []string{
+	"permissions",
+	"pricing",
+	"safety",
+	"url_scope",
+	"path_scope",
+	"builtin_tools",
+	"multi_session",
+	"readonly",
+	"allow_anonymous",
+	"admin_identities",
+	"proxy_identities",
+	"allow_card_host_change",
+	"allow_metadata_endpoints",
+	"max_session_cost_usd",
+	"max_turn_cost_usd",
+	"budgets",
+	"max_cost_usd",
+	"max_turns",
+	"max_wallclock_seconds",
+	"cost_rate_limit",
+}
+
 // isFatalUnknownKey reports whether an unknown key path must fail Load
-// rather than warn. Unknown keys under permissions.*, inside budget /
-// cost_rate_limit / pricing blocks, or whose key name targets a cost,
-// budget, or permission setting are fatal so a typo cannot silently
-// disarm a gate or spending ceiling (#1375).
+// rather than warn. Unknown keys inside safety, permission, scope,
+// attach-auth, server-side built-in tool, remote-subagent, or
+// budget/pricing blocks — or typos of those container and ceiling names
+// — are fatal so a typo cannot silently disarm a gate or spending
+// ceiling (#1375, #1442).
 func isFatalUnknownKey(keyPath string) bool {
-	if strings.HasPrefix(keyPath, "permissions.") ||
-		strings.HasPrefix(keyPath, "pricing.") ||
-		strings.HasPrefix(keyPath, "attach.cost_rate_limit.") ||
-		strings.Contains(keyPath, ".budgets.") ||
-		strings.Contains(keyPath, ".pricing.") {
+	lowerPath := strings.ToLower(keyPath)
+	if hasFatalContainer(lowerPath) {
 		return true
 	}
 	leaf := keyPath
 	if idx := strings.LastIndexByte(keyPath, '.'); idx >= 0 {
 		leaf = keyPath[idx+1:]
 	}
-	lower := strings.ToLower(leaf)
-	for _, token := range []string{"cost", "budget", "usd", "mtok", "rate_limit"} {
-		if strings.Contains(lower, token) {
-			return true
-		}
+	lowerLeaf := strings.ToLower(leaf)
+	if isFatalScopedTypo(lowerPath, lowerLeaf) || hasFatalLeafToken(leaf, lowerLeaf) {
+		return true
 	}
-	for _, target := range []string{
-		"permissions",
-		"pricing",
-		"max_session_cost_usd",
-		"max_turn_cost_usd",
-		"budgets",
-		"max_cost_usd",
-		"max_turns",
-		"max_wallclock_seconds",
-		"cost_rate_limit",
-	} {
-		if editDistance(lower, target) <= 2 {
+	for _, target := range fatalLeafTargets {
+		if editDistance(lowerLeaf, target) <= 2 {
 			return true
 		}
 	}
 	return false
+}
+
+func hasFatalContainer(lowerPath string) bool {
+	for _, prefix := range fatalPathPrefixes {
+		if strings.HasPrefix(lowerPath, prefix) {
+			return true
+		}
+	}
+	for _, seg := range fatalPathSegments {
+		if strings.Contains(lowerPath, seg) {
+			return true
+		}
+	}
+	return false
+}
+
+func isFatalScopedTypo(lowerPath, lowerLeaf string) bool {
+	if !strings.Contains(lowerPath, ".") {
+		if editDistance(lowerLeaf, "attach") <= 2 || editDistance(lowerLeaf, "providers") <= 2 || editDistance(lowerLeaf, "tools") <= 1 {
+			return true
+		}
+	}
+	if rest, ok := strings.CutPrefix(lowerPath, "tools."); ok && !strings.Contains(rest, ".") {
+		if editDistance(lowerLeaf, "disable") <= 2 {
+			return true
+		}
+	}
+	if isDirectSubagentField(lowerPath) {
+		if editDistance(lowerLeaf, "tools") <= 1 ||
+			editDistance(lowerLeaf, "mcp") <= 1 ||
+			lowerLeaf == "mcp_servers" ||
+			lowerLeaf == "mcpservers" ||
+			editDistance(lowerLeaf, "skills") <= 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func isDirectSubagentField(lowerPath string) bool {
+	rest, ok := strings.CutPrefix(lowerPath, "subagents[")
+	if !ok {
+		return false
+	}
+	_, afterIdx, ok := strings.Cut(rest, "].")
+	return ok && !strings.Contains(afterIdx, ".")
+}
+
+func hasFatalLeafToken(leaf, lowerLeaf string) bool {
+	for _, sub := range []string{"cost", "budget", "rate_limit"} {
+		if strings.Contains(lowerLeaf, sub) {
+			return true
+		}
+	}
+	words := splitKeyWords(leaf)
+	for i, w := range words {
+		if w == "usd" || w == "mtok" {
+			return true
+		}
+		if w == "m" && i+1 < len(words) && words[i+1] == "tok" {
+			return true
+		}
+	}
+	return false
+}
+
+func splitKeyWords(key string) []string {
+	var words []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			words = append(words, strings.ToLower(cur.String()))
+			cur.Reset()
+		}
+	}
+	runes := []rune(key)
+	var prev rune
+	for i, r := range runes {
+		if r == '_' || r == '-' || !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			flush()
+			prev = 0
+			continue
+		}
+		if prev != 0 && shouldSplitWordBoundary(prev, r, runes, i) {
+			flush()
+		}
+		cur.WriteRune(r)
+		prev = r
+	}
+	flush()
+	return words
+}
+
+func shouldSplitWordBoundary(prev, r rune, runes []rune, i int) bool {
+	if unicode.IsLower(prev) && unicode.IsUpper(r) {
+		return true
+	}
+	if unicode.IsDigit(prev) != unicode.IsDigit(r) {
+		return true
+	}
+	return unicode.IsUpper(prev) && unicode.IsUpper(r) && i+1 < len(runes) && unicode.IsLower(runes[i+1])
 }
 
 func editDistance(a, b string) int {

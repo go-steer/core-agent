@@ -167,6 +167,8 @@ Top-level shape, with all fields optional except `version` and `model.name`:
 
 `version` must be `1`. Other versions are rejected with a clear upgrade message — the schema is bumped only on breaking changes.
 
+Unknown keys in non-critical sections (such as `ui`, `tool_output`, or `model.vertex.context_cache`) print a warning to `stderr` and survive `config.Save` round-trips for forward compatibility. Unknown keys inside `providers`, `permissions`, `safety`, `url_scope`, `path_scope`, `attach`, `builtin_tools`, `pricing`, `budgets`, or `subagents[].remote` — as well as typos of those block names, tool-restriction fields (`tools.disable`, `subagents[].tools`/`mcp`/`skills`), or cost/budget ceiling keys — fail `config.Load` outright so a typo cannot silently disarm a gate or spending cap.
+
 A minimal viable config:
 
 ```json
@@ -188,10 +190,11 @@ Interactive flows (`/allow`, `/deny`, `/model`, `/theme`, `/mouse`,
   substrate defaults are never materialized into the file. This keeps a future
   bump to a default (e.g. the default model) reaching you instead of being
   pinned to whatever was current when the file was first written.
-- **Unknown keys are preserved.** A section written by a newer build is kept
-  verbatim on round-trip, so an older build editing the file no longer drops
-  fields it doesn't recognize. A misspelled key (e.g. `permisions`) is
-  preserved but logs a warning at load, since it otherwise has no effect.
+- **Unknown keys are preserved.** A non-critical section written by a newer
+  build is kept verbatim on round-trip, so an older build editing the file no
+  longer drops fields it doesn't recognize. A misspelled non-critical key (e.g.
+  `tool_outputs`) is preserved and logs a warning at load; typos in safety,
+  permission, scope, attach, provider, or budget sections fail load instead.
 - **Permissions are protected.** A new file is created mode `0600` (the schema
   can hold `api_key` values); an existing file keeps whatever mode it already
   has — the writer never widens it.
@@ -285,7 +288,7 @@ Provider profiles: ways to reach models beyond the built-in backends — an Open
 | `models[].rates` | Your price for a model no catalog covers (USD per 1M tokens). The lowest-precedence [pricing](#model) layer: `model.pricing`, pricing files and the built-in table all outrank it. |
 | `tiers` | The model per tier. `mid` is what runs when you name no model; `small` is the default `--agentic-small-model`. |
 
-Profiles are checked for shape when the file loads — an error names the file. Unlike the rest of `config.json`, an unknown key inside a profile is an error, not a warning. Credentials and environment variables are checked only when a profile is selected, so a declared profile nobody uses never fails a run.
+Profiles are checked for shape when the file loads — an error names the file. Like the safety, scope, permission, attach, and budget sections, an unknown key inside a profile is a load error rather than a warning. Credentials and environment variables are checked only when a profile is selected, so a declared profile nobody uses never fails a run.
 
 ---
 

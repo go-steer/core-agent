@@ -506,9 +506,8 @@ type ModelConfig struct {
 // only ever fails safe: "no equivalent" means the provider has no such
 // tool to leave on, so a `false` that lands nowhere describes a state
 // that already holds. The startup summary prints the effective set, so
-// an operator can confirm what actually took — worth doing, since a
-// misspelled key is silently discarded (config decoding does not
-// reject unknown fields).
+// an operator can confirm what actually took; unknown keys inside
+// builtin_tools also fail config.Load (#1442).
 //
 // A subagent that declares its own `model` block inherits each field it
 // does not set, per field. An operator who turned web search off for

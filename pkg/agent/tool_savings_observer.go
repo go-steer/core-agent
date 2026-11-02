@@ -91,6 +91,9 @@ func (a *Agent) observeToolSavings(ev *session.Event) {
 		if !ok {
 			continue
 		}
+		if rec.SubagentModel != "" && a.pricingCatalog != nil {
+			rec.SubagentCostUSD = a.price(rec.SubagentModel).CostUSDForTurn(rec.SubagentTurn())
+		}
 		a.tracker.AppendDigestSavings(rec)
 		var eventID string
 		if ev.ID != "" {

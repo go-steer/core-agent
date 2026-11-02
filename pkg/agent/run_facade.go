@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	adkagent "google.golang.org/adk/v2/agent"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 	adktool "google.golang.org/adk/v2/tool"
@@ -35,9 +36,12 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/modeltier"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
+	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 // OneShotConfig configures a single-call agent execution via RunOneShot,
@@ -70,8 +74,9 @@ type OneShotConfig struct {
 
 	// Instruction is the user/project system instruction (e.g. AGENTS.md body).
 	// When empty and Dir is set, RunOneShot reads AGENTS.md from Dir (and
-	// Dir/.agents/AGENTS.md if present). Config.Agent.AppendSystemPrompt is
-	// appended as an extra instruction layer when non-empty.
+	// Dir/.agents/AGENTS.md if present). Config.Agent.SystemPromptFile replaces
+	// the built-in system prompt, and Config.Agent.AppendSystemPrompt is
+	// appended as an extra instruction layer (supporting @path file references).
 	Instruction string
 
 	// EnableBuiltinTools registers the standard built-in file, shell, search,
@@ -83,6 +88,13 @@ type OneShotConfig struct {
 	// tools.GateTools / tools.GateToolset so nothing bypasses governance.
 	Tools    []adktool.Tool
 	Toolsets []adktool.Toolset
+
+	// SubagentToolsets supplies optional pre-resolved per-subagent toolsets
+	// keyed by SubagentSpec.Name (for example from compose.Run when per-subagent
+	// MCP servers, mcp_tools allowlists, scoped skills, or rooted subagent
+	// bundles are configured). Each toolset is automatically wrapped through
+	// the permission Gate.
+	SubagentToolsets map[string][]adktool.Toolset
 
 	// Gate is an optional pre-constructed permission gate. When nil, a gate is
 	// built from the effective Config via permissions.FromConfig and wired to
@@ -134,6 +146,11 @@ func RunOneShot(ctx context.Context, cfg OneShotConfig, prompt string) (*OneShot
 		return nil, err
 	}
 
+	pricingCatalog, _ := usage.NewCatalogFromConfig(loadedCfg, agentsDir, "")
+	if cw := loadedCfg.ProfileContextWindows(); len(cw) > 0 {
+		usage.SetDeclaredContextWindows(cw)
+	}
+
 	llm, provider, backend, err := resolveFacadeModel(ctx, cfg, loadedCfg)
 	if err != nil {
 		return nil, err
@@ -149,10 +166,15 @@ func RunOneShot(ctx context.Context, cfg OneShotConfig, prompt string) (*OneShot
 		return nil, err
 	}
 
+	replacePrompt, appendPrompt, err := resolveFacadePrompts(loadedCfg, projectRoot)
+	if err != nil {
+		return nil, err
+	}
+
 	tracker := usage.NewTracker()
 	subagents, err := buildFacadeSubagents(
-		ctx, cfg, loadedCfg, llm, provider, backend, gate, tracker,
-		rootTools, builtinTools, rootToolsets, projectRoot, agentsDir,
+		ctx, cfg, loadedCfg, llm, provider, backend, gate, tracker, pricingCatalog,
+		rootTools, builtinTools, rootToolsets, appendPrompt, projectRoot, agentsDir,
 	)
 	if err != nil {
 		return nil, err
@@ -167,15 +189,15 @@ func RunOneShot(ctx context.Context, cfg OneShotConfig, prompt string) (*OneShot
 	}
 
 	opts := buildFacadeAgentOptions(
-		cfg, loadedCfg, backend, gate, tracker,
-		rootTools, rootToolsets, subagents, userInst,
+		cfg, loadedCfg, backend, gate, tracker, pricingCatalog,
+		rootTools, rootToolsets, subagents, userInst, replacePrompt, appendPrompt,
 	)
 	a, err := New(llm, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	return collectFacadeTurn(ctx, a, prompt, tracker, llm.Name(), loadedCfg)
+	return collectFacadeTurn(ctx, a, prompt, tracker, llm.Name())
 }
 
 // RunRecipe loads the recipe directory dir (containing .agents/config.json,
@@ -535,7 +557,7 @@ func mergeFacadeScopesAndRuntime(dst, src *config.Config) {
 
 func resolveFacadeModel(ctx context.Context, cfg OneShotConfig, loadedCfg *config.Config) (adkmodel.LLM, models.Provider, string, error) {
 	if cfg.Model != nil {
-		return cfg.Model, nil, loadedCfg.Model.Provider, nil
+		return cfg.Model, nil, usage.BackendFor(loadedCfg), nil
 	}
 	provider, err := models.Resolve(loadedCfg)
 	if err != nil {
@@ -606,6 +628,33 @@ func resolveFacadeTools(
 	return rootTools, rootToolsets, builtinTools, nil
 }
 
+func resolveFacadePrompts(loadedCfg *config.Config, projectRoot string) (replacePrompt, appendPrompt string, err error) {
+	if loadedCfg.Agent.SystemPromptFile != "" {
+		p := loadedCfg.Agent.SystemPromptFile
+		if !filepath.IsAbs(p) && projectRoot != "" {
+			p = filepath.Join(projectRoot, p)
+		}
+		raw, readErr := os.ReadFile(p) //nolint:gosec // operator-configured system_prompt_file path
+		if readErr != nil {
+			return "", "", fmt.Errorf("agent: system_prompt_file %q: %w", loadedCfg.Agent.SystemPromptFile, readErr)
+		}
+		replacePrompt = string(raw)
+	}
+	appendPrompt = loadedCfg.Agent.AppendSystemPrompt
+	if strings.HasPrefix(appendPrompt, "@") {
+		p := strings.TrimPrefix(appendPrompt, "@")
+		if !filepath.IsAbs(p) && projectRoot != "" {
+			p = filepath.Join(projectRoot, p)
+		}
+		raw, readErr := os.ReadFile(p) //nolint:gosec // operator-configured @path append_system_prompt
+		if readErr != nil {
+			return "", "", fmt.Errorf("agent: append_system_prompt %q: %w", loadedCfg.Agent.AppendSystemPrompt, readErr)
+		}
+		appendPrompt = string(raw)
+	}
+	return replacePrompt, appendPrompt, nil
+}
+
 func buildFacadeSubagents(
 	ctx context.Context,
 	cfg OneShotConfig,
@@ -615,8 +664,10 @@ func buildFacadeSubagents(
 	backend string,
 	gate *permissions.Gate,
 	tracker *usage.Tracker,
+	pricingCatalog *pricing.Catalog,
 	rootTools, builtinTools []adktool.Tool,
 	rootToolsets []adktool.Toolset,
+	appendPrompt string,
 	projectRoot, agentsDir string,
 ) ([]*Agent, error) {
 	if len(loadedCfg.Subagents) == 0 {
@@ -637,8 +688,8 @@ func buildFacadeSubagents(
 			return nil, err
 		}
 		sub, err := buildSingleFacadeSubagent(
-			ctx, spec, loadedCfg, subLLM, subBackend, gate, tracker,
-			rootTools, candidateTools, rootToolsets, projectRoot, agentsDir,
+			ctx, cfg, spec, loadedCfg, subLLM, subBackend, gate, tracker, pricingCatalog,
+			rootTools, candidateTools, rootToolsets, appendPrompt, projectRoot, agentsDir,
 		)
 		if err != nil {
 			return nil, err
@@ -665,20 +716,22 @@ func resolveFacadeSubagentModel(
 		if err != nil {
 			return nil, "", fmt.Errorf("agent: subagent %q: %w", spec.Name, err)
 		}
-		if provider != nil && (resolved.Provider == "" || resolved.Provider == loadedCfg.Model.Provider) {
+		if provider != nil {
 			llm, err := provider.Model(ctx, resolved.Name)
 			if err != nil {
 				return nil, "", fmt.Errorf("agent: subagent %q model: %w", spec.Name, err)
 			}
 			return llm, backend, nil
 		}
-		if provider == nil && loadedCfg.Model.Provider == "" {
-			return rootLLM, backend, nil
-		}
-		mc = resolved
+		return withFacadeLLMName(rootLLM, resolved.Name), backend, nil
 	}
 	if mc == nil {
 		return rootLLM, backend, nil
+	}
+	if provider == nil && (mc.Provider == "" || mc.Provider == loadedCfg.Model.Provider || mc.Provider == backend) &&
+		mc.Provider != config.ProviderEcho && mc.Provider != config.ProviderScripted &&
+		mc.APIKey == "" && mc.Vertex == nil && mc.Anthropic == nil {
+		return withFacadeLLMName(rootLLM, mc.Name), backend, nil
 	}
 	subCfg := *loadedCfg
 	mergeFacadeModelConfig(&subCfg.Model, mc)
@@ -693,18 +746,47 @@ func resolveFacadeSubagentModel(
 	return llm, models.BackendOf(subProv), nil
 }
 
+type facadeRenamedLLM struct {
+	adkmodel.LLM
+	name string
+}
+
+func (m facadeRenamedLLM) Name() string { return m.name }
+
+func (m facadeRenamedLLM) WithoutBuiltins() adkmodel.LLM {
+	if wb, ok := m.LLM.(interface{ WithoutBuiltins() adkmodel.LLM }); ok {
+		return facadeRenamedLLM{LLM: wb.WithoutBuiltins(), name: m.name}
+	}
+	return m
+}
+
+func withFacadeLLMName(llm adkmodel.LLM, name string) adkmodel.LLM {
+	if llm == nil || name == "" || llm.Name() == name {
+		return llm
+	}
+	return facadeRenamedLLM{LLM: llm, name: name}
+}
+
 func buildSingleFacadeSubagent(
 	ctx context.Context,
+	cfg OneShotConfig,
 	spec config.SubagentSpec,
 	loadedCfg *config.Config,
 	subLLM adkmodel.LLM,
 	subBackend string,
 	gate *permissions.Gate,
 	tracker *usage.Tracker,
+	pricingCatalog *pricing.Catalog,
 	rootTools, candidateTools []adktool.Tool,
 	rootToolsets []adktool.Toolset,
+	appendPrompt string,
 	projectRoot, agentsDir string,
 ) (*Agent, error) {
+	preResolvedToolsets, hasPreResolved := cfg.SubagentToolsets[spec.Name]
+	if spec.Root != "" && !hasPreResolved {
+		return nil, fmt.Errorf("agent: subagent %q declares root %q; rooted subagents require compose.Run (or OneShotConfig.SubagentToolsets)", spec.Name, spec.Root)
+	}
+
 	mode := SubagentMode(spec.EffectiveMode())
 	maxTurnUSD := derefFloat64(loadedCfg.Agent.MaxTurnCostUSD)
 	var budgets SubagentBudgets
@@ -734,10 +816,11 @@ func buildSingleFacadeSubagent(
 		WithSubagentBudgets(budgets),
 		WithMode(ModeAutonomous),
 		WithUserInstruction(spec.Instructions),
-		WithExtraInstruction(loadedCfg.Agent.AppendSystemPrompt),
+		WithExtraInstruction(appendPrompt),
 		WithExtraInstruction(returnContract),
 		WithGate(gate),
 		WithUsageTracker(tracker),
+		WithPricingCatalog(pricingCatalog),
 		WithBillingBackend(subBackend),
 		WithCostCeiling(CostCeiling{
 			MaxTurnUSD:    maxTurnUSD,
@@ -748,9 +831,9 @@ func buildSingleFacadeSubagent(
 		schema, err := loadFacadeOutputSchema(
 			spec.OutputSchema,
 			spec.BaseDir(),
-			filepath.Join(agentsDir, config.SubagentsDirName),
+			subagentsDirIfSet(agentsDir),
 			agentsDir,
-			projectRoot,
+			subagentRootIfSet(spec.Root, agentsDir, projectRoot),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("agent: subagent %q: %w", spec.Name, err)
@@ -762,9 +845,19 @@ func buildSingleFacadeSubagent(
 		if err != nil {
 			return nil, err
 		}
-		selectedToolsets, err := selectFacadeSubagentToolsets(spec, rootToolsets)
-		if err != nil {
-			return nil, err
+		var selectedToolsets []adktool.Toolset
+		if hasPreResolved {
+			for _, ts := range preResolvedToolsets {
+				if ts == nil {
+					continue
+				}
+				selectedToolsets = append(selectedToolsets, tools.GateToolset(ts, gate, ts.Name()))
+			}
+		} else {
+			selectedToolsets, err = selectFacadeSubagentToolsets(spec, rootToolsets)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if err := checkFacadeSubagentCapability(ctx, spec, selectedTools, selectedToolsets); err != nil {
 			return nil, err
@@ -777,6 +870,30 @@ func buildSingleFacadeSubagent(
 		}
 	}
 	return New(subLLM, subOpts...)
+}
+
+func subagentsDirIfSet(agentsDir string) string {
+	if agentsDir == "" {
+		return ""
+	}
+	return filepath.Join(agentsDir, config.SubagentsDirName)
+}
+
+func subagentRootIfSet(root, agentsDir, projectRoot string) string {
+	if root == "" {
+		return ""
+	}
+	if filepath.IsAbs(root) {
+		return filepath.Clean(root)
+	}
+	base := agentsDir
+	if base == "" {
+		base = projectRoot
+	}
+	if base == "" {
+		return ""
+	}
+	return filepath.Clean(filepath.Join(base, root))
 }
 
 func loadFacadeOutputSchema(ref string, baseDirs ...string) (*genai.Schema, error) {
@@ -792,12 +909,15 @@ func loadFacadeOutputSchema(ref string, baseDirs ...string) (*genai.Schema, erro
 		if err == nil {
 			return s, nil
 		}
+		if strings.Contains(err.Error(), "path escapes scope root") {
+			return nil, err
+		}
 		lastErr = err
 	}
 	if lastErr != nil {
 		return nil, lastErr
 	}
-	return ParseOutputSchema(ref, baseDirs...)
+	return config.LoadOutputSchema("", ref)
 }
 
 func derefFloat64(p *float64) float64 {
@@ -844,9 +964,6 @@ func selectFacadeSubagentTools(spec config.SubagentSpec, rootTools, candidateToo
 }
 
 func selectFacadeSubagentToolsets(spec config.SubagentSpec, rootToolsets []adktool.Toolset) ([]adktool.Toolset, error) {
-	if len(rootToolsets) == 0 {
-		return nil, nil
-	}
 	var skillSets, mcpSets []adktool.Toolset
 	for _, ts := range rootToolsets {
 		if ts == nil {
@@ -858,9 +975,47 @@ func selectFacadeSubagentToolsets(spec config.SubagentSpec, rootToolsets []adkto
 			mcpSets = append(mcpSets, ts)
 		}
 	}
+	if len(spec.Skills) > 0 && len(skillSets) > 0 {
+		return nil, fmt.Errorf("agent: subagent %q declares skills subset %v; skill scoping requires compose.Run (or OneShotConfig.SubagentToolsets)", spec.Name, spec.Skills)
+	}
+
+	mcpToolsByServer := make(map[string][]string, len(spec.MCPTools))
+	for _, mt := range spec.MCPTools {
+		matched := false
+		for _, ts := range mcpSets {
+			if matchesFacadeMCPServer(ts.Name(), mt.Server) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return nil, fmt.Errorf("agent: subagent %q: mcp_tools: unknown mcp server %q", spec.Name, mt.Server)
+		}
+		mcpToolsByServer[mt.Server] = mt.Tools
+	}
+
+	takeMCP := func(ts adktool.Toolset, serverName string) adktool.Toolset {
+		if allowed, hasFilter := mcpToolsByServer[serverName]; hasFilter {
+			if len(allowed) == 0 {
+				return nil
+			}
+			return &facadeFilteredToolset{inner: ts, server: serverName, allowed: allowed}
+		}
+		return ts
+	}
 
 	var out []adktool.Toolset
 	switch {
+	case spec.MCP == nil && len(spec.MCPTools) > 0:
+		for _, mt := range spec.MCPTools {
+			for _, ts := range mcpSets {
+				if matchesFacadeMCPServer(ts.Name(), mt.Server) {
+					if filtered := takeMCP(ts, mt.Server); filtered != nil {
+						out = append(out, filtered)
+					}
+				}
+			}
+		}
 	case spec.MCP == nil:
 		out = append(out, mcpSets...)
 	case len(spec.MCP) == 0:
@@ -869,8 +1024,10 @@ func selectFacadeSubagentToolsets(spec config.SubagentSpec, rootToolsets []adkto
 		for _, name := range spec.MCP {
 			matched := false
 			for _, ts := range mcpSets {
-				if ts.Name() == name || strings.HasPrefix(ts.Name(), name+"_") {
-					out = append(out, ts)
+				if matchesFacadeMCPServer(ts.Name(), name) {
+					if filtered := takeMCP(ts, name); filtered != nil {
+						out = append(out, filtered)
+					}
 					matched = true
 				}
 			}
@@ -880,8 +1037,70 @@ func selectFacadeSubagentToolsets(spec config.SubagentSpec, rootToolsets []adkto
 		}
 	}
 
-	if spec.Skills == nil || len(spec.Skills) > 0 {
+	if spec.Skills == nil {
 		out = append(out, skillSets...)
+	}
+	return out, nil
+}
+
+func matchesFacadeMCPServer(tsName, serverName string) bool {
+	if tsName == serverName {
+		return true
+	}
+	sanitized := sanitizeFacadeMCPPrefix(serverName)
+	if tsName == sanitized {
+		return true
+	}
+	if base, ok := strings.CutSuffix(tsName, "_mcp_tool_set"); ok {
+		return base == serverName || base == sanitized
+	}
+	if base, ok := strings.CutSuffix(tsName, "_toolset"); ok {
+		return base == serverName || base == sanitized
+	}
+	return false
+}
+
+func sanitizeFacadeMCPPrefix(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+type facadeFilteredToolset struct {
+	inner   adktool.Toolset
+	server  string
+	allowed []string
+}
+
+func (f *facadeFilteredToolset) Name() string                   { return f.inner.Name() }
+func (f *facadeFilteredToolset) UnwrapToolset() adktool.Toolset { return f.inner }
+
+func (f *facadeFilteredToolset) Tools(ctx adkagent.ReadonlyContext) ([]adktool.Tool, error) {
+	all, err := f.inner.Tools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefix := sanitizeFacadeMCPPrefix(f.server) + "_"
+	out := make([]adktool.Tool, 0, len(all))
+	for _, t := range all {
+		if t == nil {
+			continue
+		}
+		name := t.Name()
+		for _, a := range f.allowed {
+			if name == a || name == prefix+a {
+				out = append(out, t)
+				break
+			}
+		}
 	}
 	return out, nil
 }
@@ -991,21 +1210,25 @@ func buildFacadeAgentOptions(
 	backend string,
 	gate *permissions.Gate,
 	tracker *usage.Tracker,
+	pricingCatalog *pricing.Catalog,
 	rootTools []adktool.Tool,
 	rootToolsets []adktool.Toolset,
 	subagents []*Agent,
-	userInst string,
+	userInst, replacePrompt, appendPrompt string,
 ) []Option {
 	opts := []Option{
 		WithMode(ModeAutonomous),
 		WithGate(gate),
 		WithUsageTracker(tracker),
+		WithPricingCatalog(pricingCatalog),
 		WithBillingBackend(backend),
 		WithCostCeiling(CostCeiling{
 			MaxTurnUSD:    derefFloat64(loadedCfg.Agent.MaxTurnCostUSD),
 			MaxSessionUSD: derefFloat64(loadedCfg.Agent.MaxSessionCostUSD),
 		}),
+		WithCompactor(buildFacadeCompactor(loadedCfg.Compaction)),
 	}
+	opts = appendFacadeGuardrailOptions(opts, loadedCfg)
 	name := cfg.Name
 	if name == "" && loadedCfg.Agent.DisplayName != "" {
 		name = loadedCfg.Agent.DisplayName
@@ -1020,11 +1243,14 @@ func buildFacadeAgentOptions(
 	if desc != "" {
 		opts = append(opts, WithDescription(desc))
 	}
+	if replacePrompt != "" {
+		opts = append(opts, WithInstruction(replacePrompt))
+	}
 	if userInst != "" {
 		opts = append(opts, WithUserInstruction(userInst))
 	}
-	if loadedCfg.Agent.AppendSystemPrompt != "" {
-		opts = append(opts, WithExtraInstruction(loadedCfg.Agent.AppendSystemPrompt))
+	if appendPrompt != "" {
+		opts = append(opts, WithExtraInstruction(appendPrompt))
 	}
 	if len(rootTools) > 0 {
 		opts = append(opts, WithTools(rootTools))
@@ -1048,20 +1274,60 @@ func buildFacadeAgentOptions(
 	return opts
 }
 
+func buildFacadeCompactor(cc config.CompactionConfig) *DefaultCompactor {
+	threshold := DefaultCompactionThreshold
+	tierThresholds := modeltier.DefaultCompactionThresholds()
+	if cc.Threshold != nil {
+		threshold = *cc.Threshold
+		tierThresholds = map[string]float64{}
+	}
+	for tier, v := range cc.ThresholdByTier {
+		tierThresholds[tier] = v
+	}
+	return &DefaultCompactor{
+		Threshold:       threshold,
+		ThresholdByTier: tierThresholds,
+	}
+}
+
+func appendFacadeGuardrailOptions(opts []Option, loadedCfg *config.Config) []Option {
+	switch loadedCfg.Safety.Watchdog {
+	case "", config.WatchdogEnforce:
+		w := watchdog.NewDefaultWatchdog()
+		opts = append(opts, WithWatchdog(w, nil), WithWatchdogFeedback(), WithWatchdogEnforce())
+	case config.WatchdogFeedback:
+		w := watchdog.NewDefaultWatchdog()
+		opts = append(opts, WithWatchdog(w, nil), WithWatchdogFeedback())
+	case config.WatchdogWarn:
+		w := watchdog.NewDefaultWatchdog()
+		opts = append(opts, WithWatchdog(w, nil))
+	case config.WatchdogOff:
+	}
+
+	switch loadedCfg.Checkpoint.Mode {
+	case config.CheckpointModeModel:
+		opts = append(opts, WithCheckpointer(NewDefaultCheckpointer()))
+	case config.CheckpointModeOperator:
+		opts = append(opts, WithCheckpointer(NewDefaultCheckpointer()), WithoutMarkTaskDoneTool())
+	case config.CheckpointModeOff:
+		opts = append(opts, WithoutMarkTaskDoneTool())
+	}
+	return opts
+}
+
 func collectFacadeTurn(
 	ctx context.Context,
 	a *Agent,
 	prompt string,
 	tracker *usage.Tracker,
 	modelName string,
-	loadedCfg *config.Config,
 ) (*OneShotResult, error) {
 	var (
 		sb           strings.Builder
 		lastTurnText string
 		lastOutput   any
 		tap          usage.TurnTap
-		rate         = usage.PriceFor(modelName, loadedCfg)
+		rate         = a.price(modelName)
 	)
 	for ev, err := range a.Run(WithOperatorTask(ctx, prompt), prompt) {
 		if err != nil {

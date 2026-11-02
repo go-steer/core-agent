@@ -207,7 +207,7 @@ Selects the LLM backend.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `provider` | string | `""` (auto-detect) | One of `gemini`, `vertex`, `anthropic`, `anthropic-vertex`, `echo`, `scripted`, or the name of a [provider profile](#providers): a core-models built-in (`vertex-maas`, `vllm`, `sglang`, `ollama`, `openai-compatible`) or one declared under `providers`. Empty = auto-detect from env (never a profile). |
+| `provider` | string | `""` (auto-detect) | One of `gemini`, `vertex`, `anthropic`, `anthropic-vertex`, `echo`, `scripted`, or the name of a [provider profile](#providers): a core-models built-in (`vertex-maas`, `openai`, `xai`, `sap-ai-core`, `vllm`, `sglang`, `ollama`, `openai-compatible`) or one declared under `providers`. Empty = auto-detect from env (never a profile). |
 | `name` | string | `gemini-3.7-flash` | Model ID. **Required.** For Gemini, version 3.0 or later is required when using the default tool suite — see [Providers → Gemini 3.0+ required](/concepts/providers/#gemini-30-required-when-combining-built-ins-with-function-tools). The default is a current-generation, generally-available flash model that combines server-side search built-ins with function tools out of the box. Override with a pro-class model, or with the `gemini-3.1-pro-preview-customtools` variant (fine-tuned to prefer developer-defined tools over raw bash), when you want that behavior. |
 | `api_key` | string | `""` | Inline key for `provider: gemini`. Usually unset; read from `GOOGLE_API_KEY` / `GEMINI_API_KEY` at runtime. |
 | `vertex` | object | `null` | GCP project + region. Required when `provider: vertex`. |
@@ -283,7 +283,10 @@ Provider profiles: ways to reach models beyond the built-in backends — an Open
 | Field | Notes |
 |---|---|
 | `name` | What `model.provider` / `--provider` names. May not be one of core-agent's own six provider names, and may appear once. |
-| `extends` | A core-models built-in to start from. Every field set here overrides it. |
+| `extends` | A core-models built-in to start from (`vertex-maas`, `openai`, `xai`, `sap-ai-core`, `vllm`, `sglang`, `ollama`, `openai-compatible`). Every field set here overrides it. |
+| `auth` | Request authentication: `bearer` (`env`, `header`), `google_adc`, `oauth2_client_credentials` (`token_url`, `client_id_env`, `client_secret_env`, optional `scopes`, `audience`, `client_auth`), or `none`. |
+| `headers` | Map of custom HTTP request headers sent on every model request (values support `${ENV_VAR}` expansion; reserved headers such as `Authorization` and `Content-Type` are rejected at load time). |
+| `pricing` | Optional pricing isolation mode. When `"isolated"` (the default on `sap-ai-core`), models on this profile never fall back to bare rows in the shared catalog and must be priced via `<backend>/<model>` overrides or `models[].rates`. |
 | `models[].context_window` | The input window this server serves for the model, in tokens — for vLLM, its `--max-model-len`, which can be well below the model's published window. Compaction sizes its threshold against it ahead of every other source, when the profile is the one `model.provider` or a subagent's `model.provider` selects (a declared but unused profile's windows are ignored); without it, a model the built-in table doesn't know is assumed to hold 128,000 tokens (see [Context management](/concepts/context-management/)). |
 | `models[].rates` | Your price for a model no catalog covers (USD per 1M tokens). The lowest-precedence [pricing](#model) layer: `model.pricing`, pricing files and the built-in table all outrank it. |
 | `tiers` | The model per tier. `mid` is what runs when you name no model; `small` is the default `--agentic-small-model`. |

@@ -647,7 +647,7 @@ func (a *Agent) preflightTurnRequest(call preflightCall, gen uint64) (preflightR
 	}
 	// Priced on the requesting model's backend, not a's: this check also
 	// screens subagents' requests, and one on another provider bills there.
-	price := usage.PriceOn(backend, modelName)
+	price := a.priceOn(backend, modelName)
 	if price.Unpriced {
 		a.warnUnpricedOnce(modelName, backend)
 		return nil, nil

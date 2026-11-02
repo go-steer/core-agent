@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,6 +32,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/skills"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // RunConfig configures a single-call agent execution via compose.Run,
@@ -63,20 +65,6 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 		}
 		effectiveCfg := mergeComposeConfig(diskCfg, cfg.Config)
 
-		if len(effectiveCfg.Subagents) > 0 {
-			subagents, err := expandComposeSubagents(effectiveCfg.Subagents, projectRoot)
-			if err != nil {
-				return nil, err
-			}
-			if cfg.Config == nil {
-				cfg.Config = &config.Config{Subagents: subagents}
-			} else {
-				cp := *cfg.Config
-				cp.Subagents = subagents
-				cfg.Config = &cp
-			}
-		}
-
 		gate := cfg.Gate
 		if gate == nil {
 			gate, err = permissions.FromConfig(effectiveCfg, projectRoot, "", cfg.Prompter)
@@ -95,7 +83,7 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 		}
 
 		contentRoots := resolveComposeContentRoots(agentsDir, effectiveCfg.ContentRoots)
-		shellRegistered := cfg.EnableBuiltinTools && !slices.Contains(effectiveCfg.Tools.Disable, "bash")
+		shellRegistered := resolveComposeShellRegistered(cfg, effectiveCfg)
 		loadedSkills, err := skills.LoadAll(
 			ctx,
 			agentsDir,
@@ -106,6 +94,29 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 		)
 		if err != nil {
 			return nil, fmt.Errorf("compose: skills: %w", err)
+		}
+
+		if len(effectiveCfg.Subagents) > 0 {
+			parentMCP := buildComposeNamedMCP(servers, cfg.Toolsets, gate)
+			subagents, subToolsets, rootedServers, subErr := prepareComposeSubagents(
+				ctx, effectiveCfg.Subagents, projectRoot, agentsDir,
+				gate, shellRegistered, parentMCP, loadedSkills,
+			)
+			defer mcp.CloseAll(rootedServers)
+			if subErr != nil {
+				return nil, subErr
+			}
+			if cfg.Config == nil {
+				cfg.Config = &config.Config{Subagents: subagents}
+			} else {
+				cp := *cfg.Config
+				cp.Subagents = subagents
+				cfg.Config = &cp
+			}
+			mergedSubToolsets := make(map[string][]adktool.Toolset, len(subToolsets)+len(cfg.SubagentToolsets))
+			maps.Copy(mergedSubToolsets, subToolsets)
+			maps.Copy(mergedSubToolsets, cfg.SubagentToolsets)
+			cfg.SubagentToolsets = mergedSubToolsets
 		}
 
 		if len(mcpToolsets) > 0 || !loadedSkills.Empty() {
@@ -130,6 +141,14 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 			if !loaded.Empty() {
 				cfg.Instruction = loaded.Instruction
 			}
+		}
+	} else if cfg.Config != nil && len(cfg.Config.Subagents) > 0 {
+		var rootedServers []*mcp.Server
+		var err error
+		cfg, rootedServers, err = prepareComposeDirlessSubagents(ctx, cfg)
+		defer mcp.CloseAll(rootedServers)
+		if err != nil {
+			return nil, err
 		}
 	}
 	return agent.RunOneShot(ctx, cfg, prompt)
@@ -230,25 +249,351 @@ func mergeComposeConfig(base, override *config.Config) *config.Config {
 	return &cp
 }
 
-func expandComposeSubagents(specs []config.SubagentSpec, projectRoot string) ([]config.SubagentSpec, error) {
-	out := slices.Clone(specs)
-	for i := range out {
-		if out[i].Instructions == "" {
+type composeNamedToolset struct {
+	name    string
+	toolset adktool.Toolset
+}
+
+func resolveComposeShellRegistered(cfg RunConfig, effectiveCfg *config.Config) bool {
+	if slices.Contains(effectiveCfg.Tools.Disable, "bash") {
+		return false
+	}
+	if cfg.EnableBuiltinTools {
+		return true
+	}
+	for _, sub := range effectiveCfg.Subagents {
+		if slices.Contains(sub.Tools, "bash") {
+			return true
+		}
+	}
+	return false
+}
+
+func buildComposeNamedMCP(servers []*mcp.Server, extraToolsets []adktool.Toolset, gate *permissions.Gate) []composeNamedToolset {
+	out := make([]composeNamedToolset, 0, len(servers)+len(extraToolsets))
+	seen := make(map[string]bool, len(servers)+len(extraToolsets))
+	for _, s := range servers {
+		if s == nil {
 			continue
 		}
-		expanded, _, err := instruction.Expand(out[i].Instructions, projectRoot, projectRoot)
-		if err != nil && out[i].BaseDir() != "" && out[i].BaseDir() != projectRoot {
-			if alt, _, altErr := instruction.Expand(out[i].Instructions, out[i].BaseDir(), projectRoot); altErr == nil {
-				expanded = alt
-				err = nil
+		out = append(out, composeNamedToolset{name: s.Name, toolset: s.Toolset()})
+		seen[s.Name] = true
+	}
+	for _, ts := range extraToolsets {
+		if ts == nil || ts.Name() == "skill_toolset" || seen[ts.Name()] {
+			continue
+		}
+		out = append(out, composeNamedToolset{
+			name:    ts.Name(),
+			toolset: tools.GateToolset(ts, gate, ts.Name()),
+		})
+		seen[ts.Name()] = true
+	}
+	return out
+}
+
+func prepareComposeDirlessSubagents(ctx context.Context, cfg RunConfig) (RunConfig, []*mcp.Server, error) {
+	projectRoot, _ := os.Getwd()
+	gate := cfg.Gate
+	shellRegistered := resolveComposeShellRegistered(cfg, cfg.Config)
+	specs := slices.Clone(cfg.Config.Subagents)
+	var rootedServers []*mcp.Server
+	var subToolsets map[string][]adktool.Toolset
+
+	for i := range specs {
+		spec := &specs[i]
+		if spec.Root != "" {
+			if gate == nil {
+				var err error
+				gate, err = permissions.FromConfig(cfg.Config, projectRoot, "", cfg.Prompter)
+				if err != nil {
+					return cfg, rootedServers, err
+				}
+				cfg.Gate = gate
+			}
+			rootAbs, rootMCP, rootSkills, servers, err := loadComposeSubagentRoot(ctx, *spec, projectRoot, gate, shellRegistered)
+			rootedServers = append(rootedServers, servers...)
+			if err != nil {
+				return cfg, rootedServers, fmt.Errorf("compose: subagent %q: %w", spec.Name, err)
+			}
+			sets, err := resolveComposeSubagentToolsets(ctx, *spec, rootMCP, rootSkills)
+			if err != nil {
+				return cfg, rootedServers, fmt.Errorf("compose: subagent %q: %w", spec.Name, err)
+			}
+			if subToolsets == nil {
+				subToolsets = make(map[string][]adktool.Toolset)
+			}
+			subToolsets[spec.Name] = sets
+			inst, err := resolveComposeRootedInstruction(*spec, rootAbs)
+			if err != nil {
+				return cfg, rootedServers, fmt.Errorf("compose: subagent %q instructions: %w", spec.Name, err)
+			}
+			spec.Instructions = inst
+			continue
+		}
+		if spec.Instructions != "" {
+			expanded, err := expandComposeInstruction(spec.Instructions, spec.BaseDir(), projectRoot)
+			if err != nil {
+				return cfg, rootedServers, fmt.Errorf("compose: subagent %q instructions: %w", spec.Name, err)
+			}
+			spec.Instructions = expanded
+		}
+	}
+
+	cp := *cfg.Config
+	cp.Subagents = specs
+	cfg.Config = &cp
+	if len(subToolsets) > 0 {
+		merged := make(map[string][]adktool.Toolset, len(subToolsets)+len(cfg.SubagentToolsets))
+		maps.Copy(merged, subToolsets)
+		maps.Copy(merged, cfg.SubagentToolsets)
+		cfg.SubagentToolsets = merged
+	}
+	return cfg, rootedServers, nil
+}
+
+func prepareComposeSubagents(
+	ctx context.Context,
+	specs []config.SubagentSpec,
+	projectRoot, agentsDir string,
+	gate *permissions.Gate,
+	shellRegistered bool,
+	parentMCP []composeNamedToolset,
+	parentSkills skills.Skills,
+) ([]config.SubagentSpec, map[string][]adktool.Toolset, []*mcp.Server, error) {
+	out := slices.Clone(specs)
+	toolsetsBySub := make(map[string][]adktool.Toolset, len(out))
+	var rootedServers []*mcp.Server
+
+	rootBase := agentsDir
+	if rootBase == "" {
+		rootBase = projectRoot
+	}
+
+	for i := range out {
+		spec := &out[i]
+		if spec.Root != "" {
+			rootAbs, rootMCP, rootSkills, servers, err := loadComposeSubagentRoot(ctx, *spec, rootBase, gate, shellRegistered)
+			rootedServers = append(rootedServers, servers...)
+			if err != nil {
+				return nil, nil, rootedServers, fmt.Errorf("compose: subagent %q: %w", spec.Name, err)
+			}
+			sets, err := resolveComposeSubagentToolsets(ctx, *spec, rootMCP, rootSkills)
+			if err != nil {
+				return nil, nil, rootedServers, fmt.Errorf("compose: subagent %q: %w", spec.Name, err)
+			}
+			toolsetsBySub[spec.Name] = sets
+
+			inst, err := resolveComposeRootedInstruction(*spec, rootAbs)
+			if err != nil {
+				return nil, nil, rootedServers, fmt.Errorf("compose: subagent %q instructions: %w", spec.Name, err)
+			}
+			spec.Instructions = inst
+			continue
+		}
+
+		sets, err := resolveComposeSubagentToolsets(ctx, *spec, parentMCP, parentSkills)
+		if err != nil {
+			return nil, nil, rootedServers, fmt.Errorf("compose: subagent %q: %w", spec.Name, err)
+		}
+		toolsetsBySub[spec.Name] = sets
+
+		if spec.Instructions != "" {
+			expanded, err := expandComposeInstruction(spec.Instructions, spec.BaseDir(), projectRoot)
+			if err != nil {
+				return nil, nil, rootedServers, fmt.Errorf("compose: subagent %q instructions: %w", spec.Name, err)
+			}
+			spec.Instructions = expanded
+		}
+	}
+	return out, toolsetsBySub, rootedServers, nil
+}
+
+func loadComposeSubagentRoot(
+	ctx context.Context,
+	spec config.SubagentSpec,
+	rootBase string,
+	gate *permissions.Gate,
+	shellRegistered bool,
+) (string, []composeNamedToolset, skills.Skills, []*mcp.Server, error) {
+	rootAbs := spec.Root
+	if !filepath.IsAbs(rootAbs) && rootBase != "" {
+		rootAbs = filepath.Join(rootBase, rootAbs)
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	info, err := os.Stat(rootAbs)
+	if err != nil {
+		return "", nil, skills.Skills{}, nil, fmt.Errorf("root: %w", err)
+	}
+	if !info.IsDir() {
+		return "", nil, skills.Skills{}, nil, fmt.Errorf("root %q is not a directory", rootAbs)
+	}
+
+	servers, _, mcpErr := mcp.Build(ctx, rootAbs, "", nil, gate, nil, nil)
+	if mcpErr != nil {
+		return "", nil, skills.Skills{}, servers, fmt.Errorf("mcp: %w", mcpErr)
+	}
+	named := buildComposeNamedMCP(servers, nil, gate)
+
+	rootSkills, err := skills.LoadAll(ctx, rootAbs, "", gate, skills.WithShellTool(shellRegistered))
+	if err != nil {
+		return "", nil, skills.Skills{}, servers, fmt.Errorf("skills: %w", err)
+	}
+	return rootAbs, named, rootSkills, servers, nil
+}
+
+func resolveComposeRootedInstruction(spec config.SubagentSpec, rootAbs string) (string, error) {
+	if spec.Instructions != "" {
+		expanded, _, err := instruction.Expand(spec.Instructions, rootAbs, rootAbs)
+		return expanded, err
+	}
+	loaded, err := instruction.Load("", "", instruction.WithContentRoots([]string{rootAbs}))
+	if err != nil {
+		return "", err
+	}
+	return loaded.Instruction, nil
+}
+
+func expandComposeInstruction(raw, baseDir, projectRoot string) (string, error) {
+	expanded, _, err := instruction.Expand(raw, projectRoot, projectRoot)
+	if err != nil && baseDir != "" && baseDir != projectRoot {
+		if alt, _, altErr := instruction.Expand(raw, baseDir, projectRoot); altErr == nil {
+			return alt, nil
+		}
+	}
+	return expanded, err
+}
+
+func resolveComposeSubagentToolsets(
+	ctx context.Context,
+	spec config.SubagentSpec,
+	mcpSurface []composeNamedToolset,
+	skillSurface skills.Skills,
+) ([]adktool.Toolset, error) {
+	if spec.EffectiveMode() == config.SubagentModeSingleTurn {
+		return nil, nil
+	}
+
+	byName := make(map[string]composeNamedToolset, len(mcpSurface))
+	for _, s := range mcpSurface {
+		byName[s.name] = s
+	}
+
+	var mcpToolsByServer map[string][]string
+	if len(spec.MCPTools) > 0 {
+		mcpToolsByServer = make(map[string][]string, len(spec.MCPTools)*2)
+		for _, mt := range spec.MCPTools {
+			s, ok := lookupComposeMCP(byName, mcpSurface, mt.Server)
+			if !ok {
+				return nil, fmt.Errorf("mcp_tools: unknown server %q (not in mcp.json)", mt.Server)
+			}
+			mcpToolsByServer[mt.Server] = mt.Tools
+			mcpToolsByServer[s.name] = mt.Tools
+		}
+	}
+
+	var sets []adktool.Toolset
+	take := func(s composeNamedToolset, requestedName string) {
+		if s.toolset == nil {
+			return
+		}
+		allowed, hasFilter := mcpToolsByServer[s.name]
+		if !hasFilter && requestedName != "" {
+			allowed, hasFilter = mcpToolsByServer[requestedName]
+		}
+		if hasFilter {
+			if len(allowed) == 0 {
+				return
+			}
+			filterServer := canonicalComposeMCPServerName(s.name)
+			if requestedName != "" {
+				filterServer = canonicalComposeMCPServerName(requestedName)
+			}
+			sets = append(sets, mcp.FilterToolset(s.toolset, filterServer, allowed))
+			return
+		}
+		sets = append(sets, s.toolset)
+	}
+
+	switch {
+	case spec.MCP == nil && len(spec.MCPTools) > 0:
+		for _, mt := range spec.MCPTools {
+			if s, ok := lookupComposeMCP(byName, mcpSurface, mt.Server); ok {
+				take(s, mt.Server)
 			}
 		}
-		if err != nil {
-			return nil, fmt.Errorf("compose: subagent %q instructions: %w", out[i].Name, err)
+	case spec.MCP == nil:
+		for _, s := range mcpSurface {
+			take(s, s.name)
 		}
-		out[i].Instructions = expanded
+	default:
+		for _, name := range spec.MCP {
+			s, ok := lookupComposeMCP(byName, mcpSurface, name)
+			if !ok {
+				return nil, fmt.Errorf("mcp: unknown server %q (not in mcp.json)", name)
+			}
+			take(s, name)
+		}
 	}
-	return out, nil
+
+	switch spec.Skills {
+	case nil:
+		if !skillSurface.Empty() {
+			sets = append(sets, skillSurface.Toolset)
+		}
+	default:
+		scoped, err := skillSurface.Scoped(ctx, spec.Skills)
+		if err != nil {
+			return nil, err
+		}
+		if !scoped.Empty() {
+			sets = append(sets, scoped.Toolset)
+		}
+	}
+	return sets, nil
+}
+
+func lookupComposeMCP(byName map[string]composeNamedToolset, list []composeNamedToolset, serverName string) (composeNamedToolset, bool) {
+	if s, ok := byName[serverName]; ok {
+		return s, true
+	}
+	sanitized := sanitizeComposeMCPPrefix(serverName)
+	if s, ok := byName[sanitized]; ok {
+		return s, true
+	}
+	for _, s := range list {
+		if base, ok := strings.CutSuffix(s.name, "_mcp_tool_set"); ok && (base == serverName || base == sanitized) {
+			return s, true
+		}
+		if base, ok := strings.CutSuffix(s.name, "_toolset"); ok && (base == serverName || base == sanitized) {
+			return s, true
+		}
+	}
+	return composeNamedToolset{}, false
+}
+
+func canonicalComposeMCPServerName(name string) string {
+	if base, ok := strings.CutSuffix(name, "_mcp_tool_set"); ok {
+		return base
+	}
+	if base, ok := strings.CutSuffix(name, "_toolset"); ok {
+		return base
+	}
+	return name
+}
+
+func sanitizeComposeMCPPrefix(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 func resolveComposeContentRoots(agentsDir string, roots []string) []string {

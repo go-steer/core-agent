@@ -51,7 +51,7 @@ func GateToolset(ts adktool.Toolset, gate *permissions.Gate, namespace string) a
 	if ts == nil || gate == nil {
 		return ts
 	}
-	if _, already := ts.(*gatedToolset); already {
+	if isAlreadyGatedToolset(ts) {
 		return ts
 	}
 	if namespace == "" {
@@ -67,6 +67,20 @@ func GateToolset(ts adktool.Toolset, gate *permissions.Gate, namespace string) a
 	// Exempt namespaces — "skill" — are dropped by the gate.
 	gate.RegisterPlanGatedTools(namespace)
 	return &gatedToolset{inner: ts, gate: gate, namespace: namespace}
+}
+
+func isAlreadyGatedToolset(ts adktool.Toolset) bool {
+	for cur := ts; cur != nil; {
+		if _, ok := cur.(*gatedToolset); ok {
+			return true
+		}
+		u, ok := cur.(interface{ UnwrapToolset() adktool.Toolset })
+		if !ok {
+			return false
+		}
+		cur = u.UnwrapToolset()
+	}
+	return false
 }
 
 // GateTool wraps a single tool so every invocation goes through gate
@@ -120,6 +134,10 @@ func (g *gatedToolset) Tools(ctx agent.ReadonlyContext) ([]adktool.Tool, error) 
 	}
 	out := make([]adktool.Tool, 0, len(upstream))
 	for _, t := range upstream {
+		if _, already := t.(*gatedTool); already {
+			out = append(out, t)
+			continue
+		}
 		out = append(out, &gatedTool{inner: t, gate: g.gate, namespace: g.namespace})
 	}
 	return out, nil

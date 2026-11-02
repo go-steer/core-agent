@@ -1567,6 +1567,44 @@ Configures deterministic pre-turn collection, transition gating, outbound notifi
 
 ---
 
+## `a2a` (v3.1+, #1407)
+
+Configures inbound A2A v0.3 JSON-RPC 2.0 server exposure (`POST /a2a`) on the attach listener and enriches [`/.well-known/agent-card.json`](/reference/agent-card/#a2a-v03-json-rpc-20-transport-a2aexpose-v31).
+
+```json
+{
+  "a2a": {
+    "expose": true,
+    "skill_name": "gke-triage",
+    "skill_description": "Diagnose GKE workload failures and propose remediations.",
+    "input_schema": {
+      "type": "object",
+      "required": ["cluster", "namespace"],
+      "properties": {
+        "cluster":   { "type": "string" },
+        "namespace": { "type": "string" }
+      }
+    },
+    "auth": {
+      "required": true,
+      "scopes": ["sre:triage"]
+    }
+  }
+}
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `expose` | bool | `false` | Mount `POST /a2a` (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`) on the attach listener and advertise `"preferredTransport": "JSONRPC"` + `<external-url>/a2a` in `/.well-known/agent-card.json`. When `false`, `POST /a2a` is not mounted and the Agent Card output is unchanged. |
+| `skill_name` | string | `""` | Skill identifier and display name advertised on the Agent Card and accepted by `POST /a2a` (`metadata.skill` / `metadata.skillId`). Defaults to the card/app name when empty; whitespace-only values are rejected. |
+| `skill_description` | string | `""` | Human-readable description for the exposed A2A skill. Falls back to `agent.description` when empty. |
+| `input_schema` | object | absent | Optional JSON Schema object validated at config load time and enforced against inbound `message/send` and `message/stream` payloads (`DataPart` or JSON-encoded `TextPart`). Rendered into the Agent Card skill's `description` so the card stays valid against the A2A v0.3.0 schema. |
+| `output_schema` | object | absent | Optional JSON Schema object validated at config load time and rendered into the Agent Card skill's `description`. |
+| `auth.required` | bool | `false` | Require an authenticated caller (bearer token, mTLS, or multi-session identity) on `POST /a2a` even when the listener allows anonymous requests. Unauthenticated calls return HTTP `401` with `WWW-Authenticate: Bearer realm="a2a"`. |
+| `auth.scopes` | string[] | `[]` | Required caller scopes for the skill, checked against `Caller.Labels["scopes"]` / `Caller.Labels["scope"]` (comma- or whitespace-delimited; `Caller.Admin` bypasses scope checks). Missing scopes return HTTP `403`. |
+
+---
+
 ## Discovery and merge
 
 `core-agent` finds your config like this:
@@ -1659,6 +1697,7 @@ Key mappings:
 - `builtin_tools` → `model.builtin_tools` (all three server-side built-ins default to `false` when importing a workload bundle unless explicitly enabled).
 - `mode: single_session` / `multi_session` → `attach.multi_session.enabled`.
 - `edge_trigger.scheduled` / `schedule` → `schedule` (`interval` / `every`, `jitter`, `prompt`).
+- `a2a` (`expose`, `skill_name`, `skill_description`, `input_schema`, `output_schema`, `auth`) → `a2a` in `.agents/config.json` (defaulting `skill_name` and `skill_description` from the workload's `name` and `description` when `expose: true`).
 - `specialists/*.specialist.md` → `.agents/subagents/<name>.md` (`mode`, `tier`, `capability`, `output_schema`, `budgets`, `tools`, `mcp_tools`, `skills`), enforcing the capability-split invariant (`capability: change_executor` vs read-only diagnosers) at import time.
 
 ---

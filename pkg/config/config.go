@@ -20,6 +20,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/go-steer/core-models/profile"
+	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/go-steer/core-agent/v3/pkg/hooks"
 	"github.com/go-steer/core-agent/v3/pkg/modeltier"
@@ -67,6 +69,7 @@ type Config struct {
 	Safety      SafetyConfig      `json:"safety,omitempty"`
 	Schedule    *ScheduleConfig   `json:"schedule,omitempty" yaml:"schedule,omitempty"`
 	Monitor     *MonitorConfig    `json:"monitor,omitempty" yaml:"monitor,omitempty"`
+	A2A         A2AConfig         `json:"a2a,omitempty" yaml:"a2a,omitempty"`
 
 	// Providers declares provider profiles: ways to reach models beyond
 	// the built-in gemini / vertex / anthropic / anthropic-vertex paths
@@ -2316,6 +2319,9 @@ func (c *Config) Validate() error {
 	if err := c.validateCallPeer(); err != nil {
 		return err
 	}
+	if err := c.validateA2A(); err != nil {
+		return err
+	}
 	if err := c.Hooks.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -2788,4 +2794,122 @@ func (s *ScheduleConfig) Validate() error {
 	}
 	_, err := s.EffectiveJitter()
 	return err
+}
+
+// A2AConfig configures inbound A2A v0.3 JSON-RPC server exposure on the
+// attach mux (POST /a2a and /.well-known/agent-card.json). Absent or
+// Expose=false (the default) leaves the A2A endpoint unmounted and keeps
+// the Agent Card in its passive attach-discovery shape (#1407).
+type A2AConfig struct {
+	// Expose mounts POST /a2a on the attach listener and populates the
+	// A2A v0.3 transport and skill metadata on /.well-known/agent-card.json.
+	Expose bool `json:"expose,omitempty" yaml:"expose,omitempty"`
+
+	// SkillName is the A2A skill id and name advertised on the Agent Card
+	// and matched by inbound message/send and message/stream requests.
+	// Defaults to agent.display_name (or the binary default) at serve time.
+	SkillName string `json:"skill_name,omitempty" yaml:"skill_name,omitempty"`
+
+	// SkillDescription is the human-readable summary advertised for the
+	// A2A skill on the Agent Card. Defaults to agent.description.
+	SkillDescription string `json:"skill_description,omitempty" yaml:"skill_description,omitempty"`
+
+	// InputSchema and OutputSchema are optional JSON Schema objects.
+	// Inbound task payloads (DataPart or JSON-encoded TextPart) are
+	// validated against InputSchema before starting a turn, and both
+	// schemas are rendered into the Agent Card's human-readable skill
+	// description so strict A2A v0.3 card validators (which forbid extra
+	// properties on AgentSkill) still accept the card.
+	InputSchema  map[string]any `json:"input_schema,omitempty" yaml:"input_schema,omitempty"`
+	OutputSchema map[string]any `json:"output_schema,omitempty" yaml:"output_schema,omitempty"`
+
+	// Auth configures per-skill authentication and scope requirements on
+	// POST /a2a.
+	Auth A2AAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// A2AAuthConfig configures authentication and required token scopes for
+// the inbound A2A endpoint (#1407).
+type A2AAuthConfig struct {
+	// Required refuses unauthenticated (anonymous) callers on POST /a2a
+	// with HTTP 401 and WWW-Authenticate: Bearer realm="a2a".
+	Required bool `json:"required,omitempty" yaml:"required,omitempty"`
+
+	// Scopes lists the token scopes a caller must carry (in
+	// Caller.Labels["scopes"] or Caller.Labels["scope"]) to invoke the
+	// skill; missing scope returns HTTP 403. Admin callers bypass scope
+	// checks.
+	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+}
+
+var validJSONSchemaTypes = map[string]bool{
+	"object":  true,
+	"array":   true,
+	"string":  true,
+	"number":  true,
+	"integer": true,
+	"boolean": true,
+	"null":    true,
+}
+
+func validateJSONSchemaNode(s *jsonschema.Schema, path string) error {
+	if s == nil {
+		return nil
+	}
+	if s.Type != "" && !validJSONSchemaTypes[s.Type] {
+		return fmt.Errorf("%s: unknown type %q", path, s.Type)
+	}
+	for _, t := range s.Types {
+		if !validJSONSchemaTypes[t] {
+			return fmt.Errorf("%s: unknown type %q", path, t)
+		}
+	}
+	if err := validateJSONSchemaNode(s.Items, path+".items"); err != nil {
+		return err
+	}
+	for k, prop := range s.Properties {
+		if err := validateJSONSchemaNode(prop, path+".properties."+k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CompileJSONSchemaMap compiles a JSON Schema map into a resolved validator
+// using github.com/google/jsonschema-go/jsonschema. Returns (nil, nil) when
+// m is empty.
+func CompileJSONSchemaMap(m map[string]any) (*jsonschema.Resolved, error) {
+	if len(m) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	var s jsonschema.Schema
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	if err := validateJSONSchemaNode(&s, "$"); err != nil {
+		return nil, err
+	}
+	return s.Resolve(nil)
+}
+
+func (c *Config) validateA2A() error {
+	if c.A2A.SkillName != "" && strings.TrimSpace(c.A2A.SkillName) == "" {
+		return fmt.Errorf("config: a2a.skill_name is whitespace-only")
+	}
+	for i, sc := range c.A2A.Auth.Scopes {
+		if strings.TrimSpace(sc) == "" {
+			return fmt.Errorf("config: a2a.auth.scopes[%d] is empty", i)
+		}
+	}
+	if _, err := CompileJSONSchemaMap(c.A2A.InputSchema); err != nil {
+		return fmt.Errorf("config: a2a.input_schema: %w", err)
+	}
+	if _, err := CompileJSONSchemaMap(c.A2A.OutputSchema); err != nil {
+		return fmt.Errorf("config: a2a.output_schema: %w", err)
+	}
+	return nil
 }

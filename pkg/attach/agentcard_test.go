@@ -497,3 +497,88 @@ func TestAgentCardSchemaValidation(t *testing.T) {
 		t.Fatalf("schema validation failed for auth-less card:\n  %v\nemitted card:\n%s", err, bareBytes)
 	}
 }
+
+func TestBuildAgentCard_A2AExposedAndSchemaValidation(t *testing.T) {
+	t.Parallel()
+	schemaBytes, err := os.ReadFile("testdata/agentcard.schema.json")
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var raw jsonschema.Schema
+	if err := json.Unmarshal(schemaBytes, &raw); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	wrapper := &jsonschema.Schema{
+		Ref:         "#/definitions/AgentCard",
+		Definitions: raw.Definitions,
+	}
+	resolved, err := wrapper.Resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	reg := NewSessionRegistry()
+	srv, err := NewServer(Options{
+		Registry: reg,
+		AgentCard: AgentCardConfig{
+			Name:        "gke-triage",
+			Description: "GKE incident triage agent.",
+			ExternalURL: "https://agent.example.com:7777/",
+		},
+		A2A: A2AOptions{
+			Expose:           true,
+			SkillName:        "gke-triage",
+			SkillDescription: "Diagnose GKE incidents.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"cluster": map[string]any{"type": "string"},
+				},
+				"required": []any{"cluster"},
+			},
+			OutputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"severity": map[string]any{"type": "string"},
+				},
+			},
+			Auth: A2AAuthOptions{
+				Required: true,
+				Scopes:   []string{"triage:invoke"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/agent-card.json", nil)
+	w := httptest.NewRecorder()
+	srv.public[agentCardPath].ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET card status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var cardInst map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &cardInst); err != nil {
+		t.Fatalf("unmarshal card: %v", err)
+	}
+	if err := resolved.Validate(cardInst); err != nil {
+		t.Fatalf("A2A-exposed card failed schema validation:\n%v\ncard:\n%s", err, w.Body.String())
+	}
+	if got := cardInst["preferredTransport"]; got != "JSONRPC" {
+		t.Errorf("preferredTransport = %v, want JSONRPC", got)
+	}
+	if got := cardInst["url"]; got != "https://agent.example.com:7777/a2a" {
+		t.Errorf("url = %v, want https://agent.example.com:7777/a2a", got)
+	}
+	skills, _ := cardInst["skills"].([]any)
+	if len(skills) != 1 {
+		t.Fatalf("len(skills) = %d, want 1", len(skills))
+	}
+	skill0, _ := skills[0].(map[string]any)
+	desc, _ := skill0["description"].(string)
+	if !strings.Contains(desc, "Input schema (JSON Schema):") || !strings.Contains(desc, "Output schema (JSON Schema):") {
+		t.Errorf("skill description missing rendered schemas:\n%s", desc)
+	}
+}

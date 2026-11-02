@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/go-steer/core-agent/v3/internal/version"
 )
@@ -80,6 +81,18 @@ type AgentCardConfig struct {
 	// ExtraSkills are curated skills merged with the registrant's
 	// AttachSkills() output. Curated entries win on ID collision.
 	ExtraSkills []AgentCardSkill
+
+	// A2AExposed, when true, switches the card from passive discovery
+	// metadata to an active A2A v0.3 JSON-RPC descriptor: preferredTransport
+	// is set to "JSONRPC" and "/a2a" is appended to the card's url field
+	// (#1407). False (the default) leaves the card byte-for-byte identical
+	// to its passive discovery shape.
+	A2AExposed bool
+
+	// A2ABearerAuth, when true, advertises HTTP Bearer in securitySchemes
+	// even when AuthConfig.BearerToken is empty (e.g. when A2A per-skill
+	// auth or multi-session bearer auth gates POST /a2a).
+	A2ABearerAuth bool
 }
 
 // AgentCardProvider mirrors the A2A AgentProvider definition.
@@ -90,11 +103,38 @@ type AgentCardProvider struct {
 
 // AgentCardSkill mirrors the A2A AgentSkill definition.
 type AgentCardSkill struct {
-	ID          string
-	Name        string
-	Description string
-	Tags        []string // defaults to ["curated"] if empty for curated entries
-	Examples    []string
+	ID           string
+	Name         string
+	Description  string
+	Tags         []string // defaults to ["curated"] if empty for curated entries
+	Examples     []string
+	InputSchema  map[string]any
+	OutputSchema map[string]any
+}
+
+// RenderA2ASkillDescription appends human-readable InputSchema and
+// OutputSchema JSON blocks to baseDesc without adding non-spec fields to
+// the wire AgentSkill object, keeping the emitted card valid against
+// testdata/agentcard.schema.json (#1407).
+func RenderA2ASkillDescription(baseDesc string, inputSchema, outputSchema map[string]any) string {
+	out := baseDesc
+	if len(inputSchema) > 0 {
+		if raw, err := json.MarshalIndent(inputSchema, "", "  "); err == nil {
+			if out != "" {
+				out += "\n\n"
+			}
+			out += "Input schema (JSON Schema):\n" + string(raw)
+		}
+	}
+	if len(outputSchema) > 0 {
+		if raw, err := json.MarshalIndent(outputSchema, "", "  "); err == nil {
+			if out != "" {
+				out += "\n\n"
+			}
+			out += "Output schema (JSON Schema):\n" + string(raw)
+		}
+	}
+	return out
 }
 
 // Enabled reports whether the endpoint should be registered.
@@ -139,6 +179,7 @@ type agentCardWire struct {
 	Name               string                `json:"name"`
 	Description        string                `json:"description"`
 	URL                string                `json:"url"`
+	PreferredTransport string                `json:"preferredTransport,omitempty"`
 	Version            string                `json:"version"`
 	Provider           *providerWire         `json:"provider,omitempty"`
 	DocumentationURL   string                `json:"documentationUrl,omitempty"`
@@ -190,11 +231,29 @@ type skillWire struct {
 // url is the value emitted as the card's `url` field — already
 // resolved by the handler (override or request-derived).
 func buildAgentCard(cfg AgentCardConfig, reg *SessionRegistry, auth AuthConfig, url string) agentCardWire {
+	cardURL := url
+	var preferredTransport string
+	if cfg.A2AExposed {
+		preferredTransport = "JSONRPC"
+		if cardURL != "" {
+			trimmed := strings.TrimRight(cardURL, "/")
+			if !strings.HasSuffix(trimmed, "/a2a") {
+				cardURL = trimmed + "/a2a"
+			} else {
+				cardURL = trimmed
+			}
+		}
+	}
+	effAuth := auth
+	if cfg.A2ABearerAuth && effAuth.BearerToken == "" {
+		effAuth.BearerToken = "a2a-bearer"
+	}
 	card := agentCardWire{
 		ProtocolVersion:    agentCardProtocolVersion,
 		Name:               resolveName(cfg.Name, reg),
 		Description:        resolveDescription(cfg.Description, reg),
-		URL:                url,
+		URL:                cardURL,
+		PreferredTransport: preferredTransport,
 		Version:            resolveVersion(cfg.Version),
 		DocumentationURL:   cfg.DocumentationURL,
 		Capabilities:       capabilitiesWire{Streaming: true},
@@ -208,7 +267,7 @@ func buildAgentCard(cfg AgentCardConfig, reg *SessionRegistry, auth AuthConfig, 
 			URL:          cfg.Provider.URL,
 		}
 	}
-	if schemes, sec := deriveSecurity(auth); schemes != nil {
+	if schemes, sec := deriveSecurity(effAuth); schemes != nil {
 		card.SecuritySchemes = schemes
 		card.Security = sec
 	}
@@ -362,10 +421,11 @@ func mergeSkills(curated, derived []AgentCardSkill) []skillWire {
 	out := make([]skillWire, 0, len(ids))
 	for _, id := range ids {
 		s := combined[id]
+		desc := RenderA2ASkillDescription(s.Description, s.InputSchema, s.OutputSchema)
 		out = append(out, skillWire{
 			ID:          s.ID,
 			Name:        s.Name,
-			Description: s.Description,
+			Description: desc,
 			Tags:        append([]string(nil), s.Tags...),
 			Examples:    append([]string(nil), s.Examples...),
 		})

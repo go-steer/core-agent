@@ -153,13 +153,13 @@ func (f *fakeA2AServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			result, rpcErr = f.onGet(p.ID, n)
 		}
 	case methodTasksCancel:
-		f.cancelHits.Add(1)
 		raw, _ := json.Marshal(req.Params)
 		var p taskIDParams
 		_ = json.Unmarshal(raw, &p)
 		f.mu.Lock()
 		f.lastCanceled = p.ID
 		f.mu.Unlock()
+		f.cancelHits.Add(1)
 		result = A2ATask{Kind: "task", ID: p.ID, Status: A2ATaskStatus{State: A2ATaskStateCanceled}}
 	default:
 		rpcErr = &A2ARPCError{Code: -32601, Message: "method not found"}
@@ -182,6 +182,30 @@ func (f *fakeA2AServer) recordMessage(m A2AMessage) {
 		f.lastSkillID = sid
 	}
 	f.lastGoalText = textOfA2AParts(m.Parts)
+}
+
+func (f *fakeA2AServer) lastSkill() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastSkillID
+}
+
+func (f *fakeA2AServer) lastGoal() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastGoalText
+}
+
+func (f *fakeA2AServer) lastCanceledID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastCanceled
+}
+
+func (f *fakeA2AServer) lastVersionHeader() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastVersion
 }
 
 func writeSSEFrame(w http.ResponseWriter, id int64, result any, rpcErr *A2ARPCError) {
@@ -288,11 +312,11 @@ func TestA2ASend_DirectMessageReply(t *testing.T) {
 	if res.State != "completed" || res.Text != "triaged checkout" || res.Output["root_cause"] != "bad deploy" {
 		t.Errorf("Result = %+v", res)
 	}
-	if f.lastVersion != A2AProtocolVersion {
-		t.Errorf("A2A-Version header = %q, want %q", f.lastVersion, A2AProtocolVersion)
+	if got := f.lastVersionHeader(); got != A2AProtocolVersion {
+		t.Errorf("A2A-Version header = %q, want %q", got, A2AProtocolVersion)
 	}
-	if f.lastSkillID != "investigate" {
-		t.Errorf("skillId metadata = %q, want investigate", f.lastSkillID)
+	if got := f.lastSkill(); got != "investigate" {
+		t.Errorf("skillId metadata = %q, want investigate", got)
 	}
 	if f.getHits.Load() != 0 {
 		t.Errorf("tasks/get called %d times on direct message reply", f.getHits.Load())
@@ -356,30 +380,33 @@ func TestA2ASend_TaskPollsToCompletion(t *testing.T) {
 }
 
 func TestA2ASend_ContextCancelSendsTasksCancel(t *testing.T) {
+	pollReached := make(chan struct{})
+	var pollOnce sync.Once
 	f := newFakeA2A(t, func(f *fakeA2AServer) {
 		f.onSend = func(rpcRequest, A2AMessage) (any, *A2ARPCError) {
 			return A2ATask{Kind: "task", ID: "task-cancel-me", Status: A2ATaskStatus{State: A2ATaskStateWorking}}, nil
 		}
 		f.onGet = func(id string, _ int32) (any, *A2ARPCError) {
+			pollOnce.Do(func() { close(pollReached) })
 			return A2ATask{Kind: "task", ID: id, Status: A2ATaskStatus{State: A2ATaskStateWorking}}, nil
 		}
 	})
 
 	c, _ := NewA2AClient(
 		A2AConfig{Name: "triage", AgentCardURL: f.srv.URL},
-		WithA2APollInterval(10*time.Millisecond),
+		WithA2APollInterval(2*time.Millisecond),
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(25 * time.Millisecond)
+		<-pollReached
 		cancel()
 	}()
 	_, err := c.Send(ctx, "investigate", nil, 5*time.Second)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Send err = %v, want context.Canceled", err)
 	}
-	if f.cancelHits.Load() != 1 || f.lastCanceled != "task-cancel-me" {
-		t.Errorf("cancelHits=%d lastCanceled=%q, want 1 / task-cancel-me", f.cancelHits.Load(), f.lastCanceled)
+	if f.cancelHits.Load() != 1 || f.lastCanceledID() != "task-cancel-me" {
+		t.Errorf("cancelHits=%d lastCanceled=%q, want 1 / task-cancel-me", f.cancelHits.Load(), f.lastCanceledID())
 	}
 }
 
@@ -395,14 +422,14 @@ func TestA2ASend_TimeoutSendsTasksCancel(t *testing.T) {
 
 	c, _ := NewA2AClient(
 		A2AConfig{Name: "triage", AgentCardURL: f.srv.URL},
-		WithA2APollInterval(10*time.Millisecond),
+		WithA2APollInterval(5*time.Millisecond),
 	)
-	_, err := c.Send(context.Background(), "investigate", nil, 30*time.Millisecond)
+	_, err := c.Send(context.Background(), "investigate", nil, 100*time.Millisecond)
 	if !errors.Is(err, ErrRemoteTimeout) {
 		t.Fatalf("Send err = %v, want ErrRemoteTimeout", err)
 	}
-	if f.cancelHits.Load() != 1 || f.lastCanceled != "task-slow" {
-		t.Errorf("cancelHits=%d lastCanceled=%q", f.cancelHits.Load(), f.lastCanceled)
+	if f.cancelHits.Load() != 1 || f.lastCanceledID() != "task-slow" {
+		t.Errorf("cancelHits=%d lastCanceled=%q", f.cancelHits.Load(), f.lastCanceledID())
 	}
 }
 
@@ -602,8 +629,8 @@ func TestA2ASpawner_StreamingCardUsesMessageStream(t *testing.T) {
 	if f.streamHits.Load() != 1 || f.sendHits.Load() != 0 {
 		t.Fatalf("streamHits=%d sendHits=%d, want 1 / 0", f.streamHits.Load(), f.sendHits.Load())
 	}
-	if f.lastSkillID != "investigate" || f.lastGoalText != "investigate checkout 5xx spike" {
-		t.Errorf("lastSkillID=%q lastGoalText=%q", f.lastSkillID, f.lastGoalText)
+	if f.lastSkill() != "investigate" || f.lastGoal() != "investigate checkout 5xx spike" {
+		t.Errorf("lastSkill=%q lastGoal=%q", f.lastSkill(), f.lastGoal())
 	}
 	if len(events) != 2 {
 		t.Fatalf("events = %+v, want 2 (1 alert + 1 completed)", events)
@@ -659,8 +686,8 @@ func TestA2ASpawner_StopCancelsRemoteStreamTask(t *testing.T) {
 	if last.Kind != "stopped" {
 		t.Errorf("last event = %+v, want Kind=stopped", last)
 	}
-	if f.cancelHits.Load() != 1 || f.lastCanceled != "stream-stop-1" {
-		t.Errorf("cancelHits=%d lastCanceled=%q, want 1 / stream-stop-1", f.cancelHits.Load(), f.lastCanceled)
+	if f.cancelHits.Load() != 1 || f.lastCanceledID() != "stream-stop-1" {
+		t.Errorf("cancelHits=%d lastCanceled=%q, want 1 / stream-stop-1", f.cancelHits.Load(), f.lastCanceledID())
 	}
 }
 
@@ -676,7 +703,7 @@ func TestA2ASpawner_WallclockBudgetCancelsRemoteTask(t *testing.T) {
 
 	spawner, err := NewA2AClient(
 		A2AConfig{Name: "triage", AgentCardURL: f.srv.URL},
-		WithA2APollInterval(10*time.Millisecond),
+		WithA2APollInterval(5*time.Millisecond),
 	)
 	if err != nil {
 		t.Fatalf("NewA2AClient: %v", err)
@@ -685,7 +712,7 @@ func TestA2ASpawner_WallclockBudgetCancelsRemoteTask(t *testing.T) {
 		ID:      "triage-1",
 		Name:    "triage-1",
 		Goal:    "long task",
-		Budgets: Budgets{MaxWallclock: 35 * time.Millisecond},
+		Budgets: Budgets{MaxWallclock: 100 * time.Millisecond},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -697,8 +724,8 @@ func TestA2ASpawner_WallclockBudgetCancelsRemoteTask(t *testing.T) {
 	if last.Kind != "failed" || !strings.Contains(last.Text, ErrRemoteTimeout.Error()) {
 		t.Errorf("last event = %+v, want failed with timeout", last)
 	}
-	if f.cancelHits.Load() != 1 || f.lastCanceled != "budget-task-1" {
-		t.Errorf("cancelHits=%d lastCanceled=%q, want 1 / budget-task-1", f.cancelHits.Load(), f.lastCanceled)
+	if f.cancelHits.Load() != 1 || f.lastCanceledID() != "budget-task-1" {
+		t.Errorf("cancelHits=%d lastCanceled=%q, want 1 / budget-task-1", f.cancelHits.Load(), f.lastCanceledID())
 	}
 }
 
@@ -1426,6 +1453,199 @@ func TestA2AAbandonment_CancelAndResilience(t *testing.T) {
 		_, err = c.Send(context.Background(), "", map[string]any{"q": "1"}, time.Second)
 		if err == nil || !strings.Contains(err.Error(), "does not match request id") {
 			t.Fatalf("Send with mismatched id: err = %v, want 'does not match request id'", err)
+		}
+	})
+}
+
+func TestHandle_ClaimSyncAfterStatusTransitionBeforeTakeSyncClaim(t *testing.T) {
+	t.Parallel()
+	h := &Handle{
+		status: StatusCompleted,
+		done:   make(chan struct{}),
+	}
+	if !h.claimSync() {
+		t.Fatal("claimSync() = false when status is StatusCompleted but takeSyncClaim() has not yet run; want true so an awaitResult waiter arriving in the terminalAlertText / StopAndReport window suppresses the duplicate alert")
+	}
+	if !h.takeSyncClaim() {
+		t.Fatal("takeSyncClaim() = false after claimSync() succeeded; want true")
+	}
+	close(h.done)
+	if h.claimSync() {
+		t.Fatal("claimSync() = true after done is closed; want false")
+	}
+
+	// Conversely, once takeSyncClaim() has passed with no active claim,
+	// a late claimSync() before close(h.done) must return false because
+	// the alert was not suppressed.
+	h2 := &Handle{
+		status: StatusCompleted,
+		done:   make(chan struct{}),
+	}
+	if h2.takeSyncClaim() {
+		t.Fatal("takeSyncClaim() = true with no active claim; want false")
+	}
+	if h2.claimSync() {
+		t.Fatal("claimSync() = true after takeSyncClaim() already passed; want false")
+	}
+}
+
+func TestA2ACard_MalformedJSONFails(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{not-valid-json`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: srv.URL})
+	if err != nil {
+		t.Fatalf("NewA2AClient: %v", err)
+	}
+	_, err = c.Card(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "parse agent card") {
+		t.Fatalf("Card() with malformed JSON = %v, want 'parse agent card' error", err)
+	}
+}
+
+func TestA2ASpawner_StreamRPCErrorFrameEmitsFailedEvent(t *testing.T) {
+	t.Parallel()
+	f := newFakeA2A(t, func(f *fakeA2AServer) {
+		f.card.Capabilities.Streaming = true
+		f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeSSEFrame(w, req.ID, nil, &A2ARPCError{
+				Code:    -32000,
+				Message: "backend overloaded",
+			})
+		}
+	})
+
+	spawner, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+	if err != nil {
+		t.Fatalf("NewA2AClient: %v", err)
+	}
+	h, err := spawner.Spawn(context.Background(), RemoteAgentSpec{ID: "err-1", Name: "err-1", Goal: "work"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	var last RemoteAgentEvent
+	for ev := range h.Events() {
+		last = ev
+	}
+	if last.Kind != "failed" || !strings.Contains(last.Text, "backend overloaded") {
+		t.Fatalf("last event = %+v, want failed mentioning 'backend overloaded'", last)
+	}
+	if st, _ := h.Status(context.Background()); st != RemoteStatusFailed {
+		t.Fatalf("Status = %v, want RemoteStatusFailed", st)
+	}
+}
+
+func TestA2ASpawner_StopDuringPollingCancelsRemoteTask(t *testing.T) {
+	t.Parallel()
+	pollReached := make(chan struct{})
+	var pollOnce sync.Once
+	f := newFakeA2A(t, func(f *fakeA2AServer) {
+		f.onSend = func(rpcRequest, A2AMessage) (any, *A2ARPCError) {
+			return A2ATask{Kind: "task", ID: "poll-stop-1", Status: A2ATaskStatus{State: A2ATaskStateWorking}}, nil
+		}
+		f.onGet = func(id string, _ int32) (any, *A2ARPCError) {
+			pollOnce.Do(func() { close(pollReached) })
+			return A2ATask{Kind: "task", ID: id, Status: A2ATaskStatus{State: A2ATaskStateWorking}}, nil
+		}
+	})
+
+	spawner, err := NewA2AClient(
+		A2AConfig{Name: "triage", AgentCardURL: f.srv.URL},
+		WithA2APollInterval(2*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("NewA2AClient: %v", err)
+	}
+	h, err := spawner.Spawn(context.Background(), RemoteAgentSpec{ID: "ps-1", Name: "ps-1", Goal: "work"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	<-pollReached
+	if err := h.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	var last RemoteAgentEvent
+	for ev := range h.Events() {
+		last = ev
+	}
+	if last.Kind != "stopped" {
+		t.Fatalf("last event = %+v, want Kind=stopped", last)
+	}
+	deadline := time.Now().Add(time.Second)
+	for f.cancelHits.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if f.cancelHits.Load() < 1 || f.lastCanceledID() != "poll-stop-1" {
+		t.Fatalf("cancelHits=%d lastCanceled=%q, want >=1 / poll-stop-1", f.cancelHits.Load(), f.lastCanceledID())
+	}
+}
+
+func TestA2ASpawner_InputRequiredOnSpawnCancelsAndFails(t *testing.T) {
+	t.Parallel()
+	t.Run("streaming", func(t *testing.T) {
+		f := newFakeA2A(t, func(f *fakeA2AServer) {
+			f.card.Capabilities.Streaming = true
+			f.onStream = func(w http.ResponseWriter, _ *http.Request, req rpcRequest, _ A2AMessage) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				writeSSEFrame(w, req.ID, A2ATaskStatusUpdateEvent{
+					Kind:   "status-update",
+					TaskID: "stream-hitl-1",
+					Final:  true,
+					Status: A2ATaskStatus{
+						State:   A2ATaskStateInputRequired,
+						Message: &A2AMessage{Kind: "message", MessageID: "m", Role: "agent", Parts: []A2APart{{Kind: "text", Text: "approve please"}}},
+					},
+				}, nil)
+			}
+		})
+		spawner, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := spawner.Spawn(context.Background(), RemoteAgentSpec{ID: "hitl-1", Name: "hitl-1", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		var last RemoteAgentEvent
+		for ev := range h.Events() {
+			last = ev
+		}
+		if last.Kind != "failed" || !strings.Contains(last.Text, "input-required") {
+			t.Fatalf("last event = %+v, want failed mentioning input-required", last)
+		}
+		if f.cancelHits.Load() != 1 || f.lastCanceledID() != "stream-hitl-1" {
+			t.Fatalf("cancelHits=%d lastCanceled=%q, want 1 / stream-hitl-1", f.cancelHits.Load(), f.lastCanceledID())
+		}
+	})
+
+	t.Run("polling", func(t *testing.T) {
+		f := newFakeA2A(t, func(f *fakeA2AServer) {
+			f.onSend = func(rpcRequest, A2AMessage) (any, *A2ARPCError) {
+				return A2ATask{Kind: "task", ID: "poll-hitl-1", Status: A2ATaskStatus{State: A2ATaskStateInputRequired}}, nil
+			}
+		})
+		spawner, err := NewA2AClient(A2AConfig{Name: "triage", AgentCardURL: f.srv.URL})
+		if err != nil {
+			t.Fatalf("NewA2AClient: %v", err)
+		}
+		h, err := spawner.Spawn(context.Background(), RemoteAgentSpec{ID: "hitl-2", Name: "hitl-2", Goal: "work"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		var last RemoteAgentEvent
+		for ev := range h.Events() {
+			last = ev
+		}
+		if last.Kind != "failed" || !strings.Contains(last.Text, "input-required") {
+			t.Fatalf("last event = %+v, want failed mentioning input-required", last)
+		}
+		if f.cancelHits.Load() != 1 || f.lastCanceledID() != "poll-hitl-1" {
+			t.Fatalf("cancelHits=%d lastCanceled=%q, want 1 / poll-hitl-1", f.cancelHits.Load(), f.lastCanceledID())
 		}
 	})
 }

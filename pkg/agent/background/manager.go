@@ -223,6 +223,9 @@ const (
 	// syncConsumed: the completion goroutine honored a claim and skipped
 	// the terminal alert. The waiter MUST deliver the result inline.
 	syncConsumed
+	// syncPassed: the completion goroutine passed takeSyncClaim with no
+	// active claim and is delivering the terminal alert to the inbox.
+	syncPassed
 )
 
 // claimSync registers a synchronous waiter's intent to consume this
@@ -237,9 +240,6 @@ func (h *Handle) claimSync() bool {
 	case <-h.done:
 		return false
 	default:
-	}
-	if h.status != StatusRunning {
-		return false
 	}
 	if h.sync != syncNone {
 		// A second concurrent waiter on the same handle can't happen via
@@ -260,6 +260,7 @@ func (h *Handle) takeSyncClaim() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.sync != syncClaimed {
+		h.sync = syncPassed
 		return false
 	}
 	h.sync = syncConsumed

@@ -312,16 +312,3 @@ func subagentCanReachTool(spec SubagentSpec, toolName string, hasMCPServers bool
 	}
 	return hasMCPServers
 }
-
-func sanitizeMCPServerPrefix(server string) string {
-	var b strings.Builder
-	b.Grow(len(server))
-	for _, r := range server {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('_')
-		}
-	}
-	return b.String()
-}

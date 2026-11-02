@@ -14,6 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
+_No unreleased changes since [3.1.0-dev.2]._
+
+## [3.1.0-dev.2] — 2026-11-02
+
 #### Bug or Regression
 
 - **`workload.yaml` importer (`config.ImportWorkload`, `config.LoadWorkloadConfig`) and runtime enforcement of `tools.policies`, `max_wallclock_seconds`, and `final_report`.**

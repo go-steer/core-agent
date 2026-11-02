@@ -17,6 +17,7 @@
 package attach
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -102,15 +103,17 @@ type A2AOptions struct {
 
 // A2ATaskRequest is the normalized request passed to A2ABackend.SendMessage.
 type A2ATaskRequest struct {
-	TaskID     string
-	ContextID  string
-	SkillID    string
-	Message    A2AMessage
-	Text       string
-	Data       map[string]any
-	Metadata   map[string]any
-	Caller     auth.Caller
-	OnProgress func(state A2ATaskState, statusText string)
+	TaskID             string
+	ContextID          string
+	TaskIDGenerated    bool
+	ContextIDGenerated bool
+	SkillID            string
+	Message            A2AMessage
+	Text               string
+	Data               map[string]any
+	Metadata           map[string]any
+	Caller             auth.Caller
+	OnProgress         func(state A2ATaskState, statusText string)
 }
 
 // A2ATaskOutcome is the result returned by A2ABackend methods.
@@ -150,10 +153,15 @@ type a2aHandler struct {
 	skills          []compiledA2ASkill
 	skillByID       map[string]*compiledA2ASkill
 	authRequired    bool
+	anySkillAuthReq bool
 	defaultScopes   []string
 	defaultCallerID string
 	costLimit       *costRateLimiter
+	daemonCtx       context.Context
 	closing         <-chan struct{}
+
+	taskSkillsMu sync.Mutex
+	taskSkills   map[string]*compiledA2ASkill
 }
 
 func mountA2A(opts *Options, mux *http.ServeMux, h *handlers) error {
@@ -173,6 +181,8 @@ func prepareA2A(opts *Options, costLimit *costRateLimiter, closing <-chan struct
 	compiled := make([]compiledA2ASkill, 0, len(rawSkills))
 	byID := make(map[string]*compiledA2ASkill, len(rawSkills))
 	anyAuthReq := opts.A2A.Auth.Required || len(opts.A2A.Auth.Scopes) > 0 || (opts.MultiSessionEnabled && !opts.AllowAnonymous)
+	anySkillAuthReq := false
+	allSkillsRequireAuth := len(rawSkills) > 0
 
 	for _, sk := range rawSkills {
 		if strings.TrimSpace(sk.ID) == "" {
@@ -194,6 +204,9 @@ func prepareA2A(opts *Options, costLimit *costRateLimiter, closing <-chan struct
 		}
 		if sk.Auth.Required {
 			anyAuthReq = true
+			anySkillAuthReq = true
+		} else {
+			allSkillsRequireAuth = false
 		}
 		if sk.Name == "" {
 			sk.Name = sk.ID
@@ -215,15 +228,22 @@ func prepareA2A(opts *Options, costLimit *costRateLimiter, closing <-chan struct
 	if opts.A2A.Backend == nil {
 		return nil, nil
 	}
+	defaultScopes := append([]string(nil), opts.A2A.Auth.Scopes...)
+	if len(defaultScopes) == 0 && len(compiled) == 1 && len(compiled[0].Auth.Scopes) > 0 {
+		defaultScopes = append([]string(nil), compiled[0].Auth.Scopes...)
+	}
 	return &a2aHandler{
 		backend:         opts.A2A.Backend,
 		skills:          compiled,
 		skillByID:       byID,
-		authRequired:    opts.A2A.Auth.Required || len(opts.A2A.Auth.Scopes) > 0,
-		defaultScopes:   append([]string(nil), opts.A2A.Auth.Scopes...),
+		authRequired:    opts.A2A.Auth.Required || len(opts.A2A.Auth.Scopes) > 0 || allSkillsRequireAuth,
+		anySkillAuthReq: anySkillAuthReq,
+		defaultScopes:   defaultScopes,
 		defaultCallerID: opts.DefaultCaller.Identity,
 		costLimit:       costLimit,
+		daemonCtx:       opts.DaemonCtx,
 		closing:         closing,
+		taskSkills:      make(map[string]*compiledA2ASkill),
 	}, nil
 }
 
@@ -314,9 +334,6 @@ func compileA2ASchema(m map[string]any) (*jsonschema.Resolved, error) {
 	if len(m) == 0 {
 		return nil, nil
 	}
-	if err := validateA2AJSONSchemaNode("", m); err != nil {
-		return nil, err
-	}
 	raw, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
@@ -325,62 +342,69 @@ func compileA2ASchema(m map[string]any) (*jsonschema.Resolved, error) {
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
+	if err := validateA2AJSONSchemaNode(&s, "$"); err != nil {
+		return nil, err
+	}
 	return s.Resolve(nil)
 }
 
-func validateA2AJSONSchemaNode(path string, node map[string]any) error {
-	if t, hasType := node["type"]; hasType {
-		switch tv := t.(type) {
-		case string:
-			if !validA2AJSONSchemaTypes[tv] {
-				return fmt.Errorf("%s: unknown JSON Schema type %q", a2aSchemaPathLabel(path, "type"), tv)
-			}
-		case []any:
-			if len(tv) == 0 {
-				return fmt.Errorf("%s: JSON Schema type array must not be empty", a2aSchemaPathLabel(path, "type"))
-			}
-			for _, item := range tv {
-				s, ok := item.(string)
-				if !ok || !validA2AJSONSchemaTypes[s] {
-					return fmt.Errorf("%s: unknown JSON Schema type %v", a2aSchemaPathLabel(path, "type"), item)
-				}
-			}
-		default:
-			return fmt.Errorf("%s: JSON Schema type must be a string or array of strings", a2aSchemaPathLabel(path, "type"))
+func validateA2AJSONSchemaNode(s *jsonschema.Schema, path string) error {
+	if s == nil {
+		return nil
+	}
+	if s.Type != "" && !validA2AJSONSchemaTypes[s.Type] {
+		return fmt.Errorf("%s: unknown JSON Schema type %q", path, s.Type)
+	}
+	for _, t := range s.Types {
+		if !validA2AJSONSchemaTypes[t] {
+			return fmt.Errorf("%s: unknown JSON Schema type %q", path, t)
 		}
 	}
-	if props, hasProps := node["properties"]; hasProps {
-		pm, ok := props.(map[string]any)
-		if !ok {
-			return fmt.Errorf("%s: properties must be an object", a2aSchemaPathLabel(path, "properties"))
+	for _, pair := range []struct {
+		sub  *jsonschema.Schema
+		name string
+	}{
+		{s.Items, ".items"},
+		{s.AdditionalProperties, ".additionalProperties"},
+		{s.PropertyNames, ".propertyNames"},
+		{s.Not, ".not"},
+	} {
+		if err := validateA2AJSONSchemaNode(pair.sub, path+pair.name); err != nil {
+			return err
 		}
-		for k, v := range pm {
-			sub, ok := v.(map[string]any)
-			if !ok {
-				return fmt.Errorf("%s: property schema must be an object", a2aSchemaPathLabel(path, "properties."+k))
-			}
-			if err := validateA2AJSONSchemaNode(a2aSchemaPathLabel(path, "properties."+k), sub); err != nil {
+	}
+	for _, list := range []struct {
+		subs []*jsonschema.Schema
+		name string
+	}{
+		{s.AllOf, ".allOf"},
+		{s.AnyOf, ".anyOf"},
+		{s.OneOf, ".oneOf"},
+		{s.PrefixItems, ".prefixItems"},
+	} {
+		for i, sub := range list.subs {
+			if err := validateA2AJSONSchemaNode(sub, fmt.Sprintf("%s%s[%d]", path, list.name, i)); err != nil {
 				return err
 			}
 		}
 	}
-	if items, hasItems := node["items"]; hasItems {
-		sub, ok := items.(map[string]any)
-		if !ok {
-			return fmt.Errorf("%s: items schema must be an object", a2aSchemaPathLabel(path, "items"))
-		}
-		if err := validateA2AJSONSchemaNode(a2aSchemaPathLabel(path, "items"), sub); err != nil {
-			return err
+	for _, m := range []struct {
+		subs map[string]*jsonschema.Schema
+		name string
+	}{
+		{s.Properties, ".properties."},
+		{s.PatternProperties, ".patternProperties."},
+		{s.DependentSchemas, ".dependentSchemas."},
+		{s.Defs, ".$defs."},
+		{s.Definitions, ".definitions."},
+	} {
+		for k, sub := range m.subs {
+			if err := validateA2AJSONSchemaNode(sub, path+m.name+k); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
-}
-
-func a2aSchemaPathLabel(prefix, field string) string {
-	if prefix == "" {
-		return field
-	}
-	return prefix + "." + field
 }
 
 func (a *a2aHandler) register(mux *http.ServeMux) {
@@ -409,12 +433,19 @@ func (a *a2aHandler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req jsonrpcRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&req); err != nil {
 		writeA2AError(w, nil, JSONRPCParseError, fmt.Sprintf("parse error: %v", err))
 		return
 	}
 	if req.JSONRPC != "2.0" || strings.TrimSpace(req.Method) == "" {
 		writeA2AError(w, req.ID, JSONRPCInvalidRequest, "invalid JSON-RPC 2.0 request (jsonrpc must be \"2.0\" and method non-empty)")
+		return
+	}
+	if a.isClosing() && (req.Method == A2AMethodMessageSend || req.Method == A2AMethodMessageStream) {
+		w.Header().Set("Retry-After", "5")
+		writeA2AErrorStatus(w, http.StatusServiceUnavailable, req.ID, JSONRPCServerError, "server is shutting down", nil)
 		return
 	}
 	if a.authRequired && !a.isAuthenticated(r) {
@@ -435,6 +466,51 @@ func (a *a2aHandler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeA2AError(w, req.ID, JSONRPCMethodNotFound, fmt.Sprintf("method %q not found", req.Method))
 	}
+}
+
+func (a *a2aHandler) isClosing() bool {
+	if a.closing != nil {
+		select {
+		case <-a.closing:
+			return true
+		default:
+		}
+	}
+	if a.daemonCtx != nil {
+		select {
+		case <-a.daemonCtx.Done():
+			return true
+		default:
+		}
+	}
+	return false
+}
+
+func (a *a2aHandler) rememberTaskSkill(taskID string, skill *compiledA2ASkill) {
+	if taskID == "" || skill == nil {
+		return
+	}
+	a.taskSkillsMu.Lock()
+	defer a.taskSkillsMu.Unlock()
+	if a.taskSkills == nil {
+		a.taskSkills = make(map[string]*compiledA2ASkill)
+	}
+	if _, exists := a.taskSkills[taskID]; !exists && len(a.taskSkills) >= 4096 {
+		for k := range a.taskSkills {
+			delete(a.taskSkills, k)
+			break
+		}
+	}
+	a.taskSkills[taskID] = skill
+}
+
+func (a *a2aHandler) lookupTaskSkill(taskID string) *compiledA2ASkill {
+	if taskID == "" {
+		return nil
+	}
+	a.taskSkillsMu.Lock()
+	defer a.taskSkillsMu.Unlock()
+	return a.taskSkills[taskID]
 }
 
 func (a *a2aHandler) isAuthenticated(r *http.Request) bool {
@@ -563,7 +639,9 @@ func (a *a2aHandler) handleMessageSend(w http.ResponseWriter, r *http.Request, r
 	if !ok {
 		return
 	}
+	a.rememberTaskSkill(taskReq.TaskID, a.skillByID[taskReq.SkillID])
 	outcome, err := a.backend.SendMessage(r.Context(), taskReq)
+	a.rememberTaskSkill(firstNonEmptyA2A(outcome.TaskID, taskReq.TaskID), a.skillByID[taskReq.SkillID])
 	if err != nil {
 		if errors.Is(err, ErrA2AForbidden) {
 			writeA2AErrorStatus(w, http.StatusForbidden, req.ID, JSONRPCServerError, err.Error(), nil)
@@ -597,6 +675,7 @@ func (a *a2aHandler) handleMessageStream(w http.ResponseWriter, r *http.Request,
 	}
 	if taskReq.TaskID == "" {
 		taskReq.TaskID = "a2a-" + uuid.NewString()
+		taskReq.TaskIDGenerated = true
 	} else if taskReq.ContextID == "" {
 		if existing, found, err := a.backend.GetTask(r.Context(), taskReq.TaskID); err == nil && found && existing.ContextID != "" {
 			taskReq.ContextID = existing.ContextID
@@ -604,7 +683,9 @@ func (a *a2aHandler) handleMessageStream(w http.ResponseWriter, r *http.Request,
 	}
 	if taskReq.ContextID == "" {
 		taskReq.ContextID = "ctx-" + uuid.NewString()
+		taskReq.ContextIDGenerated = true
 	}
+	a.rememberTaskSkill(taskReq.TaskID, a.skillByID[taskReq.SkillID])
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -636,13 +717,32 @@ func (a *a2aHandler) streamTaskTurn(w http.ResponseWriter, r *http.Request, flus
 		sendFrame(newStatusUpdateEvent(taskReq.TaskID, taskReq.ContextID, state, statusText, false, nil))
 	}
 
-	outcome, err := a.backend.SendMessage(r.Context(), taskReq)
+	streamCtx, cancelStream := context.WithCancel(r.Context())
+	defer cancelStream()
+	var daemonDone <-chan struct{}
+	if a.daemonCtx != nil {
+		daemonDone = a.daemonCtx.Done()
+	}
+	if a.closing != nil || daemonDone != nil {
+		go func() {
+			select {
+			case <-a.closing:
+				cancelStream()
+			case <-daemonDone:
+				cancelStream()
+			case <-streamCtx.Done():
+			}
+		}()
+	}
+
+	outcome, err := a.backend.SendMessage(streamCtx, taskReq)
 	if err != nil {
 		sendFrame(newStatusUpdateEvent(taskReq.TaskID, taskReq.ContextID, TaskStateFailed, err.Error(), true, nil))
 		return
 	}
 	taskID := firstNonEmptyA2A(outcome.TaskID, taskReq.TaskID)
 	ctxID := firstNonEmptyA2A(outcome.ContextID, taskReq.ContextID)
+	a.rememberTaskSkill(taskID, a.skillByID[taskReq.SkillID])
 	state := outcome.State
 	if state == "" {
 		state = TaskStateCompleted
@@ -688,6 +788,18 @@ func newStatusUpdateEvent(taskID, ctxID string, state A2ATaskState, msgText stri
 	}
 }
 
+func (a *a2aHandler) authorizeTaskAccess(w http.ResponseWriter, r *http.Request, reqID any, taskID string) bool {
+	if sk := a.lookupTaskSkill(taskID); sk != nil {
+		return a.authorizeSkill(w, r, reqID, sk)
+	}
+	if a.anySkillAuthReq && !a.isAuthenticated(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="a2a"`)
+		writeA2AErrorStatus(w, http.StatusUnauthorized, reqID, JSONRPCServerError, "unauthenticated", nil)
+		return false
+	}
+	return a.authorizeDefaultScopes(w, r, reqID)
+}
+
 func (a *a2aHandler) authorizeDefaultScopes(w http.ResponseWriter, r *http.Request, reqID any) bool {
 	if len(a.defaultScopes) == 0 {
 		return true
@@ -729,6 +841,9 @@ func (a *a2aHandler) handleTasksGet(w http.ResponseWriter, r *http.Request, req 
 		writeA2AError(w, req.ID, JSONRPCInvalidParams, "invalid params: id is required")
 		return
 	}
+	if !a.authorizeTaskAccess(w, r, req.ID, strings.TrimSpace(params.ID)) {
+		return
+	}
 	outcome, found, err := a.backend.GetTask(r.Context(), params.ID)
 	if err != nil {
 		if errors.Is(err, ErrA2AForbidden) {
@@ -760,6 +875,9 @@ func (a *a2aHandler) handleTasksCancel(w http.ResponseWriter, r *http.Request, r
 	}
 	if strings.TrimSpace(params.ID) == "" {
 		writeA2AError(w, req.ID, JSONRPCInvalidParams, "invalid params: id is required")
+		return
+	}
+	if !a.authorizeTaskAccess(w, r, req.ID, strings.TrimSpace(params.ID)) {
 		return
 	}
 	outcome, found, err := a.backend.CancelTask(r.Context(), params.ID)

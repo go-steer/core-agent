@@ -74,6 +74,13 @@ type turnPrep struct {
 	// the turn originator and the OTel span links. Produced by the
 	// drain-inbox step and read by three later ones.
 	drained inboxDrain
+
+	// hasContent is true when RunContent supplied a pre-built *genai.Content
+	// message (such as a FunctionResponse resuming a parked tool call). When
+	// true, prompt-draining steps (alerts, inbox, watchdog feedback) leave
+	// their queues intact for the next text-prompt turn instead of draining
+	// into an unused tp.prompt string (#1469).
+	hasContent bool
 }
 
 // preTurnStep is one ordered stage of the pipeline.
@@ -208,6 +215,9 @@ var preTurnSteps = []preTurnStep{
 		enforces: "Alerts first of the two prepends: they are internal state changes, and " +
 			"inbox messages are external input, which belongs closer to the prompt.",
 		run: func(a *Agent, tp *turnPrep) error {
+			if tp.hasContent {
+				return nil
+			}
 			if a.bgMgr != nil {
 				tp.prompt = a.bgMgr.PrependPendingAlerts(tp.prompt)
 			}
@@ -219,7 +229,13 @@ var preTurnSteps = []preTurnStep{
 		enforces: "Produces tp.drained, which three later steps read. Emits the same " +
 			"inbox/dequeued events the public DrainInbox does, so the SSE stream stays " +
 			"consistent with what /inject produced on the way in.",
-		run: func(a *Agent, tp *turnPrep) error { tp.drained = a.drainInboxFull(); return nil },
+		run: func(a *Agent, tp *turnPrep) error {
+			if tp.hasContent {
+				return nil
+			}
+			tp.drained = a.drainInboxFull()
+			return nil
+		},
 	},
 	{
 		name: "capture-approver-task",
@@ -229,7 +245,13 @@ var preTurnSteps = []preTurnStep{
 			"because a refused turn never reaches the model, so its text is not an instruction " +
 			"the model has seen. Reads the host's WithOperatorTask text and the raw inbox " +
 			"texts, never tp.prompt, so alert and inbox framing never become the task (#1175).",
-		run: func(a *Agent, tp *turnPrep) error { a.captureApproverTask(tp); return nil },
+		run: func(a *Agent, tp *turnPrep) error {
+			if tp.hasContent {
+				return nil
+			}
+			a.captureApproverTask(tp)
+			return nil
+		},
 	},
 	{
 		name: "prepend-inbox",
@@ -239,6 +261,9 @@ var preTurnSteps = []preTurnStep{
 			"operator asking anything. Whether the operator typed something is what picks " +
 			"the framing (#697).",
 		run: func(a *Agent, tp *turnPrep) error {
+			if tp.hasContent {
+				return nil
+			}
 			tp.prompt = prependInboxMessages(tp.prompt, tp.drained.texts, tp.drained.senders,
 				strings.TrimSpace(tp.rawPrompt) == "")
 			return nil
@@ -251,6 +276,9 @@ var preTurnSteps = []preTurnStep{
 			"attach-mode session permanently unnamed. Before the watchdog prepend, so the " +
 			"title cannot be drawn from an observation about the model.",
 		run: func(a *Agent, tp *turnPrep) error {
+			if tp.hasContent {
+				return nil
+			}
 			if src := titleSource(tp.rawPrompt, tp.drained.texts); src != "" {
 				a.maybeTitleSession(tp.ctx, src)
 			}
@@ -263,6 +291,9 @@ var preTurnSteps = []preTurnStep{
 			"immediately-preceding turn, and a correction buried under a page of inbox " +
 			"traffic is a correction the model can skim past.",
 		run: func(a *Agent, tp *turnPrep) error {
+			if tp.hasContent {
+				return nil
+			}
 			tp.prompt = a.prependWatchdogFeedback(tp.prompt)
 			return nil
 		},

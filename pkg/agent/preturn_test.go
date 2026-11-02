@@ -814,3 +814,69 @@ func TestPreTurn_TheParkedAgentDrainsNothing(t *testing.T) {
 		t.Errorf("pending inbox = %d, want 1 — the parked agent ate the operator's steer", got)
 	}
 }
+
+// TestPreTurn_1469_RunContentPreservesPendingAlertsInboxAndWatchdogFeedback
+// verifies that when RunContent supplies an explicit *genai.Content message
+// (hasContent=true, such as a FunctionResponse resuming a parked tool call),
+// the pre-turn pipeline does not destructively drain pending background alerts,
+// inbox messages, or watchdog feedback into an unused tp.prompt string.
+func TestPreTurn_1469_RunContentPreservesPendingAlertsInboxAndWatchdogFeedback(t *testing.T) {
+	t.Parallel()
+	mgr := &oneShotAlertManager{alert: "[Background reports]\nsubagent finished"}
+	a := preTurnAgent(t, WithBackgroundManager(mgr))
+	a.watchdogPending = []watchdog.Alert{{
+		Signal:   "repeated-tool-call",
+		Severity: watchdog.SeverityWarn,
+		Reason:   "read_file on main.go five times with identical args.",
+	}}
+	if err := a.Inject("follow up after tool approval"); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+
+	// 1. RunContent turn (hasContent: true) leaves all three queues intact.
+	tpContent := &turnPrep{ctx: context.Background(), hasContent: true}
+	if err := a.runPreTurn(tpContent, preTurnSteps); err != nil {
+		t.Fatalf("runPreTurn(hasContent=true): %v", err)
+	}
+	if got := a.PendingInboxCount(); got != 1 {
+		t.Fatalf("PendingInboxCount after hasContent=true = %d, want 1", got)
+	}
+	if len(a.watchdogPending) != 1 {
+		t.Fatalf("watchdogPending after hasContent=true = %d, want 1", len(a.watchdogPending))
+	}
+	if mgr.alert == "" {
+		t.Fatalf("background alert was drained during hasContent=true turn")
+	}
+
+	// 2. Subsequent normal prompt turn (hasContent: false) receives all three.
+	tpNext, err := runPrep(t, a, preTurnSteps, "what next?")
+	if err != nil {
+		t.Fatalf("runPreTurn(hasContent=false): %v", err)
+	}
+	if !strings.Contains(tpNext.prompt, "subagent finished") {
+		t.Errorf("next turn prompt missing preserved background alert:\n%s", tpNext.prompt)
+	}
+	if !strings.Contains(tpNext.prompt, "follow up after tool approval") {
+		t.Errorf("next turn prompt missing preserved inbox message:\n%s", tpNext.prompt)
+	}
+	if !strings.Contains(tpNext.prompt, "repeated-tool-call") {
+		t.Errorf("next turn prompt missing preserved watchdog feedback:\n%s", tpNext.prompt)
+	}
+}
+
+type oneShotAlertManager struct {
+	pendingAlertManager
+	alert string
+}
+
+func (m *oneShotAlertManager) PrependPendingAlerts(p string) string {
+	a := m.alert
+	m.alert = ""
+	if a == "" {
+		return p
+	}
+	if p == "" {
+		return a
+	}
+	return a + "\n\n" + p
+}

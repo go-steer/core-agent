@@ -97,6 +97,21 @@ func TestValidate_A2AConfig(t *testing.T) {
 			t.Fatalf("Validate() = %v, want a2a.output_schema error", err)
 		}
 	})
+
+	t.Run("invalid nested anyOf type in input_schema rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.A2A.InputSchema = map[string]any{
+			"type": "object",
+			"anyOf": []any{
+				map[string]any{"type": "bogus-type"},
+			},
+		}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "a2a.input_schema") {
+			t.Fatalf("Validate() = %v, want a2a.input_schema nested anyOf error", err)
+		}
+	})
 }
 
 func TestLoadAndSave_A2ARoundTrip(t *testing.T) {

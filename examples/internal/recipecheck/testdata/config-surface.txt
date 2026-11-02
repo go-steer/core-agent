@@ -106,6 +106,7 @@ model.vertex.context_cache.refresh
 model.vertex.context_cache.ttl
 model.vertex.location
 model.vertex.project
+monitor.ack.args
 monitor.ack.tool
 monitor.collect.args
 monitor.collect.tool

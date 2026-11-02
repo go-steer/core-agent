@@ -107,6 +107,21 @@ done
 
 `dev/tools/gen-users-json` in the repository writes a whole hashed table the same way.
 
+### One credential: `token_identity`
+
+A daemon with a single client credential, its attach token, can skip the table file. `auth.token_identity` serves that token as a one-row table:
+
+```json
+"multi_session": {
+  "enabled": true,
+  "auth": { "token_identity": "switchboard" }
+}
+```
+
+A request presenting the token from `--attach-token` (or `--attach-token-file`) authenticates as `switchboard`. Sessions work as with a table: `POST /sessions` creates sessions it owns, ACLs apply, and `admin_identities` can name it. The row holds the token's SHA-256, like a `token_sha256` row. It is meant for deployments with nowhere to keep a `0600` file, such as an [AX task](https://github.com/go-steer/core-agent/tree/main/examples/deploy/ax), whose environment and files end up in the sandbox's template and snapshots.
+
+`token_identity` and `table_file` are mutually exclusive, and the daemon refuses to start an attach listener with `token_identity` but no attach token. The table has one row, so it attributes every turn to that identity. `proxy_identities` adds nothing here: a caller asserted through `X-Asserted-Caller` has to be a provisioned identity, and the only one is the token's own. Attributing turns to the people a proxy speaks for needs a `table_file` that lists them.
+
 ### Keeping the table away from the agent
 
 File modes keep `users.json` from *other* users. They don't keep it from the agent, which runs as the daemon's user. Any plaintext token in the table answers permission prompts and can inject work under its holder's identity, so an agent that reads a plaintext table can approve its own calls, and one that writes the table can add its own row for the next boot ([#1201](https://github.com/go-steer/core-agent/issues/1201)).

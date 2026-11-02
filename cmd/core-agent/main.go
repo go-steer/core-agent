@@ -2389,7 +2389,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// chat-bot integrations. Single-user mode (the default) leaves
 		// these fields zero — the attach server behaves as it always
 		// has end-to-end.
-		authn, defaultCaller, authErr := compose.BuildMultiSessionAuthn(cfg.Attach.MultiSession)
+		authn, defaultCaller, authErr := compose.BuildMultiSessionAuthnWithToken(cfg.Attach.MultiSession, token)
 		if authErr != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: multi-session auth: %v\n", authErr)
 			return runner.ExitConfigError

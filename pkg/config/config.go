@@ -2001,8 +2001,18 @@ type MultiSessionAuthConfig struct {
 
 	// TableFile is the path to users.json when Kind="bearer_table".
 	// File must be mode 0600 or stricter (the loader rejects anything
-	// laxer). Required when Kind="bearer_table" and Enabled=true.
+	// laxer). Required when Kind="bearer_table" and Enabled=true,
+	// unless TokenIdentity is set instead.
 	TableFile string `json:"table_file,omitempty"`
+
+	// TokenIdentity serves the daemon's attach token (--attach-token or
+	// --attach-token-file) as a one-row bearer table: a request
+	// presenting it authenticates as this identity. It is for a daemon
+	// with one client credential and nowhere to keep a 0600 table file,
+	// such as an AX task, which still needs POST /sessions and session
+	// ACLs (#1483). Every turn is attributed to this one identity. The row holds the token's SHA-256,
+	// as token_sha256 rows do (#1213). Mutually exclusive with TableFile.
+	TokenIdentity string `json:"token_identity,omitempty"`
 }
 
 // Recognized values for MultiSessionAuthConfig.Kind. Only the bearer
@@ -2349,8 +2359,14 @@ func (c *Config) validateMultiSession() error {
 		// implementations are explicitly deferred.
 		switch c.Attach.MultiSession.Auth.Kind {
 		case "", MultiSessionAuthKindBearerTable:
-			if c.Attach.MultiSession.Auth.TableFile == "" {
-				return fmt.Errorf("config: attach.multi_session.auth.table_file is required when multi_session is enabled with kind=%q", MultiSessionAuthKindBearerTable)
+			a := c.Attach.MultiSession.Auth
+			switch {
+			case a.TableFile != "" && a.TokenIdentity != "":
+				return errors.New("config: attach.multi_session.auth.table_file and token_identity are mutually exclusive: one names a table file, the other serves the attach token as a one-row table")
+			case a.TableFile == "" && a.TokenIdentity == "":
+				return fmt.Errorf("config: attach.multi_session.auth.table_file is required when multi_session is enabled with kind=%q (or set token_identity to serve the attach token as a one-row table)", MultiSessionAuthKindBearerTable)
+			case a.TokenIdentity != "" && strings.TrimSpace(a.TokenIdentity) != a.TokenIdentity:
+				return fmt.Errorf("config: attach.multi_session.auth.token_identity %q has surrounding whitespace", a.TokenIdentity)
 			}
 		default:
 			return fmt.Errorf("config: attach.multi_session.auth.kind=%q is not shipped in this version (only %q is supported; oidc/mtls/k8s_sa are designed but deferred)", c.Attach.MultiSession.Auth.Kind, MultiSessionAuthKindBearerTable)

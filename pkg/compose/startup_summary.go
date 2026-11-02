@@ -376,7 +376,9 @@ func formatAuthLine(cfg *config.Config) string {
 	// attach branch will do the load-and-validate later; this is
 	// belt-and-suspenders visibility).
 	userCount := "? users"
-	if ms.Auth.TableFile != "" {
+	if ms.Auth.TokenIdentity != "" {
+		userCount = fmt.Sprintf("1 user (the attach token, as %q)", ms.Auth.TokenIdentity)
+	} else if ms.Auth.TableFile != "" {
 		if uf, err := auth.LoadUsersFile(ms.Auth.TableFile); err != nil {
 			userCount = fmt.Sprintf("? (load error: %v) users", err)
 		} else {

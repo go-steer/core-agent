@@ -346,3 +346,86 @@ func TestBuildBearerTableAuthn_HashedTableIsQuiet(t *testing.T) {
 		t.Errorf("an all-hashed table warned:\n%s", warn.String())
 	}
 }
+
+// #1483: with auth.token_identity the attach token is the bearer table's
+// only row. What matters is what the Authenticator decides: the token is
+// that identity, any other credential is no one, and the admin and proxy
+// lists apply to it as they would to a row in a file.
+func TestBuildMultiSessionAuthnWithToken_TokenIdentity(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.MultiSessionConfig{
+		Enabled:         true,
+		ProxyIdentities: []string{"switchboard"},
+	}
+	cfg.Auth.TokenIdentity = "switchboard"
+
+	authn, _, err := BuildMultiSessionAuthnWithToken(cfg, botToken)
+	if err != nil {
+		t.Fatalf("BuildMultiSessionAuthnWithToken: %v", err)
+	}
+	if authn == nil {
+		t.Fatal("authenticator is nil — multi-session would serve every request unauthenticated")
+	}
+	c, err := authenticate(t, authn, botToken)
+	if err != nil {
+		t.Fatalf("authenticate with the attach token: %v", err)
+	}
+	if c.Identity != "switchboard" || c.Admin {
+		t.Errorf("caller = %+v, want identity switchboard, not admin", c)
+	}
+	if _, err := authenticate(t, authn, sreToken); err == nil {
+		t.Error("a token that isn't the attach token authenticated")
+	}
+	if _, err := authenticate(t, authn, ""); err == nil {
+		t.Error("a request with no token authenticated")
+	}
+	proxer, ok := authn.(auth.AuthenticatorWithProxy)
+	if !ok || !proxer.CanProxyAs(c) {
+		t.Error("proxy_identities did not reach the token's identity")
+	}
+
+	// Admin applies the same way.
+	cfg.AdminIdentities = []string{"switchboard"}
+	authn, _, err = BuildMultiSessionAuthnWithToken(cfg, botToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := authenticate(t, authn, botToken); err != nil || !c.Admin {
+		t.Errorf("admin_identities: caller %+v, %v", c, err)
+	}
+}
+
+func TestBuildMultiSessionAuthnWithToken_Refusals(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.MultiSessionConfig{Enabled: true}
+	cfg.Auth.TokenIdentity = "switchboard"
+
+	// No token: multi-session with no credential at all is refused,
+	// never served as if the table were empty.
+	if _, _, err := BuildMultiSessionAuthnWithToken(cfg, ""); err == nil || !strings.Contains(err.Error(), "needs the attach token") {
+		t.Errorf("no token: err = %v", err)
+	}
+	// The token-less entry point is the same as no token.
+	if _, _, err := BuildMultiSessionAuthn(cfg); err == nil || !strings.Contains(err.Error(), "needs the attach token") {
+		t.Errorf("BuildMultiSessionAuthn: err = %v", err)
+	}
+	// Both sources at once, past config validation: refused.
+	cfg.Auth.TableFile = writeUsersFile(t)
+	if _, _, err := BuildMultiSessionAuthnWithToken(cfg, botToken); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("table and token: err = %v", err)
+	}
+	// Without token_identity the token is ignored: a table still rules.
+	cfg.Auth.TokenIdentity = ""
+	authn, _, err := BuildMultiSessionAuthnWithToken(cfg, "some-other-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := authenticate(t, authn, sreToken); err != nil || c.Identity != "sre@example.com" {
+		t.Errorf("table without token_identity: caller %+v, %v", c, err)
+	}
+	if _, err := authenticate(t, authn, "some-other-token"); err == nil {
+		t.Error("the attach token authenticated against a table that doesn't list it")
+	}
+}

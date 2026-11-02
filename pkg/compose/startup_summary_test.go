@@ -475,6 +475,20 @@ func TestFormatAuthLine(t *testing.T) {
 			wantSubstr: []string{"multi-session auth: bearer_table, 2 users, admin=[]"},
 		},
 		{
+			// #1483: the attach token as a one-row table.
+			name: "enabled with token_identity",
+			cfg: &config.Config{
+				Attach: config.AttachConfig{
+					MultiSession: config.MultiSessionConfig{
+						Enabled:         true,
+						Auth:            config.MultiSessionAuthConfig{TokenIdentity: "switchboard"},
+						ProxyIdentities: []string{"switchboard"},
+					},
+				},
+			},
+			wantSubstr: []string{`multi-session auth: bearer_table, 1 user (the attach token, as "switchboard")`, "proxy=[switchboard]"},
+		},
+		{
 			name: "enabled but no table file — user count unknown",
 			cfg: &config.Config{
 				Attach: config.AttachConfig{

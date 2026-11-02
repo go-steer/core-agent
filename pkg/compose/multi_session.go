@@ -58,7 +58,19 @@ import (
 // In single-user mode (multi_session.enabled = false), returns
 // (nil, zero-Caller, nil) — the attach server defaults its own
 // AnonymousAuth and the wiring is a no-op.
+//
+// A config with auth.token_identity needs the attach token, which
+// lives outside the config: use BuildMultiSessionAuthnWithToken.
 func BuildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, auth.Caller, error) {
+	return BuildMultiSessionAuthnWithToken(cfg, "")
+}
+
+// BuildMultiSessionAuthnWithToken is BuildMultiSessionAuthn for a host
+// that holds the daemon's attach token (--attach-token or
+// --attach-token-file): with auth.token_identity set, the token becomes
+// the bearer table's one row, authenticating as that identity (#1483).
+// attachToken is ignored otherwise.
+func BuildMultiSessionAuthnWithToken(cfg config.MultiSessionConfig, attachToken string) (auth.Authenticator, auth.Caller, error) {
 	// Default Caller comes from the config knob (resolved to "anon"
 	// when unset to match the design doc's documented default). Used
 	// for the legacy / single-user path AND as the AllowAnonymous
@@ -74,6 +86,13 @@ func BuildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 
 	switch cfg.Auth.Kind {
 	case "", config.MultiSessionAuthKindBearerTable:
+		if cfg.Auth.TokenIdentity != "" {
+			authn, err := buildTokenIdentityAuthn(cfg, attachToken)
+			if err != nil {
+				return nil, defaultCaller, err
+			}
+			return authn, defaultCaller, nil
+		}
 		authn, err := buildBearerTableAuthn(cfg, os.Stderr)
 		if err != nil {
 			return nil, defaultCaller, err
@@ -104,6 +123,22 @@ func buildBearerTableAuthn(cfg config.MultiSessionConfig, warn io.Writer) (auth.
 		fmt.Fprintln(warn, w)
 	}
 	return auth.NewBearerTokenAuth(users.Users, cfg.AdminIdentities, cfg.ProxyIdentities), nil
+}
+
+// buildTokenIdentityAuthn builds the one-row bearer table
+// auth.token_identity asks for: the attach token, as its SHA-256, mapped
+// to that identity. Without a token there is nothing to authenticate
+// with, and serving multi-session with no credential at all is the
+// silent-and-permissive failure this builder exists to refuse.
+func buildTokenIdentityAuthn(cfg config.MultiSessionConfig, attachToken string) (auth.Authenticator, error) {
+	if attachToken == "" {
+		return nil, fmt.Errorf("auth.token_identity %q needs the attach token (--attach-token or --attach-token-file)", cfg.Auth.TokenIdentity)
+	}
+	if cfg.Auth.TableFile != "" {
+		return nil, fmt.Errorf("auth.token_identity and auth.table_file are mutually exclusive")
+	}
+	users := []auth.User{{Identity: cfg.Auth.TokenIdentity, TokenSHA256: auth.HashToken(attachToken)}}
+	return auth.NewBearerTokenAuth(users, cfg.AdminIdentities, cfg.ProxyIdentities), nil
 }
 
 // PlaintextTokenWarning returns the startup warning for a bearer table

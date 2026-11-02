@@ -180,3 +180,47 @@ func TestMultiSessionConfig_Validate_DisabledIgnoresAuthFields(t *testing.T) {
 		t.Errorf("disabled multi-session must not validate the auth sub-tree: %v", err)
 	}
 }
+
+// #1483: token_identity is the other way to give bearer_table its rows —
+// the attach token as a one-row table — so it satisfies the table
+// requirement on its own, and naming both is refused rather than one
+// silently winning.
+func TestMultiSessionConfig_Validate_TokenIdentity(t *testing.T) {
+	t.Parallel()
+	cfg := func(a MultiSessionAuthConfig) *Config {
+		return &Config{
+			Version: SchemaVersion,
+			Model:   ModelConfig{Name: "claude-opus-4-7"},
+			Attach:  AttachConfig{MultiSession: MultiSessionConfig{Enabled: true, Auth: a}},
+		}
+	}
+	if err := cfg(MultiSessionAuthConfig{TokenIdentity: "shipmind"}).Validate(); err != nil {
+		t.Errorf("token_identity alone must validate: %v", err)
+	}
+	if err := cfg(MultiSessionAuthConfig{Kind: MultiSessionAuthKindBearerTable, TokenIdentity: "shipmind"}).Validate(); err != nil {
+		t.Errorf("token_identity with the explicit kind must validate: %v", err)
+	}
+	err := cfg(MultiSessionAuthConfig{TableFile: "/etc/core-agent/users.json", TokenIdentity: "shipmind"}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("table_file with token_identity: err = %v, want mutually exclusive", err)
+	}
+	err = cfg(MultiSessionAuthConfig{}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "table_file is required") || !strings.Contains(err.Error(), "token_identity") {
+		t.Errorf("neither: err = %v, want it to name table_file and token_identity", err)
+	}
+	err = cfg(MultiSessionAuthConfig{TokenIdentity: " shipmind"}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Errorf("padded identity: err = %v, want a whitespace error", err)
+	}
+}
+
+func TestMultiSessionConfig_TokenIdentityRoundTrip(t *testing.T) {
+	t.Parallel()
+	var c MultiSessionAuthConfig
+	if err := json.Unmarshal([]byte(`{"kind":"bearer_table","token_identity":"shipmind"}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.TokenIdentity != "shipmind" {
+		t.Errorf("token_identity = %q", c.TokenIdentity)
+	}
+}

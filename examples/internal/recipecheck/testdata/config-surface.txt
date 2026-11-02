@@ -56,6 +56,7 @@ attach.multi_session.allow_anonymous
 attach.multi_session.asserted_caller_header
 attach.multi_session.auth.kind
 attach.multi_session.auth.table_file
+attach.multi_session.auth.token_identity
 attach.multi_session.default_identity
 attach.multi_session.enabled
 attach.multi_session.proxy_identities

@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
-_No unreleased changes since [3.1.0-dev.2]._
+#### Feature
+
+- **`attach.multi_session.auth.token_identity`: the attach token as a one-row bearer table.**
+  - **What was missing:** `POST /sessions` is wired only in multi-session mode, which needed a `table_file` at mode `0600`. A daemon whose one client credential is its attach token, such as an AX task in serve mode, had nowhere to keep that file, so `POST /sessions` answered 501 ("no SessionFactory configured").
+  - **What landed:** `token_identity` (mutually exclusive with `table_file`) makes `--attach-token` / `--attach-token-file` the table's one row, stored as its SHA-256, authenticating as that identity: sessions and ACLs work as with a table, and every turn is attributed to that identity. `compose.BuildMultiSessionAuthnWithToken` takes the token, `BuildMultiSessionAuthn` is unchanged, the startup summary reports `1 user (the attach token, as "<identity>")`, and the 501 names the setting. ([#1483](https://github.com/go-steer/core-agent/issues/1483))
 
 ## [3.1.0-dev.2] — 2026-11-02
 

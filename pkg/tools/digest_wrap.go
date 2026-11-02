@@ -198,14 +198,11 @@ func (dt *digestingTool) Description() string { return dt.inner.Description() }
 func (dt *digestingTool) IsLongRunning() bool { return dt.inner.IsLongRunning() }
 
 // ReadOnlyHint forwards the wrapped tool's dispatch-class declaration
-// (ReadOnlyHinter, #460), same as gatedTool and timedTool. Every tool
-// in digestableBuiltins is read-only, so dropping the forward would
-// reclassify the whole set as mutating.
+// (ReadOnlyHinter, #460), falling back to IsReadOnlyTool so built-ins
+// in digestableBuiltins (which classify via readOnlyBuiltins rather
+// than implementing ReadOnlyHinter) are not masked as mutating (#1450).
 func (dt *digestingTool) ReadOnlyHint() bool {
-	if h, ok := dt.inner.(ReadOnlyHinter); ok {
-		return h.ReadOnlyHint()
-	}
-	return false
+	return IsReadOnlyTool(dt.inner)
 }
 
 func (dt *digestingTool) Declaration() *genai.FunctionDeclaration {

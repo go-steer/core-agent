@@ -61,6 +61,11 @@ var readOnlyBuiltins = map[string]bool{
 	"grep":              true,
 	"json_query":        true,
 	"fetch_url":         true, // GET-only network read; no local state
+	"retrieve_raw":      true, // CCR digest store read; no filesystem or external mutation (#1450)
+	"agentic_read_file": true, // isolated read-only subtask (#1450)
+	"agentic_fetch_url": true, // isolated read-only subtask (#1450)
+	"agentic_grep":      true, // isolated read-only subtask (#1450)
+	"agentic_research":  true, // isolated read-only subtask (#1450)
 	// wait_and_verify only ever calls tools that are themselves
 	// classified read-only (#648), so the waiter inherits the class.
 	// Naming it here also gets the auto-continue classifier (#624)

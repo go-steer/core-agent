@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"iter"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +34,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 )
 
 func reportSchema() *genai.Schema {
@@ -619,6 +622,155 @@ func TestCallGateAndFinalReport(t *testing.T) {
 		}
 		if _, ok := resps[0]["output"]; ok {
 			t.Errorf("stalled task subagent should not populate structured output, got %v", resps[0]["output"])
+		}
+	})
+}
+
+func TestModesHardening_1450(t *testing.T) {
+	t.Parallel()
+
+	enumAndAnyOfSchema := &genai.Schema{
+		Type:     genai.TypeObject,
+		Required: []string{"severity", "detail"},
+		Properties: map[string]*genai.Schema{
+			"severity": {
+				Type: genai.TypeString,
+				Enum: []string{"INFO", "WARN", "CRITICAL"},
+			},
+			"detail": {
+				Type: genai.TypeString,
+				AnyOf: []*genai.Schema{
+					{Type: genai.TypeString, Enum: []string{"ok", "first try"}},
+					{Type: genai.TypeString, Enum: []string{"resolved"}},
+				},
+			},
+		},
+	}
+
+	t.Run("single_turn with output_schema rejects empty reply in NewSubagentTool and autonomous.Run", func(t *testing.T) {
+		sub, err := agent.New(&replyModel{name: "m", reply: ""},
+			agent.WithName("empty_classifier"),
+			agent.WithDescription("d"),
+			agent.WithSubagentMode(agent.SubagentModeSingleTurn),
+			agent.WithOutputSchema(reportSchema()),
+		)
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		resps := runParentWithSubagent(t, sub)
+		if len(resps) != 1 {
+			t.Fatalf("got %d responses, want 1", len(resps))
+		}
+		if errMsg, _ := resps[0]["error"].(string); !strings.Contains(errMsg, "empty response did not satisfy output_schema") {
+			t.Errorf("NewSubagentTool empty reply error = %q, want 'empty response did not satisfy output_schema'", errMsg)
+		}
+
+		subAuto, err := agent.New(&replyModel{name: "m", reply: ""},
+			agent.WithName("empty_auto"),
+			agent.WithDescription("d"),
+			agent.WithMode(agent.ModeAutonomous),
+			agent.WithSubagentMode(agent.SubagentModeSingleTurn),
+			agent.WithOutputSchema(reportSchema()),
+		)
+		if err != nil {
+			t.Fatalf("agent.New(subAuto): %v", err)
+		}
+		_, runErr := autonomous.Run(
+			context.Background(),
+			func([]tool.Tool) (*agent.Agent, error) { return subAuto, nil },
+			"classify",
+			autonomous.WithMaxTurns(1),
+		)
+		if runErr == nil || !strings.Contains(runErr.Error(), "empty response did not satisfy output_schema") {
+			t.Errorf("autonomous.Run empty reply err = %v, want 'empty response did not satisfy output_schema'", runErr)
+		}
+	})
+
+	t.Run("enum and anyOf enforced at runtime across task and single_turn modes", func(t *testing.T) {
+		subBadEnum, err := agent.New(&replyModel{name: "m", reply: `{"severity":"BOGUS","detail":"ok"}`},
+			agent.WithName("bad_enum"),
+			agent.WithDescription("d"),
+			agent.WithSubagentMode(agent.SubagentModeSingleTurn),
+			agent.WithOutputSchema(enumAndAnyOfSchema),
+		)
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		resps := runParentWithSubagent(t, subBadEnum)
+		if errMsg, _ := resps[0]["error"].(string); !strings.Contains(errMsg, "not one of enum") {
+			t.Errorf("single_turn bad enum error = %q, want 'not one of enum'", errMsg)
+		}
+
+		subBadAnyOf, err := agent.New(&replyModel{name: "m", reply: `{"severity":"WARN","detail":"unlisted"}`},
+			agent.WithName("bad_anyof"),
+			agent.WithDescription("d"),
+			agent.WithSubagentMode(agent.SubagentModeSingleTurn),
+			agent.WithOutputSchema(enumAndAnyOfSchema),
+		)
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		respsAnyOf := runParentWithSubagent(t, subBadAnyOf)
+		if errMsg, _ := respsAnyOf[0]["error"].(string); !strings.Contains(errMsg, "anyOf") {
+			t.Errorf("single_turn bad anyOf error = %q, want 'anyOf'", errMsg)
+		}
+
+		// Task mode: first call fails enum check via finish_task callback, second call succeeds.
+		taskModel := &scriptedTaskModel{
+			name: "task_enum",
+			args: []map[string]any{
+				{"severity": "INVALID", "detail": "first try"},
+				{"severity": "CRITICAL", "detail": "resolved"},
+			},
+		}
+		subTask, err := agent.New(taskModel,
+			agent.WithName("task_enum_agent"),
+			agent.WithDescription("d"),
+			agent.WithMode(agent.ModeAutonomous),
+			agent.WithSubagentMode(agent.SubagentModeTask),
+			agent.WithOutputSchema(enumAndAnyOfSchema),
+		)
+		if err != nil {
+			t.Fatalf("agent.New(subTask): %v", err)
+		}
+		runRes, runErr := autonomous.Run(
+			context.Background(),
+			func([]tool.Tool) (*agent.Agent, error) { return subTask, nil },
+			"go",
+			autonomous.WithMaxTurns(5),
+		)
+		if runErr != nil {
+			t.Fatalf("autonomous.Run: %v", runErr)
+		}
+		if !runRes.Returned {
+			t.Errorf("runRes.Returned = false, want true after retry")
+		}
+		for _, c := range runRes.Calls {
+			if c.Tool == agent.FinishTaskToolName {
+				t.Errorf("driver tool %q leaked into RunResult.Calls: %+v", agent.FinishTaskToolName, runRes.Calls)
+			}
+		}
+	})
+
+	t.Run("ParseOutputSchema supports yaml and enforces baseDirs containment", func(t *testing.T) {
+		tmp := t.TempDir()
+		baseDir := filepath.Join(tmp, "bundle")
+		if err := os.MkdirAll(baseDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		yamlFile := filepath.Join(baseDir, "out.yaml")
+		if err := os.WriteFile(yamlFile, []byte("type: object\nproperties:\n  ok:\n    type: boolean\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if s, err := agent.ParseOutputSchema("out.yaml", baseDir); err != nil || s == nil {
+			t.Fatalf("ParseOutputSchema(out.yaml) = (%v, %v), want valid schema", s, err)
+		}
+		outsideFile := filepath.Join(tmp, "outside.json")
+		if err := os.WriteFile(outsideFile, []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := agent.ParseOutputSchema("../outside.json", baseDir); err == nil || !strings.Contains(err.Error(), "escapes scope root") {
+			t.Fatalf("ParseOutputSchema(../outside.json) = %v, want containment error", err)
 		}
 	})
 }

@@ -44,6 +44,7 @@ package agentic
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	adkmodel "google.golang.org/adk/v2/model"
@@ -115,22 +116,30 @@ func agenticTool(opts AgenticToolOpts, name, description, systemPrompt string) t
 
 	// Lazily resolve the small model on first call; cache on
 	// success. Retry on failure so transient provider outages
-	// don't permanently disable the wrapper.
-	var resolvedModel adkmodel.LLM
-	var resolveErr error
-	var resolveDone bool
+	// don't permanently disable the wrapper. Guarded by resolveMu
+	// because agentic_* tools are classified read-only (#1450) and
+	// may therefore run concurrently within a turn.
+	var (
+		resolveMu     sync.Mutex
+		resolvedModel adkmodel.LLM
+		resolveErr    error
+		resolveDone   bool
+	)
 
 	handler := func(toolCtx adkagent.Context, args agenticArgs) (agenticResult, error) {
 		a := opts.AgentGetter()
 		if a == nil {
 			return agenticResult{}, fmt.Errorf("%s: agent not yet bound (registration race?)", name)
 		}
+		resolveMu.Lock()
 		if !resolveDone || resolveErr != nil {
 			if opts.Provider != nil && opts.SmallModelID != "" {
 				resolvedModel, resolveErr = opts.Provider.Model(toolCtx, opts.SmallModelID)
 				resolveDone = true
 				if resolveErr != nil {
-					return agenticResult{}, fmt.Errorf("%s: resolve small model %q: %w", name, opts.SmallModelID, resolveErr)
+					err := resolveErr
+					resolveMu.Unlock()
+					return agenticResult{}, fmt.Errorf("%s: resolve small model %q: %w", name, opts.SmallModelID, err)
 				}
 			} else {
 				// Inherit parent's model — leave resolvedModel
@@ -138,13 +147,15 @@ func agenticTool(opts AgenticToolOpts, name, description, systemPrompt string) t
 				resolveDone = true
 			}
 		}
+		modelForCall := resolvedModel
+		resolveMu.Unlock()
 
 		res, err := a.RunSubtask(models.AsSideCall(toolCtx, "agentic "+name), agent.SubtaskSpec{
 			Name:         name,
 			SystemPrompt: systemPrompt,
 			UserMessage:  args.Request,
 			Tools:        opts.InnerTools,
-			Model:        resolvedModel,
+			Model:        modelForCall,
 			Budgets:      opts.Budgets,
 		})
 		if err != nil {

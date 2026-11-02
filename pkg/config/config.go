@@ -2804,12 +2804,35 @@ func (s *ScheduleConfig) EffectiveJitter() (time.Duration, error) {
 	return d, nil
 }
 
-// Validate checks that the schedule's interval and jitter are well-formed.
+// EffectiveTimeout parses the schedule's per-turn timeout duration. An omitted
+// or empty timeout returns (0, nil).
+func (s *ScheduleConfig) EffectiveTimeout() (time.Duration, error) {
+	if s == nil || strings.TrimSpace(s.Timeout) == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(s.Timeout))
+	if err != nil {
+		return 0, fmt.Errorf("schedule.timeout %q is not a duration (want something like \"5m\"): %w", s.Timeout, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("schedule.timeout %q must be > 0", s.Timeout)
+	}
+	return d, nil
+}
+
+// Validate checks that the schedule's interval, jitter, max_fires, and timeout
+// are well-formed.
 func (s *ScheduleConfig) Validate() error {
 	if s == nil {
 		return nil
 	}
-	_, err := s.EffectiveJitter()
+	if _, err := s.EffectiveJitter(); err != nil {
+		return err
+	}
+	if s.MaxFires < 0 {
+		return fmt.Errorf("schedule.max_fires %d is negative; use 0 for unlimited or a positive count", s.MaxFires)
+	}
+	_, err := s.EffectiveTimeout()
 	return err
 }
 

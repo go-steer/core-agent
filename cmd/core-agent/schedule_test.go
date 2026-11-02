@@ -16,20 +16,39 @@ package main
 
 import (
 	"context"
+	"errors"
+	"iter"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/glebarez/sqlite"
 	adkagent "google.golang.org/adk/v2/agent"
+	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/internal/effects"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/compose"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
+
+type scheduleStubLLM struct {
+	reply string
+}
+
+func (s scheduleStubLLM) Name() string { return "schedule-stub" }
+func (s scheduleStubLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: s.reply}}},
+			TurnComplete: true,
+		}, nil)
+	}
+}
 
 func TestStartDaemonSchedule_SeedsAndRunsBehindLease(t *testing.T) {
 	t.Parallel()
@@ -150,5 +169,115 @@ func TestBuildDaemonEffectControls_HonorsMCPReadOnlyHintsAndPrefixedPolicies(t *
 	}
 	if got := pred("adk_request_confirmation"); got != effects.ClassReadOnly {
 		t.Errorf("pred(adk_request_confirmation) = %v, want ClassReadOnly (control call must not suffix-match policy \"confirmation\")", got)
+	}
+}
+
+func TestScheduledTurnWaiter_IgnoresUnrelatedInFlightTurn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	ag, err := agent.New(scheduleStubLLM{reply: "scheduled reply"})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	// Run an initial turn so ag has reached drain-inbox before the scheduled
+	// prompt is injected mid-flight.
+	for _, runErr := range ag.Run(ctx, "initial operator turn") {
+		if runErr != nil {
+			t.Fatalf("initial ag.Run: %v", runErr)
+		}
+	}
+
+	waiter := &scheduledTurnWaiter{}
+	sh := &daemonScheduleHandle{waiter: waiter}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- waiter.runScheduledTurn(ctx, ag, compose.ScheduledFire{
+			FireNum: 1,
+			Payload: "scheduled prompt",
+		}, nil, nil)
+	}()
+
+	// Wait until runScheduledTurn has injected the payload and registered w.out.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		waiter.mu.Lock()
+		ready := waiter.out != nil
+		waiter.mu.Unlock()
+		if ready {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Simulate an already-in-flight unrelated turn finishing (both success and
+	// error) while the scheduled prompt is still sitting undrained in ag's inbox.
+	sh.AfterTurn("unrelated turn output", nil)
+	sh.AfterTurn("", errors.New("unrelated in-flight error"))
+
+	select {
+	case err := <-done:
+		t.Fatalf("runScheduledTurn resolved early on unrelated turn (err=%v)", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	// Now run the turn that drains the inbox and invoke AfterTurn.
+	for _, runErr := range ag.Run(ctx, "") {
+		if runErr != nil {
+			t.Fatalf("ag.Run: %v", runErr)
+		}
+	}
+	sh.AfterTurn("scheduled reply", nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runScheduledTurn err = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runScheduledTurn to complete after draining turn")
+	}
+}
+
+func TestStartDaemonSchedule_ForwardsMaxFires(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fired := make(chan int64, 4)
+	sh, err := startDaemonSchedule(ctx, daemonScheduleDeps{
+		AppName:  "core-agent",
+		Workload: "bounded-audit",
+		Schedule: &config.ScheduleConfig{
+			Every:    "1s",
+			Jitter:   "0s",
+			Prompt:   "Run bounded audit.",
+			MaxFires: 1,
+			Timeout:  "5s",
+		},
+		Fire: func(_ context.Context, f compose.ScheduledFire) error {
+			fired <- f.FireNum
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("startDaemonSchedule: %v", err)
+	}
+	defer sh.Stop()
+
+	select {
+	case n := <-fired:
+		if n != 1 {
+			t.Errorf("FireNum = %d, want 1", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for fire 1")
+	}
+
+	// Trigger goroutine should exit on its own after reaching MaxFires=1.
+	select {
+	case <-sh.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected trigger to stop after MaxFires=1")
 	}
 }

@@ -333,7 +333,9 @@ func (c *Client) doAttempt(ctx context.Context, method, rawURL string, body []by
 		return respBody, false, nil
 	case status == http.StatusNotImplemented:
 		return nil, false, &Error{Status: status, Body: strings.TrimSpace(string(respBody)), Err: ErrEditUnsupported}
-	case status == http.StatusNotFound && method == http.MethodPut:
+	case status == http.StatusConflict:
+		return nil, false, &Error{Status: status, Body: strings.TrimSpace(string(respBody)), Err: ErrSendFullText}
+	case status == http.StatusNotFound && (method == http.MethodPut || method == http.MethodPost):
 		return nil, false, &Error{Status: status, Body: strings.TrimSpace(string(respBody)), Err: ErrNoSuchMessage}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return nil, false, &Error{Status: status, Body: strings.TrimSpace(string(respBody)), Err: ErrDenied}

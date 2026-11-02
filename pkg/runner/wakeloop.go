@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
@@ -192,10 +193,14 @@ func WakeLoop(ctx context.Context, a *agent.Agent, opts WakeLoopOptions) {
 				evCount++
 				tap.Observe(ev)
 				if ev != nil && !ev.Partial && ev.Author != "user" && ev.Content != nil {
+					var sb strings.Builder
 					for _, p := range ev.Content.Parts {
 						if p != nil && p.Text != "" && !p.Thought {
-							lastText = p.Text
+							sb.WriteString(p.Text)
 						}
+					}
+					if text := sb.String(); text != "" {
+						lastText = text
 					}
 				}
 				if u, ok := tap.Commit(ev); ok && opts.Tracker != nil {

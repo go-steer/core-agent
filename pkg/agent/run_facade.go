@@ -553,6 +553,12 @@ func mergeFacadeScopesAndRuntime(dst, src *config.Config) {
 	if src.Compaction.ThresholdByTier != nil {
 		dst.Compaction.ThresholdByTier = src.Compaction.ThresholdByTier
 	}
+	if src.Schedule != nil {
+		dst.Schedule = src.Schedule
+	}
+	if src.Monitor != nil {
+		dst.Monitor = src.Monitor
+	}
 }
 
 func resolveFacadeModel(ctx context.Context, cfg OneShotConfig, loadedCfg *config.Config) (adkmodel.LLM, models.Provider, string, error) {

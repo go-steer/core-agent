@@ -61,6 +61,8 @@ monitor:
     digest_after: 6h
   ack:
     tool: cluster_watch_ack
+    args:
+      window: 4h
 `
 
 func writeMonitorWorkloadFixture(t *testing.T, workloadYAML string) string {
@@ -113,6 +115,9 @@ func TestLoadMonitorWorkload_ValidFullConfig(t *testing.T) {
 	if cfg.Monitor.Notify.ResolvedDigestAfter() != 6*time.Hour {
 		t.Errorf("ResolvedDigestAfter() = %v, want 6h", cfg.Monitor.Notify.ResolvedDigestAfter())
 	}
+	if cfg.Monitor.Ack == nil || cfg.Monitor.Ack.Args["window"] != "4h" {
+		t.Errorf("Monitor.Ack = %+v, want Args[window]=4h preserved", cfg.Monitor.Ack)
+	}
 	selfRun := cfg.Monitor.SelfRunTools()
 	if len(selfRun) != 2 || selfRun[0] != "cluster_watch_diff" || selfRun[1] != "cluster_watch_ack" {
 		t.Errorf("SelfRunTools() = %v, want [cluster_watch_diff cluster_watch_ack]", selfRun)
@@ -142,6 +147,14 @@ func TestValidateMonitor_RejectionCases(t *testing.T) {
 			name:    "collect tool empty",
 			yaml:    replace("    tool: cluster_watch_diff\n", "    tool: \"\"\n"),
 			wantSub: "monitor.collect[0].tool is required",
+		},
+		{
+			name: "multiple collect tools rejected",
+			yaml: replace(
+				"  collect:\n    tool: cluster_watch_diff\n    args:\n      window: 60s\n",
+				"  collect:\n    - tool: cluster_watch_diff\n    - tool: cluster_watch_diff\n",
+			),
+			wantSub: "supports at most 1 pre-turn collect tool",
 		},
 		{
 			name:    "collect tool not in tool_catalog",
@@ -350,4 +363,37 @@ func TestCheckMonitorCollectSurface(t *testing.T) {
 			t.Fatalf("expected error when builtin tool matches collect tool")
 		}
 	})
+
+	t.Run("hyphenated MCP server prefix match rejected", func(t *testing.T) {
+		cfg := &Config{
+			Monitor: &MonitorConfig{
+				Collect: &MonitorCollectConfig{Tool: "my_lookout_watch_diff"},
+			},
+			Subagents: []SubagentSpec{
+				{
+					Name:     "diag",
+					Mode:     SubagentModeTask,
+					MCPTools: []MCPToolAllowlist{{Server: "my-lookout", Tools: []string{"watch_diff"}}},
+				},
+			},
+		}
+		if err := CheckMonitorCollectSurface(cfg, true); err == nil {
+			t.Fatalf("expected error when hyphenated MCP server prefix matches collect tool")
+		}
+	})
+}
+
+func TestMonitorAndScheduleUnknownKeysAreFatal(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"schedule": {"every": "60s", "unknown_sched_key": true},
+		"monitor": {"collect": {"tool": "diff"}, "unknown_mon_key": true}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() succeeded on unknown keys under schedule/monitor, want error")
+	}
 }

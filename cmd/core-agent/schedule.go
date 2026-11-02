@@ -172,6 +172,15 @@ func startMultiSessionAutoContinue(
 	}
 }
 
+func hasMCPToolsets(toolsets []adktool.Toolset) bool {
+	for _, ts := range toolsets {
+		if ts != nil && ts.Name() != "skills" {
+			return true
+		}
+	}
+	return false
+}
+
 func startSingleSessionScheduleAndAutoContinue(
 	ctx, retryCtx context.Context,
 	wg *sync.WaitGroup,
@@ -194,6 +203,9 @@ func startSingleSessionScheduleAndAutoContinue(
 		var notifier *compose.Notifier
 		var collector *compose.MonitorCollector
 		if cfg.Monitor != nil {
+			if err := config.CheckMonitorCollectSurface(cfg, hasMCPToolsets(toolsets)); err != nil {
+				return nil, err
+			}
 			n, err := compose.NewNotifier(compose.NotifierConfig{
 				WorkloadName: workload,
 				AppName:      a.AppName(),
@@ -376,8 +388,10 @@ type scheduledTurnResult struct {
 }
 
 type scheduledTurnWaiter struct {
-	mu  sync.Mutex
-	out chan scheduledTurnResult
+	mu       sync.Mutex
+	out      chan scheduledTurnResult
+	promptID string
+	agent    *agent.Agent
 }
 
 func (w *scheduledTurnWaiter) runScheduledTurn(
@@ -389,18 +403,24 @@ func (w *scheduledTurnWaiter) runScheduledTurn(
 ) error {
 	ch := make(chan scheduledTurnResult, 1)
 	w.mu.Lock()
+	promptID, err := a.InjectAsContextWithID(fireCtx, fire.Payload, auth.Caller{Identity: compose.SchedulerIdentity})
+	if err != nil {
+		w.mu.Unlock()
+		return err
+	}
 	w.out = ch
+	w.promptID = promptID
+	w.agent = a
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
 		if w.out == ch {
 			w.out = nil
+			w.promptID = ""
+			w.agent = nil
 		}
 		w.mu.Unlock()
 	}()
-	if err := a.InjectAs(fire.Payload, auth.Caller{Identity: compose.SchedulerIdentity}); err != nil {
-		return err
-	}
 	select {
 	case res := <-ch:
 		if notifier != nil {
@@ -408,11 +428,28 @@ func (w *scheduledTurnWaiter) runScheduledTurn(
 			if collector != nil {
 				parsed, _ = collector.LastCycle()
 			}
-			_ = notifier.AfterCycle(fireCtx, parsed, res.text, res.err != nil)
+			notifyCtx := fireCtx
+			var cancel context.CancelFunc
+			if notifyCtx.Err() != nil {
+				notifyCtx, cancel = context.WithTimeout(context.WithoutCancel(fireCtx), 10*time.Second)
+				defer cancel()
+			}
+			_ = notifier.AfterCycle(notifyCtx, parsed, res.text, res.err != nil)
 		}
 		return res.err
 	case <-fireCtx.Done():
-		a.Interrupt()
+		if !a.RemoveInboxID(promptID) {
+			a.Interrupt()
+		}
+		if notifier != nil {
+			notifyCtx, cancel := context.WithTimeout(context.WithoutCancel(fireCtx), 10*time.Second)
+			defer cancel()
+			var parsed *monitor.Set
+			if collector != nil {
+				parsed, _ = collector.LastCycle()
+			}
+			_ = notifier.AfterCycle(notifyCtx, parsed, fireCtx.Err().Error(), true)
+		}
 		return fireCtx.Err()
 	}
 }
@@ -435,13 +472,23 @@ func (h *daemonScheduleHandle) AfterTurn(text string, turnErr error) {
 	}
 	h.waiter.mu.Lock()
 	ch := h.waiter.out
+	if ch == nil {
+		h.waiter.mu.Unlock()
+		return
+	}
+	ag := h.waiter.agent
+	pid := h.waiter.promptID
+	if ag != nil && pid != "" && !ag.LastTurnDrainedID(pid) && ag.InboxContainsID(pid) && (turnErr == nil || ag.LastTurnReachedDrain()) {
+		h.waiter.mu.Unlock()
+		return
+	}
 	h.waiter.out = nil
+	h.waiter.promptID = ""
+	h.waiter.agent = nil
 	h.waiter.mu.Unlock()
-	if ch != nil {
-		select {
-		case ch <- scheduledTurnResult{text: text, err: turnErr}:
-		default:
-		}
+	select {
+	case ch <- scheduledTurnResult{text: text, err: turnErr}:
+	default:
 	}
 }
 
@@ -499,9 +546,10 @@ func startDaemonSchedule(ctx context.Context, deps daemonScheduleDeps) (*daemonS
 
 	interval, ierr := deps.Schedule.EffectiveInterval()
 	jitter, jerr := deps.Schedule.EffectiveJitter()
-	if ierr != nil || jerr != nil {
+	timeout, terr := deps.Schedule.EffectiveTimeout()
+	if ierr != nil || jerr != nil || terr != nil {
 		lease.Release()
-		return nil, errors.Join(ierr, jerr)
+		return nil, errors.Join(ierr, jerr, terr)
 	}
 
 	var lost <-chan struct{}
@@ -515,6 +563,8 @@ func startDaemonSchedule(ctx context.Context, deps daemonScheduleDeps) (*daemonS
 		Interval:  interval,
 		Jitter:    jitter,
 		Prompt:    deps.Schedule.Prompt,
+		MaxFires:  deps.Schedule.MaxFires,
+		Timeout:   timeout,
 		LeaseLost: lost,
 		Logger:    logger,
 		PreFire:   deps.PreFire,

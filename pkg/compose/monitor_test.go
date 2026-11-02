@@ -32,6 +32,8 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 type stubCollectTool struct {
@@ -310,5 +312,169 @@ func TestMonitorCollector_RawCollectWithoutTransitionsFrom(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Check cluster health.") || !strings.Contains(prompt, `"cluster":"prod"`) {
 		t.Errorf("prompt = %q, want base prompt and collected output", prompt)
+	}
+}
+
+func TestMonitorCollector_UnwrapsGateToolsetAndDigestWrapper(t *testing.T) {
+	t.Parallel()
+	rawJSON := `{"transitions":[{"kind":"oom","edge":"opened","subject_key":"pod/prod/api/CrashLoopBackOff","summary":"OOMKilled"}],"degraded":false}`
+	inner := &stubCollectTool{
+		name: "lookout_diff",
+		runFn: func(_ adkagent.Context, _ any) (map[string]any, error) {
+			return map[string]any{"output": rawJSON}, nil
+		},
+	}
+	// Wrap inner in stubDigestWrapperTool and then tools.GateToolset (ModeAsk with nil approver).
+	// Without gatedTool.Unwrap(), runOwnBehalf stops at *gatedTool, which either gets denied by
+	// the ask gate or delegates to stubDigestWrapperTool (returning TRUNCATED_DIGEST).
+	digested := stubDigestWrapperTool{inner: inner}
+	rawTS := &stubCollectToolset{name: "lookout", tools: []tool.Tool{digested}}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeAsk})
+	gatedTS := tools.GateToolset(rawTS, gate, "mcp")
+
+	collector := NewMonitorCollector(MonitorCollectorConfig{
+		WorkloadName: "gke-triage",
+		AppName:      "core-agent",
+		UserID:       "daemon",
+		BasePrompt:   "Triage transitions.",
+		Monitor: &config.MonitorConfig{
+			Collect:         &config.MonitorCollectConfig{Tool: "lookout_diff"},
+			TransitionsFrom: "lookout_diff",
+		},
+		Toolsets: []tool.Toolset{gatedTS},
+	})
+
+	tick := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	prompt, shouldWake := collector.PreFire(context.Background(), tick, 1)
+	if !shouldWake {
+		t.Fatal("PreFire shouldWake = false, want true after unwrapping GateToolset + DigestWrapper")
+	}
+	if !strings.Contains(prompt, "pod/prod/api/CrashLoopBackOff") {
+		t.Errorf("prompt = %q, want raw untruncated subject_key", prompt)
+	}
+}
+
+func TestMonitorCollector_UnforwardedAckAndReOpenedNotSuppressed(t *testing.T) {
+	t.Parallel()
+	hLog := openMonitorTestEventLog(t)
+	ctx := context.Background()
+
+	// 1. Unforwarded ack when ack.tool is configured does NOT suppress.
+	if err := hLog.RecordAck(ctx, "core-agent", eventlog.AckRecord{
+		Workload:  "gke-triage",
+		Subject:   "pod/prod/api/CrashLoopBackOff",
+		By:        "alice@example.com",
+		At:        time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC),
+		Forwarded: false,
+	}); err != nil {
+		t.Fatalf("RecordAck unforwarded: %v", err)
+	}
+
+	var currentJSON string
+	collector := NewMonitorCollector(MonitorCollectorConfig{
+		WorkloadName: "gke-triage",
+		AppName:      "core-agent",
+		BasePrompt:   "Triage transitions.",
+		EventLog:     hLog,
+		Monitor: &config.MonitorConfig{
+			Collect:         &config.MonitorCollectConfig{Tool: "lookout_diff"},
+			TransitionsFrom: "lookout_diff",
+			Ack:             &config.MonitorAckConfig{Tool: "findings_ack"},
+		},
+		RunTool: func(_ adkagent.Context, _ string, _ map[string]any) (map[string]any, error) {
+			return map[string]any{"output": currentJSON}, nil
+		},
+	})
+
+	tick := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	currentJSON = `{"transitions":[{"kind":"oom","edge":"opened","subject_key":"pod/prod/api/CrashLoopBackOff"}],"degraded":false}`
+	if _, shouldWake := collector.PreFire(ctx, tick, 1); !shouldWake {
+		t.Fatal("unforwarded ack suppressed wake when ack.tool was configured")
+	}
+
+	// 2. Forwarded ack at 09:00 suppresses older/concurrent opened, but NOT re_opened or newer changed_at.
+	if err := hLog.RecordAck(ctx, "core-agent", eventlog.AckRecord{
+		Workload:  "gke-triage",
+		Subject:   "pod/prod/api/CrashLoopBackOff",
+		By:        "alice@example.com",
+		At:        time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC),
+		Forwarded: true,
+	}); err != nil {
+		t.Fatalf("RecordAck forwarded: %v", err)
+	}
+	if _, shouldWake := collector.PreFire(ctx, tick, 2); shouldWake {
+		t.Fatal("forwarded ack failed to suppress opened transition")
+	}
+
+	currentJSON = `{"transitions":[{"kind":"oom","edge":"re_opened","subject_key":"pod/prod/api/CrashLoopBackOff"}],"degraded":false}`
+	if _, shouldWake := collector.PreFire(ctx, tick, 3); !shouldWake {
+		t.Fatal("re_opened transition was suppressed by earlier ack")
+	}
+
+	currentJSON = `{"transitions":[{"kind":"oom","edge":"opened","subject_key":"pod/prod/api/CrashLoopBackOff","changed_at":"2026-08-21T09:30:00Z"}],"degraded":false}`
+	if _, shouldWake := collector.PreFire(ctx, tick, 4); !shouldWake {
+		t.Fatal("transition with changed_at after ack.At was suppressed")
+	}
+}
+
+func TestMonitorCollector_ClosedTransitionClearsActiveSubjectsWhenExcludedFromWakeOn(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSwitchboard{channel: "#sre-alerts"}
+	clock := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	notifier, err := NewNotifier(NotifierConfig{
+		WorkloadName: "gke-triage",
+		Notify: &config.MonitorNotifyConfig{
+			Channel:     "#sre-alerts",
+			RemindAfter: "1h",
+		},
+		Client: fake,
+		Now:    func() time.Time { return clock },
+	})
+	if err != nil {
+		t.Fatalf("NewNotifier: %v", err)
+	}
+
+	var currentJSON string
+	collector := NewMonitorCollector(MonitorCollectorConfig{
+		WorkloadName: "gke-triage",
+		BasePrompt:   "Triage transitions.",
+		Notifier:     notifier,
+		Monitor: &config.MonitorConfig{
+			Collect:         &config.MonitorCollectConfig{Tool: "lookout_diff"},
+			TransitionsFrom: "lookout_diff",
+			WakeOn:          []string{"opened", "remained"},
+		},
+		RunTool: func(_ adkagent.Context, _ string, _ map[string]any) (map[string]any, error) {
+			return map[string]any{"output": currentJSON}, nil
+		},
+	})
+
+	ctx := context.Background()
+	// 1. Open subject s1 at T=10:00.
+	currentJSON = `{"transitions":[{"kind":"oom","edge":"opened","subject_key":"s1"}],"degraded":false}`
+	_, shouldWake := collector.PreFire(ctx, clock, 1)
+	if !shouldWake {
+		t.Fatal("cycle 1 shouldWake = false, want true")
+	}
+	parsed, failed := collector.LastCycle()
+	if err := notifier.AfterCycle(ctx, parsed, "s1 opened", failed); err != nil {
+		t.Fatalf("AfterCycle 1: %v", err)
+	}
+	if notifier.state.ActiveSubjects["s1"] == "" {
+		t.Fatal("ActiveSubjects[s1] empty after opened, want non-empty")
+	}
+
+	// 2. Close subject s1 at T=10:15 while wake_on excludes "closed".
+	clock = clock.Add(15 * time.Minute)
+	currentJSON = `{"transitions":[{"kind":"oom","edge":"closed","subject_key":"s1"}],"degraded":false}`
+	_, shouldWake = collector.PreFire(ctx, clock, 2)
+	if shouldWake {
+		t.Fatal("cycle 2 shouldWake = true, want false when closed is excluded from wake_on")
+	}
+	if notifier.state.ActiveSubjects["s1"] != "" {
+		t.Error("ActiveSubjects[s1] still present after closed transition, want cleared even when closed not in wake_on")
+	}
+	if _, ok := notifier.state.LastRemindedAt["s1"]; ok {
+		t.Error("LastRemindedAt[s1] still present after closed transition")
 	}
 }

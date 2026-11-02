@@ -153,6 +153,12 @@ func (gt *gatedTool) Name() string        { return gt.inner.Name() }
 func (gt *gatedTool) Description() string { return gt.inner.Description() }
 func (gt *gatedTool) IsLongRunning() bool { return gt.inner.IsLongRunning() }
 
+// Unwrap returns the underlying tool wrapped by gt so direct runtime callers
+// outside the LLM dispatch path (such as compose.runOwnBehalf for
+// monitor.collect and monitor.ack) can peel the model-facing permission gate
+// and any inner digest wrapper (#1467).
+func (gt *gatedTool) Unwrap() adktool.Tool { return gt.inner }
+
 // ReadOnlyHint forwards the wrapped tool's dispatch-class declaration
 // (tools.ReadOnlyHinter, #460). Without this forward, a hint declared
 // by an inner tool (e.g. an MCP readOnlyHint recovered off the wire
@@ -162,8 +168,6 @@ func (gt *gatedTool) IsLongRunning() bool { return gt.inner.IsLongRunning() }
 func (gt *gatedTool) ReadOnlyHint() bool {
 	return IsReadOnlyTool(gt.inner)
 }
-
-func (gt *gatedTool) Unwrap() adktool.Tool { return gt.inner }
 
 // Declaration delegates to the underlying tool when it's runnable.
 // Returns nil for tools that don't expose a declaration (which the

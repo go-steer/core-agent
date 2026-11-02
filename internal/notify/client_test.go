@@ -166,6 +166,20 @@ func TestClient_ReplaceAndSentinels(t *testing.T) {
 	if !errors.Is(err, ErrDenied) {
 		t.Errorf("Replace(403) err = %v, want ErrDenied", err)
 	}
+
+	// 409 on Append -> ErrSendFullText.
+	statusToReturn.Store(http.StatusConflict)
+	_, err = c.Append(context.Background(), Ref{Channel: "C123", ID: "m-1"}, "delta")
+	if !errors.Is(err, ErrSendFullText) {
+		t.Errorf("Append(409) err = %v, want ErrSendFullText", err)
+	}
+
+	// 404 on Append -> ErrNoSuchMessage.
+	statusToReturn.Store(http.StatusNotFound)
+	_, err = c.Append(context.Background(), Ref{Channel: "C123", ID: "m-1"}, "delta")
+	if !errors.Is(err, ErrNoSuchMessage) {
+		t.Errorf("Append(404) err = %v, want ErrNoSuchMessage", err)
+	}
 }
 
 func TestClient_RetriesOn429And503(t *testing.T) {

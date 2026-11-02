@@ -246,6 +246,12 @@ func mergeComposeConfig(base, override *config.Config) *config.Config {
 	if override.Subagents != nil {
 		cp.Subagents = override.Subagents
 	}
+	if override.Schedule != nil {
+		cp.Schedule = override.Schedule
+	}
+	if override.Monitor != nil {
+		cp.Monitor = override.Monitor
+	}
 	return &cp
 }
 

@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-steer/core-agent/v3/internal/monitor"
 	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
@@ -169,5 +170,41 @@ func TestMonitorAcker_RefusesWrongWorkloadAndUnattributedCaller(t *testing.T) {
 		Subject: "s",
 	}); err == nil {
 		t.Error("unattributed Ack succeeded, want error")
+	}
+}
+
+func TestMonitorAcker_CapturesContextProxyByWhenRequestBySet(t *testing.T) {
+	t.Parallel()
+	hLog := openMonitorTestEventLog(t)
+	ctx := auth.WithProxyBy(context.Background(), "sa:switchboard")
+
+	acker := NewMonitorAcker(MonitorAckerConfig{
+		WorkloadName: "gke-triage",
+		AppName:      "core-agent",
+		EventLog:     hLog,
+		Monitor: &config.MonitorConfig{
+			Ack: &config.MonitorAckConfig{Tool: "findings_ack"},
+		},
+		RunTool: func(_ adkagent.Context, _ string, _ map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
+		},
+	})
+
+	res, err := acker.Ack(ctx, attach.MonitorAckRequest{
+		Subject: "ns/checkout/oom",
+		By:      "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	if res.ProxyBy != "sa:switchboard" {
+		t.Errorf("res.ProxyBy = %q, want sa:switchboard", res.ProxyBy)
+	}
+	got, err := hLog.Ack(ctx, "core-agent", "gke-triage", "ns/checkout/oom")
+	if err != nil || got == nil {
+		t.Fatalf("hLog.Ack: %v, %+v", err, got)
+	}
+	if got.ProxyBy != "sa:switchboard" {
+		t.Errorf("got.ProxyBy = %q, want sa:switchboard", got.ProxyBy)
 	}
 }

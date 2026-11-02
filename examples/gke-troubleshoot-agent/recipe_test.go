@@ -647,6 +647,22 @@ func TestWatcherImagePinIsConsistent(t *testing.T) {
 	if !strings.Contains(e2e, want) {
 		t.Errorf("%s does not default WATCHER_IMAGE to %s:%s", e2ePath, watcherImage, wantWatcherTag)
 	}
+
+	// Every declared Go literal in imagepin.Lookout.Literals must also
+	// match wantWatcherTag so outcome.PinnedLookout and the recipe stay
+	// in lockstep across upstream bumps.
+	for _, lit := range imagepin.Lookout.Literals {
+		path := filepath.Join("..", "..", filepath.FromSlash(lit.Path))
+		body := readRecipeFile(t, path)
+		m := lit.Re.FindStringSubmatch(body)
+		if len(m) < 2 || m[1] != wantWatcherTag {
+			got := ""
+			if len(m) >= 2 {
+				got = m[1]
+			}
+			t.Errorf("%s literal (%s) pins %q, want %q", lit.Path, lit.Why, got, wantWatcherTag)
+		}
+	}
 }
 
 // watcherTagDocs are the documents that quote this recipe's lookout

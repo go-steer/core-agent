@@ -12,16 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command outcome runs the O tier: the outcome evals (#297,
-// docs/outcome-evals-design.md).
+// Command outcome runs the O tier: the outcome evals (#1403,
+// docs/mast-fold-design.md §3.8).
 //
 // It is the only tier that needs all three of a real model, a real
-// cluster and a merge-blocking verdict. Everything the S/U/E tiers gate
-// on is a property of how mast is built; scoring a trajectory needs a
-// model that chooses, and a scripted provider does not choose.
+// cluster and a release-gating verdict. Everything the S/U/E tiers gate
+// on is a property of how the runtime is built; scoring a trajectory
+// needs a model that chooses, and a scripted provider does not choose.
 //
-// Normally invoked through scripts/outcome.sh, which is what the
-// `outcome` job in .github/workflows/outcome.yml runs. Direct use:
+// Invoked as the pre-release outcome gate in docs/release-process.md:
 //
 //	go run ./internal/evals/cmd/outcome
 //	go run ./internal/evals/cmd/outcome --model=claude-opus-5
@@ -226,6 +225,11 @@ func run(ctx context.Context, opt options) error {
 	if err := os.MkdirAll(scratch, 0o750); err != nil {
 		return err
 	}
+	defer func() {
+		if !opt.keep {
+			_ = os.RemoveAll(scratch)
+		}
+	}()
 
 	// Images come from the manifests, so the side-load list cannot drift
 	// from what the fixtures run. This provisioner is staging only — it

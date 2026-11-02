@@ -55,6 +55,7 @@ STEPS=(
   "lint            dev/tools/lint-go"
   "mod-tidy        dev/tools/verify-mod-tidy"
   "test            dev/tools/test-unit"
+  "evals           dev/tools/evals"
   "examples        dev/tools/examples-smoke"
   "gke-drill       dev/tools/verify-gke-drill"
   "terraform       dev/tools/verify-terraform"

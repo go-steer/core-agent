@@ -19,18 +19,22 @@ import (
 	"fmt"
 	"iter"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
+	"unsafe"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
+	"gorm.io/gorm"
 
-	"github.com/go-steer/core-models/pricing"
 	"github.com/go-steer/core-models/profile"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
 )
 
 type priceTable struct {
@@ -310,7 +314,7 @@ func (m *evalEchoModel) GenerateContent(_ context.Context, req *model.LLMRequest
 			CandidatesTokenCount: 16,
 		}
 		usage.TotalTokenCount = usage.PromptTokenCount + usage.CandidatesTokenCount
-		if _, ok := req.Tools["finish_task"]; ok {
+		if hasToolDeclared(req, "finish_task") {
 			yield(&model.LLMResponse{
 				Content: &genai.Content{
 					Role: genai.RoleModel,
@@ -332,6 +336,61 @@ func (m *evalEchoModel) GenerateContent(_ context.Context, req *model.LLMRequest
 			FinishReason:  genai.FinishReasonStop,
 		}, nil)
 	}
+}
+
+func hasToolDeclared(req *model.LLMRequest, name string) bool {
+	if req == nil {
+		return false
+	}
+	if _, ok := req.Tools[name]; ok {
+		return true
+	}
+	if req.Config == nil {
+		return false
+	}
+	for _, t := range req.Config.Tools {
+		if t == nil {
+			continue
+		}
+		for _, fd := range t.FunctionDeclarations {
+			if fd != nil && fd.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// CloseSessionService shuts down the underlying *sql.DB connection pool
+// held inside an ADK database.NewSessionService instance, mirroring
+// pkg/eventlog's adkGormDB cleanup so per-scenario SQLite stores do not leak
+// file descriptors.
+func CloseSessionService(svc session.Service) error {
+	if svc == nil {
+		return nil
+	}
+	v := reflect.ValueOf(svc)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	f := v.FieldByName("db")
+	if !f.IsValid() || f.Kind() != reflect.Pointer || !f.CanAddr() {
+		return nil
+	}
+	// #nosec G103 -- unexported-field read of ADK's own *gorm.DB to close its *sql.DB pool.
+	f = reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
+	db, ok := f.Interface().(*gorm.DB)
+	if !ok || db == nil {
+		return nil
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
 }
 
 func lastEchoUserText(req *model.LLMRequest) string {

@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command evals runs the v0.3 parity eval suite (docs/v0.3-plan.md W0.4).
+// Command evals runs the parity and differentiator eval suite (#1403).
 //
-// Normally invoked through scripts/evals.sh, which is what
-// dev/ci/presubmits/evals.sh and the ci.yml evals job run. Direct use:
+// Normally invoked through dev/tools/evals, which is what
+// dev/ci/presubmits/evals and the ci.yml evals job run, and through
+// .github/workflows/evals-nightly.yml for the metered judge tier.
+// Direct use:
 //
 //	go run ./internal/evals/cmd/evals              # deterministic tier
 //	go run ./internal/evals/cmd/evals --format=json
@@ -51,6 +53,7 @@ func main() {
 	var (
 		tier     = flag.String("tier", harness.TierDeterministic, "which tier to run: deterministic (free, gating) or judge (metered, live credentials)")
 		root     = flag.String("root", "", "repository root; defaults to the nearest ancestor with a go.mod")
+		cfgPath  = flag.String("c", "", "explicit config.json path for provider profile discovery (judge tier)")
 		format   = flag.String("format", "text", "output format: text or json")
 		model    = flag.String("model", "", "judge tier: the model under test (default: the Anthropic default)")
 		grader   = flag.String("grader", "", "judge tier: the model that scores response_quality (default: the small Anthropic model)")
@@ -65,12 +68,16 @@ func main() {
 	// Declared provider profiles (.agents/providers/*.yaml), so a judge
 	// run can name one — a profile with tiers is what J-cost-tier needs
 	// to price a tiered roster on a provider beyond Gemini and Claude.
-	declared, err := evalcompose.DiscoverProviders()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "evals:", err)
-		os.Exit(2)
+	// The deterministic tier does not use provider profiles and does not
+	// walk upward from the working directory unless -c is given.
+	if *cfgPath != "" || *tier != harness.TierDeterministic {
+		declared, err := evalcompose.DiscoverProvidersFrom(*cfgPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "evals:", err)
+			os.Exit(2)
+		}
+		evalcompose.RegisterProfiles(declared)
 	}
-	evalcompose.RegisterProfiles(declared)
 
 	pc, err := promptCache(*cache)
 	if err != nil {

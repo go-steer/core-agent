@@ -170,4 +170,30 @@ run "the_apply_ends_by_naming_what_it_did_not_do" {
     condition     = strcontains(output.next_steps, "core-agent can change NOTHING right now")
     error_message = "a default install must say out loud that it holds no write grant; next_steps said: ${output.next_steps}"
   }
+
+  assert {
+    condition     = strcontains(output.next_steps, "CLUSTER_NAME=local") && strcontains(output.next_steps, "REGION=us-central1")
+    error_message = "next_steps must pass CLUSTER_NAME and REGION so scripts/prereqs.sh require_coordinates succeeds: ${output.next_steps}"
+  }
+}
+
+run "an_unknown_write_scope_is_refused_at_the_root_even_with_remediation_namespaces" {
+  command = plan
+
+  variables {
+    write_scope            = "readonly"
+    remediation_namespaces = ["team-a"]
+  }
+
+  expect_failures = [var.write_scope]
+}
+
+run "an_empty_project_id_is_refused_at_the_root" {
+  command = plan
+
+  variables {
+    project_id = ""
+  }
+
+  expect_failures = [var.project_id]
 }

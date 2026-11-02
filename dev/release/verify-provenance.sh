@@ -18,9 +18,10 @@
 # Verifies the SLSA build provenance of a published core-agent artifact (#1408).
 #
 #   dev/release/verify-provenance.sh v3.0.0
-#   dev/release/verify-provenance.sh --oci ghcr.io/go-steer/core-agent@sha256:...
-#   dev/release/verify-provenance.sh --oci ghcr.io/go-steer/core-agent-slim@sha256:...
-#   dev/release/verify-provenance.sh --oci ghcr.io/go-steer/core-agent-tui@sha256:...
+#   dev/release/verify-provenance.sh --oci ghcr.io/go-steer/core-agent@sha256:... v3.0.0
+#   dev/release/verify-provenance.sh --oci ghcr.io/go-steer/core-agent-slim@sha256:... v3.0.0
+#   dev/release/verify-provenance.sh --oci ghcr.io/go-steer/core-agent-tui@sha256:... v3.0.0
+#   SOURCE_REF=refs/heads/main dev/release/verify-provenance.sh --local-dist dist
 #
 # Both release workflows run this against what they have just published:
 # a step that attests exiting 0 says an attestation was generated on a
@@ -73,8 +74,9 @@ WORKFLOW_IMAGES="${REPO}/.github/workflows/release-images.yml"
 
 usage() {
   cat >&2 <<EOF
-usage: $(basename "$0") <tag>              # e.g. v3.0.0 — the release assets
-       $(basename "$0") --oci <ref>        # e.g. ghcr.io/go-steer/core-agent@sha256:...
+usage: $(basename "$0") <tag>                     # e.g. v3.0.0 — the release assets
+       $(basename "$0") --oci <ref> [<tag>]       # e.g. ghcr.io/go-steer/core-agent@sha256:... v3.0.0 (or SOURCE_REF=...)
+       $(basename "$0") --local-dist <dir>        # verify local dist/checksums.txt + archives (requires SOURCE_REF)
 EOF
   exit 2
 }
@@ -88,6 +90,7 @@ command -v gh >/dev/null 2>&1 || {
 
 if [[ "${1:-}" == "--oci" ]]; then
   REF="${2:-}"
+  TAG="${3:-}"
   [[ -n "${REF}" ]] || usage
   # A tag is a moving pointer and provenance is about one build, so this
   # refuses a tag rather than resolving one: `docker pull` prints the
@@ -97,21 +100,71 @@ if [[ "${1:-}" == "--oci" ]]; then
     echo "       A tag can be re-pointed after it is attested. Use <repo>@sha256:..." >&2
     exit 2
   }
+  if [[ -n "${TAG}" ]]; then
+    if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+      echo "error: expected vX.Y.Z or vX.Y.Z-<pre>, got: ${TAG}" >&2
+      exit 2
+    fi
+    SOURCE_REF="${SOURCE_REF:-refs/tags/${TAG}}"
+  fi
+  if [[ -z "${SOURCE_REF:-}" ]]; then
+    echo "error: --oci requires a <tag> argument (e.g. v3.0.0) or SOURCE_REF=... so branch builds from ${WORKFLOW_IMAGES} cannot pass as release images." >&2
+    exit 2
+  fi
   echo "verifying provenance for oci://${REF}"
   echo "  signer:   ${WORKFLOW_IMAGES}"
-  oci_args=(
-    --repo "${REPO}"
-    --signer-workflow "${WORKFLOW_IMAGES}"
+  echo "  ref:      ${SOURCE_REF}"
+  echo
+  gh attestation verify "oci://${REF}" \
+    --repo "${REPO}" \
+    --signer-workflow "${WORKFLOW_IMAGES}" \
+    --source-ref "${SOURCE_REF}" \
     --bundle-from-oci
-  )
-  if [[ -n "${SOURCE_REF:-}" ]]; then
-    echo "  ref:      ${SOURCE_REF}"
-    oci_args+=(--source-ref "${SOURCE_REF}")
+  echo
+  echo "OK: ${REF} was built and attested by ${WORKFLOW_IMAGES} at ${SOURCE_REF}."
+  exit 0
+fi
+
+# ----------------------------------------------------- --local-dist mode
+
+if [[ "${1:-}" == "--local-dist" ]]; then
+  DIST_DIR="${2:-}"
+  [[ -n "${DIST_DIR}" && -d "${DIST_DIR}" ]] || usage
+  if [[ -z "${SOURCE_REF:-}" ]]; then
+    echo "error: --local-dist requires SOURCE_REF to be set in the environment." >&2
+    exit 2
+  fi
+  cd "${DIST_DIR}"
+  if [[ ! -f "checksums.txt" ]]; then
+    echo "error: ${DIST_DIR} has no checksums.txt." >&2
+    exit 1
+  fi
+  echo "verifying local dist provenance in ${DIST_DIR}"
+  echo "  signer:   ${WORKFLOW_RELEASE}"
+  echo "  ref:      ${SOURCE_REF}"
+  echo
+  assets=(checksums.txt)
+  while read -r asset; do
+    [[ -n "${asset}" ]] && assets+=("${asset}")
+  done < <(awk '{print $2}' checksums.txt)
+  failed=0
+  for asset in "${assets[@]}"; do
+    if gh attestation verify "${asset}" \
+      --repo "${REPO}" \
+      --signer-workflow "${WORKFLOW_RELEASE}" \
+      --source-ref "${SOURCE_REF}"; then
+      :
+    else
+      echo "error: no usable provenance for ${asset}" >&2
+      failed=1
+    fi
+  done
+  if [[ ${failed} -ne 0 ]]; then
+    echo "FAILED: ${DIST_DIR} has assets with no provenance from ${WORKFLOW_RELEASE} at ${SOURCE_REF}." >&2
+    exit 1
   fi
   echo
-  gh attestation verify "oci://${REF}" "${oci_args[@]}"
-  echo
-  echo "OK: ${REF} was built and attested by ${WORKFLOW_IMAGES}."
+  echo "OK: all ${#assets[@]} local dist assets were attested by ${WORKFLOW_RELEASE} at ${SOURCE_REF}."
   exit 0
 fi
 

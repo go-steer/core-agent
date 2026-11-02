@@ -147,6 +147,23 @@ func TestTerraformNamesTheDeployServiceAccount(t *testing.T) {
 		}
 	}
 
+	var watcherSA string
+	for _, o := range gatedApplyDecode(t, "deploy/base/11-serviceaccount-watcher.yaml") {
+		if o.Kind == "ServiceAccount" {
+			watcherSA = o.Metadata.Name
+		}
+	}
+	if watcherSA == "" {
+		t.Fatal("deploy/base/11-serviceaccount-watcher.yaml carries no ServiceAccount with name")
+	}
+	tfWatcherSA, ok := quotedAfter(tfReadFile(t, tfWifMain), "watcher_ksa_name")
+	if !ok {
+		t.Fatalf("%s no longer sets a literal watcher_ksa_name", tfWifMain)
+	}
+	if tfWatcherSA != watcherSA {
+		t.Errorf("deploy/base creates watcher ServiceAccount %q and %s names %q", watcherSA, tfWifMain, tfWatcherSA)
+	}
+
 	objs := gatedApplyDecode(t, filepath.Join(gatedApplyDir, "rolebinding.yaml"))
 	if len(objs) != 1 || len(objs[0].Subjects) != 1 {
 		t.Fatalf("expected 1 RoleBinding with 1 subject in %s/rolebinding.yaml", gatedApplyDir)
@@ -210,7 +227,7 @@ var tfPrincipalHoles = strings.NewReplacer(
 )
 
 // TestTerraformAndGrantIAMGrantTheSameRoles holds the module to
-// scripts/grant-iam.sh for both write scopes.
+// scripts/grant-iam.sh for both write scopes and for OTEL=1.
 func TestTerraformAndGrantIAMGrantTheSameRoles(t *testing.T) {
 	script := tfReadFile(t, grantIAMPath)
 	tf := tfReadFile(t, tfWifMain)
@@ -225,7 +242,50 @@ func TestTerraformAndGrantIAMGrantTheSameRoles(t *testing.T) {
 		})
 	}
 
-	// The fourth binding is not a project role and lives in its own
+	// Custom role definition: grant-iam.sh creates CUSTOM_ROLE_ID with
+	// CUSTOM_ROLE_EXTRA ("container.pods.getLogs"); modules/wif must
+	// provision the same custom role ID and extra permission.
+	wantRoleID, ok := quotedAfter(script, "CUSTOM_ROLE_ID=")
+	if !ok {
+		t.Fatalf("%s no longer sets CUSTOM_ROLE_ID", grantIAMPath)
+	}
+	gotRoleID, ok := quotedAfter(tf, "custom_role_id    = ")
+	if !ok {
+		t.Fatalf("%s no longer sets custom_role_id", tfWifMain)
+	}
+	if gotRoleID != wantRoleID {
+		t.Errorf("%s custom_role_id = %q, want %q from %s", tfWifMain, gotRoleID, wantRoleID, grantIAMPath)
+	}
+	wantExtraPerm, ok := quotedAfter(script, "CUSTOM_ROLE_EXTRA=")
+	if !ok {
+		t.Fatalf("%s no longer sets CUSTOM_ROLE_EXTRA", grantIAMPath)
+	}
+	gotExtraPerm, ok := quotedAfter(tf, "custom_role_extra = ")
+	if !ok {
+		t.Fatalf("%s no longer sets custom_role_extra", tfWifMain)
+	}
+	if gotExtraPerm != wantExtraPerm {
+		t.Errorf("%s custom_role_extra = %q, want %q from %s", tfWifMain, gotExtraPerm, wantExtraPerm, grantIAMPath)
+	}
+	if !strings.Contains(tf, `resource "google_project_iam_custom_role" "cluster_viewer"`) {
+		t.Errorf("%s declares no google_project_iam_custom_role.cluster_viewer resource", tfWifMain)
+	}
+
+	// OTEL roles: daemon gets roles/cloudtrace.user + roles/monitoring.metricWriter,
+	// watcher (lookout-watch) gets roles/cloudtrace.user.
+	gotOtelDaemon := hclList(t, tf, "otel_daemon_roles = var.otel_enabled ? [")
+	gotOtelWatcher := hclList(t, tf, "watcher_roles = var.otel_enabled ? toset([")
+	slices.Sort(gotOtelDaemon)
+	slices.Sort(gotOtelWatcher)
+	wantOtelDaemon, wantOtelWatcher := grantIAMOtelRoles(t, script)
+	if !slices.Equal(gotOtelDaemon, wantOtelDaemon) {
+		t.Errorf("%s otel_daemon_roles = %v, want %v from %s", tfWifMain, gotOtelDaemon, wantOtelDaemon, grantIAMPath)
+	}
+	if !slices.Equal(gotOtelWatcher, wantOtelWatcher) {
+		t.Errorf("%s watcher_roles = %v, want %v from %s", tfWifMain, gotOtelWatcher, wantOtelWatcher, grantIAMPath)
+	}
+
+	// The node SA binding is not a project role and lives in its own
 	// resource, so the loop above cannot see it. Without it the daemon
 	// cannot impersonate the node service account and Workload Identity
 	// Federation never completes.
@@ -241,8 +301,11 @@ func TestTerraformAndGrantIAMGrantTheSameRoles(t *testing.T) {
 // layer down: an API the module forgets is an apply that succeeds and a
 // daemon that cannot reach Vertex or exchange a token.
 func TestTerraformAndGrantIAMEnableTheSameAPIs(t *testing.T) {
-	want := grantIAMBaseAPIs(t, tfReadFile(t, grantIAMPath))
-	got := hclList(t, tfReadFile(t, tfWifMain), "apis = var.enable_apis ? toset([")
+	script := tfReadFile(t, grantIAMPath)
+	tf := tfReadFile(t, tfWifMain)
+
+	want := grantIAMBaseAPIs(t, script)
+	got := hclList(t, tf, "base_apis = [")
 
 	slices.Sort(want)
 	slices.Sort(got)
@@ -250,7 +313,15 @@ func TestTerraformAndGrantIAMEnableTheSameAPIs(t *testing.T) {
 		t.Fatalf("%s enables no base APIs — this test would pass on anything", grantIAMPath)
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("the module enables %v and %s enables %v", got, grantIAMPath, want)
+		t.Errorf("the module enables base_apis %v and %s enables %v", got, grantIAMPath, want)
+	}
+
+	wantOtel := grantIAMOtelAPIs(t, script)
+	gotOtel := hclList(t, tf, "otel_apis = var.otel_enabled ? [")
+	slices.Sort(wantOtel)
+	slices.Sort(gotOtel)
+	if !slices.Equal(gotOtel, wantOtel) {
+		t.Errorf("the module enables otel_apis %v and %s enables %v", gotOtel, grantIAMPath, wantOtel)
 	}
 }
 
@@ -364,9 +435,63 @@ func grantIAMBaseAPIs(t *testing.T, script string) []string {
 	return out
 }
 
+// grantIAMOtelAPIs parses the `apis+=(...)` array under `if [[ "${OTEL}" != "0" ]]`
+// in scripts/grant-iam.sh.
+func grantIAMOtelAPIs(t *testing.T, script string) []string {
+	t.Helper()
+	_, after, ok := strings.Cut(script, "apis+=(")
+	if !ok {
+		t.Fatalf("%s has no apis+=(...) array for OTEL", grantIAMPath)
+	}
+	block, _, ok := strings.Cut(after, ")")
+	if !ok {
+		t.Fatalf("%s apis+=(...) array is never closed", grantIAMPath)
+	}
+	return strings.Fields(block)
+}
+
+// grantIAMOtelRoles parses the OTEL project grants in scripts/grant-iam.sh,
+// returning the daemon roles and the lookout-watch roles.
+func grantIAMOtelRoles(t *testing.T, script string) (daemonRoles, watcherRoles []string) {
+	t.Helper()
+	_, after, ok := strings.Cut(script, "\ngrants=()")
+	if !ok {
+		t.Fatalf("%s has no grants=() array", grantIAMPath)
+	}
+	_, otelBlock, ok := strings.Cut(after, "\nif [[ \"${OTEL}\"")
+	if !ok {
+		t.Fatalf("%s has no OTEL guard after base grants=()", grantIAMPath)
+	}
+	otelBlock, _, ok = strings.Cut(otelBlock, "\nfi")
+	if !ok {
+		t.Fatalf("%s OTEL grants block is never closed", grantIAMPath)
+	}
+	for _, entry := range allQuotedAfter(otelBlock, `grants+=("`) {
+		fields := strings.Fields(entry)
+		if len(fields) != 2 {
+			t.Fatalf("unexpected OTEL grant entry %q in %s", entry, grantIAMPath)
+		}
+		switch fields[1] {
+		case "core-agent-daemon":
+			daemonRoles = append(daemonRoles, fields[0])
+		case "lookout-watch":
+			watcherRoles = append(watcherRoles, fields[0])
+		default:
+			t.Fatalf("unexpected KSA %q in OTEL grant entry %q", fields[1], entry)
+		}
+	}
+	slices.Sort(daemonRoles)
+	slices.Sort(watcherRoles)
+	return daemonRoles, watcherRoles
+}
+
 // grantIAMProjectRoles parses the base (non-OTEL) project grants for
-// core-agent-daemon from scripts/grant-iam.sh and resolves ${CUSTOM_ROLE}
-// to the predefined container role for the given write_scope.
+// core-agent-daemon from scripts/grant-iam.sh. In namespaced mode,
+// grant-iam.sh copies --source=roles/container.viewer into ${CUSTOM_ROLE}
+// and adds container.pods.getLogs, while Terraform binds both
+// roles/container.viewer and the custom role (because GCP IAM custom roles
+// cannot copy NOT_SUPPORTED permissions like resourcemanager.projects.list
+// directly via the API).
 func grantIAMProjectRoles(t *testing.T, script, scope string) []string {
 	t.Helper()
 	_, after, ok := strings.Cut(script, "\ngrants=()")
@@ -381,9 +506,9 @@ func grantIAMProjectRoles(t *testing.T, script, scope string) []string {
 	if !ok {
 		t.Fatalf("%s no longer copies CUSTOM_ROLE from a --source= predefined role", grantIAMPath)
 	}
-	containerRole := sourceRole
-	if scope == "cluster-admin" {
-		containerRole = "roles/container.admin"
+	customRoleID, ok := quotedAfter(script, "CUSTOM_ROLE_ID=")
+	if !ok {
+		t.Fatalf("%s no longer sets CUSTOM_ROLE_ID", grantIAMPath)
 	}
 
 	entries := allQuotedAfter(baseBlock, `grants+=("`)
@@ -398,7 +523,12 @@ func grantIAMProjectRoles(t *testing.T, script, scope string) []string {
 		}
 		role := fields[0]
 		if role == "${CUSTOM_ROLE}" {
-			role = containerRole
+			if scope == "cluster-admin" {
+				roles = append(roles, "roles/container.admin")
+			} else {
+				roles = append(roles, sourceRole, "projects/<project>/roles/"+customRoleID)
+			}
+			continue
 		}
 		roles = append(roles, role)
 	}
@@ -406,8 +536,7 @@ func grantIAMProjectRoles(t *testing.T, script, scope string) []string {
 	return roles
 }
 
-// terraformProjectRoles is the local.project_roles list with the
-// write_scope ternary resolved for one scope.
+// terraformProjectRoles resolves local.base_project_roles for one write_scope.
 func terraformProjectRoles(t *testing.T, tf, scope string) []string {
 	t.Helper()
 	m := containerRoleTernary.FindStringSubmatch(tf)
@@ -418,17 +547,29 @@ func terraformProjectRoles(t *testing.T, tf, scope string) []string {
 	if scope == m[1] {
 		container = m[2]
 	}
-
-	roles := hclList(t, tf, "project_roles = [")
-	var resolved int
-	for i, r := range roles {
-		if r == "local.container_role" {
-			roles[i] = container
-			resolved++
-		}
+	customRoleID, ok := quotedAfter(tf, "custom_role_id    = ")
+	if !ok {
+		t.Fatalf("%s no longer sets custom_role_id", tfWifMain)
 	}
-	if resolved != 1 {
-		t.Fatalf("%s's project_roles referenced local.container_role %d times; expected exactly one", tfWifMain, resolved)
+	customRole := "projects/<project>/roles/" + customRoleID
+
+	prefix := `base_project_roles = var.write_scope == "cluster-admin" ? [`
+	if scope != "cluster-admin" {
+		_, afterFirst, ok := strings.Cut(tf, prefix)
+		if !ok {
+			t.Fatalf("%s no longer defines base_project_roles ternary", tfWifMain)
+		}
+		tf = afterFirst
+		prefix = "] : ["
+	}
+	roles := hclList(t, tf, prefix)
+	for i, r := range roles {
+		switch r {
+		case "local.container_role":
+			roles[i] = container
+		case "local.custom_role":
+			roles[i] = customRole
+		}
 	}
 	slices.Sort(roles)
 	return roles

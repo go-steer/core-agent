@@ -60,3 +60,13 @@ output "node_service_account" {
   description = "The node service account the daemon may impersonate — derived when not supplied."
   value       = local.node_service_account
 }
+
+output "custom_role" {
+  description = "The project-scoped custom role granting container.pods.getLogs for gke_get_k8s_logs."
+  value       = local.custom_role
+}
+
+output "watcher_bound_project_roles" {
+  description = "Project roles bound on the lookout-watch ServiceAccount (roles/cloudtrace.user when otel_enabled = true)."
+  value       = sort(keys(google_project_iam_member.watcher))
+}

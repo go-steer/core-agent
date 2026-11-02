@@ -39,7 +39,7 @@ with before-and-after state transitions.
 
 | Module | Resources |
 |---|---|
-| `modules/wif` | Three base APIs (`container`, `aiplatform`, `iamcredentials`), three additive `google_project_iam_member` bindings (`roles/aiplatform.user`, `roles/mcp.toolUser`, and `roles/container.viewer` or `roles/container.admin`) on the daemon's Workload Identity Federation principal, and `roles/iam.serviceAccountUser` on the node service account. |
+| `modules/wif` | Three base APIs (`container`, `aiplatform`, `iamcredentials`, plus `cloudtrace` and `monitoring` when `otel_enabled = true`), `google_project_iam_custom_role.cluster_viewer` (`gkeAgentClusterViewer` with `container.pods.getLogs`), additive `google_project_iam_member` bindings (`roles/aiplatform.user`, `roles/mcp.toolUser`, and `roles/container.viewer` + `gkeAgentClusterViewer` or `roles/container.admin`) on the daemon's Workload Identity Federation principal, and `roles/iam.serviceAccountUser` on the node service account. |
 | `modules/release` | `kubernetes_namespace_v1.agent` (`gke-platform-agent`), `kubernetes_config_map_v1.gcp_env` (`core-agent-gcp-env`), and per-namespace `kubernetes_role_v1.remediation` + `kubernetes_role_binding_v1.remediation` matching `deploy/components/gated-apply/` (`patch` on `apps/deployments` bound to the daemon's Workload Identity `User`). |
 
 The two are separate modules because they are often separate people —

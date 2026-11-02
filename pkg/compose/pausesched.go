@@ -308,6 +308,9 @@ func (ps *PauseScheduler) fireDue(ctx context.Context, token string) {
 	}
 	if ps.fire != nil {
 		if err := ps.fire(turnCtx, rec); err != nil {
+			if errors.Is(err, eventlog.ErrAlreadyResumed) || errors.Is(err, eventlog.ErrTokenNotFound) {
+				return
+			}
 			if ctx.Err() != nil || ps.aborted() {
 				return
 			}
@@ -317,6 +320,14 @@ func (ps *PauseScheduler) fireDue(ctx context.Context, token string) {
 			ps.Schedule(token, time.Now().Add(pauseRequeueDelay))
 			return
 		}
+	}
+	wctx, cancelWrite := context.WithTimeout(context.WithoutCancel(turnCtx), scheduleStoreWriteTimeout)
+	defer cancelWrite()
+	if _, err := ps.handle.ConsumeScheduled(wctx, ps.appName, token, SchedulerIdentity); err != nil &&
+		!errors.Is(err, eventlog.ErrAlreadyResumed) &&
+		!errors.Is(err, eventlog.ErrTokenNotFound) {
+		ps.logger.Warn("timed resume failed to mark pause token consumed",
+			"session", rec.SessionID, "plane", rec.Plane, "error", err.Error())
 	}
 	ps.logger.Info("timed resume fired",
 		"session", rec.SessionID, "plane", rec.Plane, "reason", string(rec.Reason))

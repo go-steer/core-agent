@@ -167,10 +167,11 @@ type ScheduledTrigger struct {
 	now        func() time.Time
 	jitterFrac func() float64
 
-	mu     sync.Mutex
-	anchor time.Time
-	last   time.Time
-	fires  int64
+	mu       sync.Mutex
+	anchor   time.Time
+	last     time.Time
+	lastFire time.Time
+	fires    int64
 
 	running  atomic.Bool
 	stopOnce sync.Once
@@ -243,13 +244,21 @@ func (t *ScheduledTrigger) seed(ctx context.Context) error {
 			t.mu.Lock()
 			t.anchor = rec.Anchor.UTC()
 			t.last = rec.LastTick.UTC()
+			t.lastFire = rec.LastFire.UTC()
 			t.fires = rec.Fires
 			if t.last.IsZero() {
 				t.last = t.anchor
 			}
 			last := t.last
 			anchor := t.anchor
+			intervalChanged := rec.Interval != t.interval
 			t.mu.Unlock()
+			if intervalChanged {
+				if perr := t.persist(ctx, time.Time{}, 0); perr != nil {
+					t.logger.Warn("scheduled trigger could not persist updated interval",
+						"workload", t.workload, "error", perr.Error())
+				}
+			}
 			t.logger.Info("scheduled trigger resumed its persisted cadence",
 				"workload", t.workload, "anchor", anchor.Format(time.RFC3339Nano),
 				"interval", t.interval.String(), "jitter", t.jitter.String(),
@@ -464,32 +473,39 @@ func (t *ScheduledTrigger) leaseHasBeenLost() bool {
 
 func (t *ScheduledTrigger) persist(ctx context.Context, lastFire time.Time, fired int64) error {
 	t.mu.Lock()
+	if !lastFire.IsZero() {
+		t.lastFire = lastFire.UTC()
+	}
 	if t.handle == nil {
 		t.fires += fired
 		t.mu.Unlock()
 		return nil
 	}
+	effectiveLastFire := t.lastFire
 	rec := eventlog.ScheduleRecord{
 		Workload: t.workload,
 		Interval: t.interval,
 		Anchor:   t.anchor,
 		LastTick: t.last,
-		LastFire: lastFire,
+		LastFire: effectiveLastFire,
 	}
 	baseFires := t.fires
 	t.mu.Unlock()
 
 	if prev, err := t.handle.Schedule(ctx, t.appName, t.workload); err == nil && prev != nil {
-		rec.Fires = prev.Fires
-		if lastFire.IsZero() {
+		if prev.Fires > baseFires {
+			baseFires = prev.Fires
+		}
+		if effectiveLastFire.IsZero() && !prev.LastFire.IsZero() {
 			rec.LastFire = prev.LastFire
 		}
-	} else {
-		rec.Fires = baseFires
 	}
-	rec.Fires += fired
+	rec.Fires = baseFires + fired
 	t.mu.Lock()
 	t.fires = rec.Fires
+	if !rec.LastFire.IsZero() {
+		t.lastFire = rec.LastFire.UTC()
+	}
 	t.mu.Unlock()
 
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scheduleStoreWriteTimeout)

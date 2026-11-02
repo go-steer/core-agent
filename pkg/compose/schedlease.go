@@ -146,6 +146,14 @@ func acquireSchedulingLeaseWithin(
 			if ctx.Err() != nil {
 				return nil, false
 			}
+			if waited && time.Until(deadline) > 0 {
+				select {
+				case <-ctx.Done():
+					return nil, false
+				case <-time.After(retryEvery):
+				}
+				continue
+			}
 			logger.Error("could not take the scheduling lease; proceeding as if this instance drives scheduled work, which duplicates it if another instance is running",
 				"workload", appName, "lease", schedulingLeaseSessionID, "error", err.Error())
 			return nil, true

@@ -18,13 +18,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"google.golang.org/adk/v2/session"
 	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/internal/effects"
 	"github.com/go-steer/core-agent/v3/internal/monitor"
@@ -34,6 +37,8 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/compose"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 func buildMonitorAckHandler(cfg *config.Config, eventlogHandle *eventlog.Handle, toolsets []adktool.Toolset, hasMCPServers bool) (attach.MonitorAckHandler, error) {
@@ -59,29 +64,112 @@ func buildMonitorAckHandler(cfg *config.Config, eventlogHandle *eventlog.Handle,
 	}).Ack, nil
 }
 
-func buildDaemonEffectControls(cfg *config.Config) (effects.ReadOnlyPredicate, map[string]bool) {
-	if cfg == nil {
+func buildDaemonEffectControls(cfg *config.Config, toolsets ...adktool.Toolset) (effects.ReadOnlyPredicate, map[string]bool) {
+	if cfg == nil && len(toolsets) == 0 {
 		return effects.NewPredicate(nil), nil
 	}
 	var overrides map[string]bool
-	if len(cfg.Tools.Policies) > 0 {
-		overrides = make(map[string]bool, len(cfg.Tools.Policies))
-		for _, p := range cfg.Tools.Policies {
-			if p.Name != "" && p.Mutating != nil {
-				overrides[p.Name] = *p.Mutating
-			}
-		}
-	}
 	var subNames map[string]bool
-	if len(cfg.Subagents) > 0 {
-		subNames = make(map[string]bool, len(cfg.Subagents))
-		for _, sa := range cfg.Subagents {
-			if sa.Name != "" {
-				subNames[sa.Name] = true
+	if cfg != nil {
+		if len(cfg.Tools.Policies) > 0 {
+			overrides = make(map[string]bool, len(cfg.Tools.Policies))
+			for _, p := range cfg.Tools.Policies {
+				if p.Name != "" && p.Mutating != nil {
+					overrides[p.Name] = *p.Mutating
+				}
+			}
+		}
+		if len(cfg.Subagents) > 0 {
+			subNames = make(map[string]bool, len(cfg.Subagents))
+			for _, sa := range cfg.Subagents {
+				if sa.Name != "" {
+					subNames[sa.Name] = true
+				}
 			}
 		}
 	}
-	return effects.NewPredicate(overrides), subNames
+	var (
+		hintOnce    sync.Once
+		readOnlyMap map[string]bool
+	)
+	var hint effects.ReadOnlyHint
+	if len(toolsets) > 0 {
+		hint = func(toolName string) (bool, bool) {
+			hintOnce.Do(func() {
+				readOnlyMap = make(map[string]bool)
+				for _, ts := range toolsets {
+					if ts == nil {
+						continue
+					}
+					list, err := mcp.ListTools(context.Background(), ts)
+					if err != nil {
+						continue
+					}
+					for _, t := range list {
+						if t != nil && tools.IsReadOnlyTool(t) {
+							readOnlyMap[t.Name()] = true
+						}
+					}
+				}
+			})
+			if readOnlyMap[toolName] {
+				return true, true
+			}
+			return false, false
+		}
+	}
+	basePred := effects.NewPredicateWithHints(overrides, hint)
+	if len(overrides) == 0 {
+		return basePred, subNames
+	}
+	return func(name string) effects.Class {
+		if _, ok := overrides[name]; ok || effects.IsBuiltinOrControl(name) {
+			return basePred(name)
+		}
+		bestLen := 0
+		var bestMutating bool
+		for policyName, mutating := range overrides {
+			if len(policyName) > bestLen && strings.HasSuffix(name, "_"+policyName) {
+				bestLen = len(policyName)
+				bestMutating = mutating
+			}
+		}
+		if bestLen > 0 {
+			if bestMutating {
+				return effects.ClassMutating
+			}
+			return effects.ClassReadOnly
+		}
+		return basePred(name)
+	}, subNames
+}
+
+func startMultiSessionAutoContinue(
+	retryCtx context.Context,
+	wg *sync.WaitGroup,
+	cfg *config.Config,
+	deps *compose.SessionFactoryDeps,
+	enabled, retry bool,
+	retryInterval time.Duration,
+) {
+	if !enabled || deps == nil || cfg == nil || !cfg.Attach.MultiSession.Enabled {
+		return
+	}
+	maxPerBoot := 0
+	if ac := cfg.Agent.AutoContinue; ac != nil {
+		maxPerBoot = ac.MaxPerBoot
+	}
+	snapshot := *deps
+	go compose.AutoContinueBootScan(snapshot, maxPerBoot)
+	if retry {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			compose.AutoContinueRetryLoop(retryCtx, retryInterval, func() {
+				compose.AutoContinueRetryScan(snapshot, maxPerBoot)
+			}, snapshot.LeaseLost)
+		}()
+	}
 }
 
 func startSingleSessionScheduleAndAutoContinue(
@@ -91,6 +179,7 @@ func startSingleSessionScheduleAndAutoContinue(
 	eventlogHandle *eventlog.Handle,
 	a *agent.Agent,
 	toolsets []adktool.Toolset,
+	factoryDeps *compose.SessionFactoryDeps,
 	autoContinueEnabled, autoContinueRetry bool,
 	autoContinueFreshness, autoContinueRetryInterval time.Duration,
 ) (*daemonScheduleHandle, error) {
@@ -130,16 +219,24 @@ func startSingleSessionScheduleAndAutoContinue(
 				preFire = collector.PreFire
 			}
 		}
+		var localDeps compose.SessionFactoryDeps
+		if factoryDeps != nil {
+			localDeps = *factoryDeps
+		}
 		waiter := &scheduledTurnWaiter{}
+		fireFn := func(fireCtx context.Context, fire compose.ScheduledFire) error {
+			if cfg.Attach.MultiSession.Enabled && factoryDeps != nil {
+				return runMultiSessionScheduledTurn(fireCtx, localDeps, fire, collector, notifier)
+			}
+			return waiter.runScheduledTurn(fireCtx, a, fire, collector, notifier)
+		}
 		h, err := startDaemonSchedule(ctx, daemonScheduleDeps{
 			EventLog: eventlogHandle,
 			AppName:  a.AppName(),
 			Workload: workload,
 			Schedule: cfg.Schedule,
 			PreFire:  preFire,
-			Fire: func(fireCtx context.Context, fire compose.ScheduledFire) error {
-				return waiter.runScheduledTurn(fireCtx, a, fire, collector, notifier)
-			},
+			Fire:     fireFn,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("schedule: %w", err)
@@ -152,8 +249,16 @@ func startSingleSessionScheduleAndAutoContinue(
 		}
 		leaseLost = h.Lost()
 	}
-	if autoContinueEnabled && (cfg == nil || !cfg.Attach.MultiSession.Enabled) {
-		isReadOnly, subNames := buildDaemonEffectControls(cfg)
+	if cfg != nil && cfg.Attach.MultiSession.Enabled {
+		if factoryDeps != nil {
+			depsCopy := *factoryDeps
+			depsCopy.LeaseLost = leaseLost
+			startMultiSessionAutoContinue(retryCtx, wg, cfg, &depsCopy, autoContinueEnabled, autoContinueRetry, autoContinueRetryInterval)
+		}
+		return schedHandle, nil
+	}
+	if autoContinueEnabled {
+		isReadOnly, subNames := buildDaemonEffectControls(cfg, toolsets...)
 		acCfg := compose.AutoContinueConfig{
 			EventLog:      eventlogHandle,
 			Freshness:     autoContinueFreshness,
@@ -174,6 +279,83 @@ func startSingleSessionScheduleAndAutoContinue(
 		}
 	}
 	return schedHandle, nil
+}
+
+func runMultiSessionScheduledTurn(
+	fireCtx context.Context,
+	deps compose.SessionFactoryDeps,
+	fire compose.ScheduledFire,
+	collector *compose.MonitorCollector,
+	notifier *compose.Notifier,
+) error {
+	caller := auth.Caller{Identity: compose.SchedulerIdentity}
+	sid := strings.TrimSpace(fire.SessionID)
+	if sid == "" {
+		sid = compose.ScheduledSessionID(fire.Workload, fire.Tick)
+	}
+	var ag *agent.Agent
+	if deps.Registry != nil {
+		for _, entry := range deps.Registry.List() {
+			if entry.SessionID == sid {
+				if ap, ok := entry.Agent.(compose.AgentProvider); ok {
+					ag = ap.Agent()
+				}
+				break
+			}
+		}
+	}
+	if ag == nil {
+		ad, cancelOnEvict, err := compose.ReproduceAgent(deps, caller, sid, "created")
+		if err != nil {
+			return err
+		}
+		if deps.Registry != nil {
+			if _, rerr := deps.Registry.RegisterOwnedWithCancel(ad, caller.Identity, cancelOnEvict); rerr != nil && cancelOnEvict != nil {
+				cancelOnEvict()
+			}
+		} else if cancelOnEvict != nil {
+			defer cancelOnEvict()
+		}
+		ag = ad.Agent()
+	}
+	fullText, turnErr := consumeScheduledTurnEvents(ag.Run(fireCtx, fire.Payload))
+	if notifier != nil {
+		var parsed *monitor.Set
+		if collector != nil {
+			parsed, _ = collector.LastCycle()
+		}
+		_ = notifier.AfterCycle(fireCtx, parsed, fullText, turnErr != nil)
+	}
+	return turnErr
+}
+
+func consumeScheduledTurnEvents(seq iter.Seq2[*session.Event, error]) (string, error) {
+	var nonPartial strings.Builder
+	var partial strings.Builder
+	for ev, err := range seq {
+		if err != nil {
+			if nonPartial.Len() > 0 {
+				return nonPartial.String(), err
+			}
+			return partial.String(), err
+		}
+		if ev == nil || ev.Content == nil || ev.Content.Role != genai.RoleModel {
+			continue
+		}
+		for _, p := range ev.Content.Parts {
+			if p != nil && p.Text != "" {
+				if ev.Partial {
+					partial.WriteString(p.Text)
+				} else {
+					nonPartial.WriteString(p.Text)
+				}
+			}
+		}
+	}
+	if nonPartial.Len() > 0 {
+		return nonPartial.String(), nil
+	}
+	return partial.String(), nil
 }
 
 // daemonScheduleDeps wires the fleet scheduling lease and the in-process

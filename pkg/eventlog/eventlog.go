@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"sync"
 	"time"
 
 	"google.golang.org/adk/v2/session"
@@ -198,6 +199,7 @@ type Handle struct {
 	adkDB                 *gorm.DB
 	lockHeartbeatInterval time.Duration
 	lockStaleAfter        time.Duration
+	pauseMu               sync.Mutex
 }
 
 // Close releases all resources held by the Handle (Stream + the

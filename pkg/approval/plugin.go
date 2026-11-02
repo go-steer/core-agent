@@ -120,6 +120,10 @@ type Config struct {
 	// overwrite before it fires, and the call that puts it back (#296).
 	Captures *CaptureRules
 
+	// ParkHintFields, when non-nil, returns the subset of argument names
+	// to include in the operator-facing park hint for toolName (#1455).
+	ParkHintFields func(toolName string) []string
+
 	// ForgetToolRun, when non-nil, is called with a session ID when the
 	// gate turns away a call an operator already refused in this turn.
 	ForgetToolRun func(sessionID string)
@@ -278,7 +282,7 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 	}
 
 	set := g.changeSetContextFor(ctx, t, args)
-	hint := parkHint(key, set, stale)
+	hint := parkHint(g.hintKey(t.Name(), key, args), set, stale)
 	if err := ctx.RequestConfirmation(hint, Request{
 		Tool:      t.Name(),
 		Args:      args,
@@ -346,6 +350,26 @@ func (g *writeGate) refuseRepeat(ctx agent.Context, t tool.Tool, key string, cou
 		stop.StopTurn(&RefusalLoopError{Tool: t.Name(), Key: key, Count: count})
 	}
 	return out, nil
+}
+
+func (g *writeGate) hintKey(toolName, fullKey string, args map[string]any) string {
+	if g.cfg.ParkHintFields == nil || len(args) == 0 {
+		return fullKey
+	}
+	fields := g.cfg.ParkHintFields(toolName)
+	if len(fields) == 0 {
+		return fullKey
+	}
+	filtered := make(map[string]any, len(fields))
+	for _, f := range fields {
+		if v, ok := args[f]; ok {
+			filtered[f] = v
+		}
+	}
+	if len(filtered) == 0 {
+		return fullKey
+	}
+	return CallKey(toolName, filtered)
 }
 
 func parkHint(key string, set *ChangeSetContext, stale string) string {

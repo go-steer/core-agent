@@ -385,6 +385,8 @@ var fatalPathSegments = []string{
 	".remote.",
 	".mcp_tools.",
 	".mcp_tools[",
+	".policies.",
+	".policies[",
 }
 
 var fatalLeafTargets = []string{
@@ -468,7 +470,7 @@ func isFatalScopedTypo(lowerPath, lowerLeaf string) bool {
 		}
 	}
 	if rest, ok := strings.CutPrefix(lowerPath, "tools."); ok && !strings.Contains(rest, ".") {
-		if editDistance(lowerLeaf, "disable") <= 2 {
+		if editDistance(lowerLeaf, "disable") <= 2 || editDistance(lowerLeaf, "policies") <= 2 {
 			return true
 		}
 	}

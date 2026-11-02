@@ -627,6 +627,22 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	// @include refusal too. Add-only and idempotent.
 	g.ProtectCredentialFiles(cfg.CredentialFiles()...)
 	childenv.WithholdFiles(cfg.CredentialFiles()...)
+	if len(cfg.Tools.Policies) > 0 {
+		classes := make(map[string]ToolClass, len(cfg.Tools.Policies))
+		for _, p := range cfg.Tools.Policies {
+			if p.Mutating == nil {
+				continue
+			}
+			if *p.Mutating {
+				classes[p.Name] = ClassMutating
+			} else {
+				classes[p.Name] = ClassReadOnly
+			}
+		}
+		if len(classes) > 0 {
+			g.SetToolClasses(classes)
+		}
+	}
 	return g, nil
 }
 

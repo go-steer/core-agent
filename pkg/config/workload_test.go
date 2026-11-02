@@ -228,7 +228,7 @@ func TestImportWorkload_GKETriageF(t *testing.T) {
 	for _, wantAllow := range []string{
 		"spawn_agent:_fallback",
 		"spawn_agent:change-executor",
-		"spawn_agent:triage-classifier",
+		"mcp:gke_triage-classifier*",
 		"mcp:gke_get_k8s_resource*",
 		"mcp:gke_describe_k8s_resource*",
 		"mcp:gke_list_k8s_events*",
@@ -240,6 +240,7 @@ func TestImportWorkload_GKETriageF(t *testing.T) {
 		}
 	}
 	for _, mustNotAllow := range []string{
+		"spawn_agent:triage-classifier",
 		"mcp:gke_patch_k8s_resource*",
 		"mcp:gke_apply_k8s_manifest*",
 		"mcp:gke_delete_k8s_resource*",
@@ -431,12 +432,12 @@ Body.
 func TestImportWorkload_RealShipmindAndMastBundles(t *testing.T) {
 	t.Parallel()
 	candidates := []string{
-		"/usr/local/google/home/garisingh/projects/shipmind/agents/sre-triage/gke-triage-f",
-		"/usr/local/google/home/garisingh/projects/shipmind/agents/sre-triage/gke-triage",
-		"/usr/local/google/home/garisingh/projects/mast/examples/workloads/gke-triage",
-		"/usr/local/google/home/garisingh/projects/mast/examples/workloads/gke-triage-routed",
-		"/usr/local/google/home/garisingh/projects/mast/examples/workloads/bounded-triage",
-		"/usr/local/google/home/garisingh/projects/mast/examples/workloads/ns-audit",
+		filepath.Join("..", "..", "..", "shipmind", "agents", "sre-triage", "gke-triage-f"),
+		filepath.Join("..", "..", "..", "shipmind", "agents", "sre-triage", "gke-triage"),
+		filepath.Join("..", "..", "..", "mast", "examples", "workloads", "gke-triage"),
+		filepath.Join("..", "..", "..", "mast", "examples", "workloads", "gke-triage-routed"),
+		filepath.Join("..", "..", "..", "mast", "examples", "workloads", "bounded-triage"),
+		filepath.Join("..", "..", "..", "mast", "examples", "workloads", "ns-audit"),
 	}
 	for _, src := range candidates {
 		t.Run(filepath.Base(src), func(t *testing.T) {
@@ -650,4 +651,164 @@ func TestLoadWorkload_ScheduledErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestImportWorkload_HardeningAndPolicies(t *testing.T) {
+	t.Parallel()
+
+	t.Run("coordinator.md copied and refreshed, stale subagents pruned, park_hint_fields preserved, MCP prefix sanitized", func(t *testing.T) {
+		t.Parallel()
+		srcDir := writeSyntheticGKETriageF(t)
+		outDir := t.TempDir()
+
+		// Add coordinator.md and park_hint_fields + dotted MCP server name.
+		if err := os.WriteFile(filepath.Join(srcDir, "coordinator.md"), []byte("# Coordinator V1\nCoordinate triage.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		staleDir := filepath.Join(outDir, ".agents", "subagents")
+		if err := os.MkdirAll(staleDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(staleDir, "stale-old.md"), []byte("---\nname: stale-old\ndescription: stale\n---\nbody\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		wlPath := filepath.Join(srcDir, "workload.yaml")
+		wlBytes, err := os.ReadFile(wlPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wlModified := strings.Replace(string(wlBytes), "    - server: gke\n", "    - server: gke.prod-eu\n", 1)
+		wlModified = strings.Replace(wlModified, "    - name: patch_k8s_resource\n      mutating: true\n", "    - name: patch_k8s_resource\n      mutating: true\n      park_hint_fields: [namespace, name]\n", 1)
+		if err := os.WriteFile(wlPath, []byte(wlModified), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fbPath := filepath.Join(srcDir, "specialists", "_fallback.specialist.md")
+		fbBytes, err := os.ReadFile(fbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fbPath, []byte(strings.ReplaceAll(string(fbBytes), "server: gke", "server: gke.prod-eu")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cePath := filepath.Join(srcDir, "specialists", "change-executor.specialist.md")
+		ceBytes, err := os.ReadFile(cePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cePath, []byte(strings.ReplaceAll(string(ceBytes), "server: gke", "server: gke.prod-eu")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := ImportWorkload(srcDir, outDir)
+		if err != nil {
+			t.Fatalf("ImportWorkload: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(staleDir, "stale-old.md")); !os.IsNotExist(err) {
+			t.Errorf("stale subagent file still exists: err = %v", err)
+		}
+		agentsBytes, err := os.ReadFile(filepath.Join(outDir, "AGENTS.md"))
+		if err != nil || !strings.Contains(string(agentsBytes), "# Coordinator V1") {
+			t.Errorf("AGENTS.md = %q, err = %v; want Coordinator V1", string(agentsBytes), err)
+		}
+		if !slices.Contains(cfg.Permissions.Allow, "mcp:gke_prod_eu_get_k8s_resource*") {
+			t.Errorf("Permissions.Allow = %v, want sanitized prefix mcp:gke_prod_eu_get_k8s_resource*", cfg.Permissions.Allow)
+		}
+		var foundPatch bool
+		for _, p := range cfg.Tools.Policies {
+			if p.Name == "patch_k8s_resource" {
+				foundPatch = true
+				if !slices.Equal(p.ParkHintFields, []string{"namespace", "name"}) {
+					t.Errorf("ParkHintFields = %v, want [namespace name]", p.ParkHintFields)
+				}
+			}
+		}
+		if !foundPatch {
+			t.Errorf("patch_k8s_resource not found in Tools.Policies: %+v", cfg.Tools.Policies)
+		}
+
+		// Update coordinator.md and re-import: AGENTS.md should refresh.
+		if err := os.WriteFile(filepath.Join(srcDir, "coordinator.md"), []byte("# Coordinator V2\nUpdated.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ImportWorkload(srcDir, outDir); err != nil {
+			t.Fatalf("second ImportWorkload: %v", err)
+		}
+		agentsBytes2, err := os.ReadFile(filepath.Join(outDir, "AGENTS.md"))
+		if err != nil || !strings.Contains(string(agentsBytes2), "# Coordinator V2") {
+			t.Errorf("refreshed AGENTS.md = %q, err = %v; want Coordinator V2", string(agentsBytes2), err)
+		}
+
+		// Updating a separate outDir with a hand-authored AGENTS.md preserves it.
+		customOut := t.TempDir()
+		if err := os.WriteFile(filepath.Join(srcDir, "coordinator.md"), []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Remove(filepath.Join(srcDir, "coordinator.md"))
+		if err := os.WriteFile(filepath.Join(customOut, "AGENTS.md"), []byte("# Hand-Authored Custom Instructions\nKeep me.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ImportWorkload(srcDir, customOut); err != nil {
+			t.Fatalf("ImportWorkload into customOut: %v", err)
+		}
+		customAgents, err := os.ReadFile(filepath.Join(customOut, "AGENTS.md"))
+		if err != nil || !strings.Contains(string(customAgents), "# Hand-Authored Custom Instructions") {
+			t.Errorf("customOut AGENTS.md = %q, err = %v; want preserved hand-authored file", string(customAgents), err)
+		}
+
+		// LoadWorkloadConfig loads directly from srcDir without writing .agents/config.json.
+		directCfg, err := LoadWorkloadConfig(srcDir)
+		if err != nil {
+			t.Fatalf("LoadWorkloadConfig: %v", err)
+		}
+		if directCfg.Agent.DisplayName != "gke-triage" || len(directCfg.Subagents) != 2 {
+			t.Errorf("LoadWorkloadConfig = %+v, subagents=%d", directCfg.Agent, len(directCfg.Subagents))
+		}
+	})
+
+	t.Run("copyWorkloadSchemas rejects symlinks", func(t *testing.T) {
+		t.Parallel()
+		srcDir := writeSyntheticGKETriageF(t)
+		outDir := t.TempDir()
+		secretFile := filepath.Join(t.TempDir(), "secret.json")
+		if err := os.WriteFile(secretFile, []byte(`{"type":"object"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(secretFile, filepath.Join(srcDir, "schemas", "evil.json")); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+		if _, err := ImportWorkload(srcDir, outDir); err == nil || !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("ImportWorkload err = %v, want symlink rejection", err)
+		}
+	})
+
+	t.Run("Config.Validate rejects negative MaxWallclockSeconds and invalid tool policies, and Load rejects typo tools.polices", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.Agent.MaxWallclockSeconds = -5
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "max_wallclock_seconds") {
+			t.Fatalf("Validate negative MaxWallclockSeconds = %v, want error", err)
+		}
+
+		cfg2 := DefaultConfig()
+		mutTrue := true
+		cfg2.Tools.Policies = []ToolPolicyConfig{
+			{
+				Name:         "patch_k8s",
+				Mutating:     &mutTrue,
+				Precondition: &ToolPreconditionConfig{Read: "patch_k8s"},
+			},
+		}
+		if err := cfg2.Validate(); err == nil || !strings.Contains(err.Error(), "cannot be its own precondition") {
+			t.Fatalf("Validate invalid precondition = %v, want self-precondition error", err)
+		}
+
+		agentsDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(agentsDir, "config.json"), []byte(`{"tools":{"polices":[]}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(agentsDir); err == nil || !strings.Contains(err.Error(), "polices") {
+			t.Fatalf("Load(tools.polices) = %v, want fatal typo error", err)
+		}
+	})
 }

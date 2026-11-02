@@ -272,6 +272,7 @@ tools.policies[].capture.revert.args_from_change
 tools.policies[].capture.revert.call
 tools.policies[].mutating
 tools.policies[].name
+tools.policies[].park_hint_fields
 tools.policies[].precondition.args
 tools.policies[].precondition.args_from
 tools.policies[].precondition.fields

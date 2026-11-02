@@ -458,7 +458,7 @@ func buildDeclaredSubagents(
 			}
 		}
 
-		if err := checkSubagentCapability(ctx, spec, subTools, subToolsets.mcpSets); err != nil {
+		if err := checkSubagentCapability(ctx, spec, cfg.Tools.Policies, subTools, subToolsets.mcpSets); err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
 
@@ -466,7 +466,7 @@ func buildDeclaredSubagents(
 		// which differs from the parent's when spec.Model names another
 		// provider. Both doors price on it.
 		backend := models.BackendOf(subProvider)
-		sub, err := assembleSubagent(spec, llm, backend, userInstruction, subTools, subToolsets.sets, projectRoot, rootAbs, deps.rootBase)
+		sub, err := assembleSubagent(spec, cfg.Agent.FinalReport, llm, backend, userInstruction, subTools, subToolsets.sets, projectRoot, rootAbs, deps.rootBase)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
@@ -565,7 +565,7 @@ func buildRemoteSubagentTemplate(spec config.SubagentSpec, send func(string)) (b
 
 // assembleSubagent builds the *agent.Agent from a resolved model, persona,
 // and tool surface — the common tail shared by the inline and rooted paths.
-func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset, projectRoot, rootAbs, rootBase string) (*agent.Agent, error) {
+func assembleSubagent(spec config.SubagentSpec, finalReport bool, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset, projectRoot, rootAbs, rootBase string) (*agent.Agent, error) {
 	returnContract := agent.SubagentReturnContract("")
 	if spec.EffectiveMode() == config.SubagentModeTask {
 		returnContract = agent.SubagentReturnContract(agent.FinishTaskToolName)
@@ -610,7 +610,9 @@ func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, backend, userI
 		opts = append(opts, agent.WithSubagentMaxDepth(spec.MaxDepth))
 	}
 	if spec.Budgets != nil {
-		opts = append(opts, agent.WithSubagentBudgets(syncBudgets(spec.Budgets)))
+		b := syncBudgets(spec.Budgets)
+		b.FinalReport = finalReport
+		opts = append(opts, agent.WithSubagentBudgets(b))
 	}
 	return agent.New(llm, opts...)
 }
@@ -639,7 +641,7 @@ func loadSubagentOutputSchema(ref string, baseDirs ...string) (*genai.Schema, er
 	return agent.ParseOutputSchema(ref, baseDirs...)
 }
 
-func checkSubagentCapability(ctx context.Context, spec config.SubagentSpec, subTools []adktool.Tool, mcpSets []adktool.Toolset) error {
+func checkSubagentCapability(ctx context.Context, spec config.SubagentSpec, policies []config.ToolPolicyConfig, subTools []adktool.Tool, mcpSets []adktool.Toolset) error {
 	if spec.Capability != config.CapabilityReadOnly || spec.EffectiveMode() == config.SubagentModeSingleTurn {
 		return nil
 	}
@@ -647,7 +649,7 @@ func checkSubagentCapability(ctx context.Context, spec config.SubagentSpec, subT
 		if t == nil {
 			continue
 		}
-		if !tools.IsReadOnlyTool(t) {
+		if !isSubagentToolReadOnly(t, policies) {
 			return fmt.Errorf("capability %q forbids mutating built-in tool %q; drop it or declare capability: %q", spec.Capability, t.Name(), config.CapabilityChangeExecutor)
 		}
 	}
@@ -663,12 +665,28 @@ func checkSubagentCapability(ctx context.Context, spec config.SubagentSpec, subT
 			if t == nil {
 				continue
 			}
-			if !tools.IsReadOnlyTool(t) {
+			if !isSubagentToolReadOnly(t, policies) {
 				return fmt.Errorf("capability %q forbids mutating MCP tool %q on server %q; narrow mcp_tools to read-only tools or declare capability: %q", spec.Capability, t.Name(), ts.Name(), config.CapabilityChangeExecutor)
 			}
 		}
 	}
 	return nil
+}
+
+func isSubagentToolReadOnly(t adktool.Tool, policies []config.ToolPolicyConfig) bool {
+	toolName := strings.TrimSpace(t.Name())
+	isBuiltin := permissions.IsBuiltinTool(toolName)
+	for i := len(policies) - 1; i >= 0; i-- {
+		p := policies[i]
+		name := strings.TrimSpace(p.Name)
+		if p.Mutating == nil || name == "" {
+			continue
+		}
+		if name == toolName || (!isBuiltin && strings.HasSuffix(toolName, "_"+name)) {
+			return !*p.Mutating
+		}
+	}
+	return tools.IsReadOnlyTool(t)
 }
 
 // syncBudgets and asyncBudgets project one declared config.SubagentBudgets

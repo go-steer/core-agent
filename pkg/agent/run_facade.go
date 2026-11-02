@@ -141,7 +141,7 @@ func RunOneShot(ctx context.Context, cfg OneShotConfig, prompt string) (*OneShot
 		return nil, err
 	}
 
-	loadedCfg, err := resolveFacadeConfig(cfg, agentsDir)
+	loadedCfg, err := resolveFacadeConfig(cfg, projectRoot, agentsDir)
 	if err != nil {
 		return nil, err
 	}
@@ -243,10 +243,10 @@ func resolveFacadeDir(dir string) (projectRoot, agentsDir string, err error) {
 	return absDir, absDir, nil
 }
 
-func resolveFacadeConfig(cfg OneShotConfig, agentsDir string) (*config.Config, error) {
+func resolveFacadeConfig(cfg OneShotConfig, projectRoot, agentsDir string) (*config.Config, error) {
 	var base *config.Config
 	if agentsDir != "" {
-		loaded, err := config.Load(agentsDir)
+		loaded, err := loadFacadeDirConfig(projectRoot, agentsDir)
 		if err != nil {
 			return nil, err
 		}
@@ -445,6 +445,12 @@ func mergeFacadeAgentConfig(dst, src *config.AgentConfig) {
 	if src.Description != "" {
 		dst.Description = src.Description
 	}
+	if src.MaxWallclockSeconds != 0 {
+		dst.MaxWallclockSeconds = src.MaxWallclockSeconds
+	}
+	if src.FinalReport {
+		dst.FinalReport = true
+	}
 }
 
 func mergeFacadeToolsConfig(dst, src *config.Config) {
@@ -477,6 +483,9 @@ func mergeFacadeToolsConfig(dst, src *config.Config) {
 	}
 	if src.Tools.SpawnAgent.SyncWaitTimeout != "" {
 		dst.Tools.SpawnAgent.SyncWaitTimeout = src.Tools.SpawnAgent.SyncWaitTimeout
+	}
+	if src.Tools.Policies != nil {
+		dst.Tools.Policies = src.Tools.Policies
 	}
 	if src.Subagents != nil {
 		dst.Subagents = src.Subagents
@@ -807,6 +816,7 @@ func buildSingleFacadeSubagent(
 		if spec.Budgets.MaxWallclockSeconds > 0 {
 			budgets.MaxWallclock = time.Duration(spec.Budgets.MaxWallclockSeconds) * time.Second
 		}
+		budgets.FinalReport = loadedCfg.Agent.FinalReport
 	}
 
 	returnContract := SubagentReturnContract("")
@@ -860,12 +870,12 @@ func buildSingleFacadeSubagent(
 				selectedToolsets = append(selectedToolsets, tools.GateToolset(ts, gate, ts.Name()))
 			}
 		} else {
-			selectedToolsets, err = selectFacadeSubagentToolsets(spec, rootToolsets)
+			selectedToolsets, err = selectFacadeSubagentToolsets(ctx, spec, rootToolsets)
 			if err != nil {
 				return nil, err
 			}
 		}
-		if err := checkFacadeSubagentCapability(ctx, spec, selectedTools, selectedToolsets); err != nil {
+		if err := checkFacadeSubagentCapability(ctx, spec, loadedCfg.Tools.Policies, selectedTools, selectedToolsets); err != nil {
 			return nil, err
 		}
 		if len(selectedTools) > 0 {
@@ -969,7 +979,13 @@ func selectFacadeSubagentTools(spec config.SubagentSpec, rootTools, candidateToo
 	return out, nil
 }
 
-func selectFacadeSubagentToolsets(spec config.SubagentSpec, rootToolsets []adktool.Toolset) ([]adktool.Toolset, error) {
+func selectFacadeSubagentToolsets(ctx context.Context, spec config.SubagentSpec, rootToolsets []adktool.Toolset) ([]adktool.Toolset, error) {
+	if len(rootToolsets) == 0 {
+		if len(spec.MCPTools) > 0 {
+			return nil, fmt.Errorf("agent: subagent %q: unknown mcp server %q", spec.Name, spec.MCPTools[0].Server)
+		}
+		return nil, nil
+	}
 	var skillSets, mcpSets []adktool.Toolset
 	for _, ts := range rootToolsets {
 		if ts == nil {
@@ -987,27 +1003,41 @@ func selectFacadeSubagentToolsets(spec config.SubagentSpec, rootToolsets []adkto
 
 	mcpToolsByServer := make(map[string][]string, len(spec.MCPTools))
 	for _, mt := range spec.MCPTools {
-		matched := false
-		for _, ts := range mcpSets {
-			if matchesFacadeMCPServer(ts.Name(), mt.Server) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return nil, fmt.Errorf("agent: subagent %q: mcp_tools: unknown mcp server %q", spec.Name, mt.Server)
+		if !hasMatchingFacadeToolset(mcpSets, mt.Server) {
+			return nil, fmt.Errorf("agent: subagent %q: unknown mcp server %q", spec.Name, mt.Server)
 		}
 		mcpToolsByServer[mt.Server] = mt.Tools
 	}
 
-	takeMCP := func(ts adktool.Toolset, serverName string) adktool.Toolset {
-		if allowed, hasFilter := mcpToolsByServer[serverName]; hasFilter {
-			if len(allowed) == 0 {
-				return nil
-			}
-			return &facadeFilteredToolset{inner: ts, server: serverName, allowed: allowed}
+	takeToolset := func(ts adktool.Toolset, serverName string) (adktool.Toolset, error) {
+		allowed, hasFilter := lookupFacadeServerAllowlist(mcpToolsByServer, ts.Name(), serverName)
+		if !hasFilter {
+			return ts, nil
 		}
-		return ts
+		if len(allowed) == 0 {
+			return nil, nil
+		}
+		srv := serverName
+		if srv == "" {
+			srv = ts.Name()
+		}
+		tsTools, err := ts.Tools(facadeReadonlyCtx{Context: ctx})
+		if err != nil {
+			return nil, fmt.Errorf("agent: subagent %q: failed to list tools on toolset %q: %w", spec.Name, ts.Name(), err)
+		}
+		for _, want := range allowed {
+			matched := false
+			for _, t := range tsTools {
+				if t != nil && matchesFacadeMCPTool(t.Name(), srv, []string{want}) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return nil, fmt.Errorf("agent: subagent %q: mcp_tools server %q has no tool matching %q", spec.Name, srv, want)
+			}
+		}
+		return &facadeFilteredToolset{inner: ts, server: srv, allowed: allowed}, nil
 	}
 
 	var out []adktool.Toolset
@@ -1016,7 +1046,11 @@ func selectFacadeSubagentToolsets(spec config.SubagentSpec, rootToolsets []adkto
 		for _, mt := range spec.MCPTools {
 			for _, ts := range mcpSets {
 				if matchesFacadeMCPServer(ts.Name(), mt.Server) {
-					if filtered := takeMCP(ts, mt.Server); filtered != nil {
+					filtered, err := takeToolset(ts, mt.Server)
+					if err != nil {
+						return nil, err
+					}
+					if filtered != nil {
 						out = append(out, filtered)
 					}
 				}
@@ -1031,7 +1065,11 @@ func selectFacadeSubagentToolsets(spec config.SubagentSpec, rootToolsets []adkto
 			matched := false
 			for _, ts := range mcpSets {
 				if matchesFacadeMCPServer(ts.Name(), name) {
-					if filtered := takeMCP(ts, name); filtered != nil {
+					filtered, err := takeToolset(ts, name)
+					if err != nil {
+						return nil, err
+					}
+					if filtered != nil {
 						out = append(out, filtered)
 					}
 					matched = true
@@ -1053,7 +1091,7 @@ func matchesFacadeMCPServer(tsName, serverName string) bool {
 	if tsName == serverName {
 		return true
 	}
-	sanitized := sanitizeFacadeMCPPrefix(serverName)
+	sanitized := sanitizeFacadeServerName(serverName)
 	if tsName == sanitized {
 		return true
 	}
@@ -1066,18 +1104,80 @@ func matchesFacadeMCPServer(tsName, serverName string) bool {
 	return false
 }
 
-func sanitizeFacadeMCPPrefix(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
+func checkFacadeSubagentCapability(
+	ctx context.Context,
+	spec config.SubagentSpec,
+	policies []config.ToolPolicyConfig,
+	subTools []adktool.Tool,
+	subToolsets []adktool.Toolset,
+) error {
+	if (spec.Capability != config.CapabilityReadOnly && spec.Capability != "diagnoser") || spec.EffectiveMode() == config.SubagentModeSingleTurn {
+		return nil
+	}
+	for _, t := range subTools {
+		if t == nil {
+			continue
+		}
+		if !isFacadeToolReadOnly(t, policies) {
+			return fmt.Errorf("agent: subagent %q: capability %q forbids mutating built-in tool %q; drop it or declare capability: %q", spec.Name, spec.Capability, t.Name(), config.CapabilityChangeExecutor)
 		}
 	}
-	return b.String()
+	for _, ts := range subToolsets {
+		if ts == nil || ts.Name() == "skill_toolset" {
+			continue
+		}
+		tsTools, err := ts.Tools(facadeReadonlyCtx{Context: ctx})
+		if err != nil {
+			return fmt.Errorf("agent: subagent %q: capability %q: failed to list tools on toolset %q: %w", spec.Name, spec.Capability, ts.Name(), err)
+		}
+		for _, t := range tsTools {
+			if t == nil {
+				continue
+			}
+			if !isFacadeToolReadOnly(t, policies) {
+				return fmt.Errorf("agent: subagent %q: capability %q forbids mutating tool %q on toolset %q; narrow tools to read-only or declare capability: %q", spec.Name, spec.Capability, t.Name(), ts.Name(), config.CapabilityChangeExecutor)
+			}
+		}
+	}
+	return nil
+}
+
+func isFacadeToolReadOnly(t adktool.Tool, policies []config.ToolPolicyConfig) bool {
+	if mutating, ok := lookupToolMutatingPolicy(t.Name(), policies); ok {
+		return !mutating
+	}
+	return tools.IsReadOnlyTool(t)
+}
+
+func lookupToolMutatingPolicy(toolName string, policies []config.ToolPolicyConfig) (bool, bool) {
+	toolName = strings.TrimSpace(toolName)
+	isBuiltin := permissions.IsBuiltinTool(toolName)
+	for i := len(policies) - 1; i >= 0; i-- {
+		p := policies[i]
+		name := strings.TrimSpace(p.Name)
+		if p.Mutating == nil || name == "" {
+			continue
+		}
+		if name == toolName || (!isBuiltin && strings.HasSuffix(toolName, "_"+name)) {
+			return *p.Mutating, true
+		}
+	}
+	return false, false
+}
+
+func loadFacadeDirConfig(projectRoot, agentsDir string) (*config.Config, error) {
+	cfgFile := filepath.Join(agentsDir, config.ConfigFileName)
+	if _, err := os.Stat(cfgFile); errors.Is(err, fs.ErrNotExist) {
+		for _, dir := range []string{projectRoot, agentsDir} {
+			if dir == "" {
+				continue
+			}
+			if _, werr := os.Stat(filepath.Join(dir, "workload.yaml")); werr == nil {
+				return config.LoadWorkloadConfig(dir)
+			}
+		}
+	}
+	return config.Load(agentsDir)
 }
 
 type facadeFilteredToolset struct {
@@ -1094,58 +1194,63 @@ func (f *facadeFilteredToolset) Tools(ctx adkagent.ReadonlyContext) ([]adktool.T
 	if err != nil {
 		return nil, err
 	}
-	prefix := sanitizeFacadeMCPPrefix(f.server) + "_"
 	out := make([]adktool.Tool, 0, len(all))
 	for _, t := range all {
-		if t == nil {
-			continue
-		}
-		name := t.Name()
-		for _, a := range f.allowed {
-			if name == a || name == prefix+a {
-				out = append(out, t)
-				break
-			}
+		if t != nil && matchesFacadeMCPTool(t.Name(), f.server, f.allowed) {
+			out = append(out, t)
 		}
 	}
 	return out, nil
 }
 
-func checkFacadeSubagentCapability(
-	ctx context.Context,
-	spec config.SubagentSpec,
-	subTools []adktool.Tool,
-	subToolsets []adktool.Toolset,
-) error {
-	if (spec.Capability != config.CapabilityReadOnly && spec.Capability != "diagnoser") || spec.EffectiveMode() == config.SubagentModeSingleTurn {
-		return nil
+func hasMatchingFacadeToolset(sets []adktool.Toolset, server string) bool {
+	for _, ts := range sets {
+		if ts != nil && matchesFacadeMCPServer(ts.Name(), server) {
+			return true
+		}
 	}
-	for _, t := range subTools {
-		if t == nil {
+	return false
+}
+
+func lookupFacadeServerAllowlist(byServer map[string][]string, tsName, serverName string) ([]string, bool) {
+	if serverName != "" {
+		if list, ok := byServer[serverName]; ok {
+			return list, true
+		}
+	}
+	for srv, list := range byServer {
+		if matchesFacadeMCPServer(tsName, srv) {
+			return list, true
+		}
+	}
+	return nil, false
+}
+
+func matchesFacadeMCPTool(toolName, server string, allowed []string) bool {
+	prefix := sanitizeFacadeServerName(server) + "_"
+	rawPrefix := server + "_"
+	for _, a := range allowed {
+		want := strings.TrimSpace(a)
+		if want == "" {
 			continue
 		}
-		if !tools.IsReadOnlyTool(t) {
-			return fmt.Errorf("agent: subagent %q: capability %q forbids mutating built-in tool %q; drop it or declare capability: %q", spec.Name, spec.Capability, t.Name(), config.CapabilityChangeExecutor)
+		if toolName == want || toolName == prefix+want || toolName == rawPrefix+want {
+			return true
 		}
 	}
-	for _, ts := range subToolsets {
-		if ts == nil || ts.Name() == "skill_toolset" {
-			continue
-		}
-		tsTools, err := ts.Tools(facadeReadonlyCtx{Context: ctx})
-		if err != nil {
-			return fmt.Errorf("agent: subagent %q: capability %q: failed to list tools on toolset %q: %w", spec.Name, spec.Capability, ts.Name(), err)
-		}
-		for _, t := range tsTools {
-			if t == nil {
-				continue
-			}
-			if !tools.IsReadOnlyTool(t) {
-				return fmt.Errorf("agent: subagent %q: capability %q forbids mutating tool %q on toolset %q; narrow tools to read-only or declare capability: %q", spec.Name, spec.Capability, t.Name(), ts.Name(), config.CapabilityChangeExecutor)
-			}
+	return false
+}
+
+func sanitizeFacadeServerName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
 		}
 	}
-	return nil
+	return b.String()
 }
 
 type facadeReadonlyCtx struct{ context.Context }
@@ -1207,6 +1312,13 @@ func readDirInstruction(projectRoot, agentsDir string) (string, error) {
 			sections = append(sections, trimmed)
 		}
 	}
+	if len(sections) == 0 && projectRoot != "" {
+		if data, err := os.ReadFile(filepath.Join(projectRoot, "coordinator.md")); err == nil {
+			if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
+				sections = append(sections, trimmed)
+			}
+		}
+	}
 	return strings.Join(sections, "\n\n"), nil
 }
 
@@ -1235,6 +1347,9 @@ func buildFacadeAgentOptions(
 		WithCompactor(buildFacadeCompactor(loadedCfg.Compaction)),
 	}
 	opts = appendFacadeGuardrailOptions(opts, loadedCfg)
+	if loadedCfg.Agent.MaxWallclockSeconds > 0 {
+		opts = append(opts, WithMaxWallclock(time.Duration(loadedCfg.Agent.MaxWallclockSeconds)*time.Second))
+	}
 	name := cfg.Name
 	if name == "" && loadedCfg.Agent.DisplayName != "" {
 		name = loadedCfg.Agent.DisplayName

@@ -580,6 +580,10 @@ type Agent struct {
 	// out to operator-configured shell commands.
 	onEvent   func(*session.Event)
 	onTurnEnd func()
+
+	// maxWallclock bounds the wall-clock duration of each Run invocation
+	// (WithMaxWallclock). Zero or negative means unbounded.
+	maxWallclock time.Duration
 }
 
 // Option mutates Agent construction. Use the With* helpers below.
@@ -645,6 +649,7 @@ type options struct {
 	checkpointer     Checkpointer
 	noMarkTaskDone   bool
 	costCeiling      CostCeiling
+	maxWallclock     time.Duration
 	watchdog         watchdog.Watchdog
 	onWatchdogAlert  func(watchdog.Alert)
 	watchdogEnforce  bool
@@ -754,6 +759,12 @@ func WithTools(ts []tool.Tool) Option {
 // passed to llmagent.Config.Toolsets.
 func WithToolsets(ts []tool.Toolset) Option {
 	return func(o *options) { o.toolsets = append(o.toolsets, ts...) }
+}
+
+// WithMaxWallclock sets a per-turn wall-clock timeout applied to each
+// Run invocation. Zero or negative disables the timeout.
+func WithMaxWallclock(d time.Duration) Option {
+	return func(o *options) { o.maxWallclock = d }
 }
 
 // WithPlugins registers ADK runner plugins (such as pkg/approval and
@@ -1276,6 +1287,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		compactor:            o.compactor,
 		checkpointer:         o.checkpointer,
 		costCeiling:          o.costCeiling,
+		maxWallclock:         o.maxWallclock,
 		watchdog:             o.watchdog,
 		onWatchdogAlert:      o.onWatchdogAlert,
 		watchdogEnforce:      o.watchdogEnforce,
@@ -1745,7 +1757,15 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	// return) — otherwise a second Interrupt() call after the
 	// turn ended would invoke a no-op cancel against the wrong
 	// context.
-	runCtx, cancel := context.WithCancel(ctx)
+	var (
+		runCtx context.Context
+		cancel context.CancelFunc
+	)
+	if a.maxWallclock > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, a.maxWallclock)
+	} else {
+		runCtx, cancel = context.WithCancel(ctx)
+	}
 	// Thread the turn originator (most-recent caller in the drained
 	// inbox batch) onto the turn context so the eventlog metadata
 	// extractor, the MCP outbound path, and any other caller-aware
@@ -2142,7 +2162,15 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		// Track the cancel func so Interrupt() can fire it during the
 		// turn — mirrors Run(). Clearing happens via defer here
 		// since we're already inside the closure.
-		runCtx, cancel := context.WithCancel(ctx)
+		var (
+			runCtx context.Context
+			cancel context.CancelFunc
+		)
+		if a.maxWallclock > 0 {
+			runCtx, cancel = context.WithTimeout(ctx, a.maxWallclock)
+		} else {
+			runCtx, cancel = context.WithCancel(ctx)
+		}
 		// defer cancel() releases the per-turn context on return —
 		// without it every RunWithContents turn leaked a live
 		// cancellable child ctx (#359). clearCancelInFlight is keyed

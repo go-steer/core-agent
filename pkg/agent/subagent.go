@@ -187,6 +187,10 @@ type SubagentBudgets struct {
 	MaxCostUSD float64
 	// MaxWallclock caps elapsed time from the start of the delegation.
 	MaxWallclock time.Duration
+	// FinalReport grants a task-mode subagent one extra tool-stripped
+	// model call to invoke finish_task when it hits MaxTurns or MaxCostUSD
+	// after already gathering evidence (#1402, #1455).
+	FinalReport bool
 }
 
 const (
@@ -374,9 +378,10 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 			}
 			if opts.Inner.outputSchema != nil && !Refused(resText) && !Stalled(resText) {
 				if outMap == nil {
-					return subagentTaskResult{}, fmt.Errorf("subagent %q: empty response did not satisfy output_schema", name)
-				}
-				if err := ValidateOutputValue(opts.Inner.outputSchema, outMap); err != nil {
+					if stopReason == "" {
+						return subagentTaskResult{}, fmt.Errorf("subagent %q: empty response did not satisfy output_schema", name)
+					}
+				} else if err := ValidateOutputValue(opts.Inner.outputSchema, outMap); err != nil {
 					return subagentTaskResult{}, fmt.Errorf("subagent %q: output_schema validation failed: %w", name, err)
 				}
 			}
@@ -553,6 +558,14 @@ func runSubagentInvocation(
 	if skipFinishTask {
 		calls.Skip = []string{FinishTaskToolName}
 	}
+	var finalGate *subagentFinalReportGate
+	if skipFinishTask && (opts.Budgets.MaxTurns > 0 || opts.Budgets.MaxCostUSD > 0) {
+		finalGate = &subagentFinalReportGate{
+			parent:     CallGateFrom(runCtx),
+			allowFinal: opts.Budgets.FinalReport,
+		}
+		runCtx = WithCallGate(runCtx, finalGate)
+	}
 
 	var (
 		turns       int
@@ -597,7 +610,7 @@ func runSubagentInvocation(
 			}
 			costMu.Lock()
 			projected := spentUSD + reservedUSD + inputCost
-			if projected >= opts.Budgets.MaxCostUSD {
+			if projected >= opts.Budgets.MaxCostUSD && (finalGate == nil || !finalGate.inFinalReport()) {
 				spent := spentUSD
 				costMu.Unlock()
 				return nil, &costPreflightError{reason: fmt.Sprintf(
@@ -646,7 +659,9 @@ func runSubagentInvocation(
 			lastOutput = ev.Output
 		}
 		history.addPendingContextBytes(contextGrowthBytes(ev))
-		collectFinalText(&sb, ev)
+		if finalGate == nil || !finalGate.tripped() || !hasRefusedText(ev) {
+			collectFinalText(&sb, ev)
+		}
 		markIfServed(served, ev, err)
 		calls.Observe(ev)
 		tap.Observe(ev)
@@ -671,12 +686,46 @@ func runSubagentInvocation(
 		// cost cap also has a request preflight above; this settled
 		// check catches output spend the preflight cannot know.
 		if opts.Budgets.MaxTurns > 0 && turns >= opts.Budgets.MaxTurns {
-			stopReason = fmt.Sprintf("turn budget of %d", opts.Budgets.MaxTurns)
+			reason := fmt.Sprintf("turn budget of %d", opts.Budgets.MaxTurns)
+			if finalGate != nil && lastOutput == nil && !hasFinishTaskCall(ev) && finalGate.trip(reason) {
+				stopReason = reason
+				continue
+			}
+			if finalGate != nil && hasFinishTaskCall(ev) && !finalGate.forbidOccurred() {
+				finalGate.forbidFurtherCalls(reason)
+				stopReason = reason
+				continue
+			}
+			stopReason = reason
 			break
 		}
 		if opts.Budgets.MaxCostUSD > 0 && spent >= opts.Budgets.MaxCostUSD {
-			stopReason = fmt.Sprintf("cost budget of $%.4f (spent $%.4f)", opts.Budgets.MaxCostUSD, spent)
+			reason := fmt.Sprintf("cost budget of $%.4f (spent $%.4f)", opts.Budgets.MaxCostUSD, spent)
+			if finalGate != nil && lastOutput == nil && !hasFinishTaskCall(ev) && finalGate.trip(reason) {
+				stopReason = reason
+				continue
+			}
+			if finalGate != nil && hasFinishTaskCall(ev) && !finalGate.forbidOccurred() {
+				finalGate.forbidFurtherCalls(reason)
+				stopReason = reason
+				continue
+			}
+			stopReason = reason
 			break
+		}
+		if finalGate != nil && finalGate.tripped() {
+			if hasFinishTaskCall(ev) && !finalGate.forbidOccurred() {
+				finalGate.forbidFurtherCalls(finalGate.tripReason())
+				continue
+			}
+			break
+		}
+	}
+	if finalGate != nil && finalGate.tripped() {
+		if isSyntheticSubagentOutput(lastOutput) {
+			lastOutput = nil
+		} else if lastOutput != nil {
+			stopReason = ""
 		}
 	}
 	// A runner that ends its iteration cleanly on a cancelled context
@@ -767,4 +816,135 @@ func subagentInvocationID(functionCallID string) string {
 		return id
 	}
 	return uuid.NewString()
+}
+
+func hasFinishTaskCall(ev *session.Event) bool {
+	if ev == nil || ev.Content == nil {
+		return false
+	}
+	for _, p := range ev.Content.Parts {
+		if p == nil || p.FunctionCall == nil || p.FunctionCall.Name != FinishTaskToolName {
+			continue
+		}
+		if res, ok := p.FunctionCall.Args["result"].(string); ok && (Stalled(res) || Refused(res)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isSyntheticSubagentOutput(output any) bool {
+	if output == nil {
+		return false
+	}
+	if s, ok := output.(string); ok {
+		return Stalled(s) || Refused(s)
+	}
+	if m, ok := output.(map[string]any); ok {
+		if s, ok := m["result"].(string); ok {
+			return Stalled(s) || Refused(s)
+		}
+	}
+	return false
+}
+
+func hasRefusedText(ev *session.Event) bool {
+	if ev == nil || ev.Content == nil {
+		return false
+	}
+	for _, p := range ev.Content.Parts {
+		if p != nil && Refused(p.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+type subagentFinalReportGate struct {
+	parent     CallGate
+	allowFinal bool
+	mu         sync.Mutex
+	reason     string
+	granted    bool
+	active     bool
+	forbidDone bool
+}
+
+func (g *subagentFinalReportGate) Allow(agentName string) error {
+	if g.parent != nil {
+		if err := g.parent.Allow(agentName); err != nil {
+			return err
+		}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.reason != "" {
+		return errors.New(g.reason)
+	}
+	return nil
+}
+
+func (g *subagentFinalReportGate) AllowFinalReport(agentName string) bool {
+	g.mu.Lock()
+	if g.reason != "" {
+		if g.allowFinal && !g.granted {
+			g.granted = true
+			g.active = true
+			g.mu.Unlock()
+			return true
+		}
+		g.mu.Unlock()
+		return false
+	}
+	g.mu.Unlock()
+	if frg, ok := g.parent.(FinalReportGate); ok {
+		return frg.AllowFinalReport(agentName)
+	}
+	return false
+}
+
+func (g *subagentFinalReportGate) trip(reason string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.allowFinal || g.reason != "" {
+		return false
+	}
+	g.reason = reason
+	return true
+}
+
+func (g *subagentFinalReportGate) forbidFurtherCalls(reason string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.reason == "" {
+		g.reason = reason
+	}
+	g.granted = true
+	g.active = false
+	g.forbidDone = true
+}
+
+func (g *subagentFinalReportGate) forbidOccurred() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.forbidDone
+}
+
+func (g *subagentFinalReportGate) tripReason() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.reason
+}
+
+func (g *subagentFinalReportGate) tripped() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.reason != ""
+}
+
+func (g *subagentFinalReportGate) inFinalReport() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active
 }

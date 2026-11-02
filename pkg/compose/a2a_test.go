@@ -38,6 +38,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 type scriptedA2AModel struct {
@@ -812,5 +813,164 @@ func TestA2ABackend_ApproverAttributionAndTerminalTaskRejection(t *testing.T) {
 		Text:   "re-open completed task",
 	}); err == nil || !strings.Contains(err.Error(), "terminal state") {
 		t.Fatalf("second SendMessage on completed task = %v, want terminal state error", err)
+	}
+}
+
+func TestA2ABackend_UsageTrackingAndThoughtFilteringAndMultiStepText(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	model := &scriptedA2AModel{
+		fn: func(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+			return func(yield func(*adkmodel.LLMResponse, error) bool) {
+				// Step 1: intermediate narration + thought before a final structured step.
+				if !yield(&adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{Text: "internal chain of thought", Thought: true},
+							{Text: "Let me inspect the cluster first..."},
+						},
+					},
+					Partial: false,
+				}, nil) {
+					return
+				}
+				// Step 2: final response with UsageMetadata and a Thought part that must be stripped.
+				yield(&adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{Text: "final internal reasoning", Thought: true},
+							{Text: `{"severity":"high","cluster":"prod"}`},
+						},
+					},
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     120,
+						CandidatesTokenCount: 45,
+						TotalTokenCount:      165,
+					},
+					TurnComplete: true,
+					FinishReason: genai.FinishReasonStop,
+				}, nil)
+			}
+		},
+	}
+
+	reg := attach.NewSessionRegistry()
+	deps := SessionFactoryDeps{
+		DaemonCtx:      ctx,
+		Model:          model,
+		PricingRate:    usage.Pricing{InputPerMTok: 1.0, OutputPerMTok: 2.0},
+		Template:       permissions.New(permissions.Options{Mode: permissions.ModeAllow}),
+		Registry:       reg,
+		NoCompact:      true,
+		CheckpointMode: config.CheckpointModeOff,
+	}
+	backend := NewA2ABackend(A2ABackendOptions{
+		DaemonCtx:   ctx,
+		Registry:    reg,
+		FactoryDeps: &deps,
+	})
+
+	out, err := backend.SendMessage(ctx, attach.A2ATaskRequest{
+		TaskID:             "task-usage-1",
+		ContextID:          "ctx-usage-1",
+		TaskIDGenerated:    true,
+		ContextIDGenerated: true,
+		Text:               "triage cluster",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if out.Output != `{"severity":"high","cluster":"prod"}` {
+		t.Errorf("Output = %q, want clean final JSON without thought or pre-tool narration", out.Output)
+	}
+
+	entries := reg.List()
+	if len(entries) != 1 {
+		t.Fatalf("registered entries = %d, want 1", len(entries))
+	}
+	ag := agentFromRegistrant(entries[0].Agent)
+	if ag == nil || ag.Tracker() == nil {
+		t.Fatalf("session agent or tracker is nil")
+	}
+	totals := ag.Tracker().Totals()
+	if totals.Turns != 1 || totals.InputTokens != 120 || totals.OutputTokens != 45 {
+		t.Errorf("tracker totals = %+v, want Turns=1 InputTokens=120 OutputTokens=45", totals)
+	}
+}
+
+func TestA2ABackend_GetTaskAndCancelTaskRejectContextID(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	dbPath := filepath.Join(t.TempDir(), "a2a-ctx-reject.db")
+	handle, err := eventlog.Open(
+		ctx,
+		sqlite.Open(dbPath),
+		eventlog.WithGORMConfig(&gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)}),
+	)
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = handle.Close() })
+
+	model := &scriptedA2AModel{
+		fn: func(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+			return func(yield func(*adkmodel.LLMResponse, error) bool) {
+				yield(&adkmodel.LLMResponse{
+					Content:      genai.NewContentFromText("done", genai.RoleModel),
+					TurnComplete: true,
+					FinishReason: genai.FinishReasonStop,
+				}, nil)
+			}
+		},
+	}
+
+	newBackend := func() *A2ABackend {
+		reg := attach.NewSessionRegistry()
+		deps := SessionFactoryDeps{
+			DaemonCtx:      ctx,
+			Model:          model,
+			Template:       permissions.New(permissions.Options{Mode: permissions.ModeAllow}),
+			EventlogHandle: handle,
+			Registry:       reg,
+			NoCompact:      true,
+			CheckpointMode: config.CheckpointModeOff,
+		}
+		return NewA2ABackend(A2ABackendOptions{
+			DaemonCtx:      ctx,
+			Registry:       reg,
+			FactoryDeps:    &deps,
+			EventlogHandle: handle,
+		})
+	}
+
+	b1 := newBackend()
+	if _, err := b1.SendMessage(ctx, attach.A2ATaskRequest{
+		TaskID:    "task-real-id",
+		ContextID: "ctx-not-a-task-id",
+		Text:      "hi",
+	}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Across a restart, GetTask/CancelTask with the contextId must return found=false.
+	b2 := newBackend()
+	if _, found, err := b2.GetTask(ctx, "ctx-not-a-task-id"); err != nil || found {
+		t.Errorf("GetTask(contextId) found=%v err=%v, want found=false", found, err)
+	}
+	if _, found, err := b2.CancelTask(ctx, "ctx-not-a-task-id"); err != nil || found {
+		t.Errorf("CancelTask(contextId) found=%v err=%v, want found=false", found, err)
+	}
+	// Whereas GetTask with the real taskId succeeds and preserves ContextID.
+	got, found, err := b2.GetTask(ctx, "task-real-id")
+	if err != nil || !found || got.ContextID != "ctx-not-a-task-id" {
+		t.Errorf("GetTask(taskId) = %+v found=%v err=%v, want found=true ContextID=ctx-not-a-task-id", got, found, err)
 	}
 }

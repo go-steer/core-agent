@@ -1672,7 +1672,7 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	// rawPrompt is deliberately NOT seeded here: capture-raw-prompt is a
 	// step, and pre-seeding it would mask a pipeline that captured too
 	// late.
-	tp := &turnPrep{ctx: ctx, prompt: prompt}
+	tp := &turnPrep{ctx: ctx, prompt: prompt, hasContent: msg != nil}
 	if err := a.runPreTurn(tp, preTurnSteps); err != nil {
 		return func(yield func(*session.Event, error) bool) {
 			a.recordInvocation(0, err)

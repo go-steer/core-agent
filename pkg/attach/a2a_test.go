@@ -567,3 +567,112 @@ func TestA2A_InvalidSchemaAndImpliedAuthFromScopes(t *testing.T) {
 		t.Fatalf("unauthenticated request to scoped skill got status %d, want 401", resp.StatusCode)
 	}
 }
+
+func TestA2A_SkillLevelAuthEnforcedOnTasksGetAndCancelAndLargeIntID(t *testing.T) {
+	t.Parallel()
+
+	daemonCtx, cancelDaemon := context.WithCancel(context.Background())
+	t.Cleanup(cancelDaemon)
+
+	backend := newFakeA2ABackend()
+	authn := staticMapAuth{
+		"tok-noscope": {Identity: "user:bob", Labels: map[string]string{"scopes": "other:read"}},
+		"tok-scoped":  {Identity: "user:alice", Labels: map[string]string{"scopes": "sec:run"}},
+	}
+	baseURL, _ := startTestA2AServer(t, Options{
+		DaemonCtx:     daemonCtx,
+		Authenticator: authn,
+		A2A: A2AOptions{
+			Expose:  true,
+			Backend: backend,
+			// Top-level Auth is unset; auth is configured solely on Skills[0].
+			Skills: []A2ASkill{
+				{
+					ID:          "secure-skill",
+					Name:        "secure-skill",
+					Description: "Requires skill-level auth",
+					Auth: A2AAuthOptions{
+						Required: true,
+						Scopes:   []string{"sec:run"},
+					},
+				},
+			},
+		},
+	})
+
+	// 1. Send with 64-bit integer JSON-RPC ID (> 2^53) preserves exact integer in response.
+	rawSend := `{"jsonrpc":"2.0","id":9007199254740993,"method":"message/send","params":{"message":{"taskId":"task-sec-1","role":"user","parts":[{"kind":"text","text":"hello"}]}}}`
+	req, err := http.NewRequest(http.MethodPost, baseURL+A2APath, strings.NewReader(rawSend))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer tok-scoped")
+	httpResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	var rawResp bytes.Buffer
+	_, _ = rawResp.ReadFrom(httpResp.Body)
+	_ = httpResp.Body.Close()
+	if !strings.Contains(rawResp.String(), `"id":9007199254740993`) {
+		t.Errorf("response body lost 64-bit integer id precision: %s", rawResp.String())
+	}
+
+	// 2. Unauthenticated tasks/get and tasks/cancel must be rejected with 401.
+	resp, _ := postA2A(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  A2AMethodTasksGet,
+		"params":  map[string]any{"id": "task-sec-1"},
+	}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated tasks/get status = %d, want 401", resp.StatusCode)
+	}
+	resp, _ = postA2A(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  A2AMethodTasksCancel,
+		"params":  map[string]any{"id": "task-sec-1"},
+	}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated tasks/cancel status = %d, want 401", resp.StatusCode)
+	}
+
+	// 3. Authenticated caller missing skill scope must be rejected with 403 on tasks/get and tasks/cancel.
+	resp, _ = postA2A(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  A2AMethodTasksGet,
+		"params":  map[string]any{"id": "task-sec-1"},
+	}, map[string]string{"Authorization": "Bearer tok-noscope"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("insufficient-scope tasks/get status = %d, want 403", resp.StatusCode)
+	}
+	resp, _ = postA2A(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      5,
+		"method":  A2AMethodTasksCancel,
+		"params":  map[string]any{"id": "task-sec-1"},
+	}, map[string]string{"Authorization": "Bearer tok-noscope"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("insufficient-scope tasks/cancel status = %d, want 403", resp.StatusCode)
+	}
+
+	// 4. Draining/closing server refuses new message/send turns with 503.
+	cancelDaemon()
+	resp, _ = postA2A(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      6,
+		"method":  A2AMethodMessageSend,
+		"params": map[string]any{
+			"message": map[string]any{
+				"role":  "user",
+				"parts": []any{map[string]any{"kind": "text", "text": "during-shutdown"}},
+			},
+		},
+	}, map[string]string{"Authorization": "Bearer tok-scoped"})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("message/send while closing status = %d, want 503", resp.StatusCode)
+	}
+}

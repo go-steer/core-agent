@@ -2864,12 +2864,48 @@ func validateJSONSchemaNode(s *jsonschema.Schema, path string) error {
 			return fmt.Errorf("%s: unknown type %q", path, t)
 		}
 	}
-	if err := validateJSONSchemaNode(s.Items, path+".items"); err != nil {
-		return err
-	}
-	for k, prop := range s.Properties {
-		if err := validateJSONSchemaNode(prop, path+".properties."+k); err != nil {
+	for _, pair := range []struct {
+		sub  *jsonschema.Schema
+		name string
+	}{
+		{s.Items, ".items"},
+		{s.AdditionalProperties, ".additionalProperties"},
+		{s.PropertyNames, ".propertyNames"},
+		{s.Not, ".not"},
+	} {
+		if err := validateJSONSchemaNode(pair.sub, path+pair.name); err != nil {
 			return err
+		}
+	}
+	for _, list := range []struct {
+		subs []*jsonschema.Schema
+		name string
+	}{
+		{s.AllOf, ".allOf"},
+		{s.AnyOf, ".anyOf"},
+		{s.OneOf, ".oneOf"},
+		{s.PrefixItems, ".prefixItems"},
+	} {
+		for i, sub := range list.subs {
+			if err := validateJSONSchemaNode(sub, fmt.Sprintf("%s%s[%d]", path, list.name, i)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, m := range []struct {
+		subs map[string]*jsonschema.Schema
+		name string
+	}{
+		{s.Properties, ".properties."},
+		{s.PatternProperties, ".patternProperties."},
+		{s.DependentSchemas, ".dependentSchemas."},
+		{s.Defs, ".$defs."},
+		{s.Definitions, ".definitions."},
+	} {
+		for k, sub := range m.subs {
+			if err := validateJSONSchemaNode(sub, path+m.name+k); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -39,6 +39,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 const (
@@ -86,6 +87,10 @@ type A2ABackendOptions struct {
 	// EnforceACL enables per-caller ACL checks (auth.Authorize) on SendMessage,
 	// PreflightTask, GetTask, and CancelTask.
 	EnforceACL bool
+	// PricingRate is the fallback pricing rate used when committing per-turn
+	// model usage onto the session's usage.Tracker. Defaults to
+	// FactoryDeps.PricingRate when FactoryDeps is non-nil.
+	PricingRate usage.Pricing
 	// MaxTasks caps the number of terminal/idle tasks kept in memory (LRU).
 	// In-flight tasks (submitted, working) are pinned and never evicted.
 	// Defaults to DefaultA2AMaxTasks (1024).
@@ -109,6 +114,7 @@ type A2ABackend struct {
 	eventlogHandle *eventlog.Handle
 	aclStore       attach.SessionACLStore
 	enforceACL     bool
+	pricingRate    usage.Pricing
 	maxTasks       int
 	taskTTL        time.Duration
 	now            func() time.Time
@@ -199,6 +205,10 @@ func NewA2ABackend(opts A2ABackendOptions) *A2ABackend {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
+	pricingRate := opts.PricingRate
+	if pricingRate == (usage.Pricing{}) && opts.FactoryDeps != nil {
+		pricingRate = opts.FactoryDeps.PricingRate
+	}
 	return &A2ABackend{
 		daemonCtx:       daemonCtx,
 		registry:        reg,
@@ -208,6 +218,7 @@ func NewA2ABackend(opts A2ABackendOptions) *A2ABackend {
 		eventlogHandle:  evHandle,
 		aclStore:        aclStore,
 		enforceACL:      opts.EnforceACL,
+		pricingRate:     pricingRate,
 		maxTasks:        maxTasks,
 		taskTTL:         taskTTL,
 		now:             nowFn,
@@ -235,12 +246,12 @@ func (b *A2ABackend) sessionLock(sid string) *sync.Mutex {
 // message/stream commits HTTP 200 text/event-stream headers.
 func (b *A2ABackend) PreflightTask(ctx context.Context, req attach.A2ATaskRequest) error {
 	caller := resolveA2ACaller(ctx, req.Caller)
-	if strings.TrimSpace(req.TaskID) != "" {
+	if !req.TaskIDGenerated && strings.TrimSpace(req.TaskID) != "" {
 		if err := b.checkExistingTaskAccess(ctx, caller, strings.TrimSpace(req.TaskID), auth.ActionSessionWrite); err != nil {
 			return err
 		}
 	}
-	if strings.TrimSpace(req.ContextID) != "" {
+	if !req.ContextIDGenerated && strings.TrimSpace(req.ContextID) != "" {
 		if err := b.checkContextAccess(ctx, caller, strings.TrimSpace(req.ContextID), auth.ActionSessionWrite); err != nil {
 			return err
 		}
@@ -255,19 +266,24 @@ func (b *A2ABackend) PreflightTask(ctx context.Context, req attach.A2ATaskReques
 // session mapped to req.ContextID.
 func (b *A2ABackend) SendMessage(ctx context.Context, req attach.A2ATaskRequest) (attach.A2ATaskOutcome, error) {
 	caller := resolveA2ACaller(ctx, req.Caller)
-	if strings.TrimSpace(req.TaskID) != "" {
+	taskIDGenerated := req.TaskIDGenerated || strings.TrimSpace(req.TaskID) == ""
+	contextIDGenerated := req.ContextIDGenerated || strings.TrimSpace(req.ContextID) == ""
+	if !taskIDGenerated {
 		if err := b.checkExistingTaskAccess(ctx, caller, strings.TrimSpace(req.TaskID), auth.ActionSessionWrite); err != nil {
 			return attach.A2ATaskOutcome{}, err
 		}
 	}
-	if strings.TrimSpace(req.ContextID) != "" {
+	if !contextIDGenerated {
 		if err := b.checkContextAccess(ctx, caller, strings.TrimSpace(req.ContextID), auth.ActionSessionWrite); err != nil {
 			return attach.A2ATaskOutcome{}, err
 		}
 	}
-	taskID, contextID := b.normalizeTaskAndContextIDs(req.TaskID, req.ContextID)
+	taskID, contextID, inheritedCtx := b.normalizeTaskAndContextIDs(req.TaskID, req.ContextID)
+	if inheritedCtx {
+		contextIDGenerated = false
+	}
 
-	ag, err := b.resolveOrCreateSession(ctx, caller, taskID, contextID)
+	ag, err := b.resolveOrCreateSession(ctx, caller, taskID, contextID, taskIDGenerated, contextIDGenerated)
 	if err != nil {
 		return attach.A2ATaskOutcome{}, err
 	}
@@ -291,15 +307,17 @@ func (b *A2ABackend) SendMessage(ctx context.Context, req attach.A2ATaskRequest)
 		return out, nil
 	}
 
-	b.persistSessionTaskCorrelation(turnCtx, ag, taskID, contextID)
+	persisted := b.persistSessionTaskCorrelation(turnCtx, ag, taskID, contextID)
 
 	seq, err := b.startAgentTurn(turnCtx, ag, req, caller)
 	if err != nil {
 		return b.recordTurnFailure(taskID, contextID, err)
 	}
 
-	fullText, turnErr := consumeA2ATurnEvents(seq, req.OnProgress)
-	b.persistSessionTaskCorrelation(turnCtx, ag, taskID, contextID)
+	fullText, turnErr := consumeA2ATurnEvents(ag, b.pricingRate, seq, req.OnProgress)
+	if !persisted {
+		b.persistSessionTaskCorrelation(turnCtx, ag, taskID, contextID)
+	}
 	return b.finalizeTurnOutcome(turnCtx, ag, taskID, contextID, fullText, turnErr)
 }
 
@@ -397,9 +415,10 @@ func (b *A2ABackend) applyCancelLocked(id string, now time.Time) attach.A2ATaskO
 	return out
 }
 
-func (b *A2ABackend) normalizeTaskAndContextIDs(taskID, contextID string) (string, string) {
+func (b *A2ABackend) normalizeTaskAndContextIDs(taskID, contextID string) (string, string, bool) {
 	taskID = strings.TrimSpace(taskID)
 	contextID = strings.TrimSpace(contextID)
+	inheritedCtx := false
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -407,6 +426,7 @@ func (b *A2ABackend) normalizeTaskAndContextIDs(taskID, contextID string) (strin
 		if rec, ok := b.tasks[taskID]; ok && rec.outcome.ContextID != "" {
 			if contextID == "" {
 				contextID = rec.outcome.ContextID
+				inheritedCtx = true
 			}
 		}
 	}
@@ -416,7 +436,7 @@ func (b *A2ABackend) normalizeTaskAndContextIDs(taskID, contextID string) (strin
 	if contextID == "" {
 		contextID = "ctx-" + uuid.NewString()
 	}
-	return taskID, contextID
+	return taskID, contextID, inheritedCtx
 }
 
 func (b *A2ABackend) beginTaskTurn(taskID, contextID string, ag *agent.Agent, caller auth.Caller, cancel context.CancelFunc) (bool, error) {
@@ -475,14 +495,21 @@ func (b *A2ABackend) startAgentTurn(
 }
 
 func consumeA2ATurnEvents(
+	ag *agent.Agent,
+	pricingRate usage.Pricing,
 	seq iter.Seq2[*session.Event, error],
 	onProgress func(state attach.A2ATaskState, statusText string),
 ) (string, error) {
-	var nonPartialBuilder strings.Builder
+	var tap usage.TurnTap
+	var lastNonPartialText string
 	var partialBuilder strings.Builder
 	for ev, err := range seq {
+		tap.Observe(ev)
+		if u, ok := tap.Commit(ev); ok && ag != nil && ag.Tracker() != nil {
+			ag.Tracker().AppendUsage(ag.ModelName(), u, usage.PriceForRefreshed(ag.ModelName(), pricingRate))
+		}
 		if err != nil {
-			return firstNonEmptyString(nonPartialBuilder.String(), partialBuilder.String()), err
+			return firstNonEmptyString(lastNonPartialText, partialBuilder.String()), err
 		}
 		if ev == nil || ev.Content == nil || ev.Content.Role != genai.RoleModel {
 			continue
@@ -498,12 +525,12 @@ func consumeA2ATurnEvents(
 			partialBuilder.WriteString(text)
 			continue
 		}
-		nonPartialBuilder.WriteString(text)
+		lastNonPartialText = text
 		if onProgress != nil {
 			onProgress(attach.TaskStateWorking, text)
 		}
 	}
-	return firstNonEmptyString(nonPartialBuilder.String(), partialBuilder.String()), nil
+	return firstNonEmptyString(lastNonPartialText, partialBuilder.String()), nil
 }
 
 func (b *A2ABackend) finalizeTurnOutcome(
@@ -591,6 +618,7 @@ func (b *A2ABackend) resolveOrCreateSession(
 	ctx context.Context,
 	caller auth.Caller,
 	taskID, contextID string,
+	taskIDGenerated, contextIDGenerated bool,
 ) (*agent.Agent, error) {
 	b.resolveMu.Lock()
 	defer b.resolveMu.Unlock()
@@ -606,10 +634,14 @@ func (b *A2ABackend) resolveOrCreateSession(
 			return ag, err
 		}
 	}
-	for _, candidate := range []string{contextID, taskID} {
-		if candidate == "" || candidate == sid {
-			continue
-		}
+	var candidates []string
+	if !contextIDGenerated && contextID != "" && contextID != sid {
+		candidates = append(candidates, contextID)
+	}
+	if !taskIDGenerated && taskID != "" && taskID != sid && taskID != contextID {
+		candidates = append(candidates, taskID)
+	}
+	for _, candidate := range candidates {
 		ag, err := b.lookupExistingAgent(ctx, caller, candidate, auth.ActionSessionWrite)
 		if err != nil {
 			return nil, err
@@ -693,7 +725,11 @@ func (b *A2ABackend) resumePersistedAgent(ctx context.Context, caller auth.Calle
 		resumeCaller = auth.Caller{Identity: sess.UserID()}
 	}
 	if b.factoryDeps != nil {
-		ad, cancelOnEvict, err := ReproduceAgent(*b.factoryDeps, resumeCaller, sess.ID(), "resumed")
+		deps := *b.factoryDeps
+		// Suppress inline auto-continue injection when resuming a session for an
+		// incoming A2A turn so WakeLoop does not race SendMessage's own ag.Run.
+		deps.AutoContinueDeferInject = true
+		ad, cancelOnEvict, err := ReproduceAgent(deps, resumeCaller, sess.ID(), "resumed")
 		if err != nil {
 			return nil, err
 		}
@@ -701,7 +737,7 @@ func (b *A2ABackend) resumePersistedAgent(ctx context.Context, caller auth.Calle
 		return ad.Agent(), nil
 	}
 	if b.resumer != nil {
-		reg, acl, cancelOnEvict, err := b.resumer.Resume(ctx, sess.AppName(), sess.ID())
+		reg, acl, cancelOnEvict, err := b.resumer.Resume(withDeferAutoContinueInject(ctx), sess.AppName(), sess.ID())
 		if err != nil {
 			return nil, err
 		}
@@ -844,16 +880,16 @@ func (b *A2ABackend) pendingParks(ctx context.Context, ag *agent.Agent) []eventl
 	return eventlog.ScanPendingParks(resp.Session.Events())
 }
 
-func (b *A2ABackend) persistSessionTaskCorrelation(ctx context.Context, ag *agent.Agent, taskID, contextID string) {
+func (b *A2ABackend) persistSessionTaskCorrelation(ctx context.Context, ag *agent.Agent, taskID, contextID string) bool {
 	if ag == nil {
-		return
+		return false
 	}
 	svc := ag.SessionService()
 	if svc == nil && b.eventlogHandle != nil {
 		svc = b.eventlogHandle.Service
 	}
 	if svc == nil {
-		return
+		return false
 	}
 	resp, err := svc.Get(ctx, &session.GetRequest{
 		AppName:   ag.AppName(),
@@ -861,7 +897,7 @@ func (b *A2ABackend) persistSessionTaskCorrelation(ctx context.Context, ag *agen
 		SessionID: ag.SessionID(),
 	})
 	if err != nil || resp == nil || resp.Session == nil {
-		return
+		return false
 	}
 	ev := session.NewEvent(ctx, "a2a-meta")
 	ev.Author = cmp.Or(ag.AgentName(), ag.AppName(), "core_agent")
@@ -869,7 +905,7 @@ func (b *A2ABackend) persistSessionTaskCorrelation(ctx context.Context, ag *agen
 		a2aTaskStateKey:    taskID,
 		a2aContextStateKey: contextID,
 	}
-	_ = svc.AppendEvent(ctx, resp.Session, ev)
+	return svc.AppendEvent(ctx, resp.Session, ev) == nil
 }
 
 func (b *A2ABackend) recoverTaskFromStore(
@@ -877,7 +913,7 @@ func (b *A2ABackend) recoverTaskFromStore(
 	caller auth.Caller,
 	id string,
 ) (attach.A2ATaskOutcome, bool, error) {
-	sess, err := b.findPersistedSession(ctx, id)
+	sess, err := b.findPersistedSessionByTaskID(ctx, id)
 	if err != nil || sess == nil {
 		return attach.A2ATaskOutcome{}, false, err
 	}
@@ -1115,9 +1151,32 @@ func (b *A2ABackend) checkExistingTaskAccess(ctx context.Context, caller auth.Ca
 	if err := b.authorizePersistedSession(ctx, caller, sess.AppName(), sess.ID(), sess.UserID(), action); err != nil {
 		return err
 	}
-	if !isLatestSessionTask(sess, taskID) || len(eventlog.ScanPendingParks(sess.Events())) == 0 {
+	pending := eventlog.ScanPendingParks(sess.Events())
+	if !isLatestSessionTask(sess, taskID) || len(pending) == 0 {
 		return fmt.Errorf("a2a: task %q is in terminal state %s and cannot be resumed", taskID, attach.TaskStateCompleted)
 	}
+	ctxID := sessionA2AContextID(sess)
+	now := b.now().UTC()
+	b.mu.Lock()
+	if _, exists := b.tasks[taskID]; !exists {
+		b.evictLocked(now)
+		b.tasks[taskID] = &a2aTaskRecord{
+			outcome: attach.A2ATaskOutcome{
+				TaskID:        taskID,
+				ContextID:     ctxID,
+				State:         attach.TaskStateInputRequired,
+				StatusMessage: pending[0].Message,
+				Metadata:      parkToMetadata(pending[0]),
+			},
+			sessionID:    sess.ID(),
+			appName:      sess.AppName(),
+			owner:        sess.UserID(),
+			updatedAt:    now,
+			lastAccessed: now,
+		}
+	}
+	b.contextSessions[ctxID] = sess.ID()
+	b.mu.Unlock()
 	return nil
 }
 
@@ -1125,7 +1184,7 @@ func (b *A2ABackend) checkContextAccess(ctx context.Context, caller auth.Caller,
 	b.mu.Lock()
 	sid := b.contextSessions[contextID]
 	b.mu.Unlock()
-	if sid != "" {
+	if sid != "" && b.lookupInMemoryEntry("", sid) != nil {
 		return b.authorizeSessionOrOwner(ctx, caller, "", sid, "", action)
 	}
 	sess, err := b.findPersistedSession(ctx, contextID)
@@ -1391,7 +1450,7 @@ func extractContentText(c *genai.Content) string {
 	}
 	var sb strings.Builder
 	for _, p := range c.Parts {
-		if p != nil && p.Text != "" {
+		if p != nil && !p.Thought && p.Text != "" {
 			sb.WriteString(p.Text)
 		}
 	}

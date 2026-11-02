@@ -257,6 +257,29 @@ func (a *Agent) RecordGuardrailReset(reset []string, budgetUSD float64, caller s
 	if a == nil || (len(reset) == 0 && budgetUSD <= 0) {
 		return
 	}
+	// Ensure pre-existing guardrail state (including any pre-upgrade
+	// legacy eventlog fold and SaveState backfill) is restored before
+	// queuing the reset event; otherwise the reset write creates the
+	// agent_guardrail_state row first and causes a later
+	// RestoreGuardrails to skip the legacy fold or double-count the
+	// budget extension (#1439). Unconditional so a concurrent
+	// RestoreGuardrails that raced between ResetWatchdog/ResetCostCeiling
+	// and RecordGuardrailReset cannot leave a reset flag re-armed.
+	a.ensureGuardrailsRestored(context.Background())
+	if len(reset) > 0 {
+		a.mu.Lock()
+		for _, g := range reset {
+			switch g {
+			case attach.GuardrailWatchdog:
+				a.watchdogTripped = false
+				a.watchdogReason = ""
+			case attach.GuardrailCostCeiling:
+				a.costCeilingExceeded = false
+				a.costCeilingReason = ""
+			}
+		}
+		a.mu.Unlock()
+	}
 	a.queueOutOfBandEvent(attach.NewGuardrailResetAuditEvent(caller, reset, budgetUSD))
 }
 
@@ -289,6 +312,14 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 	if done {
 		return nil
 	}
+	a.guardrailRestoreMu.Lock()
+	defer a.guardrailRestoreMu.Unlock()
+	a.mu.Lock()
+	done = a.guardrailRestored
+	a.mu.Unlock()
+	if done {
+		return nil
+	}
 	var st attach.GuardrailPersistedState
 	if a.eventLog.Guardrail != nil {
 		if _, err := a.eventLog.Service.Get(ctx, &session.GetRequest{
@@ -313,7 +344,7 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 				return err
 			}
 			st = attach.FoldGuardrailEvents(eventSeq(getResp.Session))
-			_ = a.eventLog.Guardrail.SaveState(ctx, eventlog.GuardrailState{
+			if err := a.eventLog.Guardrail.SaveState(ctx, eventlog.GuardrailState{
 				AppName:            a.appName,
 				UserID:             a.userID,
 				SessionID:          a.sessionID,
@@ -322,7 +353,12 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 				CostTripped:        st.CostTripped,
 				CostReason:         st.CostReason,
 				BudgetExtensionUSD: st.BudgetAddedUSD,
-			})
+			}); err != nil {
+				slog.Warn("agent: failed to backfill guardrail state from legacy eventlog",
+					"session_id", a.sessionID,
+					"err", err,
+				)
+			}
 		} else {
 			st = attach.GuardrailPersistedState{
 				WatchdogTripped: gs.WatchdogTripped,
@@ -345,16 +381,12 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 	}
 
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.guardrailRestored {
-		// A concurrent caller won the race and already applied it.
-		// Applying twice would double-count granted budget.
-		a.mu.Unlock()
 		return nil
 	}
 	a.guardrailRestored = true
-	a.mu.Unlock()
-
-	a.applyGuardrailState(st)
+	a.applyGuardrailStateLocked(st)
 	return nil
 }
 
@@ -371,13 +403,11 @@ func (a *Agent) ensureGuardrailsRestored(ctx context.Context) {
 	_ = a.RestoreGuardrails(ctx)
 }
 
-// applyGuardrailState installs folded state, subject to the current
-// process's configuration. See the package comment: durable state
-// restores a halt the operator hasn't cleared, it does not re-enable a
-// backstop the operator has since turned off.
-func (a *Agent) applyGuardrailState(st attach.GuardrailPersistedState) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+// applyGuardrailStateLocked installs folded state, subject to the current
+// process's configuration. Caller must hold a.mu. See the package
+// comment: durable state restores a halt the operator hasn't cleared,
+// it does not re-enable a backstop the operator has since turned off.
+func (a *Agent) applyGuardrailStateLocked(st attach.GuardrailPersistedState) {
 
 	// Budget first: it is what makes a restored cost trip evaluable
 	// against the bar the operator actually left in place. Only

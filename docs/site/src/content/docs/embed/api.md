@@ -344,7 +344,7 @@ a, _ := agent.New(m,
 )
 ```
 
-The same database holds ADK's standard `events`, `sessions`, `app_states`, `user_states` tables plus an `agent_eventlog` overlay table whose `seq INTEGER PRIMARY KEY AUTOINCREMENT` column gives every event a stable monotonic ordering for replay. ADK ships the GORM-backed session service we wrap; we only own the overlay.
+The same database holds ADK's standard `events`, `sessions`, `app_states`, `user_states` tables plus `pkg/eventlog`'s durable tables: `agent_eventlog` (monotonic `seq` ordering and sidecar metadata for replay), `agent_guardrail_state` (`GuardrailStore`), `agent_budget_spend` (`SpendStore`), `agent_run_lock` (distributed session/fleet leases), `agent_continuation_claim`, `agent_boot_log`, and `agent_approval_decisions`. ADK ships the GORM-backed session service we wrap; `pkg/eventlog` owns the overlay and operational state tables.
 
 ### Replay and live tail
 

@@ -493,6 +493,12 @@ type Agent struct {
 	// See guardrail_persist.go.
 	pendingOutOfBandEvents []queuedOutOfBandEvent
 	guardrailRestored      bool
+	// guardrailRestoreMu serializes RestoreGuardrails end to end so
+	// concurrent callers (GET /guardrails, POST /guardrails/reset,
+	// RecordGuardrailReset, and Run) never race a legacy backfill or
+	// observe guardrailRestored == true before applyGuardrailState has
+	// applied the restored state (#1439). Never held with a.mu.
+	guardrailRestoreMu sync.Mutex
 	// outOfBandDrainMu serializes drainOutOfBandEvents end to end, so
 	// two drains racing (an operator's reset on an HTTP goroutine and
 	// a turn's cleanup) append in queue order. #1258's rows are read

@@ -1131,3 +1131,125 @@ func TestGuardrailPersist_PoisonEventDroppedAfterMaxAttemptsAndQueueDrains(t *te
 		t.Errorf("healthy trip behind poison did not persist: tripped=%v reason=%q", tripped, reason)
 	}
 }
+
+// TestRecordGuardrailReset_BeforeFirstRunFoldsLegacyEvents verifies that an
+// operator reset before the session's first Run (or explicit RestoreGuardrails)
+// folds any pre-upgrade legacy guardrail events first rather than creating a
+// fresh agent_guardrail_state row that masks the pre-upgrade trip and budget
+// history (#1439).
+func TestRecordGuardrailReset_BeforeFirstRunFoldsLegacyEvents(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	createTestSession(t, h, "core-agent", "u", "s-1439-pre-run")
+
+	first, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1439-pre-run"),
+		WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+		WithWatchdog(&fakeWatchdog{}, nil),
+		WithWatchdogEnforce(),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	first.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "legacy watchdog halt"))
+	first.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "legacy cost halt"))
+	first.RecordGuardrailReset(nil, 5, "alice@example.com")
+
+	// Simulate a pre-upgrade database by wiping agent_guardrail_state while
+	// leaving the legacy guardrail events in agent_eventlog.
+	if err := h.DB.Exec("DELETE FROM agent_guardrail_state").Error; err != nil {
+		t.Fatalf("clear agent_guardrail_state: %v", err)
+	}
+
+	second, err := New(minimalLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-1439-pre-run"),
+		WithCostCeiling(CostCeiling{MaxSessionUSD: 10}),
+		WithWatchdog(&fakeWatchdog{}, nil),
+		WithWatchdogEnforce(),
+	)
+	if err != nil {
+		t.Fatalf("agent.New (restart): %v", err)
+	}
+	// Operator clears the watchdog halt and adds $3 before the first Run.
+	if _, err := second.AddSessionCostBudget(3); err != nil {
+		t.Fatalf("AddSessionCostBudget: %v", err)
+	}
+	second.ResetWatchdog()
+	second.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 3, "bob@example.com")
+
+	if tripped, _ := second.WatchdogTripped(); tripped {
+		t.Error("watchdog halt should remain cleared after operator reset")
+	}
+	if tripped, reason := second.CostCeilingTripped(); !tripped || reason != "legacy cost halt" {
+		t.Errorf("unreset legacy cost halt was lost: tripped=%v reason=%q", tripped, reason)
+	}
+	if got := second.CostCeilingLimits().MaxSessionUSD; got != 18 {
+		t.Errorf("MaxSessionUSD = %v, want 18 ($10 configured + $5 legacy + $3 new)", got)
+	}
+	// Subsequent RestoreGuardrails must be a no-op and not double-count budget.
+	if err := second.RestoreGuardrails(context.Background()); err != nil {
+		t.Fatalf("RestoreGuardrails: %v", err)
+	}
+	if got := second.CostCeilingLimits().MaxSessionUSD; got != 18 {
+		t.Errorf("MaxSessionUSD after RestoreGuardrails = %v, want 18", got)
+	}
+
+	st, err := h.Guardrail.Load(context.Background(), "core-agent", "u", "s-1439-pre-run")
+	if err != nil {
+		t.Fatalf("Guardrail.Load: %v", err)
+	}
+	if st.WatchdogTripped || !st.CostTripped || st.CostReason != "legacy cost halt" || st.BudgetExtensionUSD != 8 {
+		t.Errorf("persisted GuardrailState = %+v, want WatchdogTripped=false CostTripped=true BudgetExtensionUSD=8", st)
+	}
+}
+
+// TestGuardrailEventContractMatchesEventLogStore enforces that the guardrail
+// event authors, guardrail names, and metadata keys in pkg/attach stay in
+// lockstep with the unexported constants in pkg/eventlog (#1439).
+func TestGuardrailEventContractMatchesEventLogStore(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	ctx := context.Background()
+	createTestSession(t, h, "core-agent", "u", "s-1439-contract")
+
+	getResp, err := h.Service.Get(ctx, &session.GetRequest{
+		AppName: "core-agent", UserID: "u", SessionID: "s-1439-contract", NumRecentEvents: 1,
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	sess := getResp.Session
+	events := []*session.Event{
+		attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "wd-reason"),
+		attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "cost-reason"),
+		attach.NewGuardrailResetAuditEvent("op@example.com", []string{attach.GuardrailWatchdog}, 6.5),
+	}
+	for i, ev := range events {
+		if err := h.Service.AppendEvent(ctx, sess, ev); err != nil {
+			t.Fatalf("AppendEvent(%d): %v", i, err)
+		}
+	}
+
+	fullResp, err := h.Service.Get(ctx, &session.GetRequest{
+		AppName: "core-agent", UserID: "u", SessionID: "s-1439-contract",
+	})
+	if err != nil {
+		t.Fatalf("Get(full): %v", err)
+	}
+	folded := attach.FoldGuardrailEvents(eventSeq(fullResp.Session))
+	stored, err := h.Guardrail.Load(ctx, "core-agent", "u", "s-1439-contract")
+	if err != nil {
+		t.Fatalf("Guardrail.Load: %v", err)
+	}
+	if stored.WatchdogTripped != folded.WatchdogTripped ||
+		stored.WatchdogReason != folded.WatchdogReason ||
+		stored.CostTripped != folded.CostTripped ||
+		stored.CostReason != folded.CostReason ||
+		stored.BudgetExtensionUSD != folded.BudgetAddedUSD {
+		t.Fatalf("GuardrailStore state %+v diverged from attach.FoldGuardrailEvents %+v", stored, folded)
+	}
+}

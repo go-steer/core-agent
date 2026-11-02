@@ -299,3 +299,75 @@ func TestAttachResetGuardrail_PersistsOneRow(t *testing.T) {
 		t.Errorf("durable reset rows = %d, want exactly 1 per operator action", rows)
 	}
 }
+
+// TestAttachResetGuardrail_BeforeFirstRunRestoresPreExistingState verifies that
+// GET /guardrails and POST /guardrails/reset on a freshly restarted process
+// (before the first Run) restore durable guardrail state — including any
+// pre-upgrade legacy guardrail events — so the operator sees the halt and can
+// clear it without losing pre-existing budget extensions (#1439).
+func TestAttachResetGuardrail_BeforeFirstRunRestoresPreExistingState(t *testing.T) {
+	t.Parallel()
+	h, err := eventlog.Open(context.Background(),
+		sqlite.Open(filepath.Join(t.TempDir(), "session.db")))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	tr := usage.NewTracker()
+	tr.Append("test", 12_000_000, 0, usage.Pricing{InputPerMTok: 1}) // $12 of $10
+	first := newEchoAgent(t,
+		agent.WithEventLog(h),
+		agent.WithSession("u", "s-1439-attach"),
+		agent.WithUsageTracker(tr),
+		agent.WithCostCeiling(agent.CostCeiling{MaxSessionUSD: 10}),
+	)
+	if _, err := h.Service.Create(context.Background(), &session.CreateRequest{
+		AppName: first.AppName(), UserID: "u", SessionID: "s-1439-attach",
+	}); err != nil {
+		t.Fatalf("session Create: %v", err)
+	}
+	for range first.Run(context.Background(), "hello") { //nolint:revive // drain
+	}
+	// Simulate a pre-upgrade DB by deleting agent_guardrail_state while leaving
+	// the legacy cost-trip event in agent_eventlog.
+	if err := h.DB.Exec("DELETE FROM agent_guardrail_state").Error; err != nil {
+		t.Fatalf("clear agent_guardrail_state: %v", err)
+	}
+
+	restarted := newEchoAgent(t,
+		agent.WithEventLog(h),
+		agent.WithSession("u", "s-1439-attach"),
+		agent.WithUsageTracker(tr),
+		agent.WithCostCeiling(agent.CostCeiling{MaxSessionUSD: 10}),
+	)
+	ad := New(restarted)
+
+	// Before any Run, AttachGuardrails must report the restored halt.
+	info := ad.AttachGuardrails()
+	if !info.Halted || !info.CostCeiling.Tripped {
+		t.Fatalf("AttachGuardrails before first Run = %+v, want Halted=true CostCeiling.Tripped=true", info)
+	}
+
+	// And AttachResetGuardrail on another fresh restart must clear the restored halt.
+	restarted2 := newEchoAgent(t,
+		agent.WithEventLog(h),
+		agent.WithSession("u", "s-1439-attach"),
+		agent.WithUsageTracker(tr),
+		agent.WithCostCeiling(agent.CostCeiling{MaxSessionUSD: 10}),
+	)
+	resp, err := New(restarted2).AttachResetGuardrail(attach.GuardrailResetRequest{
+		Guardrail:           attach.GuardrailCostCeiling,
+		AdditionalBudgetUSD: 5,
+		Caller:              "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("AttachResetGuardrail before first Run: %v", err)
+	}
+	if len(resp.Reset) != 1 || resp.Reset[0] != attach.GuardrailCostCeiling {
+		t.Errorf("Reset = %v, want [cost_ceiling]", resp.Reset)
+	}
+	if resp.Guardrails.Halted || resp.Guardrails.CostCeiling.MaxSessionUSD != 15 {
+		t.Errorf("Guardrails after reset = %+v, want Halted=false MaxSessionUSD=15", resp.Guardrails)
+	}
+}

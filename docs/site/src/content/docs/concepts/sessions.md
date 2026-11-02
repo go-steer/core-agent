@@ -92,12 +92,18 @@ For SQLite, WAL mode is enabled at startup (`PRAGMA journal_mode=WAL`) so concur
 
 ## Schema
 
-Two tables in the same database:
+`eventlog.Open` manages ADK's session tables plus `pkg/eventlog`'s durable overlay and state tables in the same database:
 
 | Table | Owned by | Purpose |
 |---|---|---|
 | `events`, `sessions`, `app_states`, `user_states` | ADK's `database.SessionService` (we wrap it unchanged) | Per-event payloads, session identity, app- and user-scoped state with `_adk*` filtering |
-| `agent_eventlog` | This package | Tiny overlay row per event: `seq INTEGER PRIMARY KEY AUTOINCREMENT`, the session triple, `event_id` (logical FK to `events.id`), `branch`, `author`, `timestamp` |
+| `agent_eventlog` | `pkg/eventlog` | Monotonic overlay row per event: `seq INTEGER PRIMARY KEY AUTOINCREMENT`, the session triple, `event_id` (logical FK to `events.id`), `branch`, `author`, `timestamp`, and sidecar `metadata` |
+| `agent_guardrail_state` | `pkg/eventlog` | Per-session durable watchdog and cost-ceiling halt flags, reasons, and cumulative operator-granted `budget_extension_usd` (`GuardrailStore`, `#1360`) |
+| `agent_budget_spend` | `pkg/eventlog` | Per-session cumulative token and USD spend ledger (`SpendStore`, `#1359`) |
+| `agent_run_lock` | `pkg/eventlog` | Distributed per-session and fleet lease locks with heartbeat expiry (`AcquireLock`, `#1361`) |
+| `agent_continuation_claim` | `pkg/eventlog` | Auto-continue attempt claims and retry rate-limiting per session (`ClaimContinuation`) |
+| `agent_boot_log` | `pkg/eventlog` | Daemon boot-attempt history backing the crash-loop circuit breaker |
+| `agent_approval_decisions` | `pkg/eventlog` | Durable operator approval and denial records for parked mutating tool calls (`#1400`) |
 
 The `seq` column is the cursor `Stream.Since` and `Stream.Watch` operate on. ADK's events table doesn't expose monotonic ordering — its event IDs are timestamp-based strings — so the overlay is what makes "everything since seq N" semantics possible.
 

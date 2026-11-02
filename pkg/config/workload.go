@@ -777,7 +777,10 @@ func ImportWorkload(workloadDir, outDir string) (*Config, error) {
 			return nil, err
 		}
 	}
-	cfg := buildConfigFromWorkload(b)
+	cfg, err := buildConfigFromWorkload(b)
+	if err != nil {
+		return nil, err
+	}
 	if err := writeConvertedConfigJSON(filepath.Join(agentsDir, "config.json"), cfg); err != nil {
 		return nil, err
 	}
@@ -787,7 +790,7 @@ func ImportWorkload(workloadDir, outDir string) (*Config, error) {
 	return Load(agentsDir)
 }
 
-func buildConfigFromWorkload(b *WorkloadBundle) *Config {
+func buildConfigFromWorkload(b *WorkloadBundle) (*Config, error) {
 	cfg := DefaultConfig()
 	cfg.Agent.DisplayName = b.Name
 	cfg.Agent.Description = b.Description
@@ -843,22 +846,26 @@ func buildConfigFromWorkload(b *WorkloadBundle) *Config {
 	if len(b.ToolCatalog.Tools) > 0 {
 		cfg.Tools.Policies = expandWorkloadToolPolicies(b)
 	}
-	if sc, err := b.ParsedSchedule(); err == nil && sc != nil {
-		cfg.Schedule = sc
+	sc, err := b.ParsedSchedule()
+	if err != nil {
+		return nil, err
 	}
+	cfg.Schedule = sc
 	cfg.Monitor = workloadMonitorToConfig(b.Monitor)
-	if a2aCfg, err := b.ParsedA2A(); err == nil {
-		if a2aCfg.Expose {
-			if a2aCfg.SkillName == "" {
-				a2aCfg.SkillName = b.Name
-			}
-			if a2aCfg.SkillDescription == "" {
-				a2aCfg.SkillDescription = b.Description
-			}
-		}
-		cfg.A2A = a2aCfg
+	a2aCfg, err := b.ParsedA2A()
+	if err != nil {
+		return nil, err
 	}
-	return cfg
+	if a2aCfg.Expose {
+		if a2aCfg.SkillName == "" {
+			a2aCfg.SkillName = b.Name
+		}
+		if a2aCfg.SkillDescription == "" {
+			a2aCfg.SkillDescription = b.Description
+		}
+	}
+	cfg.A2A = a2aCfg
+	return cfg, nil
 }
 
 func mapWorkloadHITLMode(h WorkloadHITL) string {

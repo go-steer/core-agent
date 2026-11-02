@@ -366,3 +366,130 @@ func TestRepairContentShape(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoResume_RepairStampAndRetryAfterFailedResume(t *testing.T) {
+	t.Parallel()
+	h := openSchedLeaseHandle(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	seedARSession(t, h, "alice", "s-retry-repair",
+		arUserText("check status", now.Add(-2*time.Minute)),
+		arModelCall("call-ro", "read_tool", now.Add(-time.Minute)),
+	)
+
+	attempts := 0
+	ar := NewAutoResumer(AutoResumeConfig{
+		Handle:          h,
+		AppName:         "core-agent",
+		IsReadOnly:      arPred(),
+		FreshnessWindow: time.Hour,
+		Resume: func(_ context.Context, _, _ string, repair *genai.Content) error {
+			attempts++
+			if repair == nil {
+				t.Error("expected non-nil repair content on dangling read-only call")
+			}
+			if attempts == 1 {
+				return errors.New("transient model failure")
+			}
+			return nil
+		},
+	})
+
+	// First pass: appendRepair runs, then Resume fails.
+	if n := ar.Run(ctx); n != 0 {
+		t.Fatalf("first Run() = %d, want 0 on failed Resume", n)
+	}
+
+	// Second pass: must still recognize the session as interrupted, must not
+	// duplicate the synthetic repair event, and must succeed.
+	if n := ar.Run(ctx); n != 1 {
+		t.Fatalf("second Run() = %d, want 1", n)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+
+	resp, err := h.Service.Get(ctx, &adksession.GetRequest{
+		AppName: "core-agent", UserID: "alice", SessionID: "s-retry-repair",
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	repairEvents := 0
+	for ev := range resp.Session.Events().All() {
+		if isAutoResumeRepairEvent(ev) {
+			repairEvents++
+		}
+	}
+	if repairEvents != 1 {
+		t.Errorf("synthetic repair events = %d, want 1 (idempotent across retries and stamped with SyntheticRepairMetadataKey)", repairEvents)
+	}
+	// Verify effects.ScanDangling still treats the read_tool call as dangling (not completed by synthetic repair).
+	scan := effects.ScanDangling(resp.Session.Events(), arPred(), nil)
+	if len(scan.Repairable) != 1 {
+		t.Errorf("ScanDangling Repairable = %d, want 1 (synthetic repair must be ignored by ScanDangling)", len(scan.Repairable))
+	}
+
+	// Simulate Turn 1 finishing after repair and a subsequent Turn 2 getting
+	// interrupted on a new read-only tool call: the prior repaired call-ro must
+	// not block or pollute Turn 2's repair. Event timestamps must postdate the
+	// Turn 1 repair event (since ADK's SQLite session store orders events by
+	// timestamp ASC).
+	t2Base := time.Now().UTC().Add(time.Second)
+	_ = h.Service.AppendEvent(ctx, resp.Session, arModelText("turn 1 done", t2Base))
+	_ = h.Service.AppendEvent(ctx, resp.Session, arUserText("turn 2 prompt", t2Base.Add(time.Second)))
+	_ = h.Service.AppendEvent(ctx, resp.Session, arModelCall("call-ro-2", "read_tool", t2Base.Add(2*time.Second)))
+
+	var turn2Repair *genai.Content
+	ar2 := NewAutoResumer(AutoResumeConfig{
+		Handle:          h,
+		AppName:         "core-agent",
+		IsReadOnly:      arPred(),
+		FreshnessWindow: time.Hour,
+		Resume: func(_ context.Context, _, _ string, repair *genai.Content) error {
+			turn2Repair = repair
+			return nil
+		},
+	})
+	ar2.now = func() time.Time { return t2Base.Add(3 * time.Second) }
+	if n := ar2.Run(ctx); n != 1 {
+		t.Fatalf("Turn 2 Run() = %d, want 1", n)
+	}
+	if turn2Repair == nil || len(turn2Repair.Parts) != 1 || turn2Repair.Parts[0].FunctionResponse == nil || turn2Repair.Parts[0].FunctionResponse.ID != "call-ro-2" {
+		t.Fatalf("Turn 2 repair = %+v, want single FunctionResponse for call-ro-2", turn2Repair)
+	}
+
+	// Simulate Turn 2 finishing and Turn 3 getting interrupted on a plain user
+	// text message: prior synthetic repairs must not re-fire on a user turn.
+	resp2, err := h.Service.Get(ctx, &adksession.GetRequest{
+		AppName: "core-agent", UserID: "alice", SessionID: "s-retry-repair",
+	})
+	if err != nil {
+		t.Fatalf("Get 2: %v", err)
+	}
+	t3Base := t2Base.Add(10 * time.Second)
+	_ = h.Service.AppendEvent(ctx, resp2.Session, arModelText("turn 2 done", t3Base))
+	_ = h.Service.AppendEvent(ctx, resp2.Session, arUserText("turn 3 prompt", t3Base.Add(time.Second)))
+
+	var turn3Repair *genai.Content
+	turn3Resumed := false
+	ar3 := NewAutoResumer(AutoResumeConfig{
+		Handle:          h,
+		AppName:         "core-agent",
+		IsReadOnly:      arPred(),
+		FreshnessWindow: time.Hour,
+		MaxAttempts:     5,
+		Resume: func(_ context.Context, _, _ string, repair *genai.Content) error {
+			turn3Resumed = true
+			turn3Repair = repair
+			return nil
+		},
+	})
+	ar3.now = func() time.Time { return t3Base.Add(2 * time.Second) }
+	if n := ar3.Run(ctx); n != 1 || !turn3Resumed {
+		t.Fatalf("Turn 3 Run() = %d (resumed=%v), want 1", n, turn3Resumed)
+	}
+	if turn3Repair != nil {
+		t.Errorf("Turn 3 repair = %+v, want nil on user-tail turn", turn3Repair)
+	}
+}

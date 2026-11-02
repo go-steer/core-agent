@@ -231,10 +231,19 @@ func (a *AutoResumer) inspectSession(ctx context.Context, userID, sessionID stri
 	if len(scan.Deferred) > 0 {
 		return autoResumeCandidate{}, false
 	}
+	priorRepaired := nonTrailingRepairedCallIDs(events)
+	var repairable []effects.DanglingIntent
 	for _, d := range scan.Repairable {
+		if priorRepaired[d.CallID] {
+			continue
+		}
 		if d.EventIndex != scan.LastCallEventIndex {
 			return autoResumeCandidate{}, false
 		}
+		repairable = append(repairable, d)
+	}
+	if len(repairable) > 0 && lastEv.Content.Role != genai.RoleModel {
+		return autoResumeCandidate{}, false
 	}
 	count, lastTime := snapshotCountAndTime(events)
 	return autoResumeCandidate{
@@ -243,7 +252,7 @@ func (a *AutoResumer) inspectSession(ctx context.Context, userID, sessionID stri
 		interruptedAt: interruptedAt,
 		lastEventTime: lastTime,
 		eventCount:    count,
-		repairable:    scan.Repairable,
+		repairable:    repairable,
 	}, true
 }
 
@@ -292,11 +301,71 @@ func (a *AutoResumer) appendRepair(ctx context.Context, userID, sessionID string
 	if err != nil {
 		return err
 	}
+	if events := resp.Session.Events(); events != nil {
+		var last *session.Event
+		for ev := range events.All() {
+			if ev != nil {
+				last = ev
+			}
+		}
+		if isAutoResumeRepairEvent(last) {
+			return nil
+		}
+	}
 	ev := session.NewEvent(ctx, "autoresume-repair")
 	ev.Author = "user"
 	ev.Timestamp = a.now().UTC()
 	ev.Content = repair
+	ev.CustomMetadata = map[string]any{
+		effects.SyntheticRepairMetadataKey: true,
+	}
 	return a.cfg.Handle.Service.AppendEvent(ctx, resp.Session, ev)
+}
+
+func isAutoResumeRepairEvent(ev *session.Event) bool {
+	if ev == nil || ev.CustomMetadata == nil {
+		return false
+	}
+	v, ok := ev.CustomMetadata[effects.SyntheticRepairMetadataKey]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
+}
+
+// nonTrailingRepairedCallIDs returns the set of FunctionResponse call IDs from
+// synthetic repair events that are followed by at least one visible non-repair
+// event (meaning the repaired turn already advanced past the repair).
+func nonTrailingRepairedCallIDs(events session.Events) map[string]bool {
+	if events == nil {
+		return nil
+	}
+	var pending []string
+	var out map[string]bool
+	for ev := range events.All() {
+		if ev == nil || ev.Content == nil || ev.Content.Role == "" {
+			continue
+		}
+		if isAutoResumeRepairEvent(ev) {
+			for _, p := range ev.Content.Parts {
+				if p != nil && p.FunctionResponse != nil && p.FunctionResponse.ID != "" {
+					pending = append(pending, p.FunctionResponse.ID)
+				}
+			}
+			continue
+		}
+		if len(pending) > 0 {
+			if out == nil {
+				out = make(map[string]bool, len(pending))
+			}
+			for _, id := range pending {
+				out[id] = true
+			}
+			pending = pending[:0]
+		}
+	}
+	return out
 }
 
 func (a *AutoResumer) attempts(ctx context.Context, userID, sessionID string) (int, time.Time) {
@@ -373,6 +442,9 @@ func lastEventIsUnhandledCall(events session.Events, subAgentNames map[string]bo
 	var last *session.Event
 	for ev := range events.All() {
 		if ev == nil || ev.Content == nil || ev.Content.Role == "" {
+			continue
+		}
+		if isAutoResumeRepairEvent(ev) {
 			continue
 		}
 		last = ev

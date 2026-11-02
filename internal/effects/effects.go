@@ -154,6 +154,16 @@ func NewPredicate(overrides map[string]bool) Predicate {
 	return NewPredicateWithHints(overrides, nil)
 }
 
+// IsBuiltinOrControl reports whether name is an engine control-flow call or a
+// registered built-in/harness tool (as opposed to a namespaced MCP tool).
+func IsBuiltinOrControl(name string) bool {
+	if controlCalls[name] {
+		return true
+	}
+	_, ok := builtinClasses[name]
+	return ok
+}
+
 // NewPredicateWithHints builds the mutation predicate. In order:
 // control surfaces are read-only; per-tool overrides decide next;
 // builtins use their registered class; an MCP tool its server annotated

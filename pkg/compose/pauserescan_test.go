@@ -337,3 +337,68 @@ func TestRescanPreservesInFlightAndRetryBackoff(t *testing.T) {
 		t.Errorf("Scan overwrote retry backoff: got %v, want %v", afterScanAt, backoffAt)
 	}
 }
+
+func TestPauseScheduler_FireMarksTokenConsumedWithoutRescanRefire(t *testing.T) {
+	t.Parallel()
+	h := openSchedLeaseHandle(t)
+	seedPauseSession(t, h, "s-auto-consume")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var fires atomic.Int32
+	fired := make(chan string, 4)
+	sched := NewPauseScheduler(PauseSchedulerConfig{
+		Handle:  h,
+		AppName: "core-agent",
+		Fire: func(_ context.Context, rec *eventlog.PauseRecord) error {
+			fires.Add(1)
+			fired <- rec.Token
+			return nil
+		},
+	})
+	sched.rescanEvery = 5 * time.Millisecond
+
+	handle, _, err := h.PauseGate(ctx, "core-agent", "", "s-auto-consume", eventlog.PauseSpec{
+		Reason:   eventlog.ReasonRateLimitBackoff,
+		ResumeAt: time.Now().UTC().Add(-time.Second),
+	})
+	if err != nil {
+		t.Fatalf("PauseGate: %v", err)
+	}
+	if err := sched.Seed(ctx); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	go sched.Run(ctx)
+	go sched.RunRescan(ctx)
+
+	select {
+	case tok := <-fired:
+		if tok != handle.Token {
+			t.Fatalf("fired %q, want %q", tok, handle.Token)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed pause did not fire")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, err := h.FindToken(ctx, "core-agent", handle.Token)
+		if err == nil && !rec.Active() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	rec, err := h.FindToken(ctx, "core-agent", handle.Token)
+	if err != nil {
+		t.Fatalf("FindToken: %v", err)
+	}
+	if rec.Active() {
+		t.Fatalf("record still Active() after Fire succeeded: %+v", rec)
+	}
+
+	// Let several rescan ticks run after consumption and verify it never re-fires.
+	time.Sleep(30 * time.Millisecond)
+	if got := fires.Load(); got != 1 {
+		t.Errorf("fires = %d, want 1 (PauseScheduler must mark token consumed after Fire succeeds)", got)
+	}
+}

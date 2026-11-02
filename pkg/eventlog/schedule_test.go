@@ -19,6 +19,7 @@ package eventlog
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -189,5 +190,50 @@ func TestSaveScheduleValidation(t *testing.T) {
 	}
 	if _, err := nilHandle.Schedule(ctx, "app", "gke-triage"); err == nil {
 		t.Error("nil Handle Schedule should fail")
+	}
+}
+
+func TestConsumeToken_ConcurrentCallsAllowExactlyOneWinner(t *testing.T) {
+	h, _ := openTestHandle(t)
+	ctx := context.Background()
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{
+		AppName: "app", UserID: "alice", SessionID: "s-race",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ph, _, err := h.PauseGate(ctx, "app", "alice", "s-race", PauseSpec{
+		Reason: ReasonOperator,
+	})
+	if err != nil {
+		t.Fatalf("PauseGate: %v", err)
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	for range workers {
+		go func() {
+			<-start
+			_, err := h.ConsumeToken(ctx, "app", ph.Token, "operator")
+			errs <- err
+		}()
+	}
+	close(start)
+
+	wins := 0
+	already := 0
+	for range workers {
+		err := <-errs
+		switch {
+		case err == nil:
+			wins++
+		case errors.Is(err, ErrAlreadyResumed):
+			already++
+		default:
+			t.Errorf("unexpected ConsumeToken error: %v", err)
+		}
+	}
+	if wins != 1 || already != workers-1 {
+		t.Errorf("concurrent ConsumeToken: wins=%d already=%d, want wins=1 already=%d", wins, already, workers-1)
 	}
 }

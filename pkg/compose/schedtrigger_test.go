@@ -502,3 +502,56 @@ func newTestTrigger(t *testing.T, h *eventlog.Handle, interval, jitter time.Dura
 func clockAt(at time.Time) func() time.Time {
 	return func() time.Time { return at }
 }
+
+func TestScheduledTrigger_PersistPreservesLastFireAndUpdatesIntervalOnSeed(t *testing.T) {
+	t.Parallel()
+	h := openSchedLeaseHandle(t)
+	ctx := context.Background()
+
+	tr, _ := newTestTrigger(t, h, time.Hour, 0)
+	tr.now = clockAt(anchorTime)
+	if err := tr.seed(ctx); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// First tick fires at anchorTime + 1h.
+	fireTime := anchorTime.Add(time.Hour)
+	tr.now = clockAt(fireTime)
+	tr.fireDue(ctx, fireTime, 0)
+
+	// Second tick is suppressed by preFire; LastFire must remain fireTime.
+	tr.preFire = func(_ context.Context, _ time.Time, _ int64) (string, bool) {
+		return "", false
+	}
+	tick2 := anchorTime.Add(2 * time.Hour)
+	tr.now = clockAt(tick2)
+	tr.fireDue(ctx, tick2, 0)
+
+	rec, err := h.Schedule(ctx, "uat-sched", tr.workload)
+	if err != nil || rec == nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if !rec.LastFire.Equal(fireTime) {
+		t.Errorf("LastFire after suppressed tick = %v, want %v", rec.LastFire, fireTime)
+	}
+	if rec.Fires != 1 {
+		t.Errorf("Fires = %d, want 1", rec.Fires)
+	}
+
+	// Restart with a new interval (30m instead of 1h); seed must persist the updated interval.
+	tr2, _ := newTestTrigger(t, h, 30*time.Minute, 0)
+	tr2.now = clockAt(tick2.Add(5 * time.Minute))
+	if err := tr2.seed(ctx); err != nil {
+		t.Fatalf("seed with updated interval: %v", err)
+	}
+	rec2, err := h.Schedule(ctx, "uat-sched", tr2.workload)
+	if err != nil || rec2 == nil {
+		t.Fatalf("Schedule after interval update: %v", err)
+	}
+	if rec2.Interval != 30*time.Minute {
+		t.Errorf("persisted Interval = %v, want 30m", rec2.Interval)
+	}
+	if !rec2.LastFire.Equal(fireTime) {
+		t.Errorf("persisted LastFire after interval update = %v, want %v", rec2.LastFire, fireTime)
+	}
+}

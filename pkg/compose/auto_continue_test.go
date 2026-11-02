@@ -1179,3 +1179,38 @@ func TestAutoContinue_StopsOnLeaseLost(t *testing.T) {
 		t.Fatal("AutoContinueRetryLoop did not exit when LeaseLost closed")
 	}
 }
+
+func TestAutoContinue_AmbiguousMutatingBeyondTailWindowAndNoBreakerInflation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	events := make([]*session.Event, 0, autoContinueScanWindow+10)
+	events = append(events,
+		acUserEvent("start deployment", now.Add(-30*time.Minute)),
+		acCallEvent("bash", now.Add(-29*time.Minute)),
+	)
+	for i := range autoContinueScanWindow + 5 {
+		ts := now.Add(-28*time.Minute + time.Duration(i)*time.Second)
+		events = append(events, acUserEvent("follow-up", ts))
+	}
+	h := seedAC(t, events...)
+	ag := acAgent(t, h)
+
+	if got := lockClassifyInject(ctx, AutoContinueConfig{EventLog: h, Freshness: time.Hour}, ag, "core-agent", acUser, acSID); got != acSkippedAmbiguousEffect {
+		t.Fatalf("outcome with dangling mutating call beyond tail window = %v, want acSkippedAmbiguousEffect", got)
+	}
+
+	// Repeated startup passes while blocked on ambiguous effects must not record
+	// attempted boots that trip the fleet crash-loop breaker.
+	for range breakerBootThreshold + 1 {
+		AutoContinueStartupSession(ctx, h, ag, time.Hour)
+	}
+	guards, err := loadAttemptGuards(ctx, h)
+	if err != nil {
+		t.Fatalf("loadAttemptGuards: %v", err)
+	}
+	if guards.breakerTripped() {
+		t.Errorf("breakerTripped() = true (bootsWithAttempts=%d); ambiguous-effect stand-downs must not inflate the boot breaker", guards.bootsWithAttempts)
+	}
+}

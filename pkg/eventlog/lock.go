@@ -161,16 +161,25 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 	}
 
 	// Try to insert. If the row already exists, GORM surfaces the
-	// unique-constraint violation; we then check for staleness.
-	err := h.db.WithContext(ctx).Create(row).Error
-	if err != nil {
-		// Slow path: existing row. Check whether it's stale.
+	// unique-constraint violation; we then check for staleness. If the
+	// previous holder releases the row between Create and First, retry
+	// the insert.
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		now = time.Now()
+		row.AcquiredAt = now
+		row.HeartbeatAt = now
+		err := h.db.WithContext(ctx).Create(row).Error
+		if err == nil {
+			break
+		}
 		var existing agentRunLockRow
 		if lookupErr := h.db.WithContext(ctx).
 			Where("app_name = ? AND user_id = ? AND session_id = ?", app, user, session).
 			First(&existing).Error; lookupErr != nil {
-			// Couldn't even read the row; surface the original
-			// insert error.
+			if errors.Is(lookupErr, gorm.ErrRecordNotFound) && attempt+1 < maxAttempts {
+				continue
+			}
 			return nil, fmt.Errorf("eventlog: AcquireLock: %w", err)
 		}
 		if time.Since(existing.HeartbeatAt) <= staleAfter {
@@ -194,9 +203,12 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 			return nil, fmt.Errorf("eventlog: AcquireLock: steal stale lease: %w", res.Error)
 		}
 		if res.RowsAffected == 0 {
-			// Someone else stole first.
+			if attempt+1 < maxAttempts {
+				continue
+			}
 			return nil, fmt.Errorf("%w (lost the steal race)", ErrSessionLocked)
 		}
+		break
 	}
 
 	lock := &SessionLock{

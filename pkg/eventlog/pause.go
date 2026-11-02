@@ -174,6 +174,8 @@ func (h *Handle) PauseGate(ctx context.Context, appName, userID, sessionID strin
 	if err := spec.validate(); err != nil {
 		return PauseHandle{}, false, err
 	}
+	h.pauseMu.Lock()
+	defer h.pauseMu.Unlock()
 	resolvedUser, err := h.resolveSessionUser(ctx, appName, userID, sessionID)
 	if err != nil {
 		return PauseHandle{}, false, err
@@ -224,6 +226,8 @@ func (h *Handle) PauseInterrupt(ctx context.Context, appName, userID, sessionID,
 	if err := spec.validate(); err != nil {
 		return PauseHandle{}, err
 	}
+	h.pauseMu.Lock()
+	defer h.pauseMu.Unlock()
 	resolvedUser, err := h.resolveSessionUser(ctx, appName, userID, sessionID)
 	if err != nil {
 		return PauseHandle{}, err
@@ -293,7 +297,7 @@ func (h *Handle) ScanPauses(ctx context.Context, appName string) ([]*PauseRecord
 			continue
 		}
 		full, gerr := h.Service.Get(ctx, &session.GetRequest{
-			AppName: appName, UserID: sess.UserID(), SessionID: sess.ID(),
+			AppName: appName, UserID: sess.UserID(), SessionID: sess.ID(), NumRecentEvents: 1,
 		})
 		if gerr != nil || full == nil || full.Session == nil {
 			continue
@@ -325,7 +329,7 @@ func (h *Handle) FindToken(ctx context.Context, appName, token string) (*PauseRe
 			continue
 		}
 		full, gerr := h.Service.Get(ctx, &session.GetRequest{
-			AppName: appName, UserID: sess.UserID(), SessionID: sess.ID(),
+			AppName: appName, UserID: sess.UserID(), SessionID: sess.ID(), NumRecentEvents: 1,
 		})
 		if gerr != nil || full == nil || full.Session == nil {
 			continue
@@ -352,6 +356,11 @@ func (h *Handle) ConsumeScheduled(ctx context.Context, appName, token, by string
 }
 
 func (h *Handle) consumeToken(ctx context.Context, appName, token, by string, enforceExpiry bool) (*PauseRecord, error) {
+	if h == nil {
+		return nil, errors.New("eventlog: consume token: handle service is required")
+	}
+	h.pauseMu.Lock()
+	defer h.pauseMu.Unlock()
 	rec, err := h.FindToken(ctx, appName, token)
 	if err != nil {
 		return nil, err
@@ -385,6 +394,11 @@ func (h *Handle) ExtendToken(ctx context.Context, appName, token string, ttl tim
 	if ttl <= 0 {
 		return nil, errors.New("eventlog: extend token: TTL must be positive")
 	}
+	if h == nil {
+		return nil, errors.New("eventlog: extend token: handle service is required")
+	}
+	h.pauseMu.Lock()
+	defer h.pauseMu.Unlock()
 	rec, err := h.FindToken(ctx, appName, token)
 	if err != nil {
 		return nil, err

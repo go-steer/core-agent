@@ -2281,6 +2281,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// it. Hoisted out of the attach block so the TUI / --no-repl /
 	// REPL branches (which run after the block) can see it.
 	var attachRegistry *attach.SessionRegistry
+	var multiSessionFactoryDeps *compose.SessionFactoryDeps
 	if attachCfg.Listen != "" || attachCfg.UnixSocket != "" {
 		// No "requires --session-db" gate here any more: the eventlog
 		// block above implies one for attach mode (#973). This branch
@@ -2420,7 +2421,6 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// compose.SessionFactoryDeps.
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
-		var autoContinueBootScan, autoContinueRetryScan func()
 		var a2aOptions attach.A2AOptions
 		if cfg.Attach.MultiSession.Enabled || cfg.A2A.Expose {
 			// Wake loops query the eventlog handle, and `defer
@@ -2442,7 +2442,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 					fmt.Fprintf(os.Stderr, "core-agent: shutdown: session wake loops still running after %s; closing the session db anyway\n", wakeLoopDrainTimeout)
 				}
 			}()
-			isReadOnly, subAgentNames := buildDaemonEffectControls(cfg)
+			isReadOnly, subAgentNames := buildDaemonEffectControls(cfg, allToolsets...)
 			factoryDeps := compose.SessionFactoryDeps{
 				DaemonCtx:    wakeCtx,
 				WakeLoops:    wakeLoops,
@@ -2489,17 +2489,10 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 				AttachApprovalNotifier: approvalNotifier.AttachSession,
 			}
 			a2aOptions = buildDaemonA2AOptions(wakeCtx, cfg, attachReg, &factoryDeps)
+			multiSessionFactoryDeps = &factoryDeps
 			if cfg.Attach.MultiSession.Enabled {
 				sessionFactory = compose.BuildSessionFactory(factoryDeps)
 				sessionResumer = compose.BuildSessionResumer(factoryDeps)
-				if autoContinueEnabled {
-					maxPerBoot := 0
-					if ac := cfg.Agent.AutoContinue; ac != nil {
-						maxPerBoot = ac.MaxPerBoot
-					}
-					autoContinueBootScan = func() { compose.AutoContinueBootScan(factoryDeps, maxPerBoot) }
-					autoContinueRetryScan = func() { compose.AutoContinueRetryScan(factoryDeps, maxPerBoot) }
-				}
 			}
 		}
 		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
@@ -2599,21 +2592,8 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			}
 		}()
 		defer func() { _ = attachSrv.Close() }()
-		if autoContinueBootScan != nil {
-			go autoContinueBootScan()
-			// In-lifetime retry driver (#575 defect B): re-runs the
-			// boot-scan pass on a fixed interval so a stranded
-			// continuation self-heals without a reboot. Bounded by the
-			// same breaker + per-session cap as the boot scan; a
-			// daemon-killing turn kills this goroutine too, so only
-			// survivable failures are ever re-fired.
-			if autoContinueRetry {
-				autoContinueWG.Add(1)
-				go func() {
-					defer autoContinueWG.Done()
-					compose.AutoContinueRetryLoop(autoContinueDriverCtx, autoContinueRetryInterval, autoContinueRetryScan)
-				}()
-			}
+		if !noREPL {
+			startMultiSessionAutoContinue(autoContinueDriverCtx, &autoContinueWG, cfg, multiSessionFactoryDeps, autoContinueEnabled, autoContinueRetry, autoContinueRetryInterval)
 		}
 	}
 
@@ -2713,7 +2693,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// breaker math (its bootstrap `default` session has no ACL
 		// row and stays uncovered — status quo since #539).
 		schedHandle, schedErr := startSingleSessionScheduleAndAutoContinue(
-			ctx, autoContinueDriverCtx, &autoContinueWG, cfg, eventlogHandle, a, allToolsets,
+			ctx, autoContinueDriverCtx, &autoContinueWG, cfg, eventlogHandle, a, allToolsets, multiSessionFactoryDeps,
 			autoContinueEnabled, autoContinueRetry,
 			autoContinueFreshness, autoContinueRetryInterval,
 		)

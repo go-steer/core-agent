@@ -331,6 +331,15 @@ func hasUnackedAmbiguousEffects(ctx context.Context, cfg AutoContinueConfig, app
 	if events == nil || cfg.EventLog == nil {
 		return false
 	}
+	if events.Len() >= autoContinueScanWindow && cfg.EventLog.Service != nil {
+		if full, err := cfg.EventLog.Service.Get(ctx, &session.GetRequest{
+			AppName:   app,
+			UserID:    user,
+			SessionID: sid,
+		}); err == nil && full != nil && full.Session != nil {
+			events = full.Session.Events()
+		}
+	}
 	scan := effects.ScanDangling(events, cfg.IsReadOnly, cfg.SubAgentNames)
 	if len(scan.Mutating) == 0 {
 		return false
@@ -342,15 +351,10 @@ func hasUnackedAmbiguousEffects(ctx context.Context, cfg AutoContinueConfig, app
 	return len(scan.Unacked(ackedAt)) > 0
 }
 
-// classifyTail does one bounded tail read + classification. Bounded
+// classifyTailWithEvents does one bounded tail read + classification. Bounded
 // because this runs synchronously on resume/startup paths — a
 // full-session scan on a 100k-event session would break the "resume
 // stays fast" promise.
-func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string) agent.TailVerdict {
-	v, _ := classifyTailWithEvents(ctx, h, app, user, sid)
-	return v
-}
-
 func classifyTailWithEvents(ctx context.Context, h *eventlog.Handle, app, user, sid string) (agent.TailVerdict, session.Events) {
 	resp, err := h.Service.Get(ctx, &session.GetRequest{
 		AppName:         app,
@@ -515,11 +519,15 @@ func autoContinueStartupPass(ctx context.Context, cfg AutoContinueConfig, ag *ag
 	// Silent on a decline: lockClassifyInject re-classifies under the run
 	// lock and logs any reason there, so speaking here would double every
 	// line.
-	verdict := classifyTail(ctx, h, app, user, sid)
+	verdict, events := classifyTailWithEvents(ctx, h, app, user, sid)
 	if !verdict.Interrupted {
 		return
 	}
 	if freshness > 0 && time.Since(verdict.InterruptedAt) > freshness {
+		return
+	}
+	if hasUnackedAmbiguousEffects(ctx, cfg, app, user, sid, events) {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: unacknowledged mutating tool call in flight; standing down until operator acks effects\n", sid)
 		return
 	}
 	bootID, err := h.RecordBoot(ctx, time.Now(), []string{sid})
@@ -709,6 +717,7 @@ func collectAutoContinueCandidates(ctx context.Context, deps SessionFactoryDeps,
 		trig.logf("list sessions: %v", err)
 		return nil, false
 	}
+	acCfg := deps.autoContinueConfig()
 	var candidates []autoContinueCandidate
 	for _, row := range rows {
 		if ctx.Err() != nil || isLeaseLost(deps.LeaseLost) {
@@ -717,11 +726,14 @@ func collectAutoContinueCandidates(ctx context.Context, deps SessionFactoryDeps,
 		if !guards.allow(row.SessionID) {
 			continue
 		}
-		verdict := classifyTail(ctx, deps.EventlogHandle, row.AppName, row.UserID, row.SessionID)
+		verdict, events := classifyTailWithEvents(ctx, deps.EventlogHandle, row.AppName, row.UserID, row.SessionID)
 		if !verdict.Interrupted {
 			continue
 		}
 		if deps.AutoContinueFreshness > 0 && time.Since(verdict.InterruptedAt) > deps.AutoContinueFreshness {
+			continue
+		}
+		if hasUnackedAmbiguousEffects(ctx, acCfg, row.AppName, row.UserID, row.SessionID, events) {
 			continue
 		}
 		candidates = append(candidates, autoContinueCandidate{app: row.AppName, user: row.UserID, sid: row.SessionID, interruptedAt: verdict.InterruptedAt})

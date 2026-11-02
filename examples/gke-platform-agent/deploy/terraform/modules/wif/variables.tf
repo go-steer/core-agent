@@ -39,7 +39,8 @@ variable "write_scope" {
   description = <<-EOT
     Where core-agent's authority to CHANGE a cluster comes from.
 
-    "namespaced" (default) binds roles/container.viewer and leaves writes to
+    "namespaced" (default) binds roles/container.viewer plus custom role
+    gkeAgentClusterViewer (container.pods.getLogs) and leaves writes to
     the Kubernetes RBAC the release module (or deploy/components/gated-apply)
     renders — the boundary an operator can see and audit per namespace.
 
@@ -71,11 +72,23 @@ variable "node_service_account" {
 
 variable "enable_apis" {
   description = <<-EOT
-    Enable the three base APIs this deployment needs. Set false in an
+    Enable the base APIs (and Cloud Trace / Cloud Monitoring when
+    otel_enabled = true) this deployment needs. Set false in an
     organization where service enablement is somebody else's pipeline, or
     where the caller has no roles/serviceusage.serviceUsageAdmin — the
     bindings below do not depend on this module having turned them on.
   EOT
   type        = bool
   default     = true
+}
+
+variable "otel_enabled" {
+  description = <<-EOT
+    Enable Cloud Trace and Cloud Monitoring APIs and grant
+    roles/cloudtrace.user (on both core-agent-daemon and lookout-watch) plus
+    roles/monitoring.metricWriter (on core-agent-daemon) for the *-otel
+    overlays, matching scripts/grant-iam.sh under OTEL=1.
+  EOT
+  type        = bool
+  default     = false
 }

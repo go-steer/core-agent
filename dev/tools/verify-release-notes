@@ -32,6 +32,7 @@ set -euo pipefail
 COMPOSE="$(cd "$(dirname "$0")/../release" && pwd)/compose-release-notes.sh"
 FOOTER="$(cd "$(dirname "$0")/../release" && pwd)/install-verify-footer.md.tmpl"
 CUTGA="$(cd "$(dirname "$0")/../release" && pwd)/cut-ga-tag.sh"
+VERIFY_PROVENANCE="$(cd "$(dirname "$0")/../release" && pwd)/verify-provenance.sh"
 
 FAILURES=0
 CASE=""
@@ -403,6 +404,52 @@ fi
 # And the fold it was in the middle of is still correct.
 assert_contains "$REPO3/CHANGELOG.md" '## [1.1.0]'
 assert_absent "$REPO3/CHANGELOG.md" '## [1.1.0-dev.1]'
+
+# ── 12. SLSA provenance footer + verify-provenance.sh --oci / --local-dist ─
+start_case 'SLSA provenance footer pins --source-ref on both archive and OCI snippets'
+PROV_count="$(grep -c -- '--source-ref "refs/tags/v1.1.0-dev.1"' "$REPO/n1.md" || true)"
+if [[ "$PROV_count" -lt 2 ]]; then
+  fail "expected at least 2 --source-ref \"refs/tags/v1.1.0-dev.1\" lines in composed footer, got ${PROV_count}"
+fi
+
+start_case 'verify-provenance.sh --oci requires tag or SOURCE_REF and --local-dist checks every asset'
+FAKE_GH_DIR="$(mktemp -d)"
+cat > "$FAKE_GH_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+exit 0
+EOF
+chmod +x "$FAKE_GH_DIR/gh"
+
+if PATH="$FAKE_GH_DIR:$PATH" FAKE_GH_LOG="$FAKE_GH_DIR/calls.log" \
+   "$VERIFY_PROVENANCE" --oci "ghcr.io/go-steer/core-agent@sha256:0123456789abcdef" >/dev/null 2>&1; then
+  fail "expected verify-provenance.sh --oci without <tag> or SOURCE_REF to fail"
+fi
+
+: > "$FAKE_GH_DIR/calls.log"
+if ! PATH="$FAKE_GH_DIR:$PATH" FAKE_GH_LOG="$FAKE_GH_DIR/calls.log" \
+     "$VERIFY_PROVENANCE" --oci "ghcr.io/go-steer/core-agent@sha256:0123456789abcdef" v1.1.0 >/dev/null 2>&1; then
+  fail "expected verify-provenance.sh --oci <digest> v1.1.0 to succeed"
+fi
+assert_contains "$FAKE_GH_DIR/calls.log" '--source-ref refs/tags/v1.1.0'
+
+DIST_FIXTURE="$FAKE_GH_DIR/dist"
+mkdir -p "$DIST_FIXTURE"
+: > "$DIST_FIXTURE/core-agent_1.1.0_linux_amd64.tar.gz"
+: > "$DIST_FIXTURE/core-agent-tui_1.1.0_linux_amd64.tar.gz"
+cat > "$DIST_FIXTURE/checksums.txt" <<'EOF'
+deadbeef  core-agent_1.1.0_linux_amd64.tar.gz
+cafebabe  core-agent-tui_1.1.0_linux_amd64.tar.gz
+EOF
+: > "$FAKE_GH_DIR/calls.log"
+if ! PATH="$FAKE_GH_DIR:$PATH" FAKE_GH_LOG="$FAKE_GH_DIR/calls.log" SOURCE_REF="refs/heads/main" \
+     "$VERIFY_PROVENANCE" --local-dist "$DIST_FIXTURE" >/dev/null 2>&1; then
+  fail "expected verify-provenance.sh --local-dist to succeed"
+fi
+assert_contains "$FAKE_GH_DIR/calls.log" 'attestation verify checksums.txt'
+assert_contains "$FAKE_GH_DIR/calls.log" 'attestation verify core-agent_1.1.0_linux_amd64.tar.gz'
+assert_contains "$FAKE_GH_DIR/calls.log" 'attestation verify core-agent-tui_1.1.0_linux_amd64.tar.gz'
+rm -rf "$FAKE_GH_DIR"
 
 if [[ "$FAILURES" -ne 0 ]]; then
   echo "verify-release-notes: ${FAILURES} assertion(s) failed" >&2

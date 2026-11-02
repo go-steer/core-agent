@@ -63,7 +63,15 @@ fi
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/core-agent-terraform-XXXXXX")"
 trap 'rm -rf "${workdir}"' EXIT
 cp -R "${tf_root}/." "${workdir}/"
-find "${workdir}" \( -name '.terraform' -o -name '.terraform.lock.hcl' \) -exec rm -rf {} +
+find "${workdir}" \( \
+  -name '.terraform' \
+  -o -name '.terraform.lock.hcl' \
+  -o -name 'terraform.tfvars' \
+  -o -name 'terraform.tfvars.json' \
+  -o -name '*.auto.tfvars' \
+  -o -name '*.auto.tfvars.json' \
+  -o -name 'terraform.tfstate*' \
+\) -exec rm -rf {} +
 mkdir -p "${workdir}/.plugin-cache"
 export TF_PLUGIN_CACHE_DIR="${workdir}/.plugin-cache"
 

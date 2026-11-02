@@ -157,8 +157,8 @@ run "extra_values_are_preserved_in_order" {
   }
 
   assert {
-    condition     = length(yamldecode(output.values_yaml).extraValues) == 1 && yamldecode(output.values_yaml).extraValues[0] == "logLevel: debug\n"
-    error_message = "extra_values did not reach the rendered configuration document"
+    condition     = length(yamldecode(output.values_yaml).extraValues) == 1 && yamldecode(output.values_yaml).extraValues[0] == "logLevel: debug\n" && yamldecode(output.values_yaml).logLevel == "debug"
+    error_message = "extra_values did not reach or merge into the rendered configuration document"
   }
 }
 

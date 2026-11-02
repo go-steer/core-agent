@@ -17,6 +17,11 @@
 variable "project_id" {
   description = "GCP project holding the GKE cluster and the Vertex AI quota. The only value with no default."
   type        = string
+
+  validation {
+    condition     = length(var.project_id) > 0
+    error_message = "project_id is required: it is substituted into the workload-identity pool name and RBAC subject."
+  }
 }
 
 variable "namespace" {
@@ -35,6 +40,11 @@ variable "write_scope" {
   description = "\"namespaced\" (default) or \"cluster-admin\". See modules/wif/variables.tf — flipping this back to namespaced REMOVES the admin binding, which an imperative gcloud script cannot do."
   type        = string
   default     = "namespaced"
+
+  validation {
+    condition     = contains(["namespaced", "cluster-admin"], var.write_scope)
+    error_message = "write_scope must be \"namespaced\" or \"cluster-admin\"."
+  }
 }
 
 variable "remediation_namespaces" {

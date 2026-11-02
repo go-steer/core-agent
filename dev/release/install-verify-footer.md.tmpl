@@ -69,5 +69,6 @@ gh attestation verify "core-agent_@VERSION@_${OS}_${ARCH}.tar.gz" \
 gh attestation verify oci://ghcr.io/go-steer/core-agent@sha256:... \
   --repo go-steer/core-agent \
   --signer-workflow go-steer/core-agent/.github/workflows/release-images.yml \
+  --source-ref "refs/tags/@TAG@" \
   --bundle-from-oci
 ```

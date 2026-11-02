@@ -189,6 +189,10 @@ jobs:
             exit 1
           fi
           VERSION="${TAG#v}"
+          if [[ "${{ !inputs.dry_run }}" == "true" && "${GITHUB_REF}" != "refs/tags/${TAG}" ]]; then
+            echo "::error::non-dry-run release for ${TAG} was dispatched on ${GITHUB_REF}; GitHub OIDC binds SourceRepositoryRef to github.ref, which would break SLSA provenance verification against refs/tags/${TAG}. Re-run with: gh workflow run release.yml --ref refs/tags/${TAG}"
+            exit 1
+          fi
           echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -293,7 +297,6 @@ jobs:
         if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_REF: ${{ github.ref }}
         run: dev/release/verify-provenance.sh "${{ steps.notes.outputs.tag }}"
 
       # The dry run attests and verifies too, so a missing permission or
@@ -309,13 +312,8 @@ jobs:
         if: ${{ inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh attestation verify dist/checksums.txt \
-            --repo "${{ github.repository }}" \
-            --signer-workflow "${{ github.repository }}/.github/workflows/release.yml" \
-            --source-ref "${{ github.ref }}"
-          echo "dry run: provenance stored and findable for dist/checksums.txt"
+          SOURCE_REF: ${{ github.ref }}
+        run: dev/release/verify-provenance.sh --local-dist dist
 
       # On dry-run, surface the built artifacts so they can be
       # downloaded + inspected without a Release ever being created.

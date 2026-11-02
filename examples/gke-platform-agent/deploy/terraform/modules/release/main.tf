@@ -31,7 +31,7 @@ locals {
     var.otel_enabled ? "example-otel" : "example"
   )
 
-  values = yamlencode({
+  base_values = {
     gcp = {
       projectID       = var.project_id
       location        = var.location
@@ -56,7 +56,12 @@ locals {
     }
     remediationNamespaces = var.remediation_namespaces
     extraValues           = var.extra_values
-  })
+  }
+
+  values = yamlencode(merge(concat(
+    [local.base_values],
+    [for doc in var.extra_values : yamldecode(doc)],
+  )...))
 }
 
 resource "kubernetes_namespace_v1" "agent" {

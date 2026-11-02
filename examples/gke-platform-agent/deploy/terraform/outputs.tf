@@ -71,13 +71,16 @@ output "next_steps" {
        file in plaintext, and a state bucket is usually readable by more
        people than a Kubernetes Secret is.
 
-    2. Apply the matching kustomize overlay:
+    2. Deploy the matching kustomize overlay (deploy/overlays/${module.release.overlay}):
+       set-up-demo.sh patches the overlay's placeholder configMapGenerator and
+       gated-apply coordinates before running `kubectl apply -k` so the
+       core-agent-gcp-env ConfigMap created here is not overwritten:
 
-         kubectl apply -k deploy/overlays/${module.release.overlay}
+         PROJECT_ID=${var.project_id} CLUSTER_NAME=${var.cluster_name} REGION=${var.cluster_location} OTEL=${var.otel_enabled ? "1" : "0"} LEG=${length(var.remediation_namespaces) == 0 ? "readonly" : "d2"}${length(var.remediation_namespaces) > 0 ? " TARGET_NS=${var.remediation_namespaces[0]}" : ""} ./scripts/set-up-demo.sh
 
     3. Check the boundary is the one you think it is:
 
-         PROJECT_ID=${var.project_id} ./scripts/verify-gated-apply.sh ${length(var.remediation_namespaces) == 0 ? "denied" : "granted"}
+         PROJECT_ID=${var.project_id} CLUSTER_NAME=${var.cluster_name} REGION=${var.cluster_location}${length(var.remediation_namespaces) > 0 ? " TARGET_NS=${var.remediation_namespaces[0]}" : ""} ./scripts/verify-gated-apply.sh ${length(var.remediation_namespaces) == 0 ? "denied" : "granted"}
 
     ${length(var.remediation_namespaces) == 0 ? "4. core-agent can change NOTHING right now — it diagnoses cluster-wide and holds\n       no write grant anywhere, which is the default. Set remediation_namespaces\n       when you are ready." : "4. core-agent may patch apps/deployments in: ${join(", ", var.remediation_namespaces)}"}
   EOT

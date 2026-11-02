@@ -75,11 +75,17 @@ run "narrowing_removes_the_admin_binding" {
   # than the set the locals block computed.
   assert {
     condition = output.bound_project_roles == tolist([
+      "projects/example-project/roles/gkeAgentClusterViewer",
       "roles/aiplatform.user",
       "roles/container.viewer",
       "roles/mcp.toolUser",
     ])
     error_message = "the bound role set drifted from scripts/grant-iam.sh's base set: ${join(", ", output.bound_project_roles)}"
+  }
+
+  assert {
+    condition     = google_project_iam_custom_role.cluster_viewer.role_id == "gkeAgentClusterViewer" && contains(google_project_iam_custom_role.cluster_viewer.permissions, "container.pods.getLogs")
+    error_message = "gkeAgentClusterViewer must grant container.pods.getLogs for gke_get_k8s_logs"
   }
 }
 
@@ -143,8 +149,31 @@ run "service_enablement_can_belong_to_someone_else" {
   }
 
   assert {
-    condition     = length(output.bound_project_roles) == 3
+    condition     = length(output.bound_project_roles) == 4
     error_message = "the bindings must not depend on this module having turned the APIs on"
+  }
+}
+
+run "otel_enabled_grants_trace_and_monitoring_roles_and_apis" {
+  command = apply
+
+  variables {
+    otel_enabled = true
+  }
+
+  assert {
+    condition     = contains(output.enabled_apis, "cloudtrace.googleapis.com") && contains(output.enabled_apis, "monitoring.googleapis.com")
+    error_message = "otel_enabled = true did not enable Cloud Trace and Cloud Monitoring APIs: ${join(", ", output.enabled_apis)}"
+  }
+
+  assert {
+    condition     = contains(output.bound_project_roles, "roles/cloudtrace.user") && contains(output.bound_project_roles, "roles/monitoring.metricWriter")
+    error_message = "otel_enabled = true did not bind trace/monitoring roles on core-agent-daemon: ${join(", ", output.bound_project_roles)}"
+  }
+
+  assert {
+    condition     = output.watcher_bound_project_roles == tolist(["roles/cloudtrace.user"]) && endswith(google_project_iam_member.watcher["roles/cloudtrace.user"].member, "/subject/ns/gke-platform-agent/sa/lookout-watch")
+    error_message = "otel_enabled = true did not bind roles/cloudtrace.user on lookout-watch: ${join(", ", output.watcher_bound_project_roles)}"
   }
 }
 

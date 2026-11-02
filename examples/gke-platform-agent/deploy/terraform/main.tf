@@ -44,6 +44,7 @@ module "wif" {
   project_id           = var.project_id
   namespace            = var.namespace
   write_scope          = local.write_scope
+  otel_enabled         = var.otel_enabled
   enable_apis          = var.enable_apis
   node_service_account = var.node_service_account
 }

@@ -204,7 +204,7 @@ func newRig(t *testing.T) (root string, run func(script string, env ...string) r
 	tmp := t.TempDir()
 	root = filepath.Join(tmp, "recipe")
 	for _, d := range []string{"scripts", "deploy"} {
-		if err := os.CopyFS(filepath.Join(root, d), os.DirFS(d)); err != nil {
+		if err := copyTreeSkippingTerraformState(filepath.Join(root, d), d); err != nil {
 			t.Fatalf("copy %s: %v", d, err)
 		}
 	}
@@ -288,6 +288,37 @@ func grantName(t *testing.T, recipeRoot string) string {
 func revokeCall(name string) string {
 	return fmt.Sprintf("kubectl --context %s -n %s delete role,rolebinding %s --ignore-not-found",
 		fakeContext, fakeTargetNS, name)
+}
+
+// copyTreeSkippingTerraformState copies src to dst while skipping any
+// .terraform directory so a local `terraform init` inside deploy/terraform
+// does not copy ~500MB of provider binaries per test run.
+func copyTreeSkippingTerraformState(dst, src string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == ".terraform" {
+			return filepath.SkipDir
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 }
 
 // TestReadOnlyLegRevokesTheGatedApplyGrant pins (1): the read-only leg

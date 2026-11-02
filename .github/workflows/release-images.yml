@@ -89,6 +89,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       # Resolve the Go toolchain from go.mod so the build container
       # always tracks the project's pinned version. Bumping go.mod
@@ -194,14 +196,19 @@ jobs:
       - name: Compute build version
         id: version
         run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            VERSION="${{ github.ref_name }}"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
             VERSION="${{ inputs.tag }}"
+            if [[ "${GITHUB_REF}" != "refs/tags/${VERSION}" ]]; then
+              echo "::error::tag image publish for ${VERSION} was dispatched on ${GITHUB_REF}; GitHub OIDC binds SourceRepositoryRef to github.ref, which would break SLSA provenance verification against refs/tags/${VERSION}. Re-run with: gh workflow run release-images.yml --ref refs/tags/${VERSION}"
+              exit 1
+            fi
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
           else
             VERSION="main-$(git rev-parse --short HEAD)"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Gate on the ARTIFACT, before anything is published.
       #
@@ -238,7 +245,7 @@ jobs:
             VARIANT=${{ matrix.variant }}
             BUILD_TAGS=${{ matrix.build_tags }}
             VERSION=${{ steps.version.outputs.version }}
-            COMMIT=${{ github.sha }}
+            COMMIT=${{ steps.version.outputs.commit }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
           cache-from: type=gha,scope=${{ matrix.image_name }}
 
@@ -274,7 +281,7 @@ jobs:
             VARIANT=${{ matrix.variant }}
             BUILD_TAGS=${{ matrix.build_tags }}
             VERSION=${{ steps.version.outputs.version }}
-            COMMIT=${{ github.sha }}
+            COMMIT=${{ steps.version.outputs.commit }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
           cache-from: type=gha,scope=${{ matrix.image_name }}
           cache-to: type=gha,scope=${{ matrix.image_name }},mode=max

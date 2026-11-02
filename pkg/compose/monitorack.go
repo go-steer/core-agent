@@ -78,8 +78,13 @@ func NewMonitorAcker(cfg MonitorAckerConfig) *MonitorAcker {
 		workloadName = appName
 	}
 	var ackTool string
+	var ackArgs map[string]any
 	if cfg.Monitor != nil && cfg.Monitor.Ack != nil {
 		ackTool = strings.TrimSpace(cfg.Monitor.Ack.Tool)
+		ackArgs = cfg.Monitor.Ack.Args
+	}
+	if len(cfg.AckArgs) > 0 {
+		ackArgs = cfg.AckArgs
 	}
 	nowFn := cfg.Now
 	if nowFn == nil {
@@ -97,7 +102,7 @@ func NewMonitorAcker(cfg MonitorAckerConfig) *MonitorAcker {
 		appName:      appName,
 		userID:       userID,
 		ackTool:      ackTool,
-		ackArgs:      cfg.AckArgs,
+		ackArgs:      ackArgs,
 		toolsets:     cfg.Toolsets,
 		runTool:      runFn,
 		eventLog:     cfg.EventLog,
@@ -174,6 +179,8 @@ func resolveAckIdentity(ctx context.Context, req attach.MonitorAckRequest) (stri
 		if caller, ok := auth.CallerFromContext(ctx); ok {
 			by = strings.TrimSpace(caller.Identity)
 		}
+	}
+	if proxyBy == "" {
 		if p, ok := auth.ProxyByFromContext(ctx); ok {
 			proxyBy = strings.TrimSpace(p)
 		}

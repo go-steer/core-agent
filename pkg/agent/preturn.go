@@ -233,6 +233,7 @@ var preTurnSteps = []preTurnStep{
 			if tp.hasContent {
 				return nil
 			}
+			a.markTurnReachedDrain()
 			tp.drained = a.drainInboxFull()
 			return nil
 		},
@@ -322,6 +323,7 @@ func (a *Agent) observeTurnStartForGate(ctx context.Context) {
 // tests can hand it a permuted pipeline. Nothing in production passes
 // anything but preTurnSteps.
 func (a *Agent) runPreTurn(tp *turnPrep, steps []preTurnStep) error {
+	a.setLastDrainedIDs(nil)
 	for _, step := range steps {
 		if err := step.run(a, tp); err != nil {
 			return err

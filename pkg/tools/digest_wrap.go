@@ -193,9 +193,10 @@ type digestingTool struct {
 	opts  *DigestOptions
 }
 
-func (dt *digestingTool) Name() string        { return dt.inner.Name() }
-func (dt *digestingTool) Description() string { return dt.inner.Description() }
-func (dt *digestingTool) IsLongRunning() bool { return dt.inner.IsLongRunning() }
+func (dt *digestingTool) Name() string         { return dt.inner.Name() }
+func (dt *digestingTool) Description() string  { return dt.inner.Description() }
+func (dt *digestingTool) IsLongRunning() bool  { return dt.inner.IsLongRunning() }
+func (dt *digestingTool) Unwrap() adktool.Tool { return dt.inner }
 
 // ReadOnlyHint forwards the wrapped tool's dispatch-class declaration
 // (ReadOnlyHinter, #460), falling back to IsReadOnlyTool so built-ins

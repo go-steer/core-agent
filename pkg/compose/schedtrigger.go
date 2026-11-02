@@ -72,6 +72,8 @@ type ScheduledTriggerConfig struct {
 	Interval   time.Duration
 	Jitter     time.Duration
 	Prompt     string
+	MaxFires   int
+	Timeout    time.Duration
 	Fire       ScheduledFireFunc
 	PreFire    ScheduledPreFireFunc
 	LeaseLost  <-chan struct{}
@@ -158,6 +160,8 @@ type ScheduledTrigger struct {
 	interval   time.Duration
 	jitter     time.Duration
 	prompt     string
+	maxFires   int
+	timeout    time.Duration
 	fire       ScheduledFireFunc
 	preFire    ScheduledPreFireFunc
 	leaseLost  <-chan struct{}
@@ -217,6 +221,8 @@ func NewScheduledTrigger(cfg ScheduledTriggerConfig) (*ScheduledTrigger, error) 
 		interval:   cfg.Interval,
 		jitter:     jitter,
 		prompt:     cfg.Prompt,
+		maxFires:   cfg.MaxFires,
+		timeout:    cfg.Timeout,
 		fire:       cfg.Fire,
 		preFire:    cfg.PreFire,
 		leaseLost:  cfg.LeaseLost,
@@ -316,6 +322,9 @@ func (t *ScheduledTrigger) Run(ctx context.Context) {
 		}
 	}
 	for {
+		if t.maxFiresReached() {
+			return
+		}
 		p := t.plan(t.now())
 		if p.Skipped > 0 {
 			t.logger.Info("scheduled ticks skipped rather than caught up",
@@ -344,6 +353,15 @@ func (t *ScheduledTrigger) Run(ctx context.Context) {
 		}
 		t.fireDue(ctx, p.Tick, p.Skipped)
 	}
+}
+
+func (t *ScheduledTrigger) maxFiresReached() bool {
+	if t.maxFires <= 0 {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.fires >= int64(t.maxFires)
 }
 
 // Stop signals the trigger loop to exit without waiting for the current timer.
@@ -429,7 +447,15 @@ func (t *ScheduledTrigger) fireDue(ctx context.Context, tick time.Time, skipped 
 }
 
 func (t *ScheduledTrigger) turnContext(parent context.Context) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(parent)
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+	if t.timeout > 0 {
+		ctx, cancel = context.WithTimeout(parent, t.timeout)
+	} else {
+		ctx, cancel = context.WithCancel(parent)
+	}
 	done := make(chan struct{})
 	go func() {
 		select {

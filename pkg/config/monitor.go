@@ -101,7 +101,8 @@ func (n *MonitorNotifyConfig) ResolvedDigestAfter() time.Duration {
 // MonitorAckConfig configures optional MCP tool forwarding when an operator
 // acknowledges an active subject via POST /monitor-ack (#1406).
 type MonitorAckConfig struct {
-	Tool string `json:"tool,omitempty" yaml:"tool,omitempty"`
+	Tool string         `json:"tool,omitempty" yaml:"tool,omitempty"`
+	Args map[string]any `json:"args,omitempty" yaml:"args,omitempty"`
 }
 
 var validWakeOnEdges = []string{"opened", "remained", "closed", "re_opened", "degraded"}
@@ -150,7 +151,7 @@ func (c *Config) validateMonitor() error {
 			return err
 		}
 	}
-	return nil
+	return CheckMonitorCollectSurface(c, false)
 }
 
 func validateMonitorCollect(col *MonitorCollectConfig, policyByTool map[string]ToolPolicyConfig) (string, error) {
@@ -296,9 +297,10 @@ func subagentCanReachTool(spec SubagentSpec, toolName string, hasMCPServers bool
 			if len(srv.Tools) == 0 {
 				return true
 			}
+			prefix := sanitizeMCPServerPrefix(srv.Server) + "_"
 			for _, t := range srv.Tools {
 				trimmed := strings.TrimSpace(t)
-				if trimmed == toolName || srv.Server+"_"+trimmed == toolName {
+				if trimmed == toolName || srv.Server+"_"+trimmed == toolName || prefix+trimmed == toolName {
 					return true
 				}
 			}
@@ -309,4 +311,17 @@ func subagentCanReachTool(spec SubagentSpec, toolName string, hasMCPServers bool
 		return len(spec.MCP) > 0
 	}
 	return hasMCPServers
+}
+
+func sanitizeMCPServerPrefix(server string) string {
+	var b strings.Builder
+	b.Grow(len(server))
+	for _, r := range server {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }

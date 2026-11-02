@@ -30,6 +30,7 @@ type Transition struct {
 	Edge       string            `json:"edge"`
 	SubjectKey string            `json:"subject_key"`
 	Summary    string            `json:"summary"`
+	ChangedAt  string            `json:"changed_at,omitempty"`
 	Attrs      map[string]string `json:"attrs"`
 }
 

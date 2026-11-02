@@ -882,6 +882,7 @@ func (a *Agent) drainInboxFull() inboxDrain {
 	a.mu.Lock()
 	a.wakeFenced = false
 	a.mu.Unlock()
+	ids := make([]string, len(msgs))
 	d := inboxDrain{
 		texts:       make([]string, len(msgs)),
 		senders:     make([]string, len(msgs)),
@@ -890,6 +891,7 @@ func (a *Agent) drainInboxFull() inboxDrain {
 	}
 	var deferredCaller auth.Caller
 	for i, m := range msgs {
+		ids[i] = m.id
 		a.Emit(attach.EventInbox, attach.InboxEvent{
 			State:    attach.InboxStateDequeued,
 			PromptID: m.id,
@@ -909,8 +911,102 @@ func (a *Agent) drainInboxFull() inboxDrain {
 	if d.originator.Identity == "" {
 		d.originator = deferredCaller
 	}
+	a.setLastDrainedIDs(ids)
 	d.links, d.linkedInjects = inboxTraceLinks(msgs)
 	return d
+}
+
+func (a *Agent) setLastDrainedIDs(ids []string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.lastDrainedIDs = ids
+	if ids == nil {
+		a.lastTurnReachedDrain = false
+	}
+	a.mu.Unlock()
+}
+
+func (a *Agent) markTurnReachedDrain() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.lastTurnReachedDrain = true
+	a.mu.Unlock()
+}
+
+// LastTurnDrainedID reports whether the most recent turn drained the inbox
+// message with prompt_id == id (#1467).
+func (a *Agent) LastTurnDrainedID(id string) bool {
+	if a == nil || id == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, d := range a.lastDrainedIDs {
+		if d == id {
+			return true
+		}
+	}
+	return false
+}
+
+// LastTurnDrainedAny reports whether the most recent turn drained at least one
+// inbox message (#1467).
+func (a *Agent) LastTurnDrainedAny() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.lastDrainedIDs) > 0
+}
+
+// LastTurnReachedDrain reports whether the most recent turn reached the
+// drain-inbox step of the pre-turn pipeline rather than being refused by an
+// earlier preflight check (#1467).
+func (a *Agent) LastTurnReachedDrain() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastTurnReachedDrain
+}
+
+// InboxContainsID reports whether the inbox currently holds a queued message
+// with prompt_id == id (#1467).
+func (a *Agent) InboxContainsID(id string) bool {
+	if a == nil || a.inbox == nil || id == "" {
+		return false
+	}
+	a.inbox.mu.Lock()
+	defer a.inbox.mu.Unlock()
+	for _, m := range a.inbox.messages {
+		if m.id == id {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveInboxID removes a queued inbox message with prompt_id == id if it has
+// not yet been drained, returning true when removed (#1467).
+func (a *Agent) RemoveInboxID(id string) bool {
+	if a == nil || a.inbox == nil || id == "" {
+		return false
+	}
+	a.inbox.mu.Lock()
+	defer a.inbox.mu.Unlock()
+	for i, m := range a.inbox.messages {
+		if m.id == id {
+			a.inbox.messages = append(a.inbox.messages[:i], a.inbox.messages[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // PendingInboxCount peeks at the inbox without draining it. Useful

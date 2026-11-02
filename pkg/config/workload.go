@@ -315,6 +315,14 @@ func LoadWorkload(workloadDir string) (*WorkloadBundle, error) {
 	if err := checkWorkloadCapabilitySplit(b, specs); err != nil {
 		return nil, fmt.Errorf("config: validate workload %q: %w", path, err)
 	}
+	if monCfg := workloadMonitorToConfig(b.Monitor); monCfg != nil {
+		if err := CheckMonitorCollectSurface(&Config{
+			Monitor:   monCfg,
+			Subagents: specs,
+		}, len(b.ToolCatalog.MCP) > 0); err != nil {
+			return nil, fmt.Errorf("config: validate workload %q: %w", path, err)
+		}
+	}
 	b.ResolvedSpecs = specs
 	return &b, nil
 }
@@ -424,6 +432,9 @@ func (b *WorkloadBundle) ParsedA2A() (A2AConfig, error) {
 }
 
 func (b *WorkloadBundle) validateWorkloadMonitor() error {
+	if len(b.Monitor.Collect) > 1 {
+		return fmt.Errorf("monitor.collect declares %d entries; core-agent supports at most 1 pre-turn collect tool", len(b.Monitor.Collect))
+	}
 	for i, col := range b.Monitor.Collect {
 		if strings.TrimSpace(col.Tool) == "" {
 			return fmt.Errorf("monitor.collect[%d].tool is required", i)
@@ -481,6 +492,7 @@ func workloadMonitorToConfig(m WorkloadMonitor) *MonitorConfig {
 	if m.Ack != nil {
 		out.Ack = &MonitorAckConfig{
 			Tool: m.Ack.Tool,
+			Args: m.Ack.Args,
 		}
 	}
 	return out

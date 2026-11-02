@@ -88,9 +88,10 @@ type Notifier struct {
 	logger       *slog.Logger
 	now          func() time.Time
 
-	mu     sync.Mutex
-	state  notifyState
-	loaded bool
+	mu        sync.Mutex
+	state     notifyState
+	loaded    bool
+	cycleTick time.Time
 }
 
 // NewNotifier constructs a Notifier from cfg (#1406). Returns (nil, nil) when
@@ -158,6 +159,44 @@ func NewNotifier(cfg NotifierConfig) (*Notifier, error) {
 	}, nil
 }
 
+// SetCycleTick records the scheduled lattice tick for the in-progress cycle so
+// AfterCycle evaluates remind_after and digest_after against the same lattice
+// timestamp that PreFire checked (#1467).
+func (n *Notifier) SetCycleTick(tick time.Time) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	n.cycleTick = tick.UTC()
+	n.mu.Unlock()
+}
+
+func (n *Notifier) clearClosedSubjects(ctx context.Context, set monitor.Set) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.ensureStateLoaded(ctx)
+	changed := false
+	for _, tr := range set.Transitions {
+		if tr.Edge != "closed" {
+			continue
+		}
+		if _, ok := n.state.ActiveSubjects[tr.SubjectKey]; ok {
+			delete(n.state.ActiveSubjects, tr.SubjectKey)
+			changed = true
+		}
+		if _, ok := n.state.LastRemindedAt[tr.SubjectKey]; ok {
+			delete(n.state.LastRemindedAt, tr.SubjectKey)
+			changed = true
+		}
+	}
+	if changed {
+		n.saveState(ctx)
+	}
+}
+
 // AfterCycle processes the outcome of a monitoring cycle, updating durable
 // state on "mast-notify:mast-ops" and dispatching outbound notifications when
 // appropriate (#1406).
@@ -170,6 +209,11 @@ func (n *Notifier) AfterCycle(ctx context.Context, parsed *monitor.Set, turnOutp
 
 	n.ensureStateLoaded(ctx)
 	now := n.now().UTC()
+	cycleTime := now
+	if !n.cycleTick.IsZero() {
+		cycleTime = n.cycleTick
+		n.cycleTick = time.Time{}
+	}
 
 	if cycleFailed || (parsed != nil && parsed.Degraded) {
 		n.handleFailedCycle(ctx, now, turnOutput)
@@ -177,11 +221,13 @@ func (n *Notifier) AfterCycle(ctx context.Context, parsed *monitor.Set, turnOutp
 	}
 	n.handleRecoveryIfDegraded(ctx, now)
 
-	shouldSpeak := n.evaluateCycleTransitions(now, parsed)
+	shouldSpeak := n.evaluateCycleTransitions(cycleTime, parsed)
 	if !shouldSpeak {
-		n.state.Ref = notify.Ref{}
-		n.state.Text = ""
-		n.saveState(ctx)
+		if !isZeroRef(n.state.Ref) || n.state.Text != "" {
+			n.state.Ref = notify.Ref{}
+			n.state.Text = ""
+			n.saveState(ctx)
+		}
 		return nil
 	}
 
@@ -198,7 +244,7 @@ func (n *Notifier) AfterCycle(ctx context.Context, parsed *monitor.Set, turnOutp
 		n.saveState(ctx)
 		return err
 	}
-	n.state.LastSpokeAt = now
+	n.state.LastSpokeAt = cycleTime
 	n.saveState(ctx)
 	return nil
 }
@@ -242,6 +288,9 @@ func (n *Notifier) allowsDegradedNotice() bool {
 
 func (n *Notifier) evaluateCycleTransitions(now time.Time, parsed *monitor.Set) bool {
 	if parsed == nil {
+		if n.digestAfter > 0 {
+			return !now.Before(n.state.LastSpokeAt.Add(n.digestAfter))
+		}
 		return true
 	}
 	if n.state.LastRemindedAt == nil {

@@ -374,6 +374,8 @@ var fatalPathPrefixes = []string{
 	"path_scope.",
 	"attach.",
 	"a2a.auth.",
+	"monitor.",
+	"schedule.",
 }
 
 var fatalPathSegments = []string{
@@ -397,6 +399,8 @@ var fatalLeafTargets = []string{
 	"allow_anonymous",
 	"admin_identities",
 	"proxy_identities",
+	"monitor",
+	"schedule",
 	"allow_card_host_change",
 	"allow_metadata_endpoints",
 	"max_session_cost_usd",

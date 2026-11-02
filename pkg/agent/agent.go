@@ -395,10 +395,12 @@ type Agent struct {
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
 	// clear operations; never across an LLM call.
-	mu                sync.Mutex
-	cancelInFlight    context.CancelFunc
-	cancelInFlightGen uint64 // generation of the currently-registered cancel (0 = none)
-	cancelSeq         uint64 // monotonic issuer for cancel generations (#359)
+	mu                   sync.Mutex
+	cancelInFlight       context.CancelFunc
+	cancelInFlightGen    uint64 // generation of the currently-registered cancel (0 = none)
+	cancelSeq            uint64 // monotonic issuer for cancel generations (#359)
+	lastDrainedIDs       []string
+	lastTurnReachedDrain bool
 	// Pause gate (see pause.go + docs/operator-interrupt-design.md).
 	// pauseCh non-nil IS the "paused" signal; Run blocks on it before
 	// starting a turn and Resume closes it. The rest is the operator-

@@ -162,6 +162,9 @@ func (c *MonitorCollector) PreFire(ctx context.Context, tick time.Time, fireNum 
 			return "", false
 		}
 		c.recordCycle(nil, false)
+		if c.notifier != nil {
+			c.notifier.SetCycleTick(tick)
+		}
 		return c.formatRawPrompt(toolName, text, tick), true
 	}
 
@@ -176,6 +179,10 @@ func (c *MonitorCollector) PreFire(ctx context.Context, tick time.Time, fireNum 
 		return "", false
 	}
 
+	if c.notifier != nil {
+		c.notifier.SetCycleTick(tick)
+		c.notifier.clearClosedSubjects(ctx, parsed)
+	}
 	filtered := c.filterTransitions(ctx, tick, parsed)
 	c.recordCycle(&filtered, false)
 
@@ -221,7 +228,7 @@ func (c *MonitorCollector) filterTransitions(ctx context.Context, tick time.Time
 		Degraded:    set.Degraded,
 	}
 	for _, tr := range set.Transitions {
-		if acked[tr.SubjectKey] {
+		if ackAt, ok := acked[tr.SubjectKey]; ok && isSuppressedByAck(tr, ackAt) {
 			continue
 		}
 		if !c.matchesWakeOn(ctx, tick, tr) {
@@ -232,7 +239,26 @@ func (c *MonitorCollector) filterTransitions(ctx context.Context, tick time.Time
 	return out
 }
 
-func (c *MonitorCollector) loadAckedSubjects(ctx context.Context) map[string]bool {
+func isSuppressedByAck(tr monitor.Transition, ackAt time.Time) bool {
+	if tr.Edge == "re_opened" || tr.Edge == "closed" {
+		return false
+	}
+	rawChangedAt := tr.ChangedAt
+	if rawChangedAt == "" && tr.Attrs != nil {
+		rawChangedAt = tr.Attrs["changed_at"]
+	}
+	if rawChangedAt != "" {
+		if changedAt, err := time.Parse(time.RFC3339Nano, rawChangedAt); err == nil && changedAt.After(ackAt) {
+			return false
+		}
+		if changedAt, err := time.Parse(time.RFC3339, rawChangedAt); err == nil && changedAt.After(ackAt) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *MonitorCollector) loadAckedSubjects(ctx context.Context) map[string]time.Time {
 	if c.eventLog == nil {
 		return nil
 	}
@@ -240,9 +266,13 @@ func (c *MonitorCollector) loadAckedSubjects(ctx context.Context) map[string]boo
 	if err != nil || len(recs) == 0 {
 		return nil
 	}
-	out := make(map[string]bool, len(recs))
+	requireForwarded := c.mon != nil && c.mon.Ack != nil && strings.TrimSpace(c.mon.Ack.Tool) != ""
+	out := make(map[string]time.Time, len(recs))
 	for _, r := range recs {
-		out[r.Subject] = true
+		if requireForwarded && !r.Forwarded {
+			continue
+		}
+		out[r.Subject] = r.At
 	}
 	return out
 }

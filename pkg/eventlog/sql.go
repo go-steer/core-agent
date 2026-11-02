@@ -21,6 +21,7 @@ import (
 	"iter"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -452,7 +453,9 @@ func (s *gormStream) buildOverlayRow(ctx context.Context, sess session.Session, 
 // otherwise break live-tail/replay for every consumer on the log.
 func (s *gormStream) deleteSession(ctx context.Context, appName, userID, sessionID string) error {
 	if err := s.db.WithContext(ctx).
-		Where("app_name = ? AND user_id = ? AND session_id = ?", appName, userID, sessionID).
+		Where("app_name = ? AND user_id = ?", appName, userID).
+		Where("session_id = ? OR session_id LIKE ? ESCAPE '"+branchPrefixEscape+"'",
+			sessionID, escapeLike(sessionID)+":sub:%").
 		Delete(&agentEventRow{}).Error; err != nil {
 		return fmt.Errorf("eventlog: delete overlay rows for session %q: %w", sessionID, err)
 	}
@@ -542,6 +545,7 @@ func (s *gormStream) iterateOnceFunc(ctx context.Context, fromSeq int64, q query
 		return yield(Entry{}, err)
 	}
 	h := newSessionHydrator(s.adkSvc)
+	h.prefetch(ctx, rows)
 	for _, r := range rows {
 		md := decodeMetadata(r.Metadata)
 		ev, err := h.hydrate(ctx, r)
@@ -775,6 +779,57 @@ type sessionHydrator struct {
 
 func newSessionHydrator(svc session.Service) *sessionHydrator {
 	return &sessionHydrator{svc: svc, cache: make(map[sessionKey]*sessionIndex)}
+}
+
+const maxHydrateConcurrency = 8
+
+// prefetch concurrently loads and indexes distinct sessions referenced by
+// rows when a query spans multiple sessions (such as WithSessionTree with
+// derived "<parent>:sub:<branch>:<inv>" child sessions, #1434). Single-session
+// queries skip goroutine fan-out and hydrate inline on first use.
+func (h *sessionHydrator) prefetch(ctx context.Context, rows []agentEventRow) {
+	if len(rows) <= 1 {
+		return
+	}
+	var keys []sessionKey
+	seen := make(map[sessionKey]struct{}, 4)
+	for _, r := range rows {
+		key := sessionKey{app: r.AppName, user: r.UserID, session: r.SessionID}
+		if _, ok := h.cache[key]; ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) <= 1 {
+		return
+	}
+	workers := min(len(keys), maxHydrateConcurrency)
+	results := make([]*sessionIndex, len(keys))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(keys) || ctx.Err() != nil {
+					return
+				}
+				results[i] = h.buildIndex(ctx, keys[i])
+			}
+		}()
+	}
+	wg.Wait()
+	for i, key := range keys {
+		if results[i] != nil {
+			h.cache[key] = results[i]
+		}
+	}
 }
 
 // hydrate returns the session.Event for row r, loading and indexing r's

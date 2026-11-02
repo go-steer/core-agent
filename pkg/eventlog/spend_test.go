@@ -23,6 +23,9 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 	"gorm.io/gorm"
 )
 
@@ -255,5 +258,190 @@ func TestSpendStoreAppendRequiresAppAndSession(t *testing.T) {
 	}
 	if err := s.Append(ctx, "", spendTestUser, spendTestSID, SpendRecord{Tokens: 1}); err == nil {
 		t.Error("Append with no app was accepted")
+	}
+}
+
+func TestStampModelVersionAndHydratorPrefetch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h, err := Open(ctx, sqlite.Open(filepath.Join(t.TempDir(), "eventlog.db")))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	rootSID := "root-tree"
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{
+		AppName: spendTestApp, UserID: spendTestUser, SessionID: rootSID,
+	}); err != nil {
+		t.Fatalf("Create root: %v", err)
+	}
+	rootResp, err := h.Service.Get(ctx, &session.GetRequest{
+		AppName: spendTestApp, UserID: spendTestUser, SessionID: rootSID,
+	})
+	if err != nil {
+		t.Fatalf("Get root: %v", err)
+	}
+	rootEv := &session.Event{
+		ID:        "ev-root",
+		Author:    "agent",
+		Timestamp: time.Now(),
+		LLMResponse: adkmodel.LLMResponse{
+			ModelVersion: "claude-opus-4-6-20260601",
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "parent"}}},
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount: 100, CandidatesTokenCount: 50, TotalTokenCount: 150,
+			},
+		},
+	}
+	if err := h.Service.AppendEvent(ctx, rootResp.Session, rootEv); err != nil {
+		t.Fatalf("AppendEvent root: %v", err)
+	}
+	if got := rootEv.CustomMetadata["model_version"]; got != "claude-opus-4-6-20260601" {
+		t.Errorf("stampModelVersion CustomMetadata[model_version] = %v, want claude-opus-4-6-20260601", got)
+	}
+
+	for _, suffix := range []string{"a", "b", "c"} {
+		childSID := rootSID + ":sub:" + suffix
+		if _, err := h.Service.Create(ctx, &session.CreateRequest{
+			AppName: spendTestApp, UserID: spendTestUser, SessionID: childSID,
+		}); err != nil {
+			t.Fatalf("Create %s: %v", childSID, err)
+		}
+		childResp, err := h.Service.Get(ctx, &session.GetRequest{
+			AppName: spendTestApp, UserID: spendTestUser, SessionID: childSID,
+		})
+		if err != nil {
+			t.Fatalf("Get %s: %v", childSID, err)
+		}
+		childEv := &session.Event{
+			ID:        "ev-" + suffix,
+			Author:    "sub-" + suffix,
+			Branch:    suffix,
+			Timestamp: time.Now(),
+			LLMResponse: adkmodel.LLMResponse{
+				Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: suffix}}},
+			},
+		}
+		if err := h.Service.AppendEvent(ctx, childResp.Session, childEv); err != nil {
+			t.Fatalf("AppendEvent %s: %v", childSID, err)
+		}
+	}
+
+	var gotIDs []string
+	var rootModelVersion string
+	for ev, iterErr := range h.Stream.Since(ctx, 0, WithSessionTree(spendTestApp, spendTestUser, rootSID)) {
+		if iterErr != nil {
+			t.Fatalf("Since WithSessionTree: %v", iterErr)
+		}
+		gotIDs = append(gotIDs, ev.Event.ID)
+		if ev.Event.ID == "ev-root" {
+			rootModelVersion = ev.Event.ModelVersion
+		}
+	}
+	if len(gotIDs) != 4 {
+		t.Fatalf("WithSessionTree returned %v, want 4 events across root and 3 child sessions", gotIDs)
+	}
+	if rootModelVersion != "claude-opus-4-6-20260601" {
+		t.Errorf("rehydrated ev-root ModelVersion = %q, want claude-opus-4-6-20260601", rootModelVersion)
+	}
+}
+
+func TestServiceDelete_CleansUpRootAndSubsessionTree(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h, err := Open(ctx, sqlite.Open(filepath.Join(t.TempDir(), "eventlog.db")))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	rootSID := "s-del"
+	childSID := rootSID + ":sub:research:inv1"
+	emptyChildSID := rootSID + ":sub:empty:inv2"
+	keepSID := "s-del-other"
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{
+		AppName: spendTestApp, UserID: spendTestUser, SessionID: emptyChildSID,
+	}); err != nil {
+		t.Fatalf("Create %s: %v", emptyChildSID, err)
+	}
+	for _, sid := range []string{rootSID, childSID, keepSID} {
+		if _, err := h.Service.Create(ctx, &session.CreateRequest{
+			AppName: spendTestApp, UserID: spendTestUser, SessionID: sid,
+		}); err != nil {
+			t.Fatalf("Create %s: %v", sid, err)
+		}
+		resp, err := h.Service.Get(ctx, &session.GetRequest{
+			AppName: spendTestApp, UserID: spendTestUser, SessionID: sid,
+		})
+		if err != nil {
+			t.Fatalf("Get %s: %v", sid, err)
+		}
+		ev := &session.Event{
+			ID:        "ev-" + sid,
+			Author:    "agent",
+			Timestamp: time.Now(),
+			LLMResponse: adkmodel.LLMResponse{
+				Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "ok"}}},
+			},
+		}
+		if err := h.Service.AppendEvent(ctx, resp.Session, ev); err != nil {
+			t.Fatalf("AppendEvent %s: %v", sid, err)
+		}
+		if err := h.Spend.Append(ctx, spendTestApp, spendTestUser, sid, SpendRecord{Author: "agent", Tokens: 100, CostUSD: 0.01}); err != nil {
+			t.Fatalf("Spend.Append %s: %v", sid, err)
+		}
+		if err := h.Guardrail.TripWatchdog(ctx, spendTestApp, spendTestUser, sid, "timeout"); err != nil {
+			t.Fatalf("Guardrail.TripWatchdog %s: %v", sid, err)
+		}
+	}
+
+	if err := h.Service.Delete(ctx, &session.DeleteRequest{
+		AppName: spendTestApp, UserID: spendTestUser, SessionID: rootSID,
+	}); err != nil {
+		t.Fatalf("Delete root: %v", err)
+	}
+
+	stTree, err := h.Spend.FoldTree(ctx, spendTestApp, spendTestUser, rootSID)
+	if err != nil {
+		t.Fatalf("FoldTree after delete: %v", err)
+	}
+	if stTree.Session.Calls != 0 {
+		t.Errorf("FoldTree after delete = %+v, want 0 calls (child spend must be deleted)", stTree.Session)
+	}
+	childGuardrail, err := h.Guardrail.Load(ctx, spendTestApp, spendTestUser, childSID)
+	if err != nil {
+		t.Fatalf("Load child: %v", err)
+	}
+	if childGuardrail.WatchdogTripped {
+		t.Errorf("child GuardrailState after root delete = %+v, want WatchdogTripped=false", childGuardrail)
+	}
+	if _, err := h.Service.Get(ctx, &session.GetRequest{
+		AppName: spendTestApp, UserID: spendTestUser, SessionID: childSID,
+	}); err == nil {
+		t.Error("expected child session in ADK sessions table to be deleted")
+	}
+	if _, err := h.Service.Get(ctx, &session.GetRequest{
+		AppName: spendTestApp, UserID: spendTestUser, SessionID: emptyChildSID,
+	}); err == nil {
+		t.Error("expected event-less child session in ADK sessions table to be deleted")
+	}
+	var leftoverADKEvents int64
+	if err := h.DB.WithContext(ctx).Table(adkEventsTable).
+		Where("app_name = ? AND user_id = ? AND (session_id = ? OR session_id LIKE ?)",
+			spendTestApp, spendTestUser, rootSID, rootSID+":sub:%").
+		Count(&leftoverADKEvents).Error; err != nil {
+		t.Fatalf("count ADK events: %v", err)
+	}
+	if leftoverADKEvents != 0 {
+		t.Errorf("leftover ADK events for deleted root/subsession tree = %d, want 0", leftoverADKEvents)
+	}
+	// Sibling session with a shared prefix ("s-del-other") must remain intact.
+	stKeep, err := h.Spend.Fold(ctx, spendTestApp, spendTestUser, keepSID)
+	if err != nil {
+		t.Fatalf("Fold keepSID: %v", err)
+	}
+	if stKeep.Session.Calls != 1 {
+		t.Errorf("keepSID spend calls = %d, want 1", stKeep.Session.Calls)
 	}
 }

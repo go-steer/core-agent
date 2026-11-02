@@ -135,10 +135,12 @@ func RebuildTrackerFromEvents(
 		}
 		if model, u, ok := sideUsageFrom(ev.CustomMetadata); ok {
 			u.EventID = ev.ID
-			t.AppendSideUsage(model, u, resolveRebuildPricing(ev, model, pricingFor))
+			t.AppendSideUsage(model, u, resolveRebuildPricing(ev, model, "", pricingFor))
 			continue
 		}
-		replayToolSavings(t, ev, pricingFor)
+		if ev.Branch == "" {
+			replayToolSavings(t, ev, pricingFor)
+		}
 		if ev.UsageMetadata == nil {
 			continue
 		}
@@ -154,7 +156,7 @@ func RebuildTrackerFromEvents(
 		// event ID the live TurnTap would have (#1433).
 		u.EventID = ev.ID
 		modelName := resolveRebuildModel(ev, defaultModel)
-		price := resolveRebuildPricing(ev, modelName, pricingFor)
+		price := resolveRebuildPricing(ev, modelName, defaultModel, pricingFor)
 		if isSubtaskBranch(ev.Branch) {
 			t.AppendSideUsage(modelName, u, price)
 		} else {
@@ -184,7 +186,12 @@ func resolveRebuildModel(ev *session.Event, defaultModel string) string {
 	return defaultModel
 }
 
-func resolveRebuildPricing(ev *session.Event, modelName string, pricingFor func(string) Pricing) Pricing {
+func resolveRebuildPricing(ev *session.Event, modelName, defaultModel string, pricingFor func(string) Pricing) Pricing {
+	if ev != nil && ev.Branch == "" && defaultModel != "" && modelName != defaultModel {
+		if pDefault := pricingFor(defaultModel); !pDefault.Unpriced && !pDefault.IsZero() {
+			return pDefault
+		}
+	}
 	price := pricingFor(modelName)
 	if ev == nil || len(ev.CustomMetadata) == 0 {
 		return price
@@ -204,6 +211,9 @@ func isSubtaskBranch(branch string) bool {
 
 // replayToolSavings restores the calling session's token and dollar
 // spend from MCP digest "savings" sidecars via AppendSideUsage (#1359).
+// Only invoked on root-session events (ev.Branch == "") because during
+// live execution a delegated subagent's Inner agent has a nil tracker
+// and does not bill its own MCP digest savings to the parent (#1434).
 // It deliberately does NOT call AppendDigestSavings: in
 // WithoutSessionLabels mode, aggregatedObserver.retiredDigest retains
 // evicted sessions' digest-cost baseline across lazy resume
@@ -225,7 +235,7 @@ func replayToolSavings(t *Tracker, ev *session.Event, pricingFor func(string) Pr
 			if ev.ID != "" {
 				u.EventID = fmt.Sprintf("%s:savings:%d", ev.ID, i)
 			}
-			t.AppendSideUsage(rec.SubagentModel, u, resolveRebuildPricing(ev, rec.SubagentModel, pricingFor))
+			t.AppendSideUsage(rec.SubagentModel, u, resolveRebuildPricing(ev, rec.SubagentModel, "", pricingFor))
 		}
 	}
 }

@@ -358,3 +358,69 @@ func TestRebuildTrackerFromEvents_SubtaskBranchPreservesLastTurn(t *testing.T) {
 		t.Errorf("Last() = (%+v, %v), want InputTokens=4000 (subtask branch should use AppendSideUsage)", last, ok)
 	}
 }
+
+func TestRebuildTrackerFromEvents_ParentServedModelAndChildToolSavings(t *testing.T) {
+	t.Parallel()
+	tracker := NewTracker()
+
+	// Parent turn carries a served ModelVersion that differs from defaultModel.
+	parentTurn := mkEvent(100_000, 50_000, false, "claude-opus-4-6-20260601")
+
+	// Child-session tool response (Branch != "") carrying a digest savings
+	// sidecar. On live runs, only parent-session tool responses feed
+	// parent.RecordToolSavings, so session-tree rebuild must skip child-branch
+	// tool responses to avoid double-counting.
+	childToolResp := &session.Event{
+		Branch: "researcher",
+		LLMResponse: model.LLMResponse{
+			Content: &genai.Content{
+				Role: "user",
+				Parts: []*genai.Part{
+					{
+						FunctionResponse: &genai.FunctionResponse{
+							Name: "mcp_tool",
+							Response: map[string]any{
+								"savings": map[string]any{
+									"path":                   "llm_fallback",
+									"original_tokens_est":    float64(12000),
+									"digest_tokens_est":      float64(2000),
+									"subagent_model":         "gemini-2.5-flash",
+									"subagent_input_tokens":  float64(12000),
+									"subagent_output_tokens": float64(2000),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pricingFor := func(m string) Pricing {
+		if m == "claude-opus-4-6" {
+			return Pricing{InputPerMTok: 20, OutputPerMTok: 100}
+		}
+		if m == "gemini-2.5-flash" {
+			return Pricing{InputPerMTok: 1, OutputPerMTok: 2}
+		}
+		return Pricing{Unpriced: true}
+	}
+
+	if err := RebuildTrackerFromEvents(
+		t.Context(), tracker,
+		seqFromEvents([]*session.Event{parentTurn, childToolResp}),
+		"claude-opus-4-6",
+		pricingFor,
+	); err != nil {
+		t.Fatalf("RebuildTrackerFromEvents: %v", err)
+	}
+
+	totals := tracker.Totals()
+	if totals.InputTokens != 100_000 || totals.OutputTokens != 50_000 {
+		t.Fatalf("Totals = %+v, want 100000/50000 (child tool savings must be skipped)", totals)
+	}
+	// 0.1 * 20 + 0.05 * 100 = 2 + 5 = 7.0
+	if totals.CostUSD < 6.999 || totals.CostUSD > 7.001 {
+		t.Fatalf("CostUSD = %f, want 7.0 from defaultModel pricing", totals.CostUSD)
+	}
+}

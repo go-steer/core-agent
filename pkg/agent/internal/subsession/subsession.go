@@ -27,6 +27,8 @@ import (
 	"strings"
 
 	"google.golang.org/adk/v2/session"
+
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // branchSeparator joins branch path segments, matching ADK's convention.
@@ -208,23 +210,23 @@ func (s *BranchInjectingService) AppendEvent(ctx context.Context, sess session.S
 				if ev.CustomMetadata == nil {
 					ev.CustomMetadata = map[string]any{}
 				}
-				if _, exists := ev.CustomMetadata["model_version"]; !exists {
-					ev.CustomMetadata["model_version"] = ev.ModelVersion
+				if _, exists := ev.CustomMetadata[usage.ModelVersionMetadataKey]; !exists {
+					ev.CustomMetadata[usage.ModelVersionMetadataKey] = ev.ModelVersion
 				}
 			}
 			if s.Backend != "" {
 				if ev.CustomMetadata == nil {
 					ev.CustomMetadata = map[string]any{}
 				}
-				if _, exists := ev.CustomMetadata["billing_backend"]; !exists {
-					ev.CustomMetadata["billing_backend"] = s.Backend
+				if _, exists := ev.CustomMetadata[usage.BillingBackendMetadataKey]; !exists {
+					ev.CustomMetadata[usage.BillingBackendMetadataKey] = s.Backend
 				}
 			}
 			if s.SkipParentUsage {
 				if ev.CustomMetadata == nil {
 					ev.CustomMetadata = map[string]any{}
 				}
-				ev.CustomMetadata["skip_parent_usage"] = true
+				ev.CustomMetadata[usage.SkipParentUsageMetadataKey] = true
 			}
 		}
 	}

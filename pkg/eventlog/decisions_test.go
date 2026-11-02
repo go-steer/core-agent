@@ -354,6 +354,11 @@ func TestAckEffects_WatermarkClearsDanglingEffects(t *testing.T) {
 	if len(danglingAfter) != 0 {
 		t.Errorf("ScanDangling after ack = %+v, want 0", danglingAfter)
 	}
+	for ev := range reloadedAfter.Session.Events().All() {
+		if ev != nil && ev.InvocationID == "effects-ack" && ev.Content != nil {
+			t.Errorf("effects-ack event has non-nil Content %+v, want state-only event so LLM prompt is not polluted", ev.Content)
+		}
+	}
 }
 
 func TestListParks_ProjectsApprovalAndInputParks(t *testing.T) {
@@ -385,9 +390,9 @@ func TestListParks_ProjectsApprovalAndInputParks(t *testing.T) {
 					"toolConfirmation": map[string]any{
 						"hint": "approve scale_deployment",
 						"payload": map[string]any{
-							"tool":    "scale_deployment",
-							"args":    map[string]any{"deployment": "checkout", "replicas": float64(4)},
-							"subject": "scale_deployment(deployment=checkout, replicas=4)",
+							"tool": "scale_deployment",
+							"args": map[string]any{"deployment": "checkout", "replicas": float64(4)},
+							"key":  "scale_deployment(deployment=checkout, replicas=4)",
 						},
 					},
 				},
@@ -410,6 +415,10 @@ func TestListParks_ProjectsApprovalAndInputParks(t *testing.T) {
 	}
 	if len(parks[0].Pending) != 1 || parks[0].Pending[0].ProposedTool != "scale_deployment" {
 		t.Errorf("Pending = %+v, want scale_deployment park", parks[0].Pending)
+	}
+	if parks[0].Pending[0].CallID != "call-orig-1" || parks[0].Pending[0].Subject != "scale_deployment(deployment=checkout, replicas=4)" {
+		t.Errorf("Pending[0] CallID=%q Subject=%q, want call-orig-1 and scale_deployment(deployment=checkout, replicas=4)",
+			parks[0].Pending[0].CallID, parks[0].Pending[0].Subject)
 	}
 
 	// Resolve the park and verify ListParks becomes empty.

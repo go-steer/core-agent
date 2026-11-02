@@ -186,6 +186,9 @@ func checkDeclaredKeys(schema *jsonschema.Schema, args map[string]any) error {
 }
 
 func applyArgs(args, edited map[string]any) {
+	if args == nil {
+		return
+	}
 	for k := range args {
 		delete(args, k)
 	}

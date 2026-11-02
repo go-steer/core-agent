@@ -239,6 +239,9 @@ func wrapServerToolset(ts tool.Toolset, name string, spec ServerSpec, digestOpts
 	if optsForServer != nil && spec.AgenticNever {
 		optsForServer = nil
 	}
+	if !spec.TrustReadOnlyHints() {
+		ts = withoutReadOnlyHints(ts)
+	}
 	filtered, allow := withToolAllowlist(ts, spec.Tools)
 	wrapped := withNamespaceAndDigest(filtered, name, name, optsForServer, spec.ReadOnly, spec.ToolNotes)
 	if gate != nil {

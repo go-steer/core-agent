@@ -260,6 +260,12 @@ func TestToolClassification(t *testing.T) {
 	if got := DefaultToolClass("write_file"); got != ClassMutating {
 		t.Errorf("DefaultToolClass(write_file) = %v, want ClassMutating", got)
 	}
+	if got := DefaultToolClass("call_peer"); got != ClassMutating {
+		t.Errorf("DefaultToolClass(call_peer) = %v, want ClassMutating", got)
+	}
+	if got := DefaultToolClass("sciontool_status"); got != ClassReadOnly {
+		t.Errorf("DefaultToolClass(sciontool_status) = %v, want ClassReadOnly", got)
+	}
 	if got := DefaultToolClass("unknown_mcp_tool"); got != ClassMutating {
 		t.Errorf("DefaultToolClass(unknown_mcp_tool) = %v, want ClassMutating", got)
 	}
@@ -302,4 +308,54 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+type fakeMutationCallCtx struct {
+	context.Context
+	sid, inv, callID string
+}
+
+func (f fakeMutationCallCtx) SessionID() string      { return f.sid }
+func (f fakeMutationCallCtx) InvocationID() string   { return f.inv }
+func (f fakeMutationCallCtx) FunctionCallID() string { return f.callID }
+
+func TestCheckMutatingToolCallWithArgs_SafetyAndAuthorizeMutationCall(t *testing.T) {
+	t.Parallel()
+	pol, err := NewPolicy(nil, []string{"mcp:gke_delete_cluster*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := New(Options{Mode: ModeAsk, Policy: pol})
+
+	// 1. Bash denylist is enforced before parking.
+	err = g.CheckMutatingToolCallWithArgs(context.Background(), "bash", "bash(rm -rf /)", map[string]any{"command": "rm -rf /"})
+	if err == nil || errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("CheckMutatingToolCallWithArgs(rm -rf /) = %v, want immediate refusal", err)
+	}
+
+	// 2. Control-plane write is refused on a headless gate before parking.
+	err = g.CheckMutatingToolCallWithArgs(context.Background(), "write_file", "write_file(.agents/config.json)", map[string]any{"path": ".agents/config.json"})
+	if !errors.Is(err, ErrControlPlaneWrite) {
+		t.Fatalf("CheckMutatingToolCallWithArgs(control-plane) = %v, want ErrControlPlaneWrite", err)
+	}
+
+	// 3. MCP deny rule under "mcp:<tool>*" is enforced before parking.
+	err = g.CheckMutatingToolCallWithArgs(context.Background(), "gke_delete_cluster", "gke_delete_cluster(prod)", map[string]any{"name": "prod"})
+	if err == nil || errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("CheckMutatingToolCallWithArgs(mcp deny) = %v, want policy denial", err)
+	}
+
+	// 4. RecordMutationVerdict(DecisionAllowOnce) authorizes the exact call on a
+	// headless gate (Prompter == nil) so CheckBash does not fail with ErrNoPrompter,
+	// and consumes the authorization so a second call asks/fails again.
+	callCtx := fakeMutationCallCtx{Context: context.Background(), sid: "s-1", inv: "inv-1", callID: "fc-1"}
+	if err := g.RecordMutationVerdict(callCtx, "bash", "bash(kubectl scale deploy/api --replicas=3)", DecisionAllowOnce); err != nil {
+		t.Fatalf("RecordMutationVerdict: %v", err)
+	}
+	if err := g.CheckBash(callCtx, "kubectl scale deploy/api --replicas=3"); err != nil {
+		t.Fatalf("CheckBash after RecordMutationVerdict(allow-once) = %v, want nil", err)
+	}
+	if err := g.CheckBash(callCtx, "kubectl scale deploy/api --replicas=3"); !errors.Is(err, ErrNoPrompter) {
+		t.Fatalf("second CheckBash with same callCtx = %v, want ErrNoPrompter (authorization consumed)", err)
+	}
 }

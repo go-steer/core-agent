@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/adk/v2/agent"
@@ -44,24 +45,63 @@ func DeriveSubSessionID(parentSessionID, subName, callID string) string {
 }
 
 // SubSessionScannerFor builds a SubSessionScanner over svc that locates
-// deterministic child sessions ("<parentSID>:sub:<subName>:<callID>")
-// and returns any dangling mutating intents inside them.
+// deterministic child sessions ("<parentSID>:sub:<subName>:<callID>",
+// "<parentSID>:sub:<subName>", or "<parentSID>:sub:bg.<bgID>" for
+// background spawns) and returns any dangling mutating intents inside them.
 func SubSessionScannerFor(svc session.Service, appName, userID string, pred Predicate, subAgents map[string]bool) SubSessionScanner {
 	if svc == nil || pred == nil {
 		return nil
 	}
 	return func(ctx context.Context, parentSessionID string, spawn DanglingIntent) ([]DanglingIntent, bool) {
-		childID := DeriveSubSessionID(parentSessionID, spawn.ToolName, spawn.CallID)
-		resp, err := svc.Get(ctx, &session.GetRequest{
-			AppName:   appName,
-			UserID:    userID,
-			SessionID: childID,
-		})
-		if err != nil || resp == nil || resp.Session == nil {
-			return nil, false
+		candidates := []string{
+			DeriveSubSessionID(parentSessionID, spawn.ToolName, spawn.CallID),
 		}
-		scan := ScanDangling(resp.Session.Events(), pred, subAgents)
-		return scan.Mutating, true
+		if spawn.CallID != "" {
+			candidates = append(candidates, DeriveSubSessionID(parentSessionID, spawn.ToolName, ""))
+		}
+		for _, childID := range candidates {
+			resp, err := svc.Get(ctx, &session.GetRequest{
+				AppName:   appName,
+				UserID:    userID,
+				SessionID: childID,
+			})
+			if err == nil && resp != nil && resp.Session != nil {
+				scan := ScanDangling(resp.Session.Events(), pred, subAgents)
+				return scan.Mutating, true
+			}
+		}
+		if spawn.ToolName == "spawn_agent" || spawn.ToolName == "spawn_subagent" {
+			bgPrefix := DeriveSubSessionID(parentSessionID, "bg.", "")
+			listResp, err := svc.List(ctx, &session.ListRequest{
+				AppName: appName,
+				UserID:  userID,
+			})
+			if err == nil && listResp != nil {
+				var matched bool
+				var out []DanglingIntent
+				for _, s := range listResp.Sessions {
+					if s == nil || !strings.HasPrefix(s.ID(), bgPrefix) {
+						continue
+					}
+					getResp, getErr := svc.Get(ctx, &session.GetRequest{
+						AppName:   appName,
+						UserID:    userID,
+						SessionID: s.ID(),
+					})
+					if getErr != nil || getResp == nil || getResp.Session == nil {
+						continue
+					}
+					matched = true
+					scan := ScanDangling(getResp.Session.Events(), pred, subAgents)
+					out = append(out, scan.Mutating...)
+				}
+				if matched {
+					sortByTimestamp(out)
+					return out, true
+				}
+			}
+		}
+		return nil, false
 	}
 }
 
@@ -202,6 +242,9 @@ func MutatingCalls(ev *session.Event, pred Predicate, subAgents map[string]bool)
 				continue
 			}
 			if fr.Name == toolconfirmation.FunctionCallName {
+				continue
+			}
+			if isAmbiguousRefusalResponse(fr.Response) {
 				continue
 			}
 			completed = append(completed, fr.ID)

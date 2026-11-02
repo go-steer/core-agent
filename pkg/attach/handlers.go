@@ -229,7 +229,12 @@ func (h *handlers) routeSession(mux *http.ServeMux, method, suffix string, actio
 // the already-cancelled daemon ctx — which is pure waste when the
 // response is going to be 503, exactly while the process races its
 // termination grace period.
-func (h *handlers) routeSessionDrainGated(mux *http.ServeMux, method, suffix string, action auth.Action, fn func(http.ResponseWriter, *http.Request, *Entry)) {
+//
+// Always POST + ActionSessionWrite — every drain-gated endpoint is a
+// mutating intake route, matching routeSessionLimited.
+func (h *handlers) routeSessionDrainGated(mux *http.ServeMux, suffix string, fn func(http.ResponseWriter, *http.Request, *Entry)) {
+	const method = "POST"
+	const action = auth.ActionSessionWrite
 	tail := ""
 	if suffix != "" {
 		tail = "/" + suffix
@@ -310,8 +315,8 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// Session-scoped endpoints — each registered under both the
 	// qualified and shortcut URL forms via routeSession.
 	h.routeSession(mux, "GET", "events", auth.ActionSessionRead, h.streamEvents)
-	h.routeSessionDrainGated(mux, "POST", "inject", auth.ActionSessionWrite, h.doInject)
-	h.routeSessionDrainGated(mux, "POST", "wake", auth.ActionSessionWrite, h.doWake)
+	h.routeSessionDrainGated(mux, "inject", h.doInject)
+	h.routeSessionDrainGated(mux, "wake", h.doWake)
 	h.routeSession(mux, "POST", "interrupt", auth.ActionSessionWrite, h.doInterrupt)
 	// v1.5.0 hold surface — /pause, /resume, /agents/{name}/stop;
 	// see handlers_pause.go.

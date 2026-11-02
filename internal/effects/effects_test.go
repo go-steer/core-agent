@@ -918,3 +918,112 @@ func TestSubSessionScannerFor(t *testing.T) {
 		t.Fatalf("child dangling = %+v, want [child-mut-1]", dangling)
 	}
 }
+
+func TestAmbiguousRefusalDoesNotSelfClearDanglingConfirmationCall(t *testing.T) {
+	pred := NewPredicate(nil)
+	t0 := time.Now().Add(-2 * time.Minute)
+
+	evCall := adksession.NewEvent(context.Background(), "inv-1")
+	evCall.Timestamp = t0
+	fc := genai.NewPartFromFunctionCall("scale_up", map[string]any{"delta": 2})
+	fc.FunctionCall.ID = "fc-1"
+	evCall.Content = &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{fc}}
+
+	evPlaceholder := adksession.NewEvent(context.Background(), "inv-1")
+	evPlaceholder.Timestamp = t0.Add(time.Second)
+	frPlaceholder := genai.NewPartFromFunctionResponse("scale_up", map[string]any{"status": "awaiting_operator_approval"})
+	frPlaceholder.FunctionResponse.ID = "fc-1"
+	evPlaceholder.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{frPlaceholder}}
+	evPlaceholder.Actions.RequestedToolConfirmations = map[string]toolconfirmation.ToolConfirmation{
+		"fc-1": {Hint: "approve?"},
+	}
+
+	evAsk := adksession.NewEvent(context.Background(), "inv-1")
+	evAsk.Timestamp = t0.Add(2 * time.Second)
+	evAsk.LongRunningToolIDs = []string{"adk-conf-1"}
+	askFC := genai.NewPartFromFunctionCall(toolconfirmation.FunctionCallName, map[string]any{
+		"originalFunctionCall": map[string]any{"id": "fc-1", "name": "scale_up"},
+	})
+	askFC.FunctionCall.ID = "adk-conf-1"
+	evAsk.Content = &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{askFC}}
+
+	evApprove1 := adksession.NewEvent(context.Background(), "inv-2")
+	evApprove1.Timestamp = t0.Add(3 * time.Second)
+	approveFR1 := genai.NewPartFromFunctionResponse(toolconfirmation.FunctionCallName, map[string]any{"confirmed": true})
+	approveFR1.FunctionResponse.ID = "adk-conf-1"
+	evApprove1.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{approveFR1}}
+
+	// Simulate duplicate-dispatch refusal on a second confirmation attempt after a mid-tool crash.
+	evApprove2 := adksession.NewEvent(context.Background(), "inv-3")
+	evApprove2.Timestamp = t0.Add(4 * time.Second)
+	approveFR2 := genai.NewPartFromFunctionResponse(toolconfirmation.FunctionCallName, map[string]any{"confirmed": true})
+	approveFR2.FunctionResponse.ID = "adk-conf-1"
+	evApprove2.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{approveFR2}}
+
+	evRefusal := adksession.NewEvent(context.Background(), "inv-3")
+	evRefusal.Timestamp = t0.Add(5 * time.Second)
+	refusalFR := genai.NewPartFromFunctionResponse("scale_up", map[string]any{
+		"error":  "ambiguous_prior_effect",
+		"status": "ambiguous_prior_effect",
+	})
+	refusalFR.FunctionResponse.ID = "fc-1"
+	evRefusal.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{refusalFR}}
+
+	events := eventList{evCall, evPlaceholder, evAsk, evApprove1, evApprove2, evRefusal}
+	st := scanHistoryForRun(events, pred, nil)
+	if len(st.dangling) != 1 || st.dangling[0].CallID != "fc-1" {
+		t.Fatalf("st.dangling after refusal = %+v, want [fc-1] still dangling", st.dangling)
+	}
+	if _, completed := st.completions["fc-1"]; completed {
+		t.Fatal("st.completions[fc-1] recorded an ambiguous_prior_effect refusal as a completion")
+	}
+}
+
+func TestSubSessionScannerFor_InProcessAndBackgroundSpawns(t *testing.T) {
+	svc := sqliteService(t)
+	pred := NewPredicate(map[string]bool{"read_file": false})
+
+	// 1. In-process subagent session ("<parent>:sub:<subName>").
+	inProcSID := DeriveSubSessionID("parent-2", "single_turn", "")
+	seedDangling(t, svc, inProcSID, "write_file", "inproc-mut-1", false)
+
+	scanner := SubSessionScannerFor(svc, testApp, testUser, pred, nil)
+	dangling, ok := scanner(context.Background(), "parent-2", DanglingIntent{
+		ToolName: "single_turn",
+		CallID:   "call-99",
+	})
+	if !ok || len(dangling) != 1 || dangling[0].CallID != "inproc-mut-1" {
+		t.Fatalf("in-process sub-session scan = (%+v, %v), want ([inproc-mut-1], true)", dangling, ok)
+	}
+
+	// 2. Background subagent session ("<parent>:sub:bg.<bgID>").
+	bgSID := DeriveSubSessionID("parent-3", "bg.bg-1", "")
+	seedDangling(t, svc, bgSID, "bash", "bg-mut-1", false)
+
+	bgDangling, bgOK := scanner(context.Background(), "parent-3", DanglingIntent{
+		ToolName: "spawn_agent",
+		CallID:   "call-bg-1",
+	})
+	if !bgOK || len(bgDangling) != 1 || bgDangling[0].CallID != "bg-mut-1" {
+		t.Fatalf("background sub-session scan = (%+v, %v), want ([bg-mut-1], true)", bgDangling, bgOK)
+	}
+}
+
+func TestSyntheticTailRepairKindMetadataIgnored(t *testing.T) {
+	pred := NewPredicate(nil)
+	evCall := adksession.NewEvent(context.Background(), "inv-1")
+	fc := genai.NewPartFromFunctionCall("write_file", map[string]any{"path": "a.txt"})
+	fc.FunctionCall.ID = "fc-1"
+	evCall.Content = &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{fc}}
+
+	evRepair := adksession.NewEvent(context.Background(), "inv-1")
+	fr := genai.NewPartFromFunctionResponse("write_file", map[string]any{"error": "repaired"})
+	fr.FunctionResponse.ID = "fc-1"
+	evRepair.Content = &genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{fr}}
+	evRepair.CustomMetadata = map[string]any{"kind": "tool_tail_repair"}
+
+	scan := ScanDangling(eventList{evCall, evRepair}, pred, nil)
+	if len(scan.Mutating) != 1 || scan.Mutating[0].CallID != "fc-1" {
+		t.Fatalf("ScanDangling with kind=tool_tail_repair = %+v, want [fc-1] still mutating-dangling", scan.Mutating)
+	}
+}

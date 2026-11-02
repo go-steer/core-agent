@@ -167,8 +167,16 @@ func New(cfg Config, opts ...Option) (*plugin.Plugin, error) {
 	return plugin.New(plugin.Config{
 		Name:               PluginName,
 		BeforeToolCallback: g.beforeTool,
+		AfterToolCallback:  g.afterTool,
 		AfterRunCallback:   func(ictx agent.InvocationContext) { g.refused.forget(ictx.InvocationID()) },
 	})
+}
+
+func (g *writeGate) afterTool(ctx agent.Context, _ tool.Tool, _ map[string]any, _ map[string]any, _ error) (map[string]any, error) {
+	if g.cfg.Gate != nil {
+		g.cfg.Gate.RevokeMutationCall(ctx)
+	}
+	return nil, nil
 }
 
 func newWriteGate(cfg Config) (*writeGate, error) {
@@ -213,8 +221,24 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 
 	switch g.cfg.Policy {
 	case OnMutationApply:
+		if g.cfg.Gate != nil {
+			g.cfg.Gate.AuthorizeMutationCall(ctx)
+			err := g.cfg.Gate.CheckMutatingToolCallWithArgs(ctx, t.Name(), key, args)
+			g.cfg.Gate.RevokeMutationCall(ctx)
+			if err != nil && !errors.Is(err, permissions.ErrApprovalRequired) {
+				g.audit(ctx, t, key, "denied_by_policy", err.Error())
+				return map[string]any{
+					"error": "denied_by_policy",
+					"detail": "This call is refused by the operator's configured permission policy, not by a person who might reconsider: " + err.Error() +
+						" Do not retry this call and do not attempt the same change by another route. Report the refusal.",
+				}, nil
+			}
+		}
 		if refusal := g.permit(ctx, t, key, args); refusal != nil {
 			return refusal, nil
+		}
+		if g.cfg.Gate != nil {
+			g.cfg.Gate.AuthorizeMutationCall(ctx)
 		}
 		g.audit(ctx, t, key, "apply", "policy is apply; executing without operator approval")
 		return nil, nil
@@ -230,8 +254,8 @@ func (g *writeGate) beforeTool(ctx agent.Context, t tool.Tool, args map[string]a
 		}, nil
 	}
 
-	err := g.cfg.Gate.CheckMutatingToolCall(ctx, t.Name(), key)
-	if !errors.Is(err, permissions.ErrApprovalRequired) {
+	err := g.cfg.Gate.CheckMutatingToolCallWithArgs(ctx, t.Name(), key, args)
+	if err != nil && !errors.Is(err, permissions.ErrApprovalRequired) {
 		g.audit(ctx, t, key, "denied_by_policy", err.Error())
 		return map[string]any{
 			"error": "denied_by_policy",
@@ -392,7 +416,7 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 
 	effKey, edited := key, map[string]any(nil)
 	if v.Verdict == OutcomeEdit {
-		refusal, norm := g.prepareEdit(ctx, t, key, v)
+		refusal, norm := g.prepareEdit(ctx, t, key, args, v)
 		if refusal != nil {
 			return refusal, nil
 		}
@@ -410,6 +434,12 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 		}, nil
 	}
 
+	if d != permissions.DecisionAllowOnce {
+		if err := g.cfg.Gate.RecordMutationVerdict(ctx, t.Name(), effKey, d); err != nil {
+			return g.verdictRefusal(ctx, t, effKey, v, err), nil
+		}
+	}
+
 	var pending []Grant
 	if v.Verdict != OutcomeReject && v.Scope == ScopeChangeSet {
 		p, refusal := g.planGrants(ctx, t, effKey, args, v)
@@ -417,14 +447,6 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 			return refusal, nil
 		}
 		pending = p
-	}
-
-	if err := g.cfg.Gate.RecordMutationVerdict(ctx, t.Name(), effKey, d); err != nil {
-		return g.verdictRefusal(ctx, t, effKey, v, err), nil
-	}
-
-	if v.Scope == ScopeChangeSet {
-		g.commitGrants(ctx, t, effKey, v, pending)
 	}
 
 	running := args
@@ -437,6 +459,14 @@ func (g *writeGate) honorVerdict(ctx agent.Context, t tool.Tool, key string, arg
 
 	if refusal := g.authorizeAndPersistDecision(ctx, t, effKey, &rec); refusal != nil {
 		return refusal, nil
+	}
+
+	if err := g.cfg.Gate.RecordMutationVerdict(ctx, t.Name(), effKey, d); err != nil {
+		return g.verdictRefusal(ctx, t, effKey, v, err), nil
+	}
+
+	if v.Scope == ScopeChangeSet {
+		g.commitGrants(ctx, t, effKey, v, pending)
 	}
 
 	if edited != nil {
@@ -581,7 +611,7 @@ func revertKey(rec *CaptureRecord) string {
 	return CallKey(rec.Revert.Tool, rec.Revert.Arguments)
 }
 
-func (g *writeGate) prepareEdit(ctx agent.Context, t tool.Tool, key string, v Verdict) (refusal, edited map[string]any) {
+func (g *writeGate) prepareEdit(ctx agent.Context, t tool.Tool, key string, args map[string]any, v Verdict) (refusal, edited map[string]any) {
 	if v.Approver == "" {
 		const detail = "an edited verdict arrived with no approver; mast will not run operator-authored arguments it cannot attribute"
 		g.audit(ctx, t, key, "edit_unattributed", detail)
@@ -600,9 +630,18 @@ func (g *writeGate) prepareEdit(ctx agent.Context, t tool.Tool, key string, v Ve
 				". The call was NOT made, with either the original or the edited arguments. Report this and stop.",
 		}, nil
 	}
+	if args == nil && len(norm) > 0 {
+		const detail = "the original tool call arrived with a nil argument map, which ADK passes by value to BeforeToolCallback and cannot be populated in place"
+		g.audit(ctx, t, key, "edit_refused", detail)
+		return map[string]any{
+			"error": "edit_refused",
+			"detail": "The operator's edited arguments could not be applied because the original tool call had a nil argument map. " +
+				"The call was NOT made, with either the original or the edited arguments. Reject this call and ask the model to propose it with explicit arguments.",
+		}, nil
+	}
 	editedKey := CallKey(t.Name(), norm)
-	err = g.cfg.Gate.CheckMutatingToolCall(ctx, t.Name(), editedKey)
-	if !errors.Is(err, permissions.ErrApprovalRequired) {
+	err = g.cfg.Gate.CheckMutatingToolCallWithArgs(ctx, t.Name(), editedKey, norm)
+	if err != nil && !errors.Is(err, permissions.ErrApprovalRequired) {
 		g.audit(ctx, t, editedKey, "denied_by_policy", err.Error())
 		return map[string]any{
 			"error": "denied_by_policy",

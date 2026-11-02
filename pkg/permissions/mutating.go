@@ -18,7 +18,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
+
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // ToolClass classifies a tool's side-effect posture for the durable
@@ -160,6 +163,7 @@ var builtinToolClasses = map[string]ToolClass{
 	"list_agents":            ClassReadOnly,
 	"read_agent_logs":        ClassReadOnly,
 	"request_operator_input": ClassReadOnly,
+	"sciontool_status":       ClassReadOnly,
 
 	// Spawning tools (synchronous or background sub-runs whose inner
 	// mutating calls are governed by the sub-run's own gate/outbox).
@@ -180,6 +184,7 @@ var builtinToolClasses = map[string]ToolClass{
 	"alert":               ClassMutating,
 	"spawn_remote_agent":  ClassMutating,
 	"invoke_remote_agent": ClassMutating,
+	"call_peer":           ClassMutating,
 	"stop_subagent":       ClassMutating,
 	"stop_agent":          ClassMutating,
 	"send_message":        ClassMutating,
@@ -287,11 +292,25 @@ func (g *Gate) MutatingMode() MutatingMode {
 // What does apply, in order: the plan-first pre-check, the deny policy,
 // and ModePlan, under which nothing executes at all.
 func (g *Gate) CheckMutatingToolCall(ctx context.Context, toolName, key string) error {
+	return g.CheckMutatingToolCallWithArgs(ctx, toolName, key, nil)
+}
+
+// CheckMutatingToolCallWithArgs applies policy and tool-specific safety
+// pre-checks (bash denylist, credential file protection, control-plane
+// write refusal, bash search gate, path-scope deny rules, and MCP deny
+// patterns) to a mutating tool call before parking or executing (#1447).
+func (g *Gate) CheckMutatingToolCallWithArgs(ctx context.Context, toolName, key string, args map[string]any) error {
 	g = g.resolveSessionGate(ctx)
 	if err := g.planFirstDenial(toolName, false); err != nil {
 		return err
 	}
+	if err := g.checkMutatingToolSpecific(ctx, toolName, key, args); err != nil {
+		return err
+	}
 	if g.matchPolicy(toolName, key) == OutcomeDeny {
+		return fmt.Errorf("%s denied by config policy: %q", toolName, key)
+	}
+	if g.matchPolicy("mcp", toolName+" "+key) == OutcomeDeny || g.matchPolicy("mcp", toolName) == OutcomeDeny {
 		return fmt.Errorf("%s denied by config policy: %q", toolName, key)
 	}
 	if g.Mode() == ModePlan {
@@ -304,6 +323,204 @@ func (g *Gate) CheckMutatingToolCall(ctx context.Context, toolName, key string) 
 		return fmt.Errorf("%s denied: mutating tool execution disabled in 'dry_run' mode (%q)", toolName, key)
 	}
 	return fmt.Errorf("%w (tool=%s detail=%q)", ErrApprovalRequired, toolName, key)
+}
+
+func (g *Gate) checkMutatingToolSpecific(ctx context.Context, toolName, key string, args map[string]any) error {
+	switch toolName {
+	case "bash":
+		cmd := strings.TrimSpace(firstStringFromMap(args, "command"))
+		if cmd == "" {
+			cmd = strings.TrimSpace(key)
+		}
+		if cmd == "" {
+			return nil
+		}
+		if err := g.credentialBashDenial(cmd); err != nil {
+			return err
+		}
+		if denied, reason := IsBashDenied(cmd); denied {
+			return fmt.Errorf("bash refused: %s", reason)
+		}
+		if g.bashSearchGate == config.BashSearchGateEnforce {
+			if binary, native, hit := SearchShapedCommand(cmd); hit && g.nativeRegistered(native) {
+				return fmt.Errorf("bash refused: %s", SearchGateMessage(binary, native))
+			}
+		}
+		if g.matchPolicy("bash", cmd) == OutcomeDeny {
+			return fmt.Errorf("bash denied by config policy: %q", cmd)
+		}
+	case "write_file", "edit_file", "delete_file":
+		path := firstStringFromMap(args, "path", "file_path")
+		if path == "" && args == nil {
+			path = key
+		}
+		if path == "" {
+			return nil
+		}
+		if err := g.credentialFileDenial(toolName, path); err != nil {
+			return err
+		}
+		if resolved, err := ResolvePath(path); err == nil && (isControlPlanePath(resolved) || g.isApproverInstructions(resolved)) {
+			if g.prompter == nil {
+				return fmt.Errorf("%s denied: %q is a privilege-bearing control-plane file (%w); it can only be modified with an explicit interactive approval, which is unavailable in this session", toolName, path, ErrControlPlaneWrite)
+			}
+		}
+		for _, candidate := range mutatingPathCandidates(path) {
+			if g.matchPolicy(toolName, candidate) == OutcomeDeny || g.matchPolicy("path_scope", candidate) == OutcomeDeny {
+				return fmt.Errorf("%s denied by config policy: %q", toolName, path)
+			}
+		}
+		if g.scope != nil {
+			access, err := g.scope.AccessFor(path)
+			if err != nil {
+				return err
+			}
+			if !access.Allows(AccessWrite) && (g.Mode() == ModeAllow || g.MutatingMode() == MutatingModeApply || g.isPolicyApplyAuth(ctx)) {
+				return fmt.Errorf("%s denied: path %q is outside scope and current mode does not prompt", toolName, path)
+			}
+		}
+	case "fetch_url":
+		rawURL := firstStringFromMap(args, "url")
+		if rawURL == "" && args == nil {
+			rawURL = key
+		}
+		if rawURL != "" && g.matchPolicy("fetch_url", rawURL) == OutcomeDeny {
+			return fmt.Errorf("fetch_url denied by config policy: %q", rawURL)
+		}
+	}
+	return nil
+}
+
+func firstStringFromMap(m map[string]any, keys ...string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+type mutationCallContext interface {
+	SessionID() string
+	InvocationID() string
+	FunctionCallID() string
+}
+
+func mutationCallKey(ctx context.Context) (key string, ok bool) {
+	if ctx == nil {
+		return "", false
+	}
+	tc, matches := ctx.(mutationCallContext)
+	if !matches {
+		return "", false
+	}
+	defer func() {
+		if recover() != nil {
+			key, ok = "", false
+		}
+	}()
+	callID := tc.FunctionCallID()
+	if callID == "" {
+		return "", false
+	}
+	return tc.SessionID() + "|" + tc.InvocationID() + "|" + callID, true
+}
+
+func mutatingPathCandidates(path string) []string {
+	out := []string{path}
+	if abs, err := filepath.Abs(path); err == nil && abs != path {
+		out = append(out, abs)
+	}
+	if resolved, err := ResolvePath(path); err == nil && resolved != path {
+		out = append(out, resolved)
+	}
+	return out
+}
+
+// AuthorizeMutationCall records that the durable write gate has authorized
+// the current tool call so the inner per-tool permission gate does not
+// double-prompt or fail with ErrNoPrompter on headless runs (#1447).
+func (g *Gate) AuthorizeMutationCall(ctx context.Context) {
+	g.authorizeMutationCall(ctx, false)
+}
+
+// RevokeMutationCall removes any unconsumed mutation authorization for ctx.
+func (g *Gate) RevokeMutationCall(ctx context.Context) {
+	if g == nil {
+		return
+	}
+	g = g.resolveSessionGate(ctx)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.authorizedMutations) == 0 {
+		return
+	}
+	k, ok := mutationCallKey(ctx)
+	if !ok {
+		return
+	}
+	delete(g.authorizedMutations, k)
+}
+
+func (g *Gate) authorizeMutationCall(ctx context.Context, operatorApproved bool) {
+	if g == nil {
+		return
+	}
+	g = g.resolveSessionGate(ctx)
+	k, ok := mutationCallKey(ctx)
+	if !ok {
+		return
+	}
+	g.mu.Lock()
+	if g.authorizedMutations == nil {
+		g.authorizedMutations = make(map[string]bool)
+	}
+	g.authorizedMutations[k] = operatorApproved
+	g.mu.Unlock()
+}
+
+func (g *Gate) isPolicyApplyAuth(ctx context.Context) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.authorizedMutations) == 0 {
+		return false
+	}
+	k, ok := mutationCallKey(ctx)
+	if !ok {
+		return false
+	}
+	operatorApproved, exists := g.authorizedMutations[k]
+	return exists && !operatorApproved
+}
+
+func (g *Gate) consumeMutationAuth(ctx context.Context, requireOperatorApproval bool) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.authorizedMutations) == 0 {
+		return false
+	}
+	k, ok := mutationCallKey(ctx)
+	if !ok {
+		return false
+	}
+	operatorApproved, ok := g.authorizedMutations[k]
+	if !ok {
+		return false
+	}
+	delete(g.authorizedMutations, k)
+	if requireOperatorApproval && !operatorApproved {
+		return false
+	}
+	return true
 }
 
 // RecordMutationVerdict closes the loop CheckMutatingToolCall opened: an
@@ -326,6 +543,7 @@ func (g *Gate) RecordMutationVerdict(ctx context.Context, toolName, key string, 
 		return fmt.Errorf("%s denied by operator: %q", toolName, key)
 	case DecisionAllowOnce:
 		g.recordApproval(toolName, key, d, "")
+		g.authorizeMutationCall(ctx, true)
 		return nil
 	default:
 		return fmt.Errorf("%w: %s for mutating tool %s (%q); only allow-once is admissible for a mutation", ErrGrantScopeRefused, d, toolName, key)

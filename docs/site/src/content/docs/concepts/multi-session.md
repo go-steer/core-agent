@@ -85,7 +85,7 @@ The startup summary counts them too (`multi-session auth: bearer_table, 3 users 
 
 Daemons from before this change reject a `token_sha256` row as an unknown field. Hash the table only once every daemon that reads it has been upgraded.
 
-**File-mode requirement:** mode `0600` or stricter (`0400`), or `0640`/`0440` when the owning group is one the daemon process belongs to. Any other-bit, and group **write** or **execute** in every case, is rejected. Failing this is a startup error, not a warning — bearer tokens deserve the same posture as a private SSH key.
+**File-mode requirement:** when every row in a `users.json` table uses `token_sha256` (no plaintext `token` rows), mode `0644` or stricter (`0640`, `0600`, `0444`, `0400`) is accepted because reading the file yields no usable credential — allowing a hashed `users.json` to be staged via an AX `Workspace` `spec.files` entry or a Kubernetes ConfigMap ([#1483](https://github.com/go-steer/core-agent/issues/1483), [#1485](https://github.com/go-steer/core-agent/issues/1485)). Whenever any row carries a plaintext `token`, mode `0600` or stricter (`0400`), or `0640`/`0440` when the owning group is one the daemon process belongs to, is required. Group **write** or **execute** and world **write** or **execute** are rejected in every case. Failing this is a startup error, not a warning — bearer tokens deserve the same posture as a private SSH key.
 
 The group-read carve-out exists because Kubernetes leaves no alternative. `fsGroup` is the standard way to give a non-root pod read access to a Secret volume, and it unconditionally sets group-read on every file in that volume — so a Secret mounted at `defaultMode: 0400` arrives as `0440` and a blanket rejection fails by construction. The membership test is the whole security argument: group-read widens access to members of the owning group and to nobody else, so when the daemon is already one of those members the bit grants no read it did not already hold. Supplementary groups count, because `fsGroup` without `runAsGroup` lands the gid there rather than on the primary. When the daemon is *not* a member, the load still fails, and the error names the gid on both sides:
 
@@ -120,7 +120,7 @@ A daemon with a single client credential, its attach token, can skip the table f
 
 A request presenting the token from `--attach-token` (or `--attach-token-file`) authenticates as `switchboard`. Sessions work as with a table: `POST /sessions` creates sessions it owns, ACLs apply, and `admin_identities` can name it. The row holds the token's SHA-256, like a `token_sha256` row. It is meant for deployments with nowhere to keep a `0600` file, such as an [AX task](https://github.com/go-steer/core-agent/tree/main/examples/deploy/ax), whose environment and files end up in the sandbox's template and snapshots.
 
-`token_identity` and `table_file` are mutually exclusive, and the daemon refuses to start an attach listener with `token_identity` but no attach token. The table has one row, so it attributes every turn to that identity. `proxy_identities` adds nothing here: a caller asserted through `X-Asserted-Caller` has to be a provisioned identity, and the only one is the token's own. Attributing turns to the people a proxy speaks for needs a `table_file` that lists them.
+`token_identity` and `table_file` are mutually exclusive, and the daemon refuses to start an attach listener with `token_identity` but no attach token. By default the one row attributes every turn to that identity. When `proxy_identities` includes the `token_identity` and `proxy_unprovisioned: true` is set (for example `"proxy_identities": ["switchboard"], "proxy_unprovisioned": true`), that proxy caller may also assert downstream end-user identities via `X-Asserted-Caller` without pre-provisioning them in a `users.json` table; unprovisioned asserted identities receive no labels and no admin privileges ([#1485](https://github.com/go-steer/core-agent/issues/1485)). Single-user daemons that pass `--attach-token` without enabling `multi_session` also serve `POST /sessions` (stamping sessions with `default_identity`, `"anon"` by default).
 
 ### Keeping the table away from the agent
 
@@ -219,7 +219,7 @@ The `proxy_identities` allowlist is what makes this safe — a compromised bot c
 
 Rules:
 - Default is no proxy capability. Identities not in `proxy_identities` get 401 if they try to use `X-Asserted-Caller`.
-- The asserted identity must exist in the user table. Bots can't invent identities — only assert ones the operator provisioned.
+- By default (`proxy_unprovisioned: false` with `table_file`), the asserted identity must exist in the user table (`401 "asserted-caller header rejected: identity is not provisioned"`). Set `"proxy_unprovisioned": true` alongside `proxy_identities` (or use `auth.token_identity` with `proxy_identities`) when the front-door proxy is the source of truth for end-user identities (for example a Slack or Google Chat switchboard asserting `U12345` or `users/1234567890`); unprovisioned asserted callers get no labels and never inherit `admin_identities` privileges, and malformed header values (whitespace, control characters, invalid UTF-8, or `> 256` bytes) are rejected with `401 "asserted-caller header rejected: identity is invalid"`.
 - Asserted-caller headers from non-proxy callers are logged (forensic trail) and rejected.
 
 ---
@@ -274,7 +274,7 @@ Configuration:
 
 The overlay loader runs the same `@include` + `AGENTS.d/` semantics as the project-scope loader (see [Instruction loader](../sessions/#instruction-loader)). Missing overlay directories are silently skipped — provision overlays for the callers who need them; the rest fall back to the daemon-wide instructions.
 
-**Path safety:** Caller identities containing `/`, `\`, or `..` are rejected at load time. Email-shaped (`alice@example.com`) and service-account-marker (`sa:slack-bot`) identities pass.
+**Path safety:** Caller identities containing `/`, `\`, or `..` (such as Google Chat's `users/1234567890`) are rejected by `instruction.LoadForSession` and treated by session creation as having no per-caller overlay. Email-shaped (`alice@example.com`) and service-account-marker (`sa:slack-bot`) identities map to `<users_dir>/<identity>/.agents/`.
 
 ---
 

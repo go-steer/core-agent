@@ -19,6 +19,8 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Authenticator extracts a Caller from an inbound HTTP request, or
@@ -111,6 +113,11 @@ type BearerTokenAuth struct {
 	byIdentity map[string]Caller // identity → Caller (for asserted-caller validation)
 	// proxyAllowed is the operator's X-Asserted-Caller allowlist.
 	proxyAllowed map[string]struct{}
+	// allowUnprovisionedProxy permits a proxy caller to assert any
+	// well-formed identity via LookupIdentity even when there is no
+	// users.json row for that identity (attach.multi_session.proxy_unprovisioned,
+	// #1485).
+	allowUnprovisionedProxy bool
 }
 
 // bearerRow is one credential the authenticator accepts.
@@ -158,6 +165,22 @@ func NewBearerTokenAuth(users []User, adminIdentities, proxyIdentities []string)
 		byIdentity:   byIdentity,
 		proxyAllowed: proxySet,
 	}
+}
+
+// WithUnprovisionedProxyCallers allows a proxy caller (CanProxyAs) to
+// assert any well-formed caller identity via X-Asserted-Caller even when
+// that identity is not pre-provisioned in the static user table.
+// Unprovisioned asserted identities receive no Labels and never receive
+// Admin (Admin comes only from a provisioned row, #1485).
+func (b *BearerTokenAuth) WithUnprovisionedProxyCallers() *BearerTokenAuth {
+	b.allowUnprovisionedProxy = true
+	return b
+}
+
+// AllowsUnprovisionedProxy reports whether WithUnprovisionedProxyCallers
+// is enabled on this authenticator.
+func (b *BearerTokenAuth) AllowsUnprovisionedProxy() bool {
+	return b.allowUnprovisionedProxy
 }
 
 // Authenticate resolves the request's bearer token against the table.
@@ -211,13 +234,41 @@ func (b *BearerTokenAuth) HasIdentity(identity string) bool {
 	return ok
 }
 
+// MaxCallerIdentityLen bounds the byte length of an asserted or
+// configured caller identity.
+const MaxCallerIdentityLen = 256
+
 // LookupIdentity returns the Caller registered for the given identity,
-// or zero-Caller + false when the identity is not in the table. Used
-// by the proxy path to materialize the asserted Caller (preserving
-// Labels and Admin flag from the user table entry).
+// or zero-Caller + false when the identity is not in the table (unless
+// WithUnprovisionedProxyCallers is enabled, in which case any
+// well-formed identity is materialized with no Labels and Admin: false).
+// Used by the proxy path to materialize the asserted Caller (preserving
+// Labels and Admin flag from a provisioned user table entry).
 func (b *BearerTokenAuth) LookupIdentity(identity string) (Caller, bool) {
-	c, ok := b.byIdentity[identity]
-	return c, ok
+	if c, ok := b.byIdentity[identity]; ok {
+		return c, true
+	}
+	if !b.allowUnprovisionedProxy || !IsValidCallerIdentity(identity) {
+		return Caller{}, false
+	}
+	return Caller{Identity: identity}, true
+}
+
+// IsValidCallerIdentity reports whether identity is a valid UTF-8
+// string of 1..MaxCallerIdentityLen bytes free of whitespace and
+// control characters. Slash-delimited resource names such as Google
+// Chat's "users/1234567890" are permitted; the per-caller users_dir
+// overlay handles path confinement separately.
+func IsValidCallerIdentity(identity string) bool {
+	if identity == "" || len(identity) > MaxCallerIdentityLen || !utf8.ValidString(identity) {
+		return false
+	}
+	for _, r := range identity {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // extractToken pulls the bearer token from either the X-Attach-Token

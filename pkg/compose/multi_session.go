@@ -16,6 +16,7 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,6 +84,9 @@ func BuildMultiSessionAuthnWithToken(cfg config.MultiSessionConfig, attachToken 
 	if !cfg.Enabled {
 		return nil, defaultCaller, nil
 	}
+	if cfg.ProxyUnprovisioned && len(cfg.ProxyIdentities) == 0 {
+		return nil, defaultCaller, errors.New("proxy_unprovisioned requires proxy_identities")
+	}
 
 	switch cfg.Auth.Kind {
 	case "", config.MultiSessionAuthKindBearerTable:
@@ -122,7 +126,11 @@ func buildBearerTableAuthn(cfg config.MultiSessionConfig, warn io.Writer) (auth.
 	if w := PlaintextTokenWarning(cfg.Auth.TableFile, users.PlaintextIdentities()); w != "" {
 		fmt.Fprintln(warn, w)
 	}
-	return auth.NewBearerTokenAuth(users.Users, cfg.AdminIdentities, cfg.ProxyIdentities), nil
+	authn := auth.NewBearerTokenAuth(users.Users, cfg.AdminIdentities, cfg.ProxyIdentities)
+	if cfg.ProxyUnprovisioned {
+		authn = authn.WithUnprovisionedProxyCallers()
+	}
+	return authn, nil
 }
 
 // buildTokenIdentityAuthn builds the one-row bearer table
@@ -131,6 +139,9 @@ func buildBearerTableAuthn(cfg config.MultiSessionConfig, warn io.Writer) (auth.
 // with, and serving multi-session with no credential at all is the
 // silent-and-permissive failure this builder exists to refuse.
 func buildTokenIdentityAuthn(cfg config.MultiSessionConfig, attachToken string) (auth.Authenticator, error) {
+	if !auth.IsValidCallerIdentity(cfg.Auth.TokenIdentity) {
+		return nil, fmt.Errorf("auth.token_identity %q must not contain whitespace or control characters", cfg.Auth.TokenIdentity)
+	}
 	if attachToken == "" {
 		return nil, fmt.Errorf("auth.token_identity %q needs the attach token (--attach-token or --attach-token-file)", cfg.Auth.TokenIdentity)
 	}
@@ -138,7 +149,11 @@ func buildTokenIdentityAuthn(cfg config.MultiSessionConfig, attachToken string) 
 		return nil, fmt.Errorf("auth.token_identity and auth.table_file are mutually exclusive")
 	}
 	users := []auth.User{{Identity: cfg.Auth.TokenIdentity, TokenSHA256: auth.HashToken(attachToken)}}
-	return auth.NewBearerTokenAuth(users, cfg.AdminIdentities, cfg.ProxyIdentities), nil
+	authn := auth.NewBearerTokenAuth(users, cfg.AdminIdentities, cfg.ProxyIdentities)
+	if cfg.ProxyUnprovisioned || len(cfg.ProxyIdentities) > 0 {
+		authn = authn.WithUnprovisionedProxyCallers()
+	}
+	return authn, nil
 }
 
 // PlaintextTokenWarning returns the startup warning for a bearer table
@@ -547,12 +562,20 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 
 	// Per-caller instruction overlay: the operator's
 	// <UsersDir>/<caller.Identity>/.agents/ tree layered on
-	// top of project + user scopes. Empty UsersDir or unknown
-	// caller falls through to the daemon-wide instruction stack.
+	// top of project + user scopes. Empty UsersDir, unknown
+	// caller, or an identity that cannot map to a single directory
+	// under UsersDir (e.g. Google Chat's "users/1234567890") falls
+	// through to the daemon-wide instruction stack.
 	instr, err := instruction.LoadForSession(deps.ProjectRoot, deps.UserRoot, caller.Identity, deps.UsersDir,
 		instruction.WithHomeAgentsRoot(deps.HomeAgentsDir),
 		instruction.WithContentRoots(deps.ContentRoots),
 		instruction.WithInterpolator(deps.EnvInterp))
+	if errors.Is(err, instruction.ErrInvalidCallerIdentity) {
+		instr, err = instruction.LoadForSession(deps.ProjectRoot, deps.UserRoot, "", "",
+			instruction.WithHomeAgentsRoot(deps.HomeAgentsDir),
+			instruction.WithContentRoots(deps.ContentRoots),
+			instruction.WithInterpolator(deps.EnvInterp))
+	}
 	if err != nil {
 		broker.Close()
 		return nil, nil, fmt.Errorf("load per-caller instructions: %w", err)

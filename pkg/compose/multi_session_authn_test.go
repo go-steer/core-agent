@@ -153,6 +153,23 @@ func TestBuildMultiSessionAuthn_BearerTable(t *testing.T) {
 			if c, err := authenticate(t, authn, strings.Repeat("f", 64)); err == nil {
 				t.Errorf("unknown token authenticated as %+v, want an error", c)
 			}
+
+			// Without ProxyUnprovisioned, table_file rejects unprovisioned
+			// LookupIdentity; with ProxyUnprovisioned, it allows non-admin
+			// unprovisioned identities (#1485).
+			bt := authn.(*auth.BearerTokenAuth)
+			if _, ok := bt.LookupIdentity("users/1234567890"); ok {
+				t.Error("table_file without ProxyUnprovisioned accepted unprovisioned LookupIdentity")
+			}
+			cfg.ProxyUnprovisioned = true
+			authnUnprov, _, err := BuildMultiSessionAuthn(cfg)
+			if err != nil {
+				t.Fatalf("BuildMultiSessionAuthn(ProxyUnprovisioned): %v", err)
+			}
+			btUnprov := authnUnprov.(*auth.BearerTokenAuth)
+			if u, ok := btUnprov.LookupIdentity("users/1234567890"); !ok || u.Identity != "users/1234567890" || u.Admin {
+				t.Errorf("table_file with ProxyUnprovisioned: LookupIdentity(users/1234567890) = (%+v, %v)", u, ok)
+			}
 		})
 	}
 }
@@ -239,6 +256,23 @@ func TestBuildSessionFactory(t *testing.T) {
 	}
 	if cancelFirst == nil || cancelSecond == nil {
 		t.Error("factory must return a cancel so eviction stops the per-session wake loop")
+	}
+
+	// Google Chat caller identity ("users/1234567890") with UsersDir set
+	// must skip the per-caller overlay rather than failing session creation (#1485).
+	factoryWithUsersDir := BuildSessionFactory(SessionFactoryDeps{
+		DaemonCtx: ctx,
+		Model:     stubLLM{},
+		Template:  permissions.New(permissions.Options{}),
+		UsersDir:  t.TempDir(),
+	})
+	gchatReg, cancelGChat, err := factoryWithUsersDir(ctx, auth.Caller{Identity: "users/1234567890"})
+	if err != nil {
+		t.Fatalf("factory with UsersDir and Google Chat identity: %v", err)
+	}
+	t.Cleanup(cancelGChat)
+	if gchatReg.SessionID() == "" {
+		t.Error("Google Chat session id is empty")
 	}
 }
 
@@ -385,14 +419,35 @@ func TestBuildMultiSessionAuthnWithToken_TokenIdentity(t *testing.T) {
 		t.Error("proxy_identities did not reach the token's identity")
 	}
 
-	// Admin applies the same way.
-	cfg.AdminIdentities = []string{"switchboard"}
+	// Admin applies to the provisioned row; unprovisioned proxy assertions
+	// on token_identity (or when ProxyUnprovisioned is set) never receive
+	// Admin (#1485).
+	cfg.AdminIdentities = []string{"switchboard", "ops@example.com"}
 	authn, _, err = BuildMultiSessionAuthnWithToken(cfg, botToken)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c, err := authenticate(t, authn, botToken); err != nil || !c.Admin {
 		t.Errorf("admin_identities: caller %+v, %v", c, err)
+	}
+	bt, ok := authn.(*auth.BearerTokenAuth)
+	if !ok {
+		t.Fatalf("authn = %T, want *auth.BearerTokenAuth", authn)
+	}
+	if u, ok := bt.LookupIdentity("U12345"); !ok || u.Identity != "U12345" || u.Admin || len(u.Labels) != 0 {
+		t.Errorf("LookupIdentity(U12345) = (%+v, %v), want non-admin U12345 with no labels", u, ok)
+	}
+	// Google Chat resource name ("users/1234567890") is accepted (#1485).
+	if gchat, ok := bt.LookupIdentity("users/1234567890"); !ok || gchat.Identity != "users/1234567890" || gchat.Admin {
+		t.Errorf("LookupIdentity(users/1234567890) = (%+v, %v), want non-admin users/1234567890", gchat, ok)
+	}
+	if adm, ok := bt.LookupIdentity("ops@example.com"); !ok || adm.Identity != "ops@example.com" || adm.Admin {
+		t.Errorf("LookupIdentity(ops@example.com) = (%+v, %v), unprovisioned identity must NOT receive Admin", adm, ok)
+	}
+	for _, bad := range []string{"", " U12345", "U123 45", "U123\n45", string([]byte{0xff, 0xfe}), strings.Repeat("a", auth.MaxCallerIdentityLen+1)} {
+		if c, ok := bt.LookupIdentity(bad); ok {
+			t.Errorf("LookupIdentity(%q) = (%+v, true), want false", bad, c)
+		}
 	}
 }
 
@@ -401,6 +456,22 @@ func TestBuildMultiSessionAuthnWithToken_Refusals(t *testing.T) {
 
 	cfg := config.MultiSessionConfig{Enabled: true}
 	cfg.Auth.TokenIdentity = "switchboard"
+
+	// ProxyUnprovisioned without ProxyIdentities: refused.
+	unprovNoProxy := cfg
+	unprovNoProxy.ProxyUnprovisioned = true
+	if _, _, err := BuildMultiSessionAuthnWithToken(unprovNoProxy, botToken); err == nil || !strings.Contains(err.Error(), "proxy_unprovisioned requires proxy_identities") {
+		t.Errorf("proxy_unprovisioned without proxy_identities: err = %v", err)
+	}
+
+	// Whitespace or control characters in token_identity: refused.
+	for _, bad := range []string{" switchboard", "switchboard ", "switch board", "switch\tboard", "switch\nboard", string([]byte{0xff, 0xfe}), strings.Repeat("a", auth.MaxCallerIdentityLen+1)} {
+		badCfg := cfg
+		badCfg.Auth.TokenIdentity = bad
+		if _, _, err := BuildMultiSessionAuthnWithToken(badCfg, botToken); err == nil || !strings.Contains(err.Error(), "whitespace or control") {
+			t.Errorf("token_identity %q: err = %v, want whitespace/control error", bad, err)
+		}
+	}
 
 	// No token: multi-session with no credential at all is refused,
 	// never served as if the table were empty.

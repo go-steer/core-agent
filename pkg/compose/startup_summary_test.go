@@ -480,13 +480,14 @@ func TestFormatAuthLine(t *testing.T) {
 			cfg: &config.Config{
 				Attach: config.AttachConfig{
 					MultiSession: config.MultiSessionConfig{
-						Enabled:         true,
-						Auth:            config.MultiSessionAuthConfig{TokenIdentity: "switchboard"},
-						ProxyIdentities: []string{"switchboard"},
+						Enabled:            true,
+						Auth:               config.MultiSessionAuthConfig{TokenIdentity: "switchboard"},
+						ProxyIdentities:    []string{"switchboard"},
+						ProxyUnprovisioned: true,
 					},
 				},
 			},
-			wantSubstr: []string{`multi-session auth: bearer_table, 1 user (the attach token, as "switchboard")`, "proxy=[switchboard]"},
+			wantSubstr: []string{`multi-session auth: bearer_table, 1 user (the attach token, as "switchboard")`, "proxy=[switchboard] (unprovisioned allowed)"},
 		},
 		{
 			name: "enabled but no table file — user count unknown",

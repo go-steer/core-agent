@@ -17,6 +17,7 @@ package attach
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-steer/core-agent/v3/pkg/auth"
@@ -110,5 +111,50 @@ func TestCallerMiddleware_FailedAuthFallsBackInAlpha1(t *testing.T) {
 	}
 	if got.Identity != "anon" {
 		t.Errorf("α.1 fallback: got %q, want %q", got.Identity, "anon")
+	}
+}
+
+func TestCallerMiddleware_RejectsInvalidAssertedCallerIdentity(t *testing.T) {
+	t.Parallel()
+	authn := auth.NewBearerTokenAuth([]auth.User{
+		{Identity: "switchboard", Token: "tok_switchboard"},
+	}, nil, []string{"switchboard"}).WithUnprovisionedProxyCallers()
+
+	cfg := callerMiddlewareConfig{
+		authenticator:         authn,
+		enforceAuthentication: true,
+		proxyHeader:           "X-Asserted-Caller",
+	}
+	var got auth.Caller
+	var saw bool
+	h := callerMiddlewareWithConfig(cfg, captureCallerHandler(&got, &saw))
+
+	for _, bad := range []string{
+		"alice bob",
+		"alice\tbob",
+		string([]byte{0xff, 0xfe}),
+		strings.Repeat("a", auth.MaxCallerIdentityLen+1),
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("Authorization", "Bearer tok_switchboard")
+		r.Header.Set("X-Asserted-Caller", bad)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("bad asserted identity %q: status = %d, want 401", bad, rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "asserted-caller header rejected: identity is invalid") {
+			t.Errorf("bad asserted identity %q: body = %q, want invalid-identity reason", bad, rr.Body.String())
+		}
+	}
+
+	// Google Chat resource names ("users/1234567890") must be accepted (#1485).
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer tok_switchboard")
+	r.Header.Set("X-Asserted-Caller", "users/1234567890")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, r)
+	if rr.Code != http.StatusOK || !saw || got.Identity != "users/1234567890" || got.Admin {
+		t.Errorf("Google Chat identity users/1234567890: code=%d saw=%v got=%+v", rr.Code, saw, got)
 	}
 }

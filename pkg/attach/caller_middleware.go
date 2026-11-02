@@ -272,6 +272,9 @@ func resolveProxyAssertion(authn auth.Authenticator, requester auth.Caller, asse
 	if !proxer.CanProxyAs(requester) {
 		return auth.Caller{}, "", auth.ErrAssertedCallerForbidden
 	}
+	if !auth.IsValidCallerIdentity(asserted) {
+		return auth.Caller{}, "", auth.ErrAssertedCallerInvalid
+	}
 	// Materialize the asserted Caller from the provisioned table so
 	// downstream code sees the same Labels / Admin flag as a direct
 	// auth would have. For authenticators that don't expose a
@@ -302,6 +305,8 @@ func writeUnauthorized(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, auth.ErrAssertedCallerForbidden):
 		msg = "asserted-caller header rejected: caller is not permitted to proxy"
+	case errors.Is(err, auth.ErrAssertedCallerInvalid):
+		msg = "asserted-caller header rejected: identity is invalid"
 	case errors.Is(err, auth.ErrAssertedCallerUnknown):
 		msg = "asserted-caller header rejected: identity is not provisioned"
 	case errors.Is(err, auth.ErrUnauthenticated):

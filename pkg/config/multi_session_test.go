@@ -212,6 +212,35 @@ func TestMultiSessionConfig_Validate_TokenIdentity(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "whitespace") {
 		t.Errorf("padded identity: err = %v, want a whitespace error", err)
 	}
+	for _, bad := range []string{"ship mind", "ship\tmind", "ship\nmind", string([]byte{0xff, 0xfe}), strings.Repeat("a", 257)} {
+		err = cfg(MultiSessionAuthConfig{TokenIdentity: bad}).Validate()
+		if err == nil || !strings.Contains(err.Error(), "whitespace or control characters") {
+			t.Errorf("token_identity %q: err = %v, want whitespace/control error", bad, err)
+		}
+	}
+}
+
+func TestMultiSessionConfig_Validate_ProxyUnprovisionedRequiresProxyIdentities(t *testing.T) {
+	t.Parallel()
+	c := &Config{
+		Version: SchemaVersion,
+		Model:   ModelConfig{Name: "claude-opus-4-7"},
+		Attach: AttachConfig{
+			MultiSession: MultiSessionConfig{
+				Enabled:            true,
+				Auth:               MultiSessionAuthConfig{TokenIdentity: "switchboard"},
+				ProxyUnprovisioned: true,
+			},
+		},
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "proxy_unprovisioned requires proxy_identities") {
+		t.Fatalf("proxy_unprovisioned without proxy_identities: err = %v, want requires proxy_identities error", err)
+	}
+	c.Attach.MultiSession.ProxyIdentities = []string{"switchboard"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("proxy_unprovisioned with proxy_identities must validate: %v", err)
+	}
 }
 
 func TestMultiSessionConfig_TokenIdentityRoundTrip(t *testing.T) {

@@ -35,6 +35,30 @@ func checkUsersFileMode(path string, info os.FileInfo) error {
 	return validateUsersFileMode(path, info.Mode().Perm(), fileGID(info), processInGroup)
 }
 
+// checkDigestOnlyUsersFileMode enforces the permission policy on a
+// users file whose rows carry only SHA-256 digests (no plaintext
+// tokens). Reading the file yields nothing a client can authenticate
+// with (#1213, #1483), so group/world read bits (such as 0644 from an
+// AX Workspace spec.files entry or a Kubernetes ConfigMap) are safe;
+// group/world write and execute bits are still rejected so no other
+// user can swap the table.
+func checkDigestOnlyUsersFileMode(path string, info os.FileInfo) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return validateDigestOnlyUsersFileMode(path, info.Mode().Perm())
+}
+
+func validateDigestOnlyUsersFileMode(path string, mode os.FileMode) error {
+	if mode&0o003 != 0 {
+		return fmt.Errorf("auth: users file %q has mode %#o; world write/execute bits must be unset (0644 or stricter for a token_sha256-only table)", path, mode)
+	}
+	if mode&0o030 != 0 {
+		return fmt.Errorf("auth: users file %q has mode %#o; group write/execute must be unset (0644 or stricter for a token_sha256-only table)", path, mode)
+	}
+	return nil
+}
+
 // validateUsersFileMode is the whole policy, as a pure function.
 //
 // The file holds bearer secrets, so the default remains 0600. The one

@@ -71,9 +71,9 @@ spec:
     port: 8484
   idle:
     suspendAfter: 10m
-  workspaces:
-    - name: core-agent-serve-workspace
-      path: /workspace/repo
+  workspace:
+    name: core-agent-serve-workspace
+    path: /workspace/repo
 ---
 apiVersion: ax.io/v1alpha1
 kind: Workspace

@@ -59,10 +59,10 @@ type axDoc struct {
 		Idle struct {
 			SuspendAfter string `yaml:"suspendAfter"`
 		} `yaml:"idle"`
-		Workspaces []struct {
+		Workspace struct {
 			Name string `yaml:"name"`
 			Path string `yaml:"path"`
-		} `yaml:"workspaces"`
+		} `yaml:"workspace"`
 	} `yaml:"spec"`
 }
 
@@ -156,10 +156,12 @@ func TestTaskManifests_Contract(t *testing.T) {
 				}
 			}
 		}
-		for _, ws := range task.Spec.Workspaces {
-			if !strings.HasPrefix(ws.Path, "/workspace/") && ws.Path != "/workspace" {
-				t.Errorf("%s: workspace %q path %q is outside /workspace", file, ws.Name, ws.Path)
-			}
+		ws := task.Spec.Workspace
+		if ws.Name == "" {
+			t.Errorf("%s: spec.workspace.name is empty", file)
+		}
+		if !strings.HasPrefix(ws.Path, "/workspace/") && ws.Path != "/workspace" {
+			t.Errorf("%s: workspace %q path %q is outside /workspace", file, ws.Name, ws.Path)
 		}
 
 		// spec.env is persisted in plain text in the actor template and its

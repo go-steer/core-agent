@@ -99,6 +99,7 @@ var builtinClasses = map[string]Class{
 	"alert":               ClassMutating,
 	"spawn_remote_agent":  ClassMutating,
 	"invoke_remote_agent": ClassMutating,
+	"call_peer":           ClassMutating,
 	"stop_subagent":       ClassMutating,
 	"stop_agent":          ClassMutating,
 	"send_message":        ClassMutating,
@@ -131,6 +132,7 @@ var builtinClasses = map[string]Class{
 	"list_agents":            ClassReadOnly,
 	"read_agent_logs":        ClassReadOnly,
 	"request_operator_input": ClassReadOnly,
+	"sciontool_status":       ClassReadOnly,
 }
 
 // Predicate classifies a tool by name. See NewPredicate.
@@ -309,7 +311,7 @@ func (o *outbox) beforeRun(ictx agent.InvocationContext) (*genai.Content, error)
 	if sess == nil {
 		return nil, nil
 	}
-	st := scanHistoryForRun(sess.Events(), o.cfg.Predicate, o.cfg.SubAgentNames)
+	st := scanHistoryInternal(sess.Events(), o.cfg.Predicate, o.cfg.SubAgentNames, hasConfirmationResponse(ictx.UserContent()))
 	if o.cfg.SubSessionScanner != nil && len(st.dangling) > 0 {
 		st.dangling = o.resolveSpawningDangling(ictx, sess.ID(), st.dangling)
 	}
@@ -425,6 +427,7 @@ type scanAccumulator struct {
 	pred              Predicate
 	subAgents         map[string]bool
 	open              map[string]scannedCall
+	priorUnpaired     []scannedCall
 	callName          map[string]string
 	confirmTargetByID map[string]string
 	confirmedCount    map[string]int
@@ -467,6 +470,7 @@ func pairScan(events session.Events, pred Predicate, subAgents map[string]bool) 
 			}
 		}
 	}
+	acc.ps.unpaired = append(acc.ps.unpaired, acc.priorUnpaired...)
 	for _, id := range acc.order {
 		if c, ok := acc.open[id]; ok {
 			acc.ps.unpaired = append(acc.ps.unpaired, c)
@@ -493,8 +497,15 @@ func (acc *scanAccumulator) onFunctionCall(ev *session.Event, evIdx int, fc *gen
 	}
 	acc.ps.lastCallEventIndex = evIdx
 	acc.callName[fc.ID] = fc.Name
-	if _, seen := acc.open[fc.ID]; !seen {
+	if prev, seen := acc.open[fc.ID]; seen {
+		if !prev.excluded {
+			acc.priorUnpaired = append(acc.priorUnpaired, prev)
+		}
+	} else {
 		acc.order = append(acc.order, fc.ID)
+	}
+	if fc.Name != toolconfirmation.FunctionCallName {
+		delete(acc.confirmedCount, fc.ID)
 	}
 	acc.open[fc.ID] = scannedCall{
 		intent: DanglingIntent{
@@ -547,6 +558,16 @@ func (acc *scanAccumulator) onFunctionResponse(ev *session.Event, evIdx int, fr 
 		}
 		return
 	}
+	// An ambiguous-prior-effect refusal (from outbox.beforeTool or
+	// writeGate.refuseDuplicateDispatch) is NOT a tool completion:
+	// never record it in completions, and never clear a confirmation-gated
+	// call whose original execution remained ambiguous (#1447).
+	if isAmbiguousRefusalResponse(fr.Response) {
+		if acc.confirmedCount[fr.ID] <= 1 && fr.Response["status"] != "ambiguous_prior_effect" {
+			delete(acc.open, fr.ID)
+		}
+		return
+	}
 	delete(acc.open, fr.ID)
 	name := fr.Name
 	if name == "" {
@@ -557,12 +578,40 @@ func (acc *scanAccumulator) onFunctionResponse(ev *session.Event, evIdx int, fr 
 	}
 }
 
+func isAmbiguousRefusalResponse(resp map[string]any) bool {
+	if resp == nil {
+		return false
+	}
+	if errVal, _ := resp["error"].(string); errVal == "ambiguous_prior_effect" {
+		return true
+	}
+	if statusVal, _ := resp["status"].(string); statusVal == "ambiguous_prior_effect" {
+		return true
+	}
+	return false
+}
+
+func hasConfirmationResponse(c *genai.Content) bool {
+	if c == nil {
+		return false
+	}
+	for _, part := range c.Parts {
+		if part != nil && part.FunctionResponse != nil && part.FunctionResponse.Name == toolconfirmation.FunctionCallName {
+			return true
+		}
+	}
+	return false
+}
+
 func isSyntheticRepairEvent(ev *session.Event) bool {
 	if ev == nil || ev.CustomMetadata == nil {
 		return false
 	}
-	b, _ := ev.CustomMetadata[SyntheticRepairMetadataKey].(bool)
-	return b
+	if b, _ := ev.CustomMetadata[SyntheticRepairMetadataKey].(bool); b {
+		return true
+	}
+	kind, _ := ev.CustomMetadata["kind"].(string)
+	return kind == "tool_tail_repair"
 }
 
 // IsConfirmationApproved reports whether an adk_request_confirmation

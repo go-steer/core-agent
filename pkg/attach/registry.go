@@ -305,6 +305,8 @@ type SessionRegistry struct {
 	// touch()ing the stale entry so the resumed session looks idle
 	// to the sweep while actively streaming.
 	evictHook func(*Entry)
+	sharedLog *eventlog.Handle
+	knownApps map[string]struct{}
 }
 
 // SetEvictHook wires a callback invoked for each entry the idle
@@ -589,6 +591,15 @@ func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL, ca
 	e.setACL(acl)
 	e.touch() // seed lastTouchedNs so the very first sweep doesn't fire on a brand-new entry
 	r.byTriple[key] = e
+	if r.sharedLog == nil {
+		if l := ag.EventLog(); l != nil {
+			r.sharedLog = l
+		}
+	}
+	if r.knownApps == nil {
+		r.knownApps = make(map[string]struct{})
+	}
+	r.knownApps[key.App] = struct{}{}
 	// Persist the ACL row when a store is wired AND the ACL has
 	// an Owner (legacy Register without owner stays in-memory
 	// only — matches the "ACL row exists ⟺ session is resumable"
@@ -983,6 +994,15 @@ func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL, ca
 	e.setACL(acl)
 	e.touch() // seed lastTouchedNs — matches the initial-touch behavior of registerWithACL
 	r.byTriple[key] = e
+	if r.sharedLog == nil {
+		if l := ag.EventLog(); l != nil {
+			r.sharedLog = l
+		}
+	}
+	if r.knownApps == nil {
+		r.knownApps = make(map[string]struct{})
+	}
+	r.knownApps[key.App] = struct{}{}
 	// Persist a fresh LastTouchedAt on resume so GET /sessions
 	// ordering reflects that this session is back in memory. The
 	// aclStore row itself is unchanged (row was already written at
@@ -1060,6 +1080,17 @@ func (r *SessionRegistry) aclStoreForList() (SessionACLStore, bool) {
 		return nil, false
 	}
 	return r.aclStore, true
+}
+
+func (r *SessionRegistry) eventLogForList() (*eventlog.Handle, []string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	apps := make([]string, 0, len(r.knownApps))
+	for app := range r.knownApps {
+		apps = append(apps, app)
+	}
+	sort.Strings(apps)
+	return r.sharedLog, apps
 }
 
 // PersistTitle writes a session's title through to its durable ACL

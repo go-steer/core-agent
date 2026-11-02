@@ -223,3 +223,20 @@ func TestHintRecorder_PaginationAccumulates(t *testing.T) {
 		t.Error(`"a" survived a first page that did not list it`)
 	}
 }
+
+func TestReadOnlyHint_UntrustedServerIgnored(t *testing.T) {
+	t.Parallel()
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	f := false
+	spec := ServerSpec{Transport: "http", URL: "u", TrustReadOnlyHint: &f}
+	composed, _ := wrapServerToolset(newAnnotatedToolset(t), "untrusted", spec, &DigestOptions{}, gate)
+	tools := toolsOf(t, composed)
+
+	tl := tools["untrusted_get_pod"]
+	if tl == nil {
+		t.Fatal("untrusted_get_pod missing from composed toolset")
+	}
+	if coretools.IsReadOnlyTool(tl) {
+		t.Error("IsReadOnlyTool(untrusted_get_pod) = true with TrustReadOnlyHint=false, want false (fail-closed mutating)")
+	}
+}

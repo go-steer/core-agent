@@ -15,10 +15,12 @@
 package attach
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -185,10 +187,11 @@ func (h *handlers) turnContext(reqCtx context.Context) context.Context {
 }
 
 func (h *handlers) registerParks(mux *http.ServeMux) {
-	h.routeSessionDrainGated(mux, "GET", "parks", auth.ActionSessionRead, h.doSessionParks)
-	h.routeSessionDrainGated(mux, "POST", "ack-effects", auth.ActionSessionWrite, h.doSessionAckEffects)
+	h.routeSession(mux, "GET", "parks", auth.ActionSessionRead, h.doSessionParks)
+	h.routeSessionDrainGated(mux, "ack-effects", h.doSessionAckEffects)
 	mux.HandleFunc("GET /parks", h.doListParks)
 	mux.HandleFunc("GET /parks/{sid}", h.doGetParksBySession)
+	mux.HandleFunc("GET /parks/{app}/{sid}", h.doGetParksByAppSession)
 	mux.HandleFunc("POST /ack-effects", h.doTopLevelAckEffects)
 }
 
@@ -202,10 +205,6 @@ func (h *handlers) doSessionParks(w http.ResponseWriter, r *http.Request, entry 
 }
 
 func (h *handlers) doGetParksBySession(w http.ResponseWriter, r *http.Request) {
-	if h.draining() {
-		h.rejectDraining(w)
-		return
-	}
 	sid := r.PathValue("sid")
 	if sid == "" {
 		http.Error(w, "parks: session id is required", http.StatusBadRequest)
@@ -218,15 +217,28 @@ func (h *handlers) doGetParksBySession(w http.ResponseWriter, r *http.Request) {
 	h.doSessionParks(w, r, entry)
 }
 
-func (h *handlers) doListParks(w http.ResponseWriter, r *http.Request) {
-	if h.draining() {
-		h.rejectDraining(w)
+func (h *handlers) doGetParksByAppSession(w http.ResponseWriter, r *http.Request) {
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
-	entries := h.reg.List()
+	h.doSessionParks(w, r, entry)
+}
+
+func (h *handlers) doListParks(w http.ResponseWriter, r *http.Request) {
+	allEntries := h.reg.List()
+	entries := allEntries
+	c, _ := auth.CallerFromContext(r.Context())
 	if h.enforceACL {
-		c, _ := auth.CallerFromContext(r.Context())
 		entries = h.reg.ListAuthorized(c)
+	}
+	seen := make(map[[2]string]struct{}, len(allEntries))
+	sharedLog, knownApps := h.reg.eventLogForList()
+	for _, entry := range allEntries {
+		seen[[2]string{entry.AppName, entry.SessionID}] = struct{}{}
+		if sharedLog == nil && entry.Agent != nil {
+			sharedLog = entry.Agent.EventLog()
+		}
 	}
 	sessions := make([]SessionParks, 0)
 	for _, entry := range entries {
@@ -240,10 +252,65 @@ func (h *handlers) doListParks(w http.ResponseWriter, r *http.Request) {
 		}
 		sessions = append(sessions, sp)
 	}
+	sessions = h.appendPersistedParks(r.Context(), c, sharedLog, knownApps, seen, sessions)
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].SessionID < sessions[j].SessionID
 	})
 	writeParksResult(w, ParksResult{Sessions: sessions})
+}
+
+func (h *handlers) appendPersistedParks(ctx context.Context, c auth.Caller, sharedLog *eventlog.Handle, knownApps []string, seen map[[2]string]struct{}, sessions []SessionParks) []SessionParks {
+	if sharedLog == nil || sharedLog.Service == nil {
+		return sessions
+	}
+	if h.enforceACL {
+		store, ok := h.reg.aclStoreForList()
+		if !ok {
+			return sessions
+		}
+		rows, err := store.ListVisibleTo(ctx, c)
+		if err != nil {
+			return sessions
+		}
+		for _, row := range rows {
+			if strings.HasSuffix(row.SessionID, ":mast-ops") {
+				continue
+			}
+			key := [2]string{row.AppName, row.SessionID}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			sp, err := projectStoredSessionParks(ctx, sharedLog, row.AppName, row.UserID, row.SessionID)
+			if err != nil || (len(sp.Parks) == 0 && sp.Hold == nil) {
+				continue
+			}
+			sessions = append(sessions, sp)
+		}
+		return sessions
+	}
+	for _, appName := range knownApps {
+		listResp, err := sharedLog.Service.List(ctx, &session.ListRequest{AppName: appName})
+		if err != nil || listResp == nil {
+			continue
+		}
+		for _, s := range listResp.Sessions {
+			if s == nil || strings.HasSuffix(s.ID(), ":mast-ops") {
+				continue
+			}
+			key := [2]string{s.AppName(), s.ID()}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			sp, err := projectStoredSessionParks(ctx, sharedLog, s.AppName(), s.UserID(), s.ID())
+			if err != nil || (len(sp.Parks) == 0 && sp.Hold == nil) {
+				continue
+			}
+			sessions = append(sessions, sp)
+		}
+	}
+	return sessions
 }
 
 func writeParksResult(w http.ResponseWriter, out ParksResult) {
@@ -258,16 +325,37 @@ func writeParksResult(w http.ResponseWriter, out ParksResult) {
 
 func (h *handlers) doSessionAckEffects(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	var req AckEffectsRequest
-	if r.ContentLength > 0 {
-		if err := readJSON(r, &req, ackEffectsMaxBytes); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+	if err := readOptionalJSON(r, &req, ackEffectsMaxBytes); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	if h.rejectDraining(w) {
 		return
 	}
 	h.executeAckEffects(w, r, entry, strings.TrimSpace(req.Reason))
+}
+
+func readOptionalJSON(r *http.Request, v any, maxBytes int64) error {
+	if r == nil || r.Body == nil {
+		return nil
+	}
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return fmt.Errorf("request body too large (max %d bytes)", maxBytes)
+		}
+		return fmt.Errorf("read body: %w", err)
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		return fmt.Errorf("malformed JSON: %w", err)
+	}
+	return nil
 }
 
 func (h *handlers) doTopLevelAckEffects(w http.ResponseWriter, r *http.Request) {
@@ -299,13 +387,16 @@ func (h *handlers) doTopLevelAckEffects(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *handlers) executeAckEffects(w http.ResponseWriter, r *http.Request, entry *Entry, reason string) {
+	if sp, ok := entry.Agent.(StatusProvider); ok {
+		st := sp.AttachStatus()
+		if st.TurnInFlight || st.State == AgentStateRunning {
+			http.Error(w, "ack-effects: cannot acknowledge effects while a turn is active on this session", http.StatusConflict)
+			return
+		}
+	}
 	ctx := h.turnContext(r.Context())
 
 	by := verifiedApprover(ctx)
-	if by == "" {
-		c, _ := auth.CallerFromContext(ctx)
-		by = c.Identity
-	}
 	if acker, ok := entry.Agent.(EffectsAcker); ok {
 		at, err := acker.AttachAckEffects(ctx, by, reason)
 		if err != nil {
@@ -363,10 +454,22 @@ func projectEntryParks(ctx context.Context, entry *Entry) (SessionParks, error) 
 	if hLog == nil || hLog.Service == nil {
 		return sp, nil
 	}
+	return populateSessionParksFromLog(ctx, hLog, entry.AppName, entry.UserID, entry.SessionID, sp)
+}
+
+func projectStoredSessionParks(ctx context.Context, hLog *eventlog.Handle, appName, userID, sessionID string) (SessionParks, error) {
+	sp := SessionParks{
+		SessionID: sessionID,
+		State:     AgentStateIdle,
+	}
+	return populateSessionParksFromLog(ctx, hLog, appName, userID, sessionID, sp)
+}
+
+func populateSessionParksFromLog(ctx context.Context, hLog *eventlog.Handle, appName, userID, sessionID string, sp SessionParks) (SessionParks, error) {
 	resp, err := hLog.Service.Get(ctx, &session.GetRequest{
-		AppName:   entry.AppName,
-		UserID:    entry.UserID,
-		SessionID: entry.SessionID,
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: sessionID,
 	})
 	if err != nil {
 		if eventlog.IsSessionNotFound(err) {
@@ -404,14 +507,49 @@ func toAttachPark(p eventlog.ParkedCall) Park {
 		RaisedAt:    p.RaisedAt,
 	}
 	if kind == ParkKindApproval {
-		park.Change = &ProposedCall{
-			Tool:  p.ProposedTool,
-			Args:  p.ProposedArgs,
-			Key:   p.Subject,
-			Agent: p.Author,
+		change := &ProposedCall{
+			CallID: p.CallID,
+			Tool:   p.ProposedTool,
+			Args:   p.ProposedArgs,
+			Key:    p.Subject,
+			Agent:  p.Author,
 		}
+		populateProposedCallFromPayload(change, p.Payload)
+		park.Change = change
 	}
 	return park
+}
+
+func populateProposedCallFromPayload(change *ProposedCall, payload any) {
+	req, ok := payload.(map[string]any)
+	if !ok || len(req) == 0 {
+		return
+	}
+	if change.Key == "" {
+		if k, ok := req["key"].(string); ok && k != "" {
+			change.Key = k
+		}
+	}
+	if policy, ok := req["policy"].(string); ok && policy != "" {
+		change.Policy = policy
+	}
+	if a, ok := req["agent"].(string); ok && a != "" && change.Agent == "" {
+		change.Agent = a
+	}
+	if stale, ok := req["stale"].(string); ok && stale != "" {
+		change.Stale = stale
+	}
+	if vf, ok := req["verdict_format"].(map[string]any); ok && len(vf) > 0 {
+		change.VerdictFormat = vf
+	}
+	if rawCS, ok := req["change_set"]; ok && rawCS != nil {
+		if b, err := json.Marshal(rawCS); err == nil {
+			var cs ChangeSet
+			if json.Unmarshal(b, &cs) == nil {
+				change.ChangeSet = &cs
+			}
+		}
+	}
 }
 
 type wireCaptureRecord struct {

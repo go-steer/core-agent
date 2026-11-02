@@ -179,8 +179,8 @@ func TestParksRoutes_EmptyAndParkedProjection(t *testing.T) {
 		t.Errorf("Applied = %+v, want 1 captured applied call with revert", sp.Applied)
 	}
 
-	// 4. GET /parks/s-idle and GET /sessions/s-idle/parks return 200 with empty parks.
-	for _, path := range []string{"/parks/s-idle", "/sessions/s-idle/parks", "/sessions/app/s-idle/parks"} {
+	// 4. GET /parks/s-idle, GET /parks/app/s-idle, and GET /sessions/s-idle/parks return 200 with empty parks.
+	for _, path := range []string{"/parks/s-idle", "/parks/app/s-idle", "/sessions/s-idle/parks", "/sessions/app/s-idle/parks"} {
 		rec = httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK {
@@ -200,6 +200,25 @@ func TestParksRoutes_EmptyAndParkedProjection(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/parks/no-such-session", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET /parks/no-such-session = %d, want 404", rec.Code)
+	}
+
+	// 6. Evicting all sessions from the in-memory registry still surfaces persisted parks on GET /parks.
+	reg.Unregister("app", "u1", "s-idle")
+	reg.Unregister("app", "u1", "s-parked")
+	if reg.Len() != 0 {
+		t.Fatalf("reg.Len() = %d, want 0 after unregistering all sessions", reg.Len())
+	}
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/parks", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /parks (evicted) = %d, want 200", rec.Code)
+	}
+	var evictedOut ParksResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &evictedOut); err != nil {
+		t.Fatalf("decode evicted /parks: %v", err)
+	}
+	if len(evictedOut.Sessions) != 1 || evictedOut.Sessions[0].SessionID != "s-parked" {
+		t.Fatalf("evictedOut.Sessions = %+v, want [s-parked] from persisted eventlog", evictedOut.Sessions)
 	}
 }
 
@@ -250,13 +269,21 @@ func TestAckEffectsRoutes_AndMast562DaemonOwnedTurnContext(t *testing.T) {
 		t.Errorf("EffectsAckedAt = (%v, %v), want (%v, true)", gotAt, ok, ackResp.AckedAt)
 	}
 
-	// 2. POST /sessions/s-1/ack-effects also works.
+	// 2. POST /sessions/s-1/ack-effects also works (including empty body and chunked body).
 	req2 := httptest.NewRequest(http.MethodPost, "/sessions/s-1/ack-effects", bytes.NewBufferString(`{"reason":"second ack"}`))
+	req2.ContentLength = -1 // simulate chunked Transfer-Encoding
 	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	mux.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("POST /sessions/s-1/ack-effects = %d (%s), want 200", rec2.Code, rec2.Body.String())
+	}
+	var ackResp2 AckEffectsResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &ackResp2); err != nil {
+		t.Fatalf("decode AckEffectsResponse 2: %v", err)
+	}
+	if ackResp2.Reason != "second ack" || ackResp2.By != "" {
+		t.Errorf("AckEffectsResponse 2 = %+v, want Reason='second ack' and By=''", ackResp2)
 	}
 
 	// 3. mast #562: POST /sessions/s-1/inject passes a daemon-owned context to

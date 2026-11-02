@@ -50,7 +50,7 @@ const resumeMaxBytes = injectMaxBytes
 // lost failure #564 closed for /inject and /wake.
 func (h *handlers) registerPause(mux *http.ServeMux) {
 	h.routeSession(mux, "POST", "pause", auth.ActionSessionWrite, h.doPause)
-	h.routeSessionDrainGated(mux, "POST", "resume", auth.ActionSessionWrite, h.doResume)
+	h.routeSessionDrainGated(mux, "resume", h.doResume)
 	h.routeSession(mux, "POST", "agents/{name}/stop", auth.ActionSessionWrite, h.doStopAgent)
 }
 

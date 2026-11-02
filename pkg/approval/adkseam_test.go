@@ -35,6 +35,8 @@ import (
 	"google.golang.org/genai"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
+
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 const (
@@ -301,5 +303,37 @@ func TestSeamEditedArgumentsAreWhatExecutes(t *testing.T) {
 	}
 	if got := p.executions[0]; got.Deployment != "api" || got.Replicas != 2 {
 		t.Errorf("executed with %+v, want the operator's edit {api 2}", got)
+	}
+}
+
+func TestPrepareEdit_NilOriginalArgsMapRefusedCleanly(t *testing.T) {
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeAsk})
+	tl, err := functiontool.New(functiontool.Config{
+		Name:        "scale_deployment",
+		Description: "Scale a deployment.",
+	}, func(_ adkagent.Context, in scaleArgs) (map[string]any, error) {
+		return map[string]any{"scaled": in.Deployment, "to": in.Replicas}, nil
+	})
+	if err != nil {
+		t.Fatalf("functiontool.New: %v", err)
+	}
+	wg, err := newWriteGate(Config{
+		Policy:   OnMutationRequireApproval,
+		Mutating: func(string) bool { return true },
+		Gate:     gate,
+	})
+	if err != nil {
+		t.Fatalf("newWriteGate: %v", err)
+	}
+	refusal, edited := wg.prepareEdit(nil, tl, "scale_deployment", nil, Verdict{
+		Verdict:  OutcomeEdit,
+		Approver: "user:alice",
+		Args:     map[string]any{"deployment": "api", "replicas": 2},
+	})
+	if edited != nil {
+		t.Fatalf("edited = %+v, want nil when original args map is nil", edited)
+	}
+	if refusal == nil || refusal["error"] != "edit_refused" {
+		t.Fatalf("refusal = %+v, want error=edit_refused", refusal)
 	}
 }

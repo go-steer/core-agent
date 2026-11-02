@@ -29,7 +29,6 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
-	"google.golang.org/genai"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -69,9 +68,9 @@ const (
 // ADK's post-tool AppendEvent (#1400, mast #561).
 type agentApprovalDecisionRow struct {
 	ID             int64     `gorm:"primaryKey;autoIncrement"`
-	SessionID      string    `gorm:"not null;index:idx_approval_decisions_session;uniqueIndex:idx_approval_decisions_call,priority:1"`
-	InvocationID   string    `gorm:"index:idx_approval_decisions_invocation"`
-	FunctionCallID string    `gorm:"not null;uniqueIndex:idx_approval_decisions_call,priority:2"`
+	SessionID      string    `gorm:"size:191;not null;index:idx_approval_decisions_session;uniqueIndex:idx_approval_decisions_call,priority:1"`
+	InvocationID   string    `gorm:"size:191;index:idx_approval_decisions_invocation"`
+	FunctionCallID string    `gorm:"size:191;not null;uniqueIndex:idx_approval_decisions_call,priority:2"`
 	Tool           string    `gorm:"not null"`
 	Outcome        string    `gorm:"not null"`
 	Scope          string    `gorm:"not null"`
@@ -494,10 +493,11 @@ func (h *Handle) AckEffects(ctx context.Context, appName, userID, sessionID, by,
 	}
 	ev := session.NewEvent(ctx, "effects-ack")
 	ev.Author = author
-	ev.Content = genai.NewContentFromText(
-		fmt.Sprintf("operator acknowledged ambiguous prior effects: %s", reason),
-		genai.RoleUser,
-	)
+	ev.CustomMetadata = map[string]any{
+		"kind":   "effects_ack",
+		"by":     author,
+		"reason": reason,
+	}
 	ev.Actions.StateDelta = map[string]any{
 		EffectsAckTimeKey:   now.Format(time.RFC3339Nano),
 		EffectsAckReasonKey: reason,
@@ -545,6 +545,7 @@ func (h *Handle) EffectsAckedAt(ctx context.Context, appName, userID, sessionID 
 // ParkedCall is one open interrupt or long-running tool park on a session.
 type ParkedCall struct {
 	InterruptID    string             `json:"interrupt_id"`
+	CallID         string             `json:"call_id,omitempty"`
 	ToolName       string             `json:"tool_name,omitempty"`
 	Awaiting       string             `json:"awaiting,omitempty"`
 	Message        string             `json:"message,omitempty"`
@@ -721,10 +722,15 @@ func enrichLongRunningPark(ev *session.Event, id string, p *ParkedCall) {
 			d := approval.DescribeConfirmation(part.FunctionCall.Args)
 			p.Awaiting = AwaitingApproval
 			p.Message = d.Summary()
+			p.CallID = d.CallID
 			p.ProposedTool = d.Tool
 			p.ProposedArgs = d.Args
 			if d.Request != nil {
-				p.Subject, _ = d.Request["subject"].(string)
+				if key, ok := d.Request["key"].(string); ok && key != "" {
+					p.Subject = key
+				} else {
+					p.Subject, _ = d.Request["subject"].(string)
+				}
 			}
 			p.Payload = d.Request
 			p.ResponseSchema = approval.VerdictSchema()

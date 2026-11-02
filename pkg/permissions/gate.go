@@ -311,8 +311,9 @@ type Gate struct {
 	// toolClasses and mutatingMode configure the durable write gate
 	// and recorded-effect outbox (#1400). Guarded by mu and inherited
 	// by DeriveForSession.
-	toolClasses  map[string]ToolClass
-	mutatingMode MutatingMode
+	toolClasses         map[string]ToolClass
+	mutatingMode        MutatingMode
+	authorizedMutations map[string]bool
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
@@ -510,6 +511,7 @@ func New(opts Options) *Gate {
 		sessionAllowTools:    make(map[string]struct{}),
 		sessionAllowVerbs:    make(map[string]struct{}),
 		turnRefusals:         make(map[string]refusalKind),
+		authorizedMutations:  make(map[string]bool),
 		requirePlanArtifact:  opts.RequirePlanArtifact,
 		bashSearchGate:       opts.BashSearchGate,
 		approvalTimeout:      opts.ApprovalTimeout,
@@ -765,6 +767,7 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
 		turnRefusals:        make(map[string]refusalKind),
+		authorizedMutations: make(map[string]bool),
 		requirePlanArtifact: template.requirePlanArtifact,
 		// Inherited, not defaulted: a sub-gate that dropped this would
 		// leave the search gate off for every daemon-created session
@@ -1364,6 +1367,7 @@ func (g *Gate) checkFileWrite(ctx context.Context, toolName, path string, args l
 		return g.promptForPath(ctx, toolName, path, AccessWrite)
 	}
 	if g.sessionToolAllowed(toolName) {
+		g.consumeMutationAuth(ctx, false)
 		return nil
 	}
 	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path, toolName, false, args)
@@ -1449,10 +1453,14 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 	if err := g.planFirstDenial(toolName, readOnly); err != nil {
 		return err
 	}
+	preAuth := !readOnly && g.consumeMutationAuth(ctx, false)
 	switch g.matchPolicy(toolName, key) {
 	case OutcomeDeny:
 		return fmt.Errorf("%s denied by config policy: %q", toolName, key)
 	case OutcomeAllow:
+		return nil
+	}
+	if preAuth {
 		return nil
 	}
 	if g.sessionToolAllowed(sessToolKey) {
@@ -1520,6 +1528,9 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Acce
 	// doesn't escape the gate.
 	if err := g.planFirstDenial(toolName, false); err != nil {
 		return err
+	}
+	if op == AccessWrite && g.matchPolicy("path_scope", path) != OutcomeDeny && g.consumeMutationAuth(ctx, true) {
+		return nil
 	}
 	mode := g.Mode()
 	if mode == ModeYolo {

@@ -143,6 +143,14 @@ type ServerSpec struct {
 	// authority as the config that turned plan-first on.
 	ReadOnly bool `json:"read_only,omitempty"`
 
+	// TrustReadOnlyHint controls whether per-tool readOnlyHint
+	// annotations published by this MCP server are trusted for
+	// read-only classification (mast #573, #1444). Nil defaults to
+	// true; set to false for untrusted third-party servers so a
+	// server's self-reported readOnlyHint cannot bypass write-gate or
+	// plan-first checks.
+	TrustReadOnlyHint *bool `json:"trust_read_only_hint,omitempty"`
+
 	// Tools is an allowlist: when non-empty, only the tools it names
 	// are registered, and the rest of the server's catalog is dropped
 	// before it is namespaced, declared, or listed. Absent means the
@@ -259,6 +267,16 @@ func (g *GoogleOAuthAuth) Validate(name string) error {
 		}
 	}
 	return nil
+}
+
+// TrustReadOnlyHints reports whether this server's per-tool readOnlyHint
+// annotations should be trusted for tool classification (mast #573, #1444).
+// Defaults to true when unset.
+func (s ServerSpec) TrustReadOnlyHints() bool {
+	if s.TrustReadOnlyHint == nil {
+		return true
+	}
+	return *s.TrustReadOnlyHint
 }
 
 // Validate checks that the spec describes a single, complete transport.

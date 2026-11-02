@@ -156,6 +156,64 @@ func withReadOnlyHints(inner tool.Toolset, rec *hintRecorder) tool.Toolset {
 	return &hintedToolset{inner: inner, recorder: rec}
 }
 
+// withoutReadOnlyHints strips server-published readOnlyHint annotations
+// when ServerSpec.TrustReadOnlyHint is explicitly false (#1444, mast #573).
+func withoutReadOnlyHints(inner tool.Toolset) tool.Toolset {
+	if inner == nil {
+		return nil
+	}
+	if ht, ok := inner.(*hintedToolset); ok {
+		return ht.inner
+	}
+	return &unhintedToolset{inner: inner}
+}
+
+type unhintedToolset struct {
+	inner tool.Toolset
+}
+
+func (u *unhintedToolset) Name() string { return u.inner.Name() }
+
+func (u *unhintedToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
+	upstream, err := u.inner.Tools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tool.Tool, 0, len(upstream))
+	for _, t := range upstream {
+		if _, hasHint := t.(interface{ ReadOnlyHint() bool }); hasHint {
+			out = append(out, unhintedTool{inner: t})
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+type unhintedTool struct {
+	inner tool.Tool
+}
+
+func (u unhintedTool) Name() string        { return u.inner.Name() }
+func (u unhintedTool) Description() string { return u.inner.Description() }
+func (u unhintedTool) IsLongRunning() bool { return u.inner.IsLongRunning() }
+
+func (u unhintedTool) Declaration() *genai.FunctionDeclaration {
+	rn, ok := u.inner.(runnable)
+	if !ok {
+		return nil
+	}
+	return rn.Declaration()
+}
+
+func (u unhintedTool) Run(ctx agent.Context, args any) (map[string]any, error) {
+	rn, ok := u.inner.(runnable)
+	if !ok {
+		return nil, errNotRunnable
+	}
+	return rn.Run(ctx, args)
+}
+
 func (h *hintedToolset) Name() string { return h.inner.Name() }
 
 // Tools returns UNANNOTATED tools untouched, on purpose. Wrapping

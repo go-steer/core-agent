@@ -378,3 +378,70 @@ func TestTurnFromSpendRecord_Legacy1430RowFallback(t *testing.T) {
 		t.Fatalf("legacy row restored as %+v, want Model=gemini-2.5-flash InputTokens=1234 CostUSD=0.012", turn)
 	}
 }
+
+// TestRestoreResumedTracker_ParentServedModelVersionUsesPinnedRate covers
+// #1434: providers populate LLMResponse.ModelVersion with the served version
+// ID (e.g. "claude-opus-4-6-20260601"), which differs from Model.Name()
+// ("claude-opus-4-6"). On event-stream fallback, parent turns must still use
+// the caller's pinned pricingRate rather than falling through to catalog
+// lookup on the served version string.
+func TestRestoreResumedTracker_ParentServedModelVersionUsesPinnedRate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	h, err := eventlog.Open(ctx, sqlite.Open(filepath.Join(t.TempDir(), "s.db")))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	pinnedRate := usage.Pricing{InputPerMTok: 40, OutputPerMTok: 80}
+	llm := &scriptedTurnLLM{
+		name: "claude-opus-4-6",
+		turns: []*adkmodel.LLMResponse{{
+			ModelVersion: "claude-opus-4-6-20260601",
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}},
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount: 10_000, CandidatesTokenCount: 5_000, TotalTokenCount: 15_000,
+			},
+			TurnComplete: true,
+		}},
+	}
+	noTitle := false
+	deps := SessionFactoryDeps{
+		DaemonCtx:      ctx,
+		Model:          llm,
+		Template:       permissions.New(permissions.Options{Mode: permissions.ModeYolo}),
+		EventlogHandle: h,
+		PricingRate:    pinnedRate,
+		Cfg:            &config.Config{Agent: config.AgentConfig{SessionTitle: &noTitle}},
+		NoCompact:      true,
+		CheckpointMode: config.CheckpointModeOff,
+	}
+	sid := "sid-served-version"
+	ad, cancelAd, err := ReproduceAgent(deps, auth.Anonymous, sid, "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent(created): %v", err)
+	}
+	for _, runErr := range ad.Agent().Run(ctx, "start") {
+		if runErr != nil {
+			t.Fatalf("Run: %v", runErr)
+		}
+	}
+	cancelAd()
+
+	if err := h.DB.WithContext(ctx).Exec("DELETE FROM agent_budget_spend").Error; err != nil {
+		t.Fatalf("wipe ledger: %v", err)
+	}
+
+	tr := usage.NewTracker()
+	path, n := restoreResumedTracker(deps, auth.Anonymous.Identity, sid, tr, "claude-opus-4-6", pinnedRate)
+	if path != spendRestoredFromEvents || n != 1 {
+		t.Fatalf("restore = (%s, %d), want (events, 1)", path, n)
+	}
+	wantCost := pinnedRate.CostUSD(10_000, 5_000)
+	if got := tr.Totals().CostUSD; math.Abs(got-wantCost) > 1e-9 {
+		t.Fatalf("restored CostUSD = %f, want pinned rate %f", got, wantCost)
+	}
+}

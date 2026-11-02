@@ -366,13 +366,16 @@ func historyQuery(tx *gorm.DB) ([]SpendRecord, error) {
 	return out, nil
 }
 
-// deleteSession removes any spend rows for the deleted session.
+// deleteSession removes any spend rows for the deleted session and its
+// derived ":sub:" child sessions (#1434).
 func (s *SpendStore) deleteSession(ctx context.Context, appName, userID, sessionID string) error {
 	if s == nil || s.db == nil {
 		return nil
 	}
 	if err := s.db.WithContext(ctx).
-		Where("app_name = ? AND user_id = ? AND session_id = ?", appName, userID, sessionID).
+		Where("app_name = ? AND user_id = ?", appName, userID).
+		Where("session_id = ? OR session_id LIKE ? ESCAPE '"+branchPrefixEscape+"'",
+			sessionID, escapeLike(sessionID)+":sub:%").
 		Delete(&budgetSpendRow{}).Error; err != nil {
 		return fmt.Errorf("eventlog: delete spend rows for session %q: %w", sessionID, err)
 	}

@@ -14,6 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
+#### Bug or Regression
+
+- **Session-tree spend rebuild and `:sub:` child cleanup (`pkg/usage`, `pkg/compose`, `pkg/eventlog`, `pkg/agent/internal/subsession`).** Parent turns whose provider stamps a served `ModelVersion` distinct from `Model.Name()` (for example `claude-opus-4-6-20260601`) now keep the session's pinned `pricingRate` on event-stream rebuild (`restoreResumedTracker` and `resolveRebuildPricing`), child-branch tool responses (`ev.Branch != ""`) no longer replay MCP digest `savings` sidecars onto the parent tracker (`RebuildTrackerFromEvents`), `sessionHydrator` prefetches distinct sessions in parallel (`maxHydrateConcurrency = 8`) when a query spans multiple `:sub:` child sessions, `Service.Delete` cleans up `:sub:` child sessions across `agent_eventlog`, `agent_guardrail_state`, `agent_budget_spend`, `agent_approval_decisions`, and ADK `sessions`/`events`, and `BranchInjectingService` shares the `usage.*MetadataKey` constants. ([#1434](https://github.com/go-steer/core-agent/issues/1434))
+
 #### Feature
 
 - **A2A v0.3 JSON-RPC 2.0 server on the attach mux (`POST /a2a`), `config.A2AConfig`, and session-backed `compose.A2ABackend`.**

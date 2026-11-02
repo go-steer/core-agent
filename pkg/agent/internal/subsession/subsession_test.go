@@ -26,6 +26,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // openTestEventLog returns a Handle backed by a fresh on-disk SQLite
@@ -240,5 +241,48 @@ func TestBranchInjectingService_DelegatesCRUD(t *testing.T) {
 		AppName: "app", UserID: "u", SessionID: "delegated",
 	}); err != nil {
 		t.Fatalf("Delete through wrapper: %v", err)
+	}
+}
+
+func TestBranchInjectingService_StampsUsageMetadata(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{
+		AppName: "app", UserID: "u", SessionID: "usage-meta",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	resp, err := h.Service.Get(ctx, &session.GetRequest{
+		AppName: "app", UserID: "u", SessionID: "usage-meta",
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	wrapped := &BranchInjectingService{
+		Inner:           h.Service,
+		Branch:          "sub.digest",
+		Model:           "gemini-2.5-flash",
+		Backend:         "vertex",
+		SkipParentUsage: true,
+	}
+	ev := makeTestEvent("ev-usage", "")
+	ev.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     100,
+		CandidatesTokenCount: 25,
+		TotalTokenCount:      125,
+	}
+	if err := wrapped.AppendEvent(ctx, resp.Session, ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if got := ev.CustomMetadata[usage.ModelVersionMetadataKey]; got != "gemini-2.5-flash" {
+		t.Errorf("CustomMetadata[%q] = %v, want gemini-2.5-flash", usage.ModelVersionMetadataKey, got)
+	}
+	if got := ev.CustomMetadata[usage.BillingBackendMetadataKey]; got != "vertex" {
+		t.Errorf("CustomMetadata[%q] = %v, want vertex", usage.BillingBackendMetadataKey, got)
+	}
+	if got := ev.CustomMetadata[usage.SkipParentUsageMetadataKey]; got != true {
+		t.Errorf("CustomMetadata[%q] = %v, want true", usage.SkipParentUsageMetadataKey, got)
 	}
 }

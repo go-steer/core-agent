@@ -117,6 +117,9 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 	if err := s.inner.Delete(ctx, req); err != nil {
 		return err
 	}
+	if err := s.deleteChildSessionsInADK(ctx, req); err != nil {
+		return err
+	}
 	if err := s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
 		return err
 	}
@@ -127,6 +130,29 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 		return err
 	}
 	return s.decisions.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
+}
+
+func (s *service) deleteChildSessionsInADK(ctx context.Context, req *session.DeleteRequest) error {
+	if s.stream == nil || s.stream.db == nil || req == nil || req.SessionID == "" {
+		return nil
+	}
+	prefix := escapeLike(req.SessionID) + ":sub:%"
+	if err := s.stream.db.WithContext(ctx).
+		Table(adkEventsTable).
+		Where("app_name = ? AND user_id = ?", req.AppName, req.UserID).
+		Where("session_id = ? OR session_id LIKE ? ESCAPE '"+branchPrefixEscape+"'",
+			req.SessionID, prefix).
+		Delete(map[string]any{}).Error; err != nil {
+		return fmt.Errorf("eventlog: delete ADK events for session %q: %w", req.SessionID, err)
+	}
+	if err := s.stream.db.WithContext(ctx).
+		Table("sessions").
+		Where("app_name = ? AND user_id = ? AND id LIKE ? ESCAPE '"+branchPrefixEscape+"'",
+			req.AppName, req.UserID, prefix).
+		Delete(map[string]any{}).Error; err != nil {
+		return fmt.Errorf("eventlog: delete ADK child sessions for %q: %w", req.SessionID, err)
+	}
+	return nil
 }
 
 // AppendEvent writes the event through ADK and mirrors it into the

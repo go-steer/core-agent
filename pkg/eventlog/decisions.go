@@ -206,7 +206,8 @@ func (s *DecisionStore) deleteSession(ctx context.Context, appName, userID, sess
 		return nil
 	}
 	if err := s.db.WithContext(ctx).
-		Where("session_id = ?", sessionID).
+		Where("session_id = ? OR session_id LIKE ? ESCAPE '"+branchPrefixEscape+"'",
+			sessionID, escapeLike(sessionID)+":sub:%").
 		Delete(&agentApprovalDecisionRow{}).Error; err != nil {
 		return fmt.Errorf("eventlog: delete approval decisions for session %q: %w", sessionID, err)
 	}

@@ -75,6 +75,7 @@ import (
 
 	"github.com/go-steer/core-agent/v3/internal/effects"
 	"github.com/go-steer/core-agent/v3/internal/evals"
+	"github.com/go-steer/core-agent/v3/internal/evals/evalcompose"
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 )
 
@@ -462,6 +463,7 @@ func (r *Runner) one(ctx context.Context, ts tool.Toolset, cs Case, index int) R
 		out.Err = fmt.Errorf("open session store: %w", err)
 		return out
 	}
+	defer func() { _ = evalcompose.CloseSessionService(svc) }()
 	if err := database.AutoMigrate(svc); err != nil {
 		out.Err = fmt.Errorf("migrate session store: %w", err)
 		return out

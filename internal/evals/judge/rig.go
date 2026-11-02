@@ -228,6 +228,7 @@ func (r *Rig) Run(ctx context.Context, sc evals.Scenario) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, fmt.Errorf("judge: %s: open session store: %w", sc.ID, err)
 	}
+	defer func() { _ = evalcompose.CloseSessionService(svc) }()
 	if err := database.AutoMigrate(svc); err != nil {
 		return Outcome{}, fmt.Errorf("judge: %s: migrate session store: %w", sc.ID, err)
 	}

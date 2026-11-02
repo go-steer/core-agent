@@ -242,6 +242,7 @@ func RunCost(ctx context.Context, root adkmodel.LLM, rootName, provider, scratch
 	if err != nil {
 		return nil, fmt.Errorf("judge: cost: open session store: %w", err)
 	}
+	defer func() { _ = evalcompose.CloseSessionService(svc) }()
 	if err := database.AutoMigrate(svc); err != nil {
 		return nil, fmt.Errorf("judge: cost: migrate session store: %w", err)
 	}

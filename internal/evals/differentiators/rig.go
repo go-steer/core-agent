@@ -161,10 +161,17 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 		return nil, fmt.Errorf("rig: open session store: %w", err)
 	}
 	if err := database.AutoMigrate(svc); err != nil {
+		_ = evalcompose.CloseSessionService(svc)
 		return nil, fmt.Errorf("rig: migrate session store: %w", err)
 	}
 	r.svc = svc
 	r.handle = &eventlog.Handle{Service: svc}
+	ok := false
+	defer func() {
+		if !ok {
+			r.close()
+		}
+	}()
 
 	tools, err := r.buildTools()
 	if err != nil {
@@ -254,7 +261,14 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rig: construct runner: %w", err)
 	}
+	ok = true
 	return r, nil
+}
+
+func (r *rig) close() {
+	if r != nil && r.svc != nil {
+		_ = evalcompose.CloseSessionService(r.svc)
+	}
 }
 
 func (r *rig) buildTools() ([]tool.Tool, error) {

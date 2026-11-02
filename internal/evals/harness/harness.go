@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package harness is the runnable form of the v0.3 parity eval suite
-// (docs/v0.3-plan.md W0.4): the thing scripts/evals.sh invokes and CI
-// gates on.
+// Package harness is the runnable form of the parity and differentiator
+// eval suite (#1403): the thing dev/tools/evals invokes and CI
+// (dev/ci/presubmits/evals) gates on.
 //
 // It runs two suites, and the split is the plan's four-tier strategy
 // (§2) rather than an implementation detail:

@@ -16,10 +16,12 @@ package evalcompose
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -102,9 +104,41 @@ func RegisterProfiles(ps []profile.Profile) {
 // DiscoverProviders loads provider profiles declared in the nearest
 // .agents/config.json if present.
 func DiscoverProviders() ([]profile.Profile, error) {
-	path, _, err := config.Find("")
-	if err != nil || path == "" {
-		return nil, nil
+	return DiscoverProvidersFrom("")
+}
+
+// DiscoverProvidersFrom loads provider profiles from configPath when non-empty
+// (accepting either an .agents directory or a config.json file path), or from
+// the nearest .agents/config.json when configPath is empty.
+func DiscoverProvidersFrom(configPath string) ([]profile.Profile, error) {
+	path := configPath
+	if path == "" {
+		found, _, err := config.Find("")
+		if err != nil || found == "" {
+			return nil, nil
+		}
+		path = found
+	}
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		if filepath.Base(path) == config.ConfigFileName {
+			cfg, err := config.Load(filepath.Dir(path))
+			if err != nil {
+				return nil, err
+			}
+			return cfg.Providers, nil
+		}
+		raw, err := os.ReadFile(path) //nolint:gosec // operator-supplied -c config path
+		if err != nil {
+			return nil, err
+		}
+		cfg := config.DefaultConfig()
+		if err := json.Unmarshal(raw, cfg); err != nil {
+			return nil, err
+		}
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
+		return cfg.Providers, nil
 	}
 	cfg, err := config.Load(path)
 	if err != nil {

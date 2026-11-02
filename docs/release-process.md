@@ -22,6 +22,13 @@ Both trigger on `push: tags: ['v*.*.*']`.
 
 ## Cut a release
 
+0. **Run the outcome evaluation gate (O tier)** before cutting a minor or major release (`docs/mast-fold-design.md` §3.8, [#1403](https://github.com/go-steer/core-agent/issues/1403)):
+   ```bash
+   go install "github.com/go-steer/k8s-lookout/cmd/lookout@$(go run ./internal/evals/cmd/outcome --print-lookout-pin)"
+   for img in $(go run ./internal/evals/cmd/outcome --print-images); do docker pull "$img"; done
+   go run ./internal/evals/cmd/outcome
+   ```
+   Requires `kind`, `kubectl`, a container runtime, `lookout` at `outcome.PinnedLookout`, and live model credentials. The command creates an isolated throwaway `kind` cluster, side-loads the pre-pulled fixture images via `kind load docker-image`, runs the 3 admitted K8s troubleshooting cases (15 runs total, 5 repetitions per case) over `lookout`'s read-only MCP server, and tears the cluster and scratch directory down on exit. An exit code of `0` ("the board is green") is required before tagging.
 1. **Update `CHANGELOG.md`** — cumulative since the last GA. Run [`dev/release/cut-ga-tag.sh vX.Y.Z`](../dev/release/cut-ga-tag.sh); it folds every pre-release section between `## [Unreleased]` and the previous GA into a new `## [X.Y.Z] — YYYY-MM-DD` entry, hoists any `**BREAKING:**` bullets to a `### Breaking Changes` section, groups the merged PRs by kind (`#### Feature` / `#### Bug or Regression` / `#### Documentation` / `#### Other (Cleanup)`), and appends a pre-release-history trailer listing the dev/rc tags folded. Two things the script leaves for you: (a) replace the `<HEADLINE — ...>` placeholder with a 3-5 sentence operator-facing summary; (b) optionally sub-group bullets under theme headers within a kind (e.g. `_Digest + cost attribution stack:_`) — see v2.7.0 for the pattern. **Do NOT hand-carve** — the manual "promote [Unreleased] verbatim" path is how v2.7.0's first-cut notes ended up covering only ~5 post-dev.5 bullets instead of the full v2.6.0 → v2.7.0 delta, requiring a full rewrite. The whole entry becomes the GitHub Release body verbatim.
 2. **Bump `internal/version.Version`** in [`internal/version/version.go`](../internal/version/version.go) to `vX.Y.Z` (the tag you're about to cut), commit.
 3. **Tag and push:**

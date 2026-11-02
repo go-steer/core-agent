@@ -74,6 +74,7 @@ func exactlyOnce() Scenario {
 			if err != nil {
 				return Result{}, err
 			}
+			defer r.close()
 			const sid = "exactly-once"
 			if stopped, err := r.turn(ctx, sid, "api is OOMKilling; scale it"); err != nil {
 				return Result{}, err
@@ -156,6 +157,7 @@ func ambiguousRefusal() Scenario {
 			if err != nil {
 				return Result{}, err
 			}
+			defer r.close()
 			const sid = "ambiguous-refusal"
 			if err := r.seedDangling(ctx, sid, toolScale, "call-interrupted-1"); err != nil {
 				return Result{}, err
@@ -272,6 +274,7 @@ func budgetExhaustion() Scenario {
 			if err != nil {
 				return Result{}, err
 			}
+			defer r.close()
 			const sid = "budget-exhaustion"
 			stopped, err := r.turn(ctx, sid, "investigate everything you can about api")
 			if err != nil {
@@ -350,6 +353,7 @@ func approvalRejected() Scenario {
 			if err != nil {
 				return Result{}, err
 			}
+			defer r.close()
 			const sid = "approval-rejected"
 			if stopped, err := r.turn(ctx, sid, "api is OOMKilling; fix it"); err != nil {
 				return Result{}, err
@@ -435,6 +439,7 @@ func approvalEdited() Scenario {
 			if err != nil {
 				return Result{}, err
 			}
+			defer r.close()
 			const sid = "approval-edited"
 			if stopped, err := r.turn(ctx, sid, "api needs more headroom"); err != nil {
 				return Result{}, err
@@ -562,6 +567,7 @@ func feedbackCapture() Scenario {
 			if err != nil {
 				return Result{}, err
 			}
+			defer r.close()
 			const sid = "feedback-capture"
 			if stopped, err := r.turn(ctx, sid, "api is OOMKilling; fix it"); err != nil {
 				return Result{}, err

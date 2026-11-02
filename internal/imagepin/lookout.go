@@ -78,12 +78,19 @@ var Lookout = &Tracked{
 		"docs/site/src/content/docs/examples/index.md",
 	},
 
-	Literals: []Literal{{
-		Path: "examples/gke-troubleshoot-agent/recipe_test.go",
-		Re:   regexp.MustCompile(`wantWatcherTag\s*=\s*"(` + semverTagPattern + `)"`),
-		Why: "wantWatcherTag, the constant TestWatcherImagePinIsConsistent and " +
-			"TestWatcherTagInDocsIsCurrent hold every other site to",
-	}},
+	Literals: []Literal{
+		{
+			Path: "examples/gke-troubleshoot-agent/recipe_test.go",
+			Re:   regexp.MustCompile(`wantWatcherTag\s*=\s*"(` + semverTagPattern + `)"`),
+			Why: "wantWatcherTag, the constant TestWatcherImagePinIsConsistent and " +
+				"TestWatcherTagInDocsIsCurrent hold every other site to",
+		},
+		{
+			Path: "internal/evals/outcome/surface.go",
+			Re:   regexp.MustCompile(`PinnedLookout\s*=\s*"(` + semverTagPattern + `)"`),
+			Why:  "outcome.PinnedLookout, the lookout release the O tier is measured against",
+		},
+	},
 
 	// The two shapes a document names the pin in, unchanged from the
 	// pair PR #788 landed: a full image reference, and the prose

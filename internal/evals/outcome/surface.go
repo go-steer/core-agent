@@ -44,7 +44,7 @@ package outcome
 // means putting a kubeconfig path into the runner's own environment,
 // where every other child it launches can also see it. Handing the
 // server one literal path and an otherwise empty environment is the
-// narrower thing, and it still goes through the same [mcp.NewToolset]
+// narrower thing, and it still goes through the same [mcptoolset.New]
 // the daemon uses, so the stdio launch, the env scoping and the refusal
 // of server-initiated input are all the shipped code paths.
 //
@@ -185,7 +185,7 @@ func NewSurface(ctx context.Context, cfg SurfaceConfig) (*Surface, error) {
 // PR authors that the gate is noise, and a gate people have learned to
 // ignore is worse than no gate. Bumping it is a reviewable diff whose
 // board delta is the evidence for or against the bump.
-const PinnedLookout = "v0.23.0"
+const PinnedLookout = "v0.36.0"
 
 // Toolset mints a toolset for one agent run. The MCP session — and so
 // the stdio child — is established lazily on the first tool call, so a

@@ -16,6 +16,7 @@ package evalcompose
 
 import (
 	"fmt"
+	"strings"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/mcp"
 )
 
 // Mode is the ADK v2 agent mode a specialist runs in.
@@ -130,25 +132,24 @@ func (o BuildOptions) modelFor(spec Spec) (model.LLM, error) {
 	return m, nil
 }
 
-type filteredToolset struct {
-	inner   tool.Toolset
-	allowed map[string]bool
-}
-
-func (f *filteredToolset) Name() string { return f.inner.Name() }
-
-func (f *filteredToolset) Tools(ctx adkagent.ReadonlyContext) ([]tool.Tool, error) {
-	offered, err := f.inner.Tools(ctx)
-	if err != nil {
-		return nil, err
+func filterTools(spec Spec, offered []tool.Tool) []tool.Tool {
+	if spec.Tools.Builtin == nil {
+		return offered
 	}
-	var kept []tool.Tool
+	if len(spec.Tools.Builtin) == 0 {
+		return nil
+	}
+	allowed := make(map[string]bool, len(spec.Tools.Builtin))
+	for _, n := range spec.Tools.Builtin {
+		allowed[n] = true
+	}
+	var out []tool.Tool
 	for _, t := range offered {
-		if f.allowed[t.Name()] {
-			kept = append(kept, t)
+		if t != nil && allowed[t.Name()] {
+			out = append(out, t)
 		}
 	}
-	return kept, nil
+	return out
 }
 
 func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
@@ -161,7 +162,15 @@ func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
 	}
 	var out []tool.Toolset
 	for _, ts := range offered {
+		if ts == nil {
+			continue
+		}
 		al, ok := byServer[ts.Name()]
+		if !ok {
+			if trimmed, cut := strings.CutSuffix(ts.Name(), "_mcp_tool_set"); cut {
+				al, ok = byServer[trimmed]
+			}
+		}
 		if !ok {
 			continue
 		}
@@ -169,11 +178,7 @@ func filterToolsets(spec Spec, offered []tool.Toolset) []tool.Toolset {
 			out = append(out, ts)
 			continue
 		}
-		allowed := make(map[string]bool, len(al.Tools))
-		for _, n := range al.Tools {
-			allowed[n] = true
-		}
-		out = append(out, &filteredToolset{inner: ts, allowed: allowed})
+		out = append(out, mcp.FilterToolset(ts, al.Server, al.Tools))
 	}
 	return out
 }
@@ -200,7 +205,7 @@ func Build(spec Spec, opts BuildOptions) (adkagent.Agent, error) {
 			Description:         spec.Description,
 			Instruction:         spec.Instruction,
 			Model:               llm,
-			Tools:               opts.Tools,
+			Tools:               filterTools(spec, opts.Tools),
 			Toolsets:            filterToolsets(spec, opts.Toolsets),
 			OutputSchema:        spec.OutputSchema,
 			AfterModelCallbacks: after,

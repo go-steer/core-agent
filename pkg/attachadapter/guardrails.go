@@ -25,6 +25,7 @@
 package attachadapter
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -42,6 +43,7 @@ func (ad *Adapter) AttachGuardrails() attach.GuardrailInfo {
 	if a == nil {
 		return attach.GuardrailInfo{Watchdog: attach.WatchdogInfo{Mode: "off"}}
 	}
+	_ = a.RestoreGuardrails(context.Background())
 	wdTripped, wdReason := a.WatchdogTripped()
 	ccTripped, ccReason := a.CostCeilingTripped()
 	lim := a.CostCeilingLimits()
@@ -93,6 +95,7 @@ func (ad *Adapter) AttachResetGuardrail(req attach.GuardrailResetRequest) (attac
 	if a == nil {
 		return attach.GuardrailResetResponse{}, attach.ErrCapabilityNotRegistered
 	}
+	_ = a.RestoreGuardrails(context.Background())
 	target := req.Guardrail
 	if target == "" {
 		target = attach.GuardrailAll

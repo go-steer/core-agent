@@ -37,16 +37,20 @@ const (
 // whether a session's watchdog or cost ceiling has tripped and any
 // cumulative operator-granted budget extensions (#1360).
 type GuardrailState struct {
-	AppName            string    `gorm:"primaryKey;not null"`
-	UserID             string    `gorm:"primaryKey;not null"`
-	SessionID          string    `gorm:"primaryKey;not null"`
-	WatchdogTripped    bool      `gorm:"not null;default:false"`
-	WatchdogReason     string    `gorm:"type:text"`
-	CostTripped        bool      `gorm:"not null;default:false"`
-	CostReason         string    `gorm:"type:text"`
-	BudgetExtensionUSD float64   `gorm:"not null;default:0"`
-	LastEventID        string    `gorm:"type:text"`
-	UpdatedAt          time.Time `gorm:"autoUpdateTime"`
+	AppName            string  `gorm:"primaryKey;not null"`
+	UserID             string  `gorm:"primaryKey;not null"`
+	SessionID          string  `gorm:"primaryKey;not null"`
+	WatchdogTripped    bool    `gorm:"not null;default:false"`
+	WatchdogReason     string  `gorm:"type:text"`
+	CostTripped        bool    `gorm:"not null;default:false"`
+	CostReason         string  `gorm:"type:text"`
+	BudgetExtensionUSD float64 `gorm:"not null;default:0"`
+	// LastEventID records the most recent reset event ID that added to
+	// BudgetExtensionUSD so fallback retries cannot double-apply an
+	// additive budget extension (trip/clear assignments are naturally
+	// idempotent).
+	LastEventID string    `gorm:"type:text"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime"`
 }
 
 // TableName pins the GORM table name across database drivers.
@@ -81,10 +85,10 @@ func (s *GuardrailStore) TripWatchdog(ctx context.Context, appName, userID, sess
 	if s == nil || s.db == nil {
 		return errors.New("eventlog: GuardrailStore is nil")
 	}
-	return tripWatchdogOnDB(s.db.WithContext(ctx), appName, userID, sessionID, reason, "")
+	return tripWatchdogOnDB(s.db.WithContext(ctx), appName, userID, sessionID, reason)
 }
 
-func tripWatchdogOnDB(db *gorm.DB, appName, userID, sessionID, reason, eventID string) error {
+func tripWatchdogOnDB(db *gorm.DB, appName, userID, sessionID, reason string) error {
 	now := time.Now().UTC()
 	row := GuardrailState{
 		AppName:         appName,
@@ -92,16 +96,12 @@ func tripWatchdogOnDB(db *gorm.DB, appName, userID, sessionID, reason, eventID s
 		SessionID:       sessionID,
 		WatchdogTripped: true,
 		WatchdogReason:  reason,
-		LastEventID:     eventID,
 		UpdatedAt:       now,
 	}
 	updates := map[string]any{
 		"watchdog_tripped": true,
 		"watchdog_reason":  reason,
 		"updated_at":       now,
-	}
-	if eventID != "" {
-		updates["last_event_id"] = eventID
 	}
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "app_name"}, {Name: "user_id"}, {Name: "session_id"}},
@@ -117,10 +117,10 @@ func (s *GuardrailStore) TripCost(ctx context.Context, appName, userID, sessionI
 	if s == nil || s.db == nil {
 		return errors.New("eventlog: GuardrailStore is nil")
 	}
-	return tripCostOnDB(s.db.WithContext(ctx), appName, userID, sessionID, reason, "")
+	return tripCostOnDB(s.db.WithContext(ctx), appName, userID, sessionID, reason)
 }
 
-func tripCostOnDB(db *gorm.DB, appName, userID, sessionID, reason, eventID string) error {
+func tripCostOnDB(db *gorm.DB, appName, userID, sessionID, reason string) error {
 	now := time.Now().UTC()
 	row := GuardrailState{
 		AppName:     appName,
@@ -128,16 +128,12 @@ func tripCostOnDB(db *gorm.DB, appName, userID, sessionID, reason, eventID strin
 		SessionID:   sessionID,
 		CostTripped: true,
 		CostReason:  reason,
-		LastEventID: eventID,
 		UpdatedAt:   now,
 	}
 	updates := map[string]any{
 		"cost_tripped": true,
 		"cost_reason":  reason,
 		"updated_at":   now,
-	}
-	if eventID != "" {
-		updates["last_event_id"] = eventID
 	}
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "app_name"}, {Name: "user_id"}, {Name: "session_id"}},
@@ -153,25 +149,21 @@ func (s *GuardrailStore) ClearWatchdog(ctx context.Context, appName, userID, ses
 	if s == nil || s.db == nil {
 		return errors.New("eventlog: GuardrailStore is nil")
 	}
-	return clearWatchdogOnDB(s.db.WithContext(ctx), appName, userID, sessionID, "")
+	return clearWatchdogOnDB(s.db.WithContext(ctx), appName, userID, sessionID)
 }
 
-func clearWatchdogOnDB(db *gorm.DB, appName, userID, sessionID, eventID string) error {
+func clearWatchdogOnDB(db *gorm.DB, appName, userID, sessionID string) error {
 	now := time.Now().UTC()
 	row := GuardrailState{
-		AppName:     appName,
-		UserID:      userID,
-		SessionID:   sessionID,
-		LastEventID: eventID,
-		UpdatedAt:   now,
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: sessionID,
+		UpdatedAt: now,
 	}
 	updates := map[string]any{
 		"watchdog_tripped": false,
 		"watchdog_reason":  "",
 		"updated_at":       now,
-	}
-	if eventID != "" {
-		updates["last_event_id"] = eventID
 	}
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "app_name"}, {Name: "user_id"}, {Name: "session_id"}},
@@ -187,25 +179,21 @@ func (s *GuardrailStore) ClearCost(ctx context.Context, appName, userID, session
 	if s == nil || s.db == nil {
 		return errors.New("eventlog: GuardrailStore is nil")
 	}
-	return clearCostOnDB(s.db.WithContext(ctx), appName, userID, sessionID, "")
+	return clearCostOnDB(s.db.WithContext(ctx), appName, userID, sessionID)
 }
 
-func clearCostOnDB(db *gorm.DB, appName, userID, sessionID, eventID string) error {
+func clearCostOnDB(db *gorm.DB, appName, userID, sessionID string) error {
 	now := time.Now().UTC()
 	row := GuardrailState{
-		AppName:     appName,
-		UserID:      userID,
-		SessionID:   sessionID,
-		LastEventID: eventID,
-		UpdatedAt:   now,
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: sessionID,
+		UpdatedAt: now,
 	}
 	updates := map[string]any{
 		"cost_tripped": false,
 		"cost_reason":  "",
 		"updated_at":   now,
-	}
-	if eventID != "" {
-		updates["last_event_id"] = eventID
 	}
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "app_name"}, {Name: "user_id"}, {Name: "session_id"}},
@@ -234,36 +222,21 @@ func addBudgetExtensionOnDB(db *gorm.DB, appName, userID, sessionID string, addU
 	if addUSD <= 0 {
 		return nil
 	}
-	var cur GuardrailState
-	err := db.Where("app_name = ? AND user_id = ? AND session_id = ?", appName, userID, sessionID).
-		First(&cur).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("eventlog: load guardrail state for budget extension: %w", err)
+	if err := ensureStateOnDB(db, appName, userID, sessionID); err != nil {
+		return err
 	}
-	if eventID != "" && cur.LastEventID == eventID {
-		return nil
-	}
-	next := cur.BudgetExtensionUSD + addUSD
 	now := time.Now().UTC()
-	row := GuardrailState{
-		AppName:            appName,
-		UserID:             userID,
-		SessionID:          sessionID,
-		BudgetExtensionUSD: next,
-		LastEventID:        eventID,
-		UpdatedAt:          now,
-	}
 	updates := map[string]any{
-		"budget_extension_usd": next,
+		"budget_extension_usd": gorm.Expr("budget_extension_usd + ?", addUSD),
 		"updated_at":           now,
 	}
+	q := db.Model(&GuardrailState{}).
+		Where("app_name = ? AND user_id = ? AND session_id = ?", appName, userID, sessionID)
 	if eventID != "" {
+		q = q.Where("last_event_id IS NULL OR last_event_id != ?", eventID)
 		updates["last_event_id"] = eventID
 	}
-	if err := db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "app_name"}, {Name: "user_id"}, {Name: "session_id"}},
-		DoUpdates: clause.Assignments(updates),
-	}).Create(&row).Error; err != nil {
+	if err := q.Updates(updates).Error; err != nil {
 		return fmt.Errorf("eventlog: add guardrail budget extension: %w", err)
 	}
 	return nil
@@ -454,19 +427,19 @@ func applyGuardrailEventOnDB(db *gorm.DB, sess session.Session, ev *session.Even
 		reason, _ := ev.CustomMetadata["reason"].(string)
 		switch g {
 		case guardrailKindWatchdog:
-			return tripWatchdogOnDB(db.Session(&gorm.Session{NewDB: true}), appName, userID, sessionID, reason, "")
+			return tripWatchdogOnDB(db.Session(&gorm.Session{NewDB: true}), appName, userID, sessionID, reason)
 		case guardrailKindCost:
-			return tripCostOnDB(db.Session(&gorm.Session{NewDB: true}), appName, userID, sessionID, reason, "")
+			return tripCostOnDB(db.Session(&gorm.Session{NewDB: true}), appName, userID, sessionID, reason)
 		}
 	case guardrailResetAuthor:
 		for _, g := range guardrailResetTargets(ev.CustomMetadata["reset"]) {
 			switch g {
 			case guardrailKindWatchdog:
-				if err := clearWatchdogOnDB(db.Session(&gorm.Session{NewDB: true}), appName, userID, sessionID, ""); err != nil {
+				if err := clearWatchdogOnDB(db.Session(&gorm.Session{NewDB: true}), appName, userID, sessionID); err != nil {
 					return err
 				}
 			case guardrailKindCost:
-				if err := clearCostOnDB(db.Session(&gorm.Session{NewDB: true}), appName, userID, sessionID, ""); err != nil {
+				if err := clearCostOnDB(db.Session(&gorm.Session{NewDB: true}), appName, userID, sessionID); err != nil {
 					return err
 				}
 			}

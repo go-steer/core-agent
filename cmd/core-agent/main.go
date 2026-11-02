@@ -1992,16 +1992,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		send(w)
 	}
 	ceilingPolicy.Store(&pricingPolicy)
-	if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
-		opts = append(opts, agent.WithCostCeiling(ceiling))
-		// 0 means "no ceiling", so print that rather than "$0.0000",
-		// which reads like a ceiling that trips on the first token.
-		sessionCeiling := "disabled"
-		if ceiling.MaxSessionUSD > 0 {
-			sessionCeiling = fmt.Sprintf("$%.4f", ceiling.MaxSessionUSD)
-		}
-		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=%s [session ceiling from %s] (refuses new turns when exceeded; clear with /guardrail reset, or POST /sessions/{id}/guardrails/reset — a per-session trip needs +budget)", ceiling.MaxTurnUSD, sessionCeiling, guard.SessionCostSource))
-	}
+	opts = appendCostAndWallclockOpts(opts, cfg, ceiling, guard.SessionCostSource, send)
 	// Behavioral watchdog (#123 PR 2), a ladder rather than a set of
 	// alternatives: "warn" observes and logs to the operator, "feedback"
 	// adds the model-facing injection (#159), "enforce" adds the halt
@@ -3107,6 +3098,23 @@ func resolveAutoContinue(ac *config.AutoContinueConfig, multiSession, noREPL, ha
 		fmt.Fprintln(stderr, "core-agent: auto_continue on by default (multi-session/--no-repl + durable eventlog); set agent.auto_continue.enabled=false to opt out")
 	}
 	return res, nil
+}
+
+func appendCostAndWallclockOpts(opts []agent.Option, cfg *config.Config, ceiling agent.CostCeiling, sessionCostSource string, send func(string)) []agent.Option {
+	if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
+		opts = append(opts, agent.WithCostCeiling(ceiling))
+		// 0 means "no ceiling", so print that rather than "$0.0000",
+		// which reads like a ceiling that trips on the first token.
+		sessionCeiling := "disabled"
+		if ceiling.MaxSessionUSD > 0 {
+			sessionCeiling = fmt.Sprintf("$%.4f", ceiling.MaxSessionUSD)
+		}
+		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=%s [session ceiling from %s] (refuses new turns when exceeded; clear with /guardrail reset, or POST /sessions/{id}/guardrails/reset — a per-session trip needs +budget)", ceiling.MaxTurnUSD, sessionCeiling, sessionCostSource))
+	}
+	if cfg != nil && cfg.Agent.MaxWallclockSeconds > 0 {
+		opts = append(opts, agent.WithMaxWallclock(time.Duration(cfg.Agent.MaxWallclockSeconds)*time.Second))
+	}
+	return opts
 }
 
 func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) {

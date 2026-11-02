@@ -170,19 +170,33 @@ func LoadSubagentMarkdownFile(path string) (SubagentSpec, error) {
 }
 
 func splitSubagentFrontmatter(data []byte) (subagentFrontmatter, string, error) {
+	yamlBlock, body, err := splitYAMLFrontmatterBytes(data)
+	if err != nil {
+		return subagentFrontmatter{}, "", err
+	}
+	var fm subagentFrontmatter
+	dec := yaml.NewDecoder(bytes.NewReader(yamlBlock))
+	dec.KnownFields(true)
+	if err := dec.Decode(&fm); err != nil && !errors.Is(err, io.EOF) {
+		return subagentFrontmatter{}, "", fmt.Errorf("parse frontmatter yaml: %w", err)
+	}
+	return fm, body, nil
+}
+
+func splitYAMLFrontmatterBytes(data []byte) ([]byte, string, error) {
 	const sep = "---"
 
 	trimmed := bytes.TrimLeft(data, " \t\r\n")
 	if !bytes.HasPrefix(trimmed, []byte(sep)) {
-		return subagentFrontmatter{}, "", fmt.Errorf("missing frontmatter (file must start with `---`)")
+		return nil, "", fmt.Errorf("missing frontmatter (file must start with `---`)")
 	}
 	rest := trimmed[len(sep):]
 	nl := bytes.IndexByte(rest, '\n')
 	if nl < 0 {
-		return subagentFrontmatter{}, "", fmt.Errorf("missing frontmatter terminator (no `---` on its own line)")
+		return nil, "", fmt.Errorf("missing frontmatter terminator (no `---` on its own line)")
 	}
 	if len(bytes.TrimRight(rest[:nl], "\r")) != 0 {
-		return subagentFrontmatter{}, "", fmt.Errorf("missing frontmatter (opening `---` must be on its own line)")
+		return nil, "", fmt.Errorf("missing frontmatter (opening `---` must be on its own line)")
 	}
 	rest = rest[nl+1:]
 
@@ -211,18 +225,9 @@ func splitSubagentFrontmatter(data []byte) (subagentFrontmatter, string, error) 
 		pos = nextPos
 	}
 	if end < 0 {
-		return subagentFrontmatter{}, "", fmt.Errorf("missing frontmatter terminator (no closing `---`)")
+		return nil, "", fmt.Errorf("missing frontmatter terminator (no closing `---`)")
 	}
-	yamlBlock := rest[:end]
-	body := rest[afterEnd:]
-
-	var fm subagentFrontmatter
-	dec := yaml.NewDecoder(bytes.NewReader(yamlBlock))
-	dec.KnownFields(true)
-	if err := dec.Decode(&fm); err != nil && !errors.Is(err, io.EOF) {
-		return subagentFrontmatter{}, "", fmt.Errorf("parse frontmatter yaml: %w", err)
-	}
-	return fm, string(body), nil
+	return rest[:end], string(rest[afterEnd:]), nil
 }
 
 var (

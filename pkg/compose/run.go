@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -59,7 +60,7 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		diskCfg, err := config.Load(agentsDir)
+		diskCfg, err := loadComposeDirConfig(projectRoot, agentsDir)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +77,13 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 			gate.SetPrompter(cfg.Prompter)
 		}
 
-		servers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, "", nil, gate, nil, nil)
+		mcpDir := agentsDir
+		if _, err := os.Stat(filepath.Join(agentsDir, "mcp.json")); errors.Is(err, fs.ErrNotExist) {
+			if _, perr := os.Stat(filepath.Join(projectRoot, "mcp.json")); perr == nil {
+				mcpDir = projectRoot
+			}
+		}
+		servers, mcpToolsets, mcpErr := mcp.Build(ctx, mcpDir, "", nil, gate, nil, nil)
 		defer mcp.CloseAll(servers)
 		if mcpErr != nil {
 			return nil, fmt.Errorf("compose: mcp: %w", mcpErr)
@@ -140,6 +147,14 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 			}
 			if !loaded.Empty() {
 				cfg.Instruction = loaded.Instruction
+			} else if coordData, cerr := os.ReadFile(filepath.Join(projectRoot, "coordinator.md")); cerr == nil {
+				if trimmed := strings.TrimSpace(string(coordData)); trimmed != "" {
+					expanded, _, expErr := instruction.Expand(trimmed, projectRoot, projectRoot, instruction.WithContentRoots(contentRoots))
+					if expErr != nil {
+						return nil, expErr
+					}
+					cfg.Instruction = expanded
+				}
 			}
 		}
 	} else if cfg.Config != nil && len(cfg.Config.Subagents) > 0 {
@@ -240,6 +255,15 @@ func mergeComposeConfig(base, override *config.Config) *config.Config {
 	if override.Tools.Disable != nil {
 		cp.Tools.Disable = override.Tools.Disable
 	}
+	if override.Tools.Policies != nil {
+		cp.Tools.Policies = override.Tools.Policies
+	}
+	if override.Agent.MaxWallclockSeconds != 0 {
+		cp.Agent.MaxWallclockSeconds = override.Agent.MaxWallclockSeconds
+	}
+	if override.Agent.FinalReport {
+		cp.Agent.FinalReport = true
+	}
 	if override.ContentRoots != nil {
 		cp.ContentRoots = override.ContentRoots
 	}
@@ -247,6 +271,21 @@ func mergeComposeConfig(base, override *config.Config) *config.Config {
 		cp.Subagents = override.Subagents
 	}
 	return &cp
+}
+
+func loadComposeDirConfig(projectRoot, agentsDir string) (*config.Config, error) {
+	cfgFile := filepath.Join(agentsDir, config.ConfigFileName)
+	if _, err := os.Stat(cfgFile); errors.Is(err, os.ErrNotExist) {
+		for _, dir := range []string{projectRoot, agentsDir} {
+			if dir == "" {
+				continue
+			}
+			if _, werr := os.Stat(filepath.Join(dir, "workload.yaml")); werr == nil {
+				return config.LoadWorkloadConfig(dir)
+			}
+		}
+	}
+	return config.Load(agentsDir)
 }
 
 type composeNamedToolset struct {

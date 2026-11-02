@@ -235,6 +235,13 @@ func (g *Gate) SetToolClasses(classes map[string]ToolClass) {
 	g.mu.Unlock()
 }
 
+// IsBuiltinTool reports whether name is a built-in tool in core-agent's
+// standard tool classification table.
+func IsBuiltinTool(name string) bool {
+	_, ok := builtinToolClasses[strings.TrimSpace(name)]
+	return ok
+}
+
 // ToolClass returns the resolved ToolClass for toolName on this gate.
 // Precedence: engine control calls (always ClassReadOnly) > explicit
 // per-gate overrides > DefaultToolClass (built-in table, then
@@ -250,6 +257,15 @@ func (g *Gate) ToolClass(toolName string) ToolClass {
 		g.mu.Unlock()
 		if c, ok := classes[toolName]; ok {
 			return c
+		}
+		if _, isBuiltin := builtinToolClasses[toolName]; !isBuiltin {
+			for i := 0; i < len(toolName); i++ {
+				if toolName[i] == '_' && i+1 < len(toolName) {
+					if c, ok := classes[toolName[i+1:]]; ok {
+						return c
+					}
+				}
+			}
 		}
 	}
 	return DefaultToolClass(toolName)

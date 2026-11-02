@@ -282,6 +282,7 @@ type WorkloadMonitorAck struct {
 // (<workloadDir>/workload.yaml + specialists/<name>.specialist.md).
 func LoadWorkload(workloadDir string) (*WorkloadBundle, error) {
 	path := filepath.Join(workloadDir, WorkloadFileName)
+	// #nosec G703 -- path is workload.yaml inside caller-selected workloadDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: read workload %q: %w", path, err)
@@ -440,7 +441,7 @@ func (b *WorkloadBundle) validateWorkloadMonitor() error {
 	tmp := &Config{
 		Schedule: sc,
 		Monitor:  workloadMonitorToConfig(b.Monitor),
-		Tools:    ToolsConfig{Policies: expandWorkloadToolPolicies(b)},
+		Tools:    ToolsConfig{Policies: b.ToolCatalog.Tools},
 	}
 	return tmp.validateMonitor()
 }
@@ -532,6 +533,11 @@ func validateWorkloadRosterAndTools(specialists []string, tools []ToolPolicyConf
 }
 
 func validateWorkloadToolPolicy(p ToolPolicyConfig) error {
+	for _, f := range p.ParkHintFields {
+		if strings.TrimSpace(f) == "" {
+			return fmt.Errorf("tool_catalog.tools[%q].park_hint_fields contains an empty field name", p.Name)
+		}
+	}
 	if pre := p.Precondition; pre != nil {
 		if strings.TrimSpace(pre.Read) == "" {
 			return fmt.Errorf("tool_catalog.tools[%q].precondition names no read tool", p.Name)
@@ -599,6 +605,7 @@ func loadWorkloadSpecialists(workloadDir string, names []string) ([]SubagentSpec
 }
 
 func loadSpecialistMarkdownFile(path, expectedName string) (SubagentSpec, error) {
+	// #nosec G703 -- path is a validated specialist file inside workloadDir/specialists.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return SubagentSpec{}, fmt.Errorf("config: read specialist %q: %w", path, err)
@@ -669,27 +676,9 @@ func loadSpecialistMarkdownFile(path, expectedName string) (SubagentSpec, error)
 }
 
 func splitSpecialistFrontmatter(data []byte) (specialistFrontmatter, string, error) {
-	const sep = "---"
-	trimmed := bytes.TrimLeft(data, " \t\r\n")
-	if !bytes.HasPrefix(trimmed, []byte(sep)) {
-		return specialistFrontmatter{}, "", errors.New("missing frontmatter (file must start with `---`)")
-	}
-	rest := trimmed[len(sep):]
-	nl := bytes.IndexByte(rest, '\n')
-	if nl < 0 {
-		return specialistFrontmatter{}, "", errors.New("missing frontmatter terminator")
-	}
-	rest = rest[nl+1:]
-	end := bytes.Index(rest, []byte("\n---"))
-	if end < 0 {
-		return specialistFrontmatter{}, "", errors.New("missing closing `---`")
-	}
-	yamlBlock := rest[:end]
-	body := rest[end+len("\n---"):]
-	if len(body) > 0 && body[0] == '\n' {
-		body = body[1:]
-	} else if len(body) > 1 && body[0] == '\r' && body[1] == '\n' {
-		body = body[2:]
+	yamlBlock, body, err := splitYAMLFrontmatterBytes(data)
+	if err != nil {
+		return specialistFrontmatter{}, "", err
 	}
 	var fm specialistFrontmatter
 	dec := yaml.NewDecoder(bytes.NewReader(yamlBlock))
@@ -697,7 +686,7 @@ func splitSpecialistFrontmatter(data []byte) (specialistFrontmatter, string, err
 	if err := dec.Decode(&fm); err != nil && !errors.Is(err, io.EOF) {
 		return specialistFrontmatter{}, "", fmt.Errorf("parse frontmatter yaml: %w", err)
 	}
-	return fm, string(body), nil
+	return fm, body, nil
 }
 
 func normalizeSpecialistMode(raw string) (string, error) {
@@ -744,6 +733,25 @@ func checkWorkloadCapabilitySplit(b WorkloadBundle, specs []SubagentSpec) error 
 	return nil
 }
 
+// LoadWorkloadConfig loads and validates a legacy workload bundle directory
+// (<workloadDir>/workload.yaml + specialists/<name>.specialist.md) into an
+// in-memory *Config without writing files to disk (#1455).
+func LoadWorkloadConfig(workloadDir string) (*Config, error) {
+	b, err := LoadWorkload(workloadDir)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := buildConfigFromWorkload(b)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Subagents = append([]SubagentSpec(nil), b.ResolvedSpecs...)
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
 // ImportWorkload converts a legacy workload bundle directory (<workloadDir>)
 // into a core-agent recipe directory (<outDir>):
 //   - <outDir>/AGENTS.md
@@ -763,7 +771,9 @@ func ImportWorkload(workloadDir, outDir string) (*Config, error) {
 		outDir = workloadDir
 	}
 	agentsDir := filepath.Join(outDir, ".agents")
-	if err := os.MkdirAll(filepath.Join(agentsDir, SubagentsDirName), 0o755); err != nil {
+	subagentsDir := filepath.Join(agentsDir, SubagentsDirName)
+	// #nosec G703 -- subagentsDir is .agents/subagents inside caller-selected outDir.
+	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("config: create subagents dir: %w", err)
 	}
 	if err := copyWorkloadSchemas(workloadDir, agentsDir); err != nil {
@@ -772,8 +782,11 @@ func ImportWorkload(workloadDir, outDir string) (*Config, error) {
 	if err := copyWorkloadMCPConfig(workloadDir, agentsDir); err != nil {
 		return nil, err
 	}
+	if err := pruneStaleSubagentMarkdownFiles(subagentsDir, b.ResolvedSpecs); err != nil {
+		return nil, err
+	}
 	for _, spec := range b.ResolvedSpecs {
-		if err := writeSubagentMarkdownFile(filepath.Join(agentsDir, SubagentsDirName, spec.Name+SubagentMarkdownExt), spec); err != nil {
+		if err := writeSubagentMarkdownFile(filepath.Join(subagentsDir, spec.Name+SubagentMarkdownExt), spec); err != nil {
 			return nil, err
 		}
 	}
@@ -784,10 +797,36 @@ func ImportWorkload(workloadDir, outDir string) (*Config, error) {
 	if err := writeConvertedConfigJSON(filepath.Join(agentsDir, "config.json"), cfg); err != nil {
 		return nil, err
 	}
-	if err := writeWorkloadAgentsMD(filepath.Join(outDir, "AGENTS.md"), b); err != nil {
+	if err := writeWorkloadAgentsMD(workloadDir, outDir, filepath.Join(outDir, "AGENTS.md"), b); err != nil {
 		return nil, err
 	}
 	return Load(agentsDir)
+}
+
+func pruneStaleSubagentMarkdownFiles(subagentsDir string, active []SubagentSpec) error {
+	keep := make(map[string]bool, len(active))
+	for _, s := range active {
+		keep[s.Name+SubagentMarkdownExt] = true
+	}
+	entries, err := os.ReadDir(subagentsDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("config: read subagents dir %q: %w", subagentsDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), SubagentMarkdownExt) {
+			continue
+		}
+		if !keep[e.Name()] {
+			// #nosec G703 -- e.Name() is a directory entry inside subagentsDir.
+			if err := os.Remove(filepath.Join(subagentsDir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("config: remove stale subagent %q: %w", e.Name(), err)
+			}
+		}
+	}
+	return nil
 }
 
 func buildConfigFromWorkload(b *WorkloadBundle) (*Config, error) {
@@ -844,7 +883,7 @@ func buildConfigFromWorkload(b *WorkloadBundle) (*Config, error) {
 	cfg.Permissions.Mode = mapWorkloadHITLMode(b.HITL)
 	cfg.Permissions.Allow = buildWorkloadAllowPatterns(b)
 	if len(b.ToolCatalog.Tools) > 0 {
-		cfg.Tools.Policies = expandWorkloadToolPolicies(b)
+		cfg.Tools.Policies = append([]ToolPolicyConfig(nil), b.ToolCatalog.Tools...)
 	}
 	sc, err := b.ParsedSchedule()
 	if err != nil {
@@ -882,6 +921,26 @@ func mapWorkloadHITLMode(h WorkloadHITL) string {
 	}
 }
 
+func sanitizeMCPServerPrefix(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+			sb.WriteRune(r)
+		default:
+			sb.WriteByte('_')
+		}
+	}
+	return sb.String()
+}
+
+func qualifyMCPToolName(prefix, toolName string) string {
+	if prefix == "" || strings.HasPrefix(toolName, prefix) {
+		return toolName
+	}
+	return prefix + toolName
+}
+
 func buildWorkloadAllowPatterns(b *WorkloadBundle) []string {
 	specSet := make(map[string]bool, len(b.Specialists))
 	for _, s := range b.Specialists {
@@ -902,7 +961,7 @@ func buildWorkloadAllowPatterns(b *WorkloadBundle) []string {
 		if t.Mutating == nil || *t.Mutating {
 			continue
 		}
-		if specSet[t.Name] || strings.Contains(t.Name, "-") {
+		if specSet[t.Name] {
 			add("spawn_agent:" + t.Name)
 			continue
 		}
@@ -911,21 +970,11 @@ func buildWorkloadAllowPatterns(b *WorkloadBundle) []string {
 			continue
 		}
 		for _, srv := range b.ToolCatalog.MCP {
-			prefix := srv.Server + "_"
-			if strings.HasPrefix(t.Name, prefix) {
-				add("mcp:" + t.Name + "*")
-			} else {
-				add("mcp:" + prefix + t.Name + "*")
-			}
+			prefix := sanitizeMCPServerPrefix(srv.Server) + "_"
+			add("mcp:" + qualifyMCPToolName(prefix, t.Name) + "*")
 		}
 	}
 	return allow
-}
-
-func expandWorkloadToolPolicies(b *WorkloadBundle) []ToolPolicyConfig {
-	out := make([]ToolPolicyConfig, 0, len(b.ToolCatalog.Tools))
-	out = append(out, b.ToolCatalog.Tools...)
-	return out
 }
 
 type subagentFrontmatterOut struct {
@@ -988,6 +1037,7 @@ func writeSubagentMarkdownFile(path string, spec SubagentSpec) error {
 			buf.WriteByte('\n')
 		}
 	}
+	// #nosec G703 -- path is a validated subagent markdown file inside .agents/subagents.
 	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
@@ -1030,16 +1080,22 @@ func writeConvertedConfigJSON(path string, cfg *Config) error {
 		return fmt.Errorf("config: marshal %q: %w", path, err)
 	}
 	data = append(data, '\n')
+	// #nosec G703 -- path is .agents/config.json inside caller-selected outDir.
 	return os.WriteFile(path, data, 0o644)
 }
 
 func copyWorkloadSchemas(workloadDir, agentsDir string) error {
 	srcDir := filepath.Join(workloadDir, SchemasDirName)
-	if _, err := os.Stat(srcDir); err != nil {
+	// #nosec G703 -- srcDir is schemas/ inside caller-selected workloadDir.
+	info, err := os.Lstat(srcDir)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("config: stat schemas dir %q: %w", srcDir, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("config: schemas dir %q is a symlink (refusing to follow symlink)", srcDir)
 	}
 	dstDir := filepath.Join(agentsDir, SchemasDirName)
 	srcFS := os.DirFS(srcDir)
@@ -1047,8 +1103,12 @@ func copyWorkloadSchemas(workloadDir, agentsDir string) error {
 		if walkErr != nil {
 			return walkErr
 		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("config: schema %q is a symlink (refusing to follow symlink out of %q)", rel, srcDir)
+		}
 		targetPath := filepath.Join(dstDir, filepath.FromSlash(rel))
 		if d.IsDir() {
+			// #nosec G703 -- rel is a validated fs.WalkDir path inside os.DirFS(srcDir).
 			return os.MkdirAll(targetPath, 0o755)
 		}
 		data, err := fs.ReadFile(srcFS, rel)
@@ -1065,6 +1125,7 @@ func copyWorkloadSchemas(workloadDir, agentsDir string) error {
 
 func copyWorkloadMCPConfig(workloadDir, agentsDir string) error {
 	src := filepath.Join(workloadDir, "mcp.json")
+	// #nosec G703 -- src is mcp.json inside caller-selected workloadDir.
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -1080,9 +1141,32 @@ func copyWorkloadMCPConfig(workloadDir, agentsDir string) error {
 	return os.WriteFile(dst, data, 0o644)
 }
 
-func writeWorkloadAgentsMD(path string, b *WorkloadBundle) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
+func writeWorkloadAgentsMD(workloadDir, outDir, path string, b *WorkloadBundle) error {
+	coordPath := filepath.Join(workloadDir, "coordinator.md")
+	// #nosec G703 -- coordPath is coordinator.md inside caller-selected workloadDir.
+	if data, err := os.ReadFile(coordPath); err == nil {
+		// #nosec G703 -- path is AGENTS.md inside caller-selected outDir.
+		return os.WriteFile(path, data, 0o644)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("config: read %q: %w", coordPath, err)
+	}
+	if filepath.Clean(workloadDir) != filepath.Clean(outDir) {
+		srcAgents := filepath.Join(workloadDir, "AGENTS.md")
+		// #nosec G703 -- srcAgents is AGENTS.md inside caller-selected workloadDir.
+		if data, err := os.ReadFile(srcAgents); err == nil {
+			if !strings.Contains(string(data), "\n## Subagent Roster\n") {
+				// #nosec G703 -- path is AGENTS.md inside caller-selected outDir.
+				return os.WriteFile(path, data, 0o644)
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("config: read %q: %w", srcAgents, err)
+		}
+	}
+	// #nosec G703 -- path is AGENTS.md inside caller-selected outDir.
+	if existing, err := os.ReadFile(path); err == nil {
+		if !strings.Contains(string(existing), "\n## Subagent Roster\n") {
+			return nil
+		}
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# %s\n\n", b.Name)
@@ -1097,5 +1181,6 @@ func writeWorkloadAgentsMD(path string, b *WorkloadBundle) error {
 	if b.EdgeTrigger.HTTP != nil && b.EdgeTrigger.HTTP.Path != "" {
 		fmt.Fprintf(&sb, "\n## Ingress\n\n- HTTP trigger path: `%s` (auth: `%s`)\n", b.EdgeTrigger.HTTP.Path, b.EdgeTrigger.HTTP.Auth)
 	}
+	// #nosec G703 -- path is AGENTS.md inside caller-selected outDir.
 	return os.WriteFile(path, []byte(sb.String()), 0o644)
 }

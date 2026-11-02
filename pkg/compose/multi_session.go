@@ -666,6 +666,9 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
 			opts = append(opts, agent.WithCostCeiling(ceiling))
 		}
+		if deps.Cfg.Agent.MaxWallclockSeconds > 0 {
+			opts = append(opts, agent.WithMaxWallclock(time.Duration(deps.Cfg.Agent.MaxWallclockSeconds)*time.Second))
+		}
 	}
 	// Behavioral watchdog (#123/#623), resolved once by the CLI and
 	// applied uniformly to every session-created agent (#642). Alerts

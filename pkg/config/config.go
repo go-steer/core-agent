@@ -1299,10 +1299,11 @@ type ToolsConfig struct {
 // ToolPolicyConfig declares a per-tool mutation classification,
 // freshness precondition, and prior-state capture rule (#1402).
 type ToolPolicyConfig struct {
-	Name         string                  `json:"name" yaml:"name"`
-	Mutating     *bool                   `json:"mutating,omitempty" yaml:"mutating,omitempty"`
-	Precondition *ToolPreconditionConfig `json:"precondition,omitempty" yaml:"precondition,omitempty"`
-	Capture      *ToolCaptureConfig      `json:"capture,omitempty" yaml:"capture,omitempty"`
+	Name           string                  `json:"name" yaml:"name"`
+	Mutating       *bool                   `json:"mutating,omitempty" yaml:"mutating,omitempty"`
+	ParkHintFields []string                `json:"park_hint_fields,omitempty" yaml:"park_hint_fields,omitempty"`
+	Precondition   *ToolPreconditionConfig `json:"precondition,omitempty" yaml:"precondition,omitempty"`
+	Capture        *ToolCaptureConfig      `json:"capture,omitempty" yaml:"capture,omitempty"`
 }
 
 // ToolPreconditionConfig declares a read-only freshness check before a
@@ -2235,6 +2236,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: agent.max_session_cost_usd=%v must be >= 0 (0 disables, positive enforces)", v)
 		}
 	}
+	if c.Agent.MaxWallclockSeconds < 0 {
+		return fmt.Errorf("config: agent.max_wallclock_seconds=%d must be >= 0 (0 disables, positive enforces)", c.Agent.MaxWallclockSeconds)
+	}
 	if c.Session.TaskClass != "" {
 		// Validation matches pkg/taskclass.Classes() but we don't
 		// import taskclass here (would pull a new dep into a
@@ -2311,6 +2315,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if err := c.validateSubagents(); err != nil {
+		return err
+	}
+	if err := c.validateToolPolicies(); err != nil {
 		return err
 	}
 	if err := c.validateAlerts(); err != nil {
@@ -2588,6 +2595,28 @@ func (c *Config) validateSubagentFields(i int, sa SubagentSpec) error {
 			i, sa.Capability, CapabilityReadOnly, CapabilityChangeExecutor)
 	}
 	return validateSubagentMCPTools(i, sa.MCP, sa.MCPTools)
+}
+
+func (c *Config) validateToolPolicies() error {
+	seen := make(map[string]struct{}, len(c.Tools.Policies))
+	for i, p := range c.Tools.Policies {
+		if strings.TrimSpace(p.Name) == "" {
+			return fmt.Errorf("config: tools.policies[%d].name is required", i)
+		}
+		if _, dup := seen[p.Name]; dup {
+			return fmt.Errorf("config: tools.policies[%d]: duplicate name %q", i, p.Name)
+		}
+		seen[p.Name] = struct{}{}
+		for j, f := range p.ParkHintFields {
+			if strings.TrimSpace(f) == "" {
+				return fmt.Errorf("config: tools.policies[%d].park_hint_fields[%d] is empty", i, j)
+			}
+		}
+		if err := validateWorkloadToolPolicy(p); err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+	}
+	return nil
 }
 
 func validateSubagentMCPTools(i int, mcpServers []string, mcpTools []MCPToolAllowlist) error {

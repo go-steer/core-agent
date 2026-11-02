@@ -19,6 +19,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 const (
@@ -300,6 +302,34 @@ func TestToolClassification(t *testing.T) {
 	sub := g.DeriveForSession("s1", nil)
 	if got := sub.ToolClass("custom_read"); got != ClassReadOnly {
 		t.Errorf("sub.ToolClass(custom_read) = %v, want ClassReadOnly", got)
+	}
+}
+
+func TestFromConfig_ToolsPoliciesAndMCPPrefixFallback(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	mutTrue := true
+	mutFalse := false
+	cfg.Tools.Policies = []config.ToolPolicyConfig{
+		{Name: "get_k8s_resource", Mutating: &mutFalse},
+		{Name: "patch_k8s_resource", Mutating: &mutTrue},
+		{Name: "file", Mutating: &mutTrue}, // must NOT flip built-in read_file via suffix match
+	}
+	g, err := FromConfig(cfg, t.TempDir(), "", nil)
+	if err != nil {
+		t.Fatalf("FromConfig: %v", err)
+	}
+	if got := g.ToolClass("get_k8s_resource"); got != ClassReadOnly {
+		t.Errorf("ToolClass(get_k8s_resource) = %v, want ClassReadOnly", got)
+	}
+	if got := g.ToolClass("gke_get_k8s_resource"); got != ClassReadOnly {
+		t.Errorf("ToolClass(gke_get_k8s_resource) = %v, want ClassReadOnly via MCP prefix fallback", got)
+	}
+	if got := g.ToolClass("gke_patch_k8s_resource"); got != ClassMutating {
+		t.Errorf("ToolClass(gke_patch_k8s_resource) = %v, want ClassMutating", got)
+	}
+	if got := g.ToolClass("read_file"); got != ClassReadOnly {
+		t.Errorf("ToolClass(read_file) = %v, want ClassReadOnly (built-in tool must not suffix-match 'file')", got)
 	}
 }
 

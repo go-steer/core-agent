@@ -16,12 +16,14 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-steer/core-models/profile"
 	adkagent "google.golang.org/adk/v2/agent"
@@ -530,11 +532,11 @@ func TestFacadeSubagents_GovernanceAndContracts(t *testing.T) {
 			Name:       "auditor",
 			Capability: config.CapabilityReadOnly,
 		}
-		if err := checkFacadeSubagentCapability(context.Background(), spec, []adktool.Tool{mutTool}, nil); err == nil {
+		if err := checkFacadeSubagentCapability(context.Background(), spec, nil, []adktool.Tool{mutTool}, nil); err == nil {
 			t.Fatal("expected error for mutating built-in tool on read_only subagent")
 		}
 		ts := &staticToolset{name: "k8s", tools: []adktool.Tool{mutTool}}
-		if err := checkFacadeSubagentCapability(context.Background(), spec, nil, []adktool.Toolset{ts}); err == nil {
+		if err := checkFacadeSubagentCapability(context.Background(), spec, nil, nil, []adktool.Toolset{ts}); err == nil {
 			t.Fatal("expected error for mutating toolset tool on read_only subagent")
 		}
 	})
@@ -542,7 +544,7 @@ func TestFacadeSubagents_GovernanceAndContracts(t *testing.T) {
 	t.Run("tools empty slice still inherits MCP toolsets when MCP is nil", func(t *testing.T) {
 		t.Parallel()
 		ts := &staticToolset{name: "k8s"}
-		got, err := selectFacadeSubagentToolsets(config.SubagentSpec{
+		got, err := selectFacadeSubagentToolsets(context.Background(), config.SubagentSpec{
 			Name:  "mcp_only",
 			Tools: []string{},
 			MCP:   nil,
@@ -554,7 +556,7 @@ func TestFacadeSubagents_GovernanceAndContracts(t *testing.T) {
 			t.Fatalf("selected toolsets = %v, want [k8s]", got)
 		}
 
-		none, err := selectFacadeSubagentToolsets(config.SubagentSpec{
+		none, err := selectFacadeSubagentToolsets(context.Background(), config.SubagentSpec{
 			Name: "no_mcp",
 			MCP:  []string{},
 		}, []adktool.Toolset{ts})
@@ -832,7 +834,7 @@ func TestFacadeSubagents_MCPToolsServerMatchingAndSchemaScope(t *testing.T) {
 
 	t.Run("prefix collision k8s vs k8s_admin is rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := selectFacadeSubagentToolsets(config.SubagentSpec{
+		_, err := selectFacadeSubagentToolsets(context.Background(), config.SubagentSpec{
 			Name: "auditor",
 			MCP:  []string{"k8s"},
 		}, []adktool.Toolset{k8sAdminTS})
@@ -851,7 +853,7 @@ func TestFacadeSubagents_MCPToolsServerMatchingAndSchemaScope(t *testing.T) {
 				{Server: "kube-api", Tools: []string{"get_pods"}},
 			},
 		}
-		sets, err := selectFacadeSubagentToolsets(spec, []adktool.Toolset{kubeTS, k8sAdminTS})
+		sets, err := selectFacadeSubagentToolsets(context.Background(), spec, []adktool.Toolset{kubeTS, k8sAdminTS})
 		if err != nil {
 			t.Fatalf("selectFacadeSubagentToolsets: %v", err)
 		}
@@ -859,7 +861,7 @@ func TestFacadeSubagents_MCPToolsServerMatchingAndSchemaScope(t *testing.T) {
 			t.Fatalf("len(sets) = %d, want 1", len(sets))
 		}
 		// Without mcp_tools filtering, kube_api_delete_pod would fail read_only capability check.
-		if err := checkFacadeSubagentCapability(context.Background(), spec, nil, sets); err != nil {
+		if err := checkFacadeSubagentCapability(context.Background(), spec, nil, nil, sets); err != nil {
 			t.Fatalf("checkFacadeSubagentCapability after mcp_tools filter: %v", err)
 		}
 
@@ -869,7 +871,7 @@ func TestFacadeSubagents_MCPToolsServerMatchingAndSchemaScope(t *testing.T) {
 			Mode: permissions.ModeAllow,
 		})
 		gatedMCP := tools.GateToolset(kubeTS, mcpGate, "mcp")
-		filteredSets, err := selectFacadeSubagentToolsets(spec, []adktool.Toolset{gatedMCP})
+		filteredSets, err := selectFacadeSubagentToolsets(context.Background(), spec, []adktool.Toolset{gatedMCP})
 		if err != nil || len(filteredSets) != 1 {
 			t.Fatalf("selectFacadeSubagentToolsets(gatedMCP): len=%d, err=%v", len(filteredSets), err)
 		}
@@ -948,5 +950,249 @@ func TestRunOneShot_SystemPromptFileAndAppendAtFile(t *testing.T) {
 	}
 	if !strings.Contains(gotSysInst, "Appended prompt from @file.") {
 		t.Errorf("system instruction missing @append.md content; got:\n%s", gotSysInst)
+	}
+}
+
+func TestWithMaxWallclock_EnforcesTurnTimeout(t *testing.T) {
+	t.Parallel()
+
+	llm := &scriptedFacadeLLM{
+		name: "gemini-2.5-flash",
+		steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				time.Sleep(120 * time.Millisecond)
+				return &adkmodel.LLMResponse{
+					Content:      genai.NewContentFromText("too slow", genai.RoleModel),
+					TurnComplete: true,
+				}, nil
+			},
+		},
+	}
+
+	a, err := New(llm, WithName("wallclock_test"), WithMaxWallclock(25*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var gotErr error
+	for _, err := range a.Run(context.Background(), "hello") {
+		if err != nil {
+			gotErr = err
+			break
+		}
+	}
+	if !errors.Is(gotErr, context.DeadlineExceeded) {
+		t.Fatalf("Run err = %v, want context.DeadlineExceeded", gotErr)
+	}
+}
+
+func TestSubagentFinalReport_GrantsLastChanceFinishTaskOnMaxTurns(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "subagents")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "diagnoser.md"), []byte(`---
+description: Autonomous task diagnoser.
+mode: task
+budgets:
+  max_turns: 1
+---
+Diagnose the pod and call finish_task.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	type readIn struct{}
+	type readOut struct {
+		Status string `json:"status"`
+	}
+	readTool, err := functiontool.New(functiontool.Config{
+		Name:        "read_file",
+		Description: "Reads cluster status.",
+	}, func(_ adkagent.Context, _ readIn) (readOut, error) {
+		return readOut{Status: "CrashLoopBackOff"}, nil
+	})
+	if err != nil {
+		t.Fatalf("functiontool.New: %v", err)
+	}
+
+	var secondCallTools []string
+	llm := &scriptedFacadeLLM{
+		name: "gemini-2.5-flash",
+		steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+			// Root spawns diagnoser.
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{FunctionCall: &genai.FunctionCall{ID: "d1", Name: "diagnoser", Args: map[string]any{"request": "diagnose pod"}}},
+						},
+					},
+					TurnComplete: true,
+				}, nil
+			},
+			// Subagent turn 1 (normal): calls read_file -> exhausts MaxTurns=1.
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{FunctionCall: &genai.FunctionCall{ID: "r1", Name: "read_file", Args: map[string]any{}}},
+						},
+					},
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     10,
+						CandidatesTokenCount: 5,
+					},
+					TurnComplete: true,
+				}, nil
+			},
+			// Subagent turn 2 (final report turn): only finish_task should be offered!
+			func(req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				if req.Config != nil {
+					for _, gt := range req.Config.Tools {
+						for _, fd := range gt.FunctionDeclarations {
+							secondCallTools = append(secondCallTools, fd.Name)
+						}
+					}
+				}
+				return &adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{FunctionCall: &genai.FunctionCall{
+								ID:   "f1",
+								Name: FinishTaskToolName,
+								Args: map[string]any{"result": "best-effort report after budget hit"},
+							}},
+						},
+					},
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     15,
+						CandidatesTokenCount: 8,
+					},
+					TurnComplete: true,
+				}, nil
+			},
+			// Root receives final report and finishes.
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content:      genai.NewContentFromText("Root got: best-effort report after budget hit", genai.RoleModel),
+					TurnComplete: true,
+				}, nil
+			},
+		},
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Permissions.Mode = config.PermissionModeYolo
+	cfg.Agent.FinalReport = true
+
+	res, err := RunWorkload(context.Background(), dir, OneShotConfig{
+		Config: cfg,
+		Model:  llm,
+		Tools:  []adktool.Tool{readTool},
+	}, "diagnose pod")
+	if err != nil {
+		t.Fatalf("RunWorkload: %v", err)
+	}
+	if len(secondCallTools) != 1 || secondCallTools[0] != FinishTaskToolName {
+		t.Errorf("second subagent call tools = %v, want only [%s]", secondCallTools, FinishTaskToolName)
+	}
+	if !strings.Contains(res.Text, "best-effort report after budget hit") {
+		t.Errorf("RunWorkload Text = %q, want final report summary", res.Text)
+	}
+}
+
+func TestRunWorkload_DirectBundleAndMCPToolsFiltering(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "specialists"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "coordinator.md"), []byte("Coordinator system instruction sentinel."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	specMD := `---
+name: _fallback
+description: Read-only diagnoser.
+mode: Task
+tools:
+  mcp:
+    - server: gke
+      tools: [get_pods]
+---
+Diagnose pods.
+`
+	if err := os.WriteFile(filepath.Join(dir, "specialists", "_fallback.specialist.md"), []byte(specMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wlYAML := `schema_version: 1
+name: raw-wl
+specialists: [_fallback]
+budget:
+  max_wallclock_seconds: 60
+  final_report: true
+tool_catalog:
+  mcp:
+    - server: gke
+  tools:
+    - name: get_pods
+      mutating: false
+    - name: delete_pod
+      mutating: true
+`
+	if err := os.WriteFile(filepath.Join(dir, "workload.yaml"), []byte(wlYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	type toolIn struct{}
+	type toolOut struct {
+		Result string `json:"result"`
+	}
+	getPods, _ := functiontool.New(functiontool.Config{Name: "gke_get_pods", Description: "get pods"}, func(_ adkagent.Context, _ toolIn) (toolOut, error) {
+		return toolOut{Result: "ok"}, nil
+	})
+	deletePod, _ := functiontool.New(functiontool.Config{Name: "gke_delete_pod", Description: "delete pod"}, func(_ adkagent.Context, _ toolIn) (toolOut, error) {
+		return toolOut{Result: "deleted"}, nil
+	})
+	gkeToolset := &staticToolset{name: "gke", tools: []adktool.Tool{getPods, deletePod}}
+
+	var sawCoordinatorPrompt bool
+	llm := &scriptedFacadeLLM{
+		name: "gemini-2.5-flash",
+		steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+			func(req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				if req.Config != nil && req.Config.SystemInstruction != nil {
+					for _, p := range req.Config.SystemInstruction.Parts {
+						if strings.Contains(p.Text, "Coordinator system instruction sentinel.") {
+							sawCoordinatorPrompt = true
+						}
+					}
+				}
+				return &adkmodel.LLMResponse{
+					Content:      genai.NewContentFromText("completed raw workload", genai.RoleModel),
+					TurnComplete: true,
+				}, nil
+			},
+		},
+	}
+
+	res, err := RunWorkload(context.Background(), dir, OneShotConfig{
+		Model:    llm,
+		Toolsets: []adktool.Toolset{gkeToolset},
+	}, "check cluster")
+	if err != nil {
+		t.Fatalf("RunWorkload on raw workload.yaml dir: %v", err)
+	}
+	if !sawCoordinatorPrompt {
+		t.Error("RunWorkload did not load coordinator.md instruction")
+	}
+	if res.Text != "completed raw workload" {
+		t.Errorf("Text = %q, want 'completed raw workload'", res.Text)
 	}
 }

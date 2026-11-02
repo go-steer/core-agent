@@ -74,12 +74,19 @@ trap cleanup EXIT
 
 git archive "$BASE_TAG" | tar -x -C "$BASE_TREE"
 
-# Extract the ## [Unreleased] section of CHANGELOG.md once.
+# Extract ## [Unreleased] plus any pre-release sections since BASE_TAG
+# so promoting [Unreleased] to a dev/rc heading does not drop
+# **BREAKING:** acknowledgements before the next GA tag is cut (#1427).
 UNRELEASED=""
+BASE_VERSION="${BASE_TAG#v}"
 if [[ -f "$CHANGELOG_FILE" ]]; then
-  UNRELEASED="$(awk '
+  UNRELEASED="$(awk -v base="$BASE_VERSION" '
     /^## \[Unreleased\]/ { in_unrel = 1; next }
-    /^## \[/ && in_unrel { exit }
+    /^## \[/ && in_unrel {
+      if ($0 ~ "^## \\[" base "\\]" || $0 ~ "^## \\[[0-9]+\\.[0-9]+\\.[0-9]+\\]") {
+        exit
+      }
+    }
     in_unrel { print }
   ' "$CHANGELOG_FILE")"
 fi
@@ -118,7 +125,7 @@ ack_in_changelog() {
       return 0 # whole-package removal: naming the package is the ack
     fi
     grep -Fq -e "\`$clean_sym\`" -e "\`${short_pkg}.${clean_sym}\`" -e "\`${head_sym}\`" -e "\`${short_pkg}.${head_sym}\`" <<<"$line" && return 0
-  done < <(grep -F '**BREAKING:**' <<<"$UNRELEASED")
+  done < <(grep -E '^[[:space:]]*-[[:space:]]+\*\*BREAKING:\*\*' <<<"$UNRELEASED")
   return 1
 }
 

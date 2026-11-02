@@ -18,4 +18,6 @@
 # Format:
 #   <package> <symbol> # <issue-or-reason>
 #
-# Clear this file when cutting a major release tag.
+# Must be empty when cutting any minor or patch GA release
+# (enforced by dev/release/cut-ga-tag.sh). Clear this file when
+# cutting a major release tag.

@@ -14,7 +14,7 @@ This document defines which packages in `github.com/go-steer/core-agent/v3` carr
 ## Out of scope
 
 - Moving `unsupported` packages under `internal/` before v4.0 when external sibling modules (`go-steer/cogo`, `extras/`) still import them.
-- Enforcing `apidiff` on `cmd/`, `internal/`, `dev/`, `examples/`, or `unsupported` packages in `dev/api-surface.txt`.
+- Enforcing `apidiff` on `cmd/`, `internal/`, `dev/`, `examples/`, `extras/` (such as `extras/scion`, which is a separate Go module), or `unsupported` packages in `dev/api-surface.txt`.
 
 ---
 
@@ -50,6 +50,7 @@ Within a major series (`v3.x`), exported types, functions, methods, constants, a
 Packages marked `unsupported` in `dev/api-surface.txt` live under `pkg/` so `cmd/core-agent`, `cmd/core-agent-tui`, `examples/`, and sibling binaries can share daemon/CLI wiring, wire protocols, or internal routing tables without duplicating code:
 
 - `pkg/agentenv` — daemon and sandbox environment readers (`CORE_AGENT_*`)
+- `pkg/approval` — durable write gate and operator approval plugin (`#1400`)
 - `pkg/approver` — model-backed approver behind experimental permission mode `auto`
 - `pkg/attach` — HTTP/SSE remote-attach server wire protocol and handler
 - `pkg/attachadapter` — bridge adapting `pkg/agent` onto `pkg/attach`
@@ -79,9 +80,9 @@ For every `promised` package in `dev/api-surface.txt` that existed at the baseli
 2. `apidiff` compares the baseline snapshot against the current working tree.
 3. Any line under `Incompatible changes:` fails the presubmit unless it is explicitly acknowledged in either:
    - [`dev/api-breaks.txt`](../dev/api-breaks.txt) (`<package> <symbol> # <issue-or-reason>`), or
-   - a `**BREAKING:**` bullet under `## [Unreleased]` in [`CHANGELOG.md`](../CHANGELOG.md) whose line names **both** the package (`` `pkg/foo` `` or `` `foo` ``) **and** the symbol (`` `Bar` ``, `` `Type.Method` `` or `` `foo.Bar` ``) in backticks. One bullet acknowledges the breaks it names, not every later break in that package.
+   - a `**BREAKING:**` bullet under `## [Unreleased]` (or a pre-release section since `<base-tag>`) in [`CHANGELOG.md`](../CHANGELOG.md) whose line names **both** the package (`` `pkg/foo` `` or `` `foo` ``) **and** the symbol (`` `Bar` ``, `` `Type.Method` `` or `` `foo.Bar` ``) in backticks. One bullet acknowledges the breaks it names, not every later break in that package.
 
-`dev/api-breaks.txt` is cleared when cutting a new major release tag.
+`dev/release/cut-ga-tag.sh` refuses to cut a non-major GA release (`vX.Y.Z` where `Y != 0` or `Z != 0`) while `dev/api-breaks.txt` has active entries or any folded section in `CHANGELOG.md` contains a `**BREAKING:**` bullet. When preparing a `/vN` module-path rename before the first `vN.0.0` GA tag (where `apidiff` sees every cross-package type's import path change from `/v(N-1)` to `/vN`), record `pkg/<name> * # vN module path rename` in `dev/api-breaks.txt` (or override `APIDIFF_BASE_TAG` once `vN.0.0-dev.1` is tagged) and clear `dev/api-breaks.txt` when cutting `vN.0.0`.
 
 ---
 

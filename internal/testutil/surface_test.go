@@ -107,6 +107,62 @@ func TestEveryImportablePackageIsADecision(t *testing.T) {
 			t.Errorf("dev/api-surface.txt entry %q is not a non-exempt importable Go package in `go list ./...`", pkg)
 		}
 	}
+
+	checkSurfaceDocsInSync(t, root, decisions)
+}
+
+func checkSurfaceDocsInSync(t *testing.T, root string, decisions map[string]string) {
+	t.Helper()
+	policyPath := filepath.Join(root, "docs", "compatibility-policy.md")
+	policyBytes, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", policyPath, err)
+	}
+	policyText := string(policyBytes)
+	promisedIdx := strings.Index(policyText, "### `promised` packages")
+	unsupportedIdx := strings.Index(policyText, "### `unsupported` packages")
+	if promisedIdx < 0 || unsupportedIdx < promisedIdx {
+		t.Fatalf("docs/compatibility-policy.md missing expected `### \\`promised\\` packages` / `### \\`unsupported\\` packages` subsections")
+	}
+	policyPromised := policyText[promisedIdx:unsupportedIdx]
+	policyUnsupported := policyText[unsupportedIdx:]
+	if sep := strings.Index(policyUnsupported, "\n---"); sep >= 0 {
+		policyUnsupported = policyUnsupported[:sep]
+	}
+
+	changelogPath := filepath.Join(root, "CHANGELOG.md")
+	changelogBytes, err := os.ReadFile(changelogPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", changelogPath, err)
+	}
+	changelogHeader := string(changelogBytes)
+	if idx := strings.Index(changelogHeader, "\n## ["); idx >= 0 {
+		changelogHeader = changelogHeader[:idx]
+	}
+	remIdx := strings.Index(changelogHeader, "\nRemaining packages under ")
+	if remIdx < 0 {
+		t.Fatalf("CHANGELOG.md Stability promise header missing `Remaining packages under ` split")
+	}
+	changelogPromised := changelogHeader[:remIdx]
+	changelogUnsupported := changelogHeader[remIdx:]
+
+	for pkg, kind := range decisions {
+		backtickedFull := "`" + pkg + "`"
+		short := strings.TrimPrefix(pkg, "pkg/")
+		backtickedShort := "`" + short + "`"
+		policySection := policyPromised
+		changelogSection := changelogPromised
+		if kind == "unsupported" {
+			policySection = policyUnsupported
+			changelogSection = changelogUnsupported
+		}
+		if !strings.Contains(policySection, backtickedFull) {
+			t.Errorf("docs/compatibility-policy.md %s section does not list %s (keep in sync with dev/api-surface.txt)", kind, backtickedFull)
+		}
+		if !strings.Contains(changelogSection, backtickedShort) && !strings.Contains(changelogSection, backtickedFull) {
+			t.Errorf("CHANGELOG.md Stability promise %s section does not list %s (keep in sync with dev/api-surface.txt)", kind, backtickedShort)
+		}
+	}
 }
 
 func isExemptFromAPISurface(rel string) bool {

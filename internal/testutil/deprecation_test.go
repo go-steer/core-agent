@@ -45,6 +45,7 @@ func TestDeprecationMarkersNameTheirRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
+	checked := 0
 
 	err = filepath.WalkDir(filepath.Join(root, "pkg"), func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -64,19 +65,22 @@ func TestDeprecationMarkersNameTheirRemoval(t *testing.T) {
 			return parseErr
 		}
 		rel, _ := filepath.Rel(root, path)
-		checkCommentGroup(t, fset, rel, file.Doc)
+		checked += checkCommentGroup(t, fset, rel, file.Doc)
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.GenDecl:
-				checkCommentGroup(t, fset, rel, x.Doc)
+				checked += checkCommentGroup(t, fset, rel, x.Doc)
 			case *ast.FuncDecl:
-				checkCommentGroup(t, fset, rel, x.Doc)
+				checked += checkCommentGroup(t, fset, rel, x.Doc)
 			case *ast.TypeSpec:
-				checkCommentGroup(t, fset, rel, x.Doc)
+				checked += checkCommentGroup(t, fset, rel, x.Doc)
+				checked += checkCommentGroup(t, fset, rel, x.Comment)
 			case *ast.ValueSpec:
-				checkCommentGroup(t, fset, rel, x.Doc)
+				checked += checkCommentGroup(t, fset, rel, x.Doc)
+				checked += checkCommentGroup(t, fset, rel, x.Comment)
 			case *ast.Field:
-				checkCommentGroup(t, fset, rel, x.Doc)
+				checked += checkCommentGroup(t, fset, rel, x.Doc)
+				checked += checkCommentGroup(t, fset, rel, x.Comment)
 			}
 			return true
 		})
@@ -85,27 +89,34 @@ func TestDeprecationMarkersNameTheirRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walking repo: %v", err)
 	}
+	if checked == 0 {
+		t.Fatal("TestDeprecationMarkersNameTheirRemoval checked 0 Deprecated: paragraphs under pkg/; walk is broken or all deprecations were removed without updating this test")
+	}
 }
 
-func checkCommentGroup(t *testing.T, fset *token.FileSet, rel string, cg *ast.CommentGroup) {
+func checkCommentGroup(t *testing.T, fset *token.FileSet, rel string, cg *ast.CommentGroup) int {
 	t.Helper()
 	if cg == nil {
-		return
+		return 0
 	}
-	for _, para := range missingRemovalTarget(cg.Text()) {
+	found, bad := missingRemovalTarget(cg.Text())
+	for _, para := range bad {
 		pos := fset.Position(cg.Pos())
 		t.Errorf("%s:%d: Deprecated marker missing trailing 'Removed in v<N>.<M>.': %q (see docs/compatibility-policy.md)", rel, pos.Line, para)
 	}
+	return found
 }
 
-// missingRemovalTarget returns every `Deprecated:` paragraph in text that
-// does not end with `Removed in v<N>.<M>.`.
-func missingRemovalTarget(text string) []string {
+// missingRemovalTarget returns the count of `Deprecated:` paragraphs in text
+// and every `Deprecated:` paragraph that does not end with `Removed in v<N>.<M>.`.
+func missingRemovalTarget(text string) (int, []string) {
+	var found int
 	var bad []string
 	for _, para := range strings.Split(text, "\n\n") {
 		trimmed := strings.TrimSpace(para)
 		for _, line := range strings.Split(trimmed, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(line), "Deprecated:") {
+				found++
 				flat := strings.Join(strings.Fields(trimmed), " ")
 				if !removalPattern.MatchString(flat) {
 					bad = append(bad, flat)
@@ -114,7 +125,7 @@ func missingRemovalTarget(text string) []string {
 			}
 		}
 	}
-	return bad
+	return found, bad
 }
 
 func TestDeprecationCheckerReadsTheMarker(t *testing.T) {
@@ -147,7 +158,10 @@ func TestDeprecationCheckerReadsTheMarker(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := missingRemovalTarget(tc.doc)
+			found, got := missingRemovalTarget(tc.doc)
+			if found != 1 {
+				t.Fatalf("missingRemovalTarget(%q) found = %d, want 1", tc.doc, found)
+			}
 			if len(got) != tc.want {
 				t.Fatalf("missingRemovalTarget(%q) = %v (len %d), want len %d", tc.doc, got, len(got), tc.want)
 			}

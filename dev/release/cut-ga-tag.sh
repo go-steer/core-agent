@@ -124,6 +124,26 @@ if [[ -n "$LATEST_GA" ]]; then
   echo "  version sequencing: OK (${LATEST_GA} → ${TAG})"
 fi
 
+# Guard 3: non-major GA releases cannot ship acknowledged API breaks
+# or **BREAKING:** bullets (#1427).
+IS_MAJOR=0
+if [[ "$VERSION" =~ ^[0-9]+\.0\.0$ ]]; then
+  IS_MAJOR=1
+fi
+BREAKS_FILE="${BREAKS_FILE:-dev/api-breaks.txt}"
+if [[ "$IS_MAJOR" -eq 0 && -f "$BREAKS_FILE" ]]; then
+  ACTIVE_BREAKS="$(awk '{ sub(/#.*/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, ""); if ($0 != "") print }' "$BREAKS_FILE")"
+  if [[ -n "$ACTIVE_BREAKS" ]]; then
+    echo "" >&2
+    echo "error: cannot cut non-major GA release ${TAG} while ${BREAKS_FILE} has active API break entries:" >&2
+    echo "${ACTIVE_BREAKS}" | sed 's/^/  /' >&2
+    echo "" >&2
+    echo "Incompatible changes to promised packages require a major version bump" >&2
+    echo "(see docs/compatibility-policy.md)." >&2
+    exit 1
+  fi
+fi
+
 echo "── Preflight OK ─────────────────────────────────────────"
 echo ""
 
@@ -225,8 +245,10 @@ for section in to_fold:
         # a merge — a human can re-add sub-groupings after the fold).
         for bul in re.findall(r"(?m)^- .+(?:\n  .+)*", body):
             bul = bul.rstrip()
-            # Hoist `**BREAKING:**` bullets out of `#### Changed`.
-            if kind == "Changed" and bul.startswith("- **BREAKING:**"):
+            # Hoist `**BREAKING:**` bullets out of `#### <Kind>` (canonically
+            # `#### Changed`, but any kind is hoisted so a misplaced bullet is
+            # never skipped by the non-major GA release guard).
+            if bul.startswith("- **BREAKING:**"):
                 # Strip the marker; the section header already labels it.
                 bul = "- " + bul[len("- **BREAKING:**"):].lstrip()
                 breaking.append(bul)
@@ -254,6 +276,12 @@ lines.append("")
 
 all_breaking = explicit_breaking + breaking
 if all_breaking:
+    if not re.fullmatch(r"\d+\.0\.0", version):
+        sys.exit(
+            f"error: cannot cut non-major GA release {tag} with breaking changes in {path} "
+            f"({len(all_breaking)} breaking bullet(s) found); a major version bump is required "
+            "(see docs/compatibility-policy.md)."
+        )
     lines.append("### Breaking Changes")
     lines.append("")
     lines.extend(all_breaking)

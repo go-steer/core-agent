@@ -149,7 +149,7 @@ func main() {
 	flag.StringVar(&modelOverrideVal, "m", "", "override model name from config")
 	flag.StringVar(&modelOverrideVal, "model", "", "long-form alias for -m — same behavior")
 	modelOverride := &modelOverrideVal
-	providerOverride := flag.String("provider", "", "override model.provider: gemini|vertex|anthropic|anthropic-vertex|echo|scripted, or a provider profile — a core-models built-in (vertex-maas|vllm|sglang|ollama|openai-compatible) or one declared under providers in .agents/config.json")
+	providerOverride := flag.String("provider", "", "override model.provider: gemini|vertex|anthropic|anthropic-vertex|echo|scripted, or a provider profile — a core-models built-in (vertex-maas|openai|xai|sap-ai-core|vllm|sglang|ollama|openai-compatible) or one declared under providers in .agents/config.json")
 	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite ("+strings.Join(tools.BuiltinToolNames(), ", ")+")")
 	disableTools := flag.String("disable-tools", "", "comma-separated list of built-in tools to disable (e.g. bash,write_file). Composes with cfg.tools.disable; ignored when --no-builtin-tools is set.")
 	enableTools := flag.String("enable-tools", "", "comma-separated list of built-in tools to add back after a --task profile dropped them (e.g. --task=debug --enable-tools=bash). Cancels the profile's opinion only: it cannot re-enable a tool you turned off in cfg.tools.disable or --disable-tools, and asking for that combination is an error rather than a silent win for either side. Naming a tool the profile never dropped is a no-op.")

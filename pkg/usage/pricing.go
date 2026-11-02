@@ -230,6 +230,37 @@ func PriceOn(backend, modelID string) Pricing {
 	return ratesToPricing(r, found, backend)
 }
 
+// NewCatalogFromConfig constructs a *pricing.Catalog from cfg (including
+// cfg.Model.Pricing overrides, provider profiles' declared rates and
+// pricing: "isolated" policy, .agents/pricing.json under agentsDir, and
+// ~/.core-agent/pricing.json under userHome when non-empty).
+func NewCatalogFromConfig(cfg *config.Config, agentsDir, userHome string) (*pricing.Catalog, error) {
+	return pricing.NewCatalog(pricing.Options{
+		CfgOverride: cfgToOverride(cfg),
+		AgentsDir:   agentsDir,
+		UserHome:    userHome,
+		Declared:    DeclaredRates(cfg),
+		Profiles:    cfgProviders(cfg),
+	})
+}
+
+// PriceOnCatalog returns the Pricing for modelID as billed by backend
+// against catalog c. When c is nil, it falls back to PriceOn(backend, modelID).
+// When backend is empty and c is non-nil, it resolves the fallback backend
+// installed via SetBackend before querying c.
+func PriceOnCatalog(c *pricing.Catalog, backend, modelID string) Pricing {
+	if c == nil {
+		return PriceOn(backend, modelID)
+	}
+	if backend == "" {
+		if b := globalBackend.Load(); b != nil {
+			backend = *b
+		}
+	}
+	r, found := c.LookupFor(backend, modelID)
+	return ratesToPricing(r, found, backend)
+}
+
 // PriceForRefreshed re-resolves modelID against the process-wide
 // catalog, falling back to the caller's captured rate when no catalog
 // is installed.

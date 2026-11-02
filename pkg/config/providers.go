@@ -27,12 +27,12 @@ import (
 // L3'): every model.provider beyond core-agent's own six names.
 //
 // A profile comes from one of two places. core-models ships built-ins
-// (vertex-maas, vllm, sglang, ollama, openai-compatible), selectable
-// as they are or extended; an operator declares the rest under
-// `providers` in .agents/config.json, in core-models' schema. The
-// six names below stay core-agent's: a profile cannot take one, so
-// `--provider anthropic` means the same thing whatever a config
-// declares.
+// (vertex-maas, openai, xai, sap-ai-core, vllm, sglang, ollama,
+// openai-compatible), selectable as they are or extended; an operator
+// declares the rest under `providers` in .agents/config.json, in
+// core-models' schema. The six names below stay core-agent's: a profile
+// cannot take one, so `--provider anthropic` means the same thing
+// whatever a config declares.
 
 // coreProviders are the provider names core-agent resolves itself, in
 // the order error messages list them.

@@ -578,7 +578,7 @@ func runSubagentInvocation(
 				if call.req != nil && call.req.Model != "" {
 					reqModel = call.req.Model
 				}
-				reqPrice = usage.PriceOn(call.backend, reqModel)
+				reqPrice = opts.Inner.priceOn(call.backend, reqModel)
 			}
 			if reqPrice.Unpriced {
 				// Startup refuses a budget on an unpriced model; one

@@ -54,6 +54,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
@@ -361,6 +362,7 @@ type Agent struct {
 	// billingBackend is the backend that bills this agent's model
 	// (WithBillingBackend); "" means the process backend.
 	billingBackend string
+	pricingCatalog *pricing.Catalog
 	inbox          *inbox
 	wake           *wakeSignal
 	tracker        *usage.Tracker
@@ -633,6 +635,7 @@ type options struct {
 	// usage.SetBackend installed, which is right whenever the agent
 	// runs on the daemon's provider.
 	billingBackend   string
+	pricingCatalog   *pricing.Catalog
 	bgMgr            SubagentManager
 	gate             *permissions.Gate
 	tracker          *usage.Tracker
@@ -862,6 +865,14 @@ func WithSubagentBudgets(b SubagentBudgets) Option {
 // agent on the daemon's own provider.
 func WithBillingBackend(backend string) Option {
 	return func(o *options) { o.billingBackend = backend }
+}
+
+// WithPricingCatalog attaches a per-agent pricing catalog for cost-ceiling
+// preflight and synchronous subagent cost tracking. When nil, the agent
+// consults the process-wide catalog installed via usage.SetCatalog (or
+// builtin rates when none is installed).
+func WithPricingCatalog(c *pricing.Catalog) Option {
+	return func(o *options) { o.pricingCatalog = c }
 }
 
 // WithBackgroundManager attaches a BackgroundAgentManager to the
@@ -1249,6 +1260,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		subagentMode:         o.subagentMode,
 		outputSchema:         o.outputSchema,
 		billingBackend:       o.billingBackend,
+		pricingCatalog:       o.pricingCatalog,
 		invocationHist:       invocationHist,
 		toolInstrumenter:     toolInstrumenter,
 		metricAgentName:      cmp.Or(o.metricAgentName, o.name),
@@ -1324,9 +1336,18 @@ func (a *Agent) BillingBackend() string {
 	return a.billingBackend
 }
 
+// priceOn returns the rate for modelName on backend, consulting this agent's
+// pricingCatalog when set before falling back to usage.PriceOn.
+func (a *Agent) priceOn(backend, modelName string) usage.Pricing {
+	if a != nil && a.pricingCatalog != nil {
+		return usage.PriceOnCatalog(a.pricingCatalog, backend, modelName)
+	}
+	return usage.PriceOn(backend, modelName)
+}
+
 // price returns the rate for modelName on this agent's billing backend.
 func (a *Agent) price(modelName string) usage.Pricing {
-	return usage.PriceOn(a.BillingBackend(), modelName)
+	return a.priceOn(a.BillingBackend(), modelName)
 }
 
 // SubagentNames returns the resolved tool names of the declarative

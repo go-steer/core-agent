@@ -74,7 +74,8 @@ func withToolAllowlist(inner tool.Toolset, allow []string) (tool.Toolset, *allow
 	return ts, ts
 }
 
-func (a *allowlistToolset) Name() string { return a.inner.Name() }
+func (a *allowlistToolset) Name() string                { return a.inner.Name() }
+func (a *allowlistToolset) UnwrapToolset() tool.Toolset { return a.inner }
 
 func (a *allowlistToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
 	upstream, err := a.inner.Tools(ctx)
@@ -152,7 +153,8 @@ type filteredMCPToolset struct {
 	allowed    []string
 }
 
-func (f *filteredMCPToolset) Name() string { return f.inner.Name() }
+func (f *filteredMCPToolset) Name() string                { return f.inner.Name() }
+func (f *filteredMCPToolset) UnwrapToolset() tool.Toolset { return f.inner }
 
 func (f *filteredMCPToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
 	upstream, err := f.inner.Tools(ctx)

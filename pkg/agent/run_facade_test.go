@@ -23,6 +23,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/go-steer/core-models/profile"
 	adkagent "google.golang.org/adk/v2/agent"
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
@@ -31,6 +32,9 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	"github.com/go-steer/core-agent/v3/pkg/pricing"
+	"github.com/go-steer/core-agent/v3/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 type scriptedFacadeLLM struct {
@@ -643,5 +647,306 @@ func TestRunOneShot_StampsOperatorTaskOnContext(t *testing.T) {
 	}
 	if observedTask != wantPrompt {
 		t.Errorf("ApproverContext.Task() = %q, want %q", observedTask, wantPrompt)
+	}
+}
+
+func TestRunOneShot_PerAgentPricingCatalogAndProfileTierSubagent(t *testing.T) {
+	// Not parallel: installs a process-global usage.SetCatalog to prove
+	// RunOneShot's per-agent pricing catalog still honors Config.Providers
+	// profile rates and .agents/pricing.json even after SetCatalog.
+	prevCat, err := pricing.NewCatalog(pricing.Options{})
+	if err != nil {
+		t.Fatalf("pricing.NewCatalog: %v", err)
+	}
+	usage.SetCatalog(prevCat)
+	t.Cleanup(func() { usage.SetCatalog(nil) })
+
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "pricing.json"), []byte(`{
+  "models": {
+    "file-priced-model": { "input_per_mtok": 4.0, "output_per_mtok": 8.0 }
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile pricing.json: %v", err)
+	}
+
+	llm := &scriptedFacadeLLM{
+		name: "custom-model",
+		steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+			// Root turn 1: delegates to tier-routed subagent.
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{FunctionCall: &genai.FunctionCall{
+								ID:   "sub-1",
+								Name: "tier_helper",
+								Args: map[string]any{"request": "check status"},
+							}},
+						},
+					},
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     1000,
+						CandidatesTokenCount: 500,
+					},
+					TurnComplete: true,
+				}, nil
+			},
+			// Subagent turn: 1000 input + 500 output tokens.
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content: genai.NewContentFromText(`{"ok":true}`, genai.RoleModel),
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     1000,
+						CandidatesTokenCount: 500,
+					},
+					TurnComplete: true,
+				}, nil
+			},
+			// Root turn 2: 1000 input + 500 output tokens.
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content: genai.NewContentFromText(`{"done":true}`, genai.RoleModel),
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     1000,
+						CandidatesTokenCount: 500,
+					},
+					TurnComplete: true,
+				}, nil
+			},
+		},
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Permissions.Mode = config.PermissionModeYolo
+	cfg.Model.Provider = "house-vllm"
+	cfg.Model.Name = "custom-model"
+	cfg.Providers = []profile.Profile{
+		{
+			Name:    "house-vllm",
+			Extends: "vllm",
+			BaseURL: "http://127.0.0.1:8000/v1",
+			Models: []profile.Model{
+				{
+					ID:    "custom-model",
+					Rates: &profile.Rates{InputPerMTok: 10.0, OutputPerMTok: 20.0},
+				},
+				{
+					ID:    "custom-small-model",
+					Rates: &profile.Rates{InputPerMTok: 2.0, OutputPerMTok: 4.0},
+				},
+			},
+			Tiers: map[profile.Tier]string{
+				profile.Tier("small"): "custom-small-model",
+				profile.Tier("mid"):   "custom-model",
+			},
+		},
+	}
+	cfg.Subagents = []config.SubagentSpec{
+		{
+			Name:         "tier_helper",
+			Description:  "Helper using small tier on profile provider.",
+			Mode:         config.SubagentModeSingleTurn,
+			Tier:         "small",
+			Instructions: "Return ok.",
+		},
+	}
+
+	res, err := RunOneShot(context.Background(), OneShotConfig{
+		Dir:    dir,
+		Config: cfg,
+		Model:  llm,
+	}, "Run profile pricing test.")
+	if err != nil {
+		t.Fatalf("RunOneShot: %v", err)
+	}
+	// Root turns (2): each 1000 in ($0.01) + 500 out ($0.01) = $0.02/turn -> $0.04.
+	// Subagent turn (1 on custom-small-model): 1000 in ($0.002) + 500 out ($0.002) = $0.004.
+	// Total = $0.044.
+	if res.Usage.UnpricedTurns > 0 {
+		t.Errorf("Usage.UnpricedTurns = %d, want 0", res.Usage.UnpricedTurns)
+	}
+	if res.Usage.CostUSD < 0.0439 || res.Usage.CostUSD > 0.0441 {
+		t.Errorf("Usage.CostUSD = %f, want ~0.044", res.Usage.CostUSD)
+	}
+
+	// Verify .agents/pricing.json is also honored via NewCatalogFromConfig.
+	fileLLM := &scriptedFacadeLLM{
+		name: "file-priced-model",
+		steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content: genai.NewContentFromText("done", genai.RoleModel),
+					UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     1000,
+						CandidatesTokenCount: 1000,
+					},
+					TurnComplete: true,
+				}, nil
+			},
+		},
+	}
+	fileCfg := config.DefaultConfig()
+	fileCfg.Model.Name = "file-priced-model"
+	fileRes, err := RunOneShot(context.Background(), OneShotConfig{
+		Dir:    dir,
+		Config: fileCfg,
+		Model:  fileLLM,
+	}, "Check file pricing.")
+	if err != nil {
+		t.Fatalf("RunOneShot file pricing: %v", err)
+	}
+	// 1000 in @ $4/MTok ($0.004) + 1000 out @ $8/MTok ($0.008) = $0.012.
+	if fileRes.Usage.CostUSD < 0.0119 || fileRes.Usage.CostUSD > 0.0121 {
+		t.Errorf("file-priced CostUSD = %f, want ~0.012", fileRes.Usage.CostUSD)
+	}
+}
+
+type readOnlyHintedTool struct {
+	adktool.Tool
+	readOnly bool
+}
+
+func (r readOnlyHintedTool) ReadOnlyHint() bool { return r.readOnly }
+
+func TestFacadeSubagents_MCPToolsServerMatchingAndSchemaScope(t *testing.T) {
+	t.Parallel()
+
+	type dummyIn struct{}
+	type dummyOut struct{}
+	rawGetTool, _ := functiontool.New(functiontool.Config{Name: "kube_api_get_pods", Description: "get pods"}, func(_ adkagent.Context, _ dummyIn) (dummyOut, error) {
+		return dummyOut{}, nil
+	})
+	getTool := readOnlyHintedTool{Tool: rawGetTool, readOnly: true}
+	delTool, _ := functiontool.New(functiontool.Config{Name: "kube_api_delete_pod", Description: "delete pod"}, func(_ adkagent.Context, _ dummyIn) (dummyOut, error) {
+		return dummyOut{}, nil
+	})
+
+	kubeTS := &staticToolset{name: "kube_api_mcp_tool_set", tools: []adktool.Tool{getTool, delTool}}
+	k8sAdminTS := &staticToolset{name: "k8s_admin_mcp_tool_set", tools: []adktool.Tool{delTool}}
+
+	t.Run("prefix collision k8s vs k8s_admin is rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := selectFacadeSubagentToolsets(config.SubagentSpec{
+			Name: "auditor",
+			MCP:  []string{"k8s"},
+		}, []adktool.Toolset{k8sAdminTS})
+		if err == nil || !strings.Contains(err.Error(), `unknown mcp server "k8s"`) {
+			t.Fatalf("selectFacadeSubagentToolsets err = %v, want unknown mcp server k8s", err)
+		}
+	})
+
+	t.Run("hyphenated server and mcp_tools allowlist filter tools before capability check", func(t *testing.T) {
+		t.Parallel()
+		spec := config.SubagentSpec{
+			Name:       "auditor",
+			Capability: config.CapabilityReadOnly,
+			MCP:        []string{"kube-api"},
+			MCPTools: []config.MCPToolAllowlist{
+				{Server: "kube-api", Tools: []string{"get_pods"}},
+			},
+		}
+		sets, err := selectFacadeSubagentToolsets(spec, []adktool.Toolset{kubeTS, k8sAdminTS})
+		if err != nil {
+			t.Fatalf("selectFacadeSubagentToolsets: %v", err)
+		}
+		if len(sets) != 1 {
+			t.Fatalf("len(sets) = %d, want 1", len(sets))
+		}
+		// Without mcp_tools filtering, kube_api_delete_pod would fail read_only capability check.
+		if err := checkFacadeSubagentCapability(context.Background(), spec, nil, sets); err != nil {
+			t.Fatalf("checkFacadeSubagentCapability after mcp_tools filter: %v", err)
+		}
+
+		// Verify a filtered MCP toolset that was already gated under "mcp" is not
+		// re-wrapped under ts.Name() when GateToolset runs again.
+		mcpGate := permissions.New(permissions.Options{
+			Mode: permissions.ModeAllow,
+		})
+		gatedMCP := tools.GateToolset(kubeTS, mcpGate, "mcp")
+		filteredSets, err := selectFacadeSubagentToolsets(spec, []adktool.Toolset{gatedMCP})
+		if err != nil || len(filteredSets) != 1 {
+			t.Fatalf("selectFacadeSubagentToolsets(gatedMCP): len=%d, err=%v", len(filteredSets), err)
+		}
+		reGated := tools.GateToolset(filteredSets[0], mcpGate, filteredSets[0].Name())
+		if reGated != filteredSets[0] {
+			t.Errorf("tools.GateToolset re-wrapped already-gated filtered toolset under %q", filteredSets[0].Name())
+		}
+	})
+
+	t.Run("output_schema escaping .agents into projectRoot is rejected", func(t *testing.T) {
+		t.Parallel()
+		projectRoot := t.TempDir()
+		agentsDir := filepath.Join(projectRoot, ".agents")
+		subDir := filepath.Join(agentsDir, "subagents")
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(projectRoot, "secret-schema.json"), []byte(`{"type":"object"}`), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		spec := config.SubagentSpec{
+			Name:         "escaped",
+			Mode:         config.SubagentModeSingleTurn,
+			OutputSchema: "../../secret-schema.json",
+		}
+		spec.SetBaseDir(subDir)
+		_, err := buildSingleFacadeSubagent(
+			context.Background(), OneShotConfig{}, spec, config.DefaultConfig(),
+			&scriptedFacadeLLM{}, "", permissions.New(permissions.Options{Mode: permissions.ModeYolo}),
+			usage.NewTracker(), nil, nil, nil, nil, "", projectRoot, agentsDir,
+		)
+		if err == nil || !strings.Contains(err.Error(), "path escapes scope root") {
+			t.Fatalf("buildSingleFacadeSubagent err = %v, want path escapes scope root", err)
+		}
+	})
+}
+
+func TestRunOneShot_SystemPromptFileAndAppendAtFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "replace.md"), []byte("Custom replaced root prompt."), 0o644); err != nil {
+		t.Fatalf("WriteFile replace.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "append.md"), []byte("Appended prompt from @file."), 0o644); err != nil {
+		t.Fatalf("WriteFile append.md: %v", err)
+	}
+
+	var gotSysInst string
+	llm := &scriptedFacadeLLM{
+		name: "gemini-2.5-flash",
+		steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+			func(req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				gotSysInst = systemInstructionFromReq(req)
+				return &adkmodel.LLMResponse{
+					Content:      genai.NewContentFromText("ok", genai.RoleModel),
+					TurnComplete: true,
+				}, nil
+			},
+		},
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.SystemPromptFile = "replace.md"
+	cfg.Agent.AppendSystemPrompt = "@append.md"
+
+	if _, err := RunOneShot(context.Background(), OneShotConfig{
+		Dir:    dir,
+		Config: cfg,
+		Model:  llm,
+	}, "Ping."); err != nil {
+		t.Fatalf("RunOneShot: %v", err)
+	}
+	if !strings.Contains(gotSysInst, "Custom replaced root prompt.") {
+		t.Errorf("system instruction missing system_prompt_file content; got:\n%s", gotSysInst)
+	}
+	if !strings.Contains(gotSysInst, "Appended prompt from @file.") {
+		t.Errorf("system instruction missing @append.md content; got:\n%s", gotSysInst)
 	}
 }

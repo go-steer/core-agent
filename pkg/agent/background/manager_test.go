@@ -53,14 +53,16 @@ func newNamedStubTool(t *testing.T, name string) tool.Tool {
 	return tl
 }
 
-func newFakeManager(t *testing.T) (*Manager, models.Provider) {
+func newFakeManager(t *testing.T, extra ...ManagerOption) (*Manager, models.Provider) {
 	t.Helper()
 	prov := mock.NewEcho()
-	mgr, err := NewManager(
+	opts := []ManagerOption{
 		WithProvider(prov, "echo"),
 		WithMaxConcurrent(4),
 		WithAlertBuffer(16),
-	)
+	}
+	opts = append(opts, extra...)
+	mgr, err := NewManager(opts...)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

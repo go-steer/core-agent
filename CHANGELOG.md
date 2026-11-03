@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
-_No unreleased changes since [3.1.0-dev.3]._
+#### Bug or Regression
+
+- **Consult `RemoteAgentHandle.Status` on unexpected remote stream close and bound retained terminal subagent handles (`pkg/agent/background`).**
+  - **What went wrong:** When `RemoteAgentHandle.Events()` closed without emitting a terminal event (`completed`, `failed`, or `stopped`), `fanInRemote` did not consult `rh.Status()` before finalizing the handle, and `Manager` only evicted terminal handles in `m.agents` when a subsequent spawn reused the same subagent name, causing the roster to grow without bound when a long-lived parent spawned subagents with unique names.
+  - **What was fixed:** `fanInRemote` (`finalizeClosedRemoteStream`) now consults `rh.Status()` when `Events()` closes without a terminal event — honoring `RemoteStatusCompleted` and `RemoteStatusStopped` and failing closed to `StatusFailed` with a `"failed"` alert when status is still running, pending, failed, or unknown — and `Manager` caps retained terminal handles (`DefaultMaxTerminalHandles = 64`, configurable via `WithMaxTerminalHandles`), evicting the oldest terminal entries by `StartedAt` while never evicting running handles. ([#1366](https://github.com/go-steer/core-agent/issues/1366))
 
 ## [3.1.0-dev.3] — 2026-11-02
 

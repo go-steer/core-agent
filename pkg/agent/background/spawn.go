@@ -836,6 +836,7 @@ func (m *Manager) shouldAlert(name string, handle *Handle) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	current, occupied := m.agents[name]
+	m.evictTerminalHandlesLocked()
 	return !occupied || current == handle
 }
 

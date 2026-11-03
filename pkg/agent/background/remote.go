@@ -291,6 +291,7 @@ func (m *Manager) registerRemote(rh RemoteAgentHandle, spec RemoteAgentSpec) {
 
 	m.mu.Lock()
 	m.agents[spec.Name] = bh
+	m.evictTerminalHandlesLocked()
 	m.mu.Unlock()
 
 	go m.fanInRemote(rh, bh, spec.Name)
@@ -408,31 +409,99 @@ func (m *Manager) fanInRemote(rh RemoteAgentHandle, bh *Handle, name string) {
 		}
 	}
 	if !sawTerminal {
+		m.finalizeClosedRemoteStream(rh, bh, name, finalize)
+		return
+	}
+	finalize(StatusCompleted)
+}
+
+// remoteStatusCheckTimeout bounds how long finalizeClosedRemoteStream
+// waits on rh.Status() when a remote event stream closes without a
+// terminal event (#1366).
+const remoteStatusCheckTimeout = 5 * time.Second
+
+// finalizeClosedRemoteStream resolves a remote subagent whose Events()
+// channel closed without emitting a terminal event (#1366). Consults
+// rh.Status() first and fails closed to StatusFailed with an alert when
+// the status is failed, still running/pending, or unknown.
+func (m *Manager) finalizeClosedRemoteStream(rh RemoteAgentHandle, bh *Handle, name string, finalize func(Status)) {
+	bh.mu.Lock()
+	wasStopped := bh.status == StatusStopped
+	lastAlert := bh.lastAlert
+	bh.mu.Unlock()
+	if wasStopped {
 		bh.mu.Lock()
-		wasStopped := bh.status == StatusStopped
-		if wasStopped {
-			bh.result = &autonomous.RunResult{
-				Reason: autonomous.StopReasonContextCancelled,
-			}
-		} else {
-			bh.err = errors.New("remote subagent stream closed without a terminal event")
-			bh.result = &autonomous.RunResult{}
+		bh.result = &autonomous.RunResult{
+			Reason: autonomous.StopReasonContextCancelled,
 		}
 		bh.mu.Unlock()
-		finalize(StatusFailed)
-		kind, text := "failed", "remote subagent stream closed without a terminal event"
-		if wasStopped {
-			kind, text = "stopped", "stopped by parent"
-		}
+		finalize(StatusStopped)
 		if m.shouldAlert(name, bh) && !bh.takeSyncClaim() {
 			m.pushAlert(Alert{
-				From: name, Text: text,
-				Kind: kind, Timestamp: time.Now(),
+				From: name, Text: "stopped by parent",
+				Kind: "stopped", Timestamp: time.Now(),
 			})
 		}
 		return
 	}
-	finalize(StatusCompleted)
+
+	statusCtx, cancel := context.WithTimeout(context.Background(), remoteStatusCheckTimeout)
+	remoteStatus, statusErr := rh.Status(statusCtx)
+	cancel()
+	if statusErr == nil {
+		switch remoteStatus {
+		case RemoteStatusCompleted:
+			detail := lastAlert
+			bh.mu.Lock()
+			bh.result = &autonomous.RunResult{
+				Reason:     autonomous.StopReasonCompleted,
+				Returned:   true,
+				DoneDetail: detail,
+				FinalText:  detail,
+			}
+			bh.mu.Unlock()
+			finalize(StatusCompleted)
+			if m.shouldAlert(name, bh) && !bh.takeSyncClaim() {
+				text := detail
+				if text == "" {
+					text = "(no detail provided)"
+				}
+				m.pushAlert(Alert{
+					From: name, Text: text,
+					Kind: "completed", Timestamp: time.Now(),
+				})
+			}
+			return
+		case RemoteStatusStopped:
+			bh.mu.Lock()
+			bh.result = &autonomous.RunResult{
+				Reason: autonomous.StopReasonContextCancelled,
+			}
+			bh.mu.Unlock()
+			finalize(StatusStopped)
+			if m.shouldAlert(name, bh) && !bh.takeSyncClaim() {
+				m.pushAlert(Alert{
+					From: name, Text: "remote subagent stopped",
+					Kind: "stopped", Timestamp: time.Now(),
+				})
+			}
+			return
+		}
+	}
+
+	const closedStreamMsg = "remote subagent stream closed without a terminal event"
+	bh.mu.Lock()
+	bh.err = errors.New(closedStreamMsg)
+	bh.result = &autonomous.RunResult{}
+	bh.mu.Unlock()
+	finalize(StatusFailed)
+	if m.shouldAlert(name, bh) && !bh.takeSyncClaim() {
+		alertText := closedStreamMsg + "\n\nstop_reason: " + string(StopError) + "\n" + AbsorbDisclosure
+		m.pushAlert(Alert{
+			From: name, Text: alertText,
+			Kind: "failed", Timestamp: time.Now(),
+		})
+	}
 }
 
 func nowOr(t time.Time) time.Time {

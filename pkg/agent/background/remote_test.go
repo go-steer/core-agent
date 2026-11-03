@@ -46,13 +46,14 @@ func (s *fakeRemoteSpawner) Spawn(_ context.Context, spec RemoteAgentSpec) (Remo
 }
 
 type fakeRemoteHandle struct {
-	id       string
-	events   chan RemoteAgentEvent
-	stopErr  error
-	stopped  bool
-	mu       sync.Mutex
-	stat     RemoteAgentStatus
-	stopOnce sync.Once
+	id        string
+	events    chan RemoteAgentEvent
+	stopErr   error
+	statusErr error
+	stopped   bool
+	mu        sync.Mutex
+	stat      RemoteAgentStatus
+	stopOnce  sync.Once
 }
 
 func (h *fakeRemoteHandle) ID() string { return h.id }
@@ -60,6 +61,9 @@ func (h *fakeRemoteHandle) ID() string { return h.id }
 func (h *fakeRemoteHandle) Status(_ context.Context) (RemoteAgentStatus, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.statusErr != nil {
+		return RemoteStatusPending, h.statusErr
+	}
 	return h.stat, nil
 }
 
@@ -206,6 +210,168 @@ func TestFanInRemote_UnknownKindStillSurfacesAsAlert(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("unknown-kind alert never arrived")
 	}
+}
+
+func TestFanInRemote_StreamClosedWithoutTerminalEvent_ConsultsStatusAndFailsClosed(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		remoteStat RemoteAgentStatus
+		statusErr  error
+		wantStatus Status
+		wantKind   string
+		wantErr    bool
+	}{
+		{
+			name:       "running_on_close_fails_closed",
+			remoteStat: RemoteStatusRunning,
+			wantStatus: StatusFailed,
+			wantKind:   "failed",
+			wantErr:    true,
+		},
+		{
+			name:       "pending_on_close_fails_closed",
+			remoteStat: RemoteStatusPending,
+			wantStatus: StatusFailed,
+			wantKind:   "failed",
+			wantErr:    true,
+		},
+		{
+			name:       "failed_on_close_fails_closed",
+			remoteStat: RemoteStatusFailed,
+			wantStatus: StatusFailed,
+			wantKind:   "failed",
+			wantErr:    true,
+		},
+		{
+			name:       "unknown_status_on_close_fails_closed",
+			remoteStat: RemoteAgentStatus(99),
+			wantStatus: StatusFailed,
+			wantKind:   "failed",
+			wantErr:    true,
+		},
+		{
+			name:       "status_error_fails_closed",
+			remoteStat: RemoteStatusCompleted,
+			statusErr:  errors.New("rpc unavailable"),
+			wantStatus: StatusFailed,
+			wantKind:   "failed",
+			wantErr:    true,
+		},
+		{
+			name:       "completed_status_on_close",
+			remoteStat: RemoteStatusCompleted,
+			wantStatus: StatusCompleted,
+			wantKind:   "completed",
+			wantErr:    false,
+		},
+		{
+			name:       "stopped_status_on_close",
+			remoteStat: RemoteStatusStopped,
+			wantStatus: StatusStopped,
+			wantKind:   "stopped",
+			wantErr:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mgr, _ := newFakeManager(t)
+			spawner := &fakeRemoteSpawner{}
+			rh := must(spawner.Spawn(context.Background(), RemoteAgentSpec{ID: "rc", Name: "rc"}))
+			fh := spawner.handles[0]
+			fh.mu.Lock()
+			fh.stat = tc.remoteStat
+			fh.statusErr = tc.statusErr
+			fh.mu.Unlock()
+
+			mgr.registerRemote(rh, RemoteAgentSpec{ID: "rc", Name: "rc"})
+			close(fh.events)
+
+			bh, ok := mgr.Get("rc")
+			if !ok {
+				t.Fatalf("handle not registered")
+			}
+			select {
+			case <-bh.Done():
+			case <-time.After(time.Second):
+				t.Fatal("background handle did not close")
+			}
+			if bh.Status() != tc.wantStatus {
+				t.Errorf("status = %v, want %v", bh.Status(), tc.wantStatus)
+			}
+			if tc.wantErr && bh.Err() == nil {
+				t.Errorf("expected non-nil handle.Err() on unexpected stream close")
+			}
+			if !tc.wantErr && bh.Err() != nil {
+				t.Errorf("unexpected handle.Err(): %v", bh.Err())
+			}
+			select {
+			case a := <-mgr.Alerts():
+				if a.From != "rc" || a.Kind != tc.wantKind {
+					t.Errorf("unexpected alert: %+v (want kind %q)", a, tc.wantKind)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("expected terminal alert on stream close")
+			}
+		})
+	}
+}
+
+func TestManager_TerminalHandlesCappedAtMaxTerminalHandles(t *testing.T) {
+	t.Parallel()
+	mgr, _ := newFakeManager(t, WithMaxTerminalHandles(3))
+	spawner := &fakeRemoteSpawner{}
+
+	// Spawn one long-running subagent first; it must never be evicted
+	// while still StatusRunning.
+	rhRunning := must(spawner.Spawn(context.Background(), RemoteAgentSpec{ID: "stay-running", Name: "stay-running"}))
+	mgr.registerRemote(rhRunning, RemoteAgentSpec{ID: "stay-running", Name: "stay-running"})
+
+	// Spawn 5 subagents that complete in order.
+	names := []string{"term-1", "term-2", "term-3", "term-4", "term-5"}
+	for i, name := range names {
+		rh := must(spawner.Spawn(context.Background(), RemoteAgentSpec{ID: name, Name: name}))
+		fh := spawner.handles[i+1]
+		mgr.registerRemote(rh, RemoteAgentSpec{ID: name, Name: name})
+		fh.events <- RemoteAgentEvent{Kind: "completed", Text: "done " + name}
+		close(fh.events)
+		bh, ok := mgr.Get(name)
+		if !ok {
+			t.Fatalf("handle %q not found immediately after spawn", name)
+		}
+		select {
+		case <-bh.Done():
+		case <-time.After(time.Second):
+			t.Fatalf("handle %q did not finish", name)
+		}
+	}
+
+	// Trigger one more eviction pass by finishing the 5th or checking List().
+	got := mgr.List()
+	// Expect 1 running ("stay-running") + 3 most recent terminal ("term-3", "term-4", "term-5") = 4 handles.
+	if len(got) != 4 {
+		var gotNames []string
+		for _, h := range got {
+			gotNames = append(gotNames, h.Name+"("+h.Status().String()+")")
+		}
+		t.Fatalf("len(List()) = %d (%v), want 4 (1 running + 3 terminal)", len(got), gotNames)
+	}
+	if _, ok := mgr.Get("stay-running"); !ok {
+		t.Errorf("running subagent 'stay-running' was evicted")
+	}
+	for _, evicted := range []string{"term-1", "term-2"} {
+		if _, ok := mgr.Get(evicted); ok {
+			t.Errorf("expected oldest terminal subagent %q to be evicted", evicted)
+		}
+	}
+	for _, retained := range []string{"term-3", "term-4", "term-5"} {
+		if _, ok := mgr.Get(retained); !ok {
+			t.Errorf("expected recent terminal subagent %q to be retained", retained)
+		}
+	}
+	close(spawner.handles[0].events)
 }
 
 func must[T any](v T, err error) T {

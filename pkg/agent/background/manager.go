@@ -41,6 +41,13 @@ import (
 // default. Mirrors the parallel-tool-call subagent depth cap in pkg/agent.
 const defaultMaxDepth = 2
 
+// DefaultMaxTerminalHandles is the default cap on how many terminal
+// (completed / failed / stopped / deferred) subagent handles a Manager
+// retains in its roster (#1366). Running handles are never evicted;
+// when terminal entries exceed the cap, the oldest by StartedAt are
+// evicted.
+const DefaultMaxTerminalHandles = 64
+
 // Manager owns the lifecycle of in-process background
 // subagents that the parent agent's model decides to spawn at runtime
 // via the spawn_agent tool family (see background_tools.go).
@@ -93,6 +100,7 @@ type Manager struct {
 
 	maxDepth         int
 	maxConcurrent    int
+	maxTerminal      int
 	defaultBudgets   Budgets
 	defaultScheduler coretools.Scheduler
 
@@ -566,6 +574,7 @@ type bgMgrConfig struct {
 	catalog          []tool.Tool
 	maxDepth         int
 	maxConcurrent    int
+	maxTerminal      int
 	defaultBudgets   Budgets
 	defaultScheduler coretools.Scheduler
 	alertBuffer      int
@@ -614,6 +623,14 @@ func WithMaxDepth(n int) ManagerOption {
 // result error the model can adapt to. Default 8.
 func WithMaxConcurrent(n int) ManagerOption {
 	return func(c *bgMgrConfig) { c.maxConcurrent = n }
+}
+
+// WithMaxTerminalHandles caps how many terminal subagent handles remain
+// in the manager's roster (#1366). Running subagents are never evicted;
+// when terminal entries exceed n, the oldest by StartedAt are removed.
+// Default DefaultMaxTerminalHandles (64).
+func WithMaxTerminalHandles(n int) ManagerOption {
+	return func(c *bgMgrConfig) { c.maxTerminal = n }
 }
 
 // WithParallelWritePolicy selects what happens when a write-capable
@@ -739,6 +756,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	cfg := bgMgrConfig{
 		maxDepth:      defaultMaxDepth,
 		maxConcurrent: 8,
+		maxTerminal:   DefaultMaxTerminalHandles,
 		alertBuffer:   256,
 		defaultBudgets: Budgets{
 			MaxTurns:     50,
@@ -779,6 +797,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		catalog:          catalog,
 		maxDepth:         cfg.maxDepth,
 		maxConcurrent:    cfg.maxConcurrent,
+		maxTerminal:      cfg.maxTerminal,
 		parallelWrites:   resolveWritePolicy(cfg.parallelWrites),
 		defaultBudgets:   cfg.defaultBudgets,
 		defaultScheduler: cfg.defaultScheduler,
@@ -1031,7 +1050,9 @@ func (m *Manager) HasPendingAlerts() bool {
 
 // List returns all currently-tracked handles, sorted by start time.
 // Terminal handles remain in the list until Close (so operator
-// surfaces can still report final status). Defensive copy of slice.
+// surfaces can still report final status), capped at the manager's
+// maxTerminal limit (DefaultMaxTerminalHandles by default; oldest by
+// StartedAt evicted first, #1366). Defensive copy of slice.
 func (m *Manager) List() []*Handle {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1175,6 +1196,35 @@ func (m *Manager) runningCount() int {
 		}
 	}
 	return n
+}
+
+// evictTerminalHandlesLocked removes the oldest terminal handles (by
+// StartedAt, breaking ties by Name) when more than m.maxTerminal
+// terminal handles are retained (#1366). Running handles are never
+// evicted. Caller holds m.mu.
+func (m *Manager) evictTerminalHandlesLocked() {
+	if m.maxTerminal <= 0 || len(m.agents) <= m.maxTerminal {
+		return
+	}
+	var terminal []*Handle
+	for _, h := range m.agents {
+		if h.Status() != StatusRunning {
+			terminal = append(terminal, h)
+		}
+	}
+	if len(terminal) <= m.maxTerminal {
+		return
+	}
+	sort.Slice(terminal, func(i, j int) bool {
+		if !terminal[i].StartedAt.Equal(terminal[j].StartedAt) {
+			return terminal[i].StartedAt.Before(terminal[j].StartedAt)
+		}
+		return terminal[i].Name < terminal[j].Name
+	})
+	excess := len(terminal) - m.maxTerminal
+	for i := 0; i < excess; i++ {
+		delete(m.agents, terminal[i].Name)
+	}
 }
 
 // autoWiredSubagentTools are tool names the autonomous driver and the

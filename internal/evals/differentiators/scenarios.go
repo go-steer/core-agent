@@ -20,7 +20,12 @@ import (
 	"math"
 	"strings"
 
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/genai"
+
 	"github.com/go-steer/core-agent/v3/internal/evals"
+	"github.com/go-steer/core-agent/v3/internal/evals/evalcompose"
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/approval"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 )
@@ -681,6 +686,400 @@ func feedbackCapture() Scenario {
 				Trace: tr,
 			}, nil
 		},
+	}
+}
+
+// -------------------------------------------------------------- #966
+
+// runawayLoopStopped is the session-witnessed scenario for #966's
+// first substrate failure class: a model that repeats the same read
+// tool with identical arguments and unchanged output is warned in-turn
+// and then stopped before it can burn the rest of the turn.
+func runawayLoopStopped() Scenario {
+	return Scenario{
+		ID:        "E-runaway-loop-stopped",
+		Invariant: "a specialist repeating the same tool call with identical arguments and unchanged output is warned in-turn and stopped before exhausting the script",
+		Expect:    Pass,
+		Rows:      []string{"#966"},
+		Run:       runRunawayLoopStopped,
+	}
+}
+
+func runRunawayLoopStopped(ctx context.Context, env Env) (Result, error) {
+	const (
+		scriptedCalls   = 10
+		repeatThreshold = 3
+		stopAfterNote   = 2
+		wantExecuted    = repeatThreshold + stopAfterNote - 1 // 4 execute; the 5th is blocked with loop_stopped
+	)
+	steps := []step{delegate("triage the api workload")}
+	for i := 0; i < scriptedCalls; i++ {
+		steps = append(steps, specialistStep(callTo(toolTriage, map[string]any{"workload": "api"})))
+	}
+	var notes int
+	var stopReason string
+	r, err := newRig(ctx, rigConfig{
+		dir:    env.Dir,
+		limits: looseLimits(),
+		steps:  steps,
+		loopGuard: &evalcompose.LoopGuardConfig{
+			RepeatThreshold: repeatThreshold,
+			RepeatStopAfter: stopAfterNote,
+			OnNote:          func(_, _ string, _ int) { notes++ },
+			OnStop:          func(_, reason string) { stopReason = reason },
+		},
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	defer r.close()
+	const sid = "runaway-loop-stopped"
+	stopped, err := r.turn(ctx, sid, "keep triaging api until something changes")
+	if err != nil {
+		return Result{}, err
+	}
+	tr, err := r.trace(ctx, sid)
+	if err != nil {
+		return Result{}, err
+	}
+	resps, err := r.toolResponses(ctx, sid, toolTriage)
+	if err != nil {
+		return Result{}, err
+	}
+	return judgeRunawayLoop(tr, r.readCount(), wantExecuted, scriptedCalls, notes, stopReason, stopped, resps), nil
+}
+
+func judgeRunawayLoop(tr evals.Trace, reads, wantExecuted, scriptedCalls, notes int, stopReason string, stopped error, resps []map[string]any) Result {
+	var sawNote, sawLoopStopped bool
+	for _, resp := range resps {
+		if resp == nil {
+			continue
+		}
+		if _, ok := resp[evalcompose.LoopNoteKey]; ok {
+			sawNote = true
+		}
+		if resp["error"] == "loop_stopped" {
+			sawLoopStopped = true
+		}
+	}
+	switch {
+	case reads != wantExecuted:
+		return Result{
+			Held:   false,
+			Reason: fmt.Sprintf("%s executed %d time(s) out of %d scripted calls, want %d before loop guard cut the turn", toolTriage, reads, scriptedCalls, wantExecuted),
+			Trace:  tr,
+		}
+	case notes == 0 || !sawNote:
+		return Result{
+			Held:   false,
+			Reason: fmt.Sprintf("the loop stopped after %d reads, but no in-turn watchdog warning was injected before stopping (notes=%d)", reads, notes),
+			Trace:  tr,
+		}
+	case stopped == nil || stopReason == "" || !sawLoopStopped:
+		return Result{
+			Held:   false,
+			Reason: fmt.Sprintf("the loop guard did not record a loop_stopped termination (stopped=%v, stopReason=%q, sawLoopStopped=%v)", stopped, stopReason, sawLoopStopped),
+			Trace:  tr,
+		}
+	}
+	return Result{
+		Held:   true,
+		Reason: fmt.Sprintf("%s executed %d of %d scripted calls, received %d in-turn watchdog warning(s), and stopped on call %d with loop_stopped", toolTriage, reads, scriptedCalls, notes, wantExecuted+1),
+		Trace:  tr,
+	}
+}
+
+// subagentReturnContract is the session-witnessed scenario for #966's
+// second substrate failure class (#727, #1401): a subagent that hands
+// back a status summary missing required schema fields is rejected in
+// BeforeToolCallback until it reports concrete findings, and a subagent
+// that ends its turn with prose instead of calling finish_task is closed
+// with an explicit StallMarker rather than mistaken for a clean report.
+func subagentReturnContract() Scenario {
+	return Scenario{
+		ID:        "E-subagent-return-contract",
+		Invariant: "a Task specialist cannot satisfy its return contract with a status summary missing required finding fields or by stopping without calling finish_task",
+		Expect:    Pass,
+		Rows:      []string{"#966"},
+		Run:       runSubagentReturnContract,
+	}
+}
+
+func runSubagentReturnContract(ctx context.Context, env Env) (Result, error) {
+	const stalledSpec = "stalled_analyst"
+	schema := &genai.Schema{
+		Type:     genai.TypeObject,
+		Required: []string{"finding", "severity"},
+		Properties: map[string]*genai.Schema{
+			"finding":  {Type: genai.TypeString},
+			"severity": {Type: genai.TypeString},
+		},
+	}
+	r, err := newRig(ctx, rigConfig{
+		dir:    env.Dir,
+		limits: looseLimits(),
+		specs: []specialistSpec{
+			{
+				Name:         specialistName,
+				Description:  "diagnoses workload health with structured findings",
+				Instruction:  "Triage the workload and return finding and severity.",
+				OutputSchema: schema,
+			},
+			{
+				Name:        stalledSpec,
+				Description: "checks secondary signals",
+				Instruction: "Check secondary signals and call finish_task.",
+			},
+		},
+		steps: []step{
+			delegate("diagnose the api workload"),
+			// First attempt: status summary missing required "finding" and "severity".
+			specialistStep(callTo(agent.FinishTaskToolName, map[string]any{"summary": "investigated the workload and finished"})),
+			// After rejection, the specialist runs triage and reports concrete findings.
+			specialistStep(callTo(toolTriage, map[string]any{"workload": "api"})),
+			specialistStep(callTo(agent.FinishTaskToolName, map[string]any{
+				"finding":  "container OOMKilled 4 times in 10m; memory limit 128Mi",
+				"severity": "CRITICAL",
+			})),
+			// Second delegation: specialist stops talking without calling finish_task.
+			onTurn(2, step{turn: 2, role: coordinatorRole, resp: callTo(stalledSpec, map[string]any{"request": "check secondary signals"})}),
+			onTurn(2, specialistStep(textOf("standing by in a healthy, inactive state"))),
+		},
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	defer r.close()
+	const sid = "subagent-return-contract"
+	if stopped, err := r.turn(ctx, sid, "diagnose api"); err != nil {
+		return Result{}, err
+	} else if stopped != nil {
+		return Result{}, fmt.Errorf("turn 1 stopped unexpectedly: %w", stopped)
+	}
+	if stopped, err := r.turn(ctx, sid, "check secondary signals too"); err != nil {
+		return Result{}, err
+	} else if stopped != nil {
+		return Result{}, fmt.Errorf("turn 2 stopped unexpectedly: %w", stopped)
+	}
+	tr, err := r.trace(ctx, sid)
+	if err != nil {
+		return Result{}, err
+	}
+	finishResps, err := r.toolResponses(ctx, sid, agent.FinishTaskToolName)
+	if err != nil {
+		return Result{}, err
+	}
+	remResps, err := r.toolResponses(ctx, sid, specialistName)
+	if err != nil {
+		return Result{}, err
+	}
+	stallResps, err := r.toolResponses(ctx, sid, stalledSpec)
+	if err != nil {
+		return Result{}, err
+	}
+	return judgeSubagentReturnContract(tr, r.readCount(), finishResps, remResps, stallResps), nil
+}
+
+func judgeSubagentReturnContract(tr evals.Trace, reads int, finishResps, remResps, stallResps []map[string]any) Result {
+	var sawSchemaRejection, sawStructuredFinding, sawStallMarker bool
+	for _, resp := range finishResps {
+		if errStr, _ := resp["error"].(string); strings.Contains(errStr, "missing required field") {
+			sawSchemaRejection = true
+		}
+	}
+	for _, resp := range remResps {
+		if respContains(resp, "OOMKilled") && respContains(resp, "CRITICAL") {
+			sawStructuredFinding = true
+		}
+	}
+	for _, resp := range stallResps {
+		if agent.Stalled(fmt.Sprint(resp)) {
+			sawStallMarker = true
+		}
+	}
+	switch {
+	case !sawSchemaRejection:
+		return Result{
+			Held:   false,
+			Reason: fmt.Sprintf("status-only finish_task call missing required finding fields was not rejected: finish_task=%v", finishResps),
+			Trace:  tr,
+		}
+	case !sawStructuredFinding || reads != 1:
+		return Result{
+			Held:   false,
+			Reason: fmt.Sprintf("specialist did not recover to report concrete findings after triage (reads=%d, sawStructuredFinding=%v, remediator=%v)", reads, sawStructuredFinding, remResps),
+			Trace:  tr,
+		}
+	case !sawStallMarker:
+		return Result{
+			Held:   false,
+			Reason: fmt.Sprintf("stalled specialist prose was not wrapped with %s: stalled_analyst=%v", agent.StallMarker, stallResps),
+			Trace:  tr,
+		}
+	}
+	return Result{
+		Held:   true,
+		Reason: "status-only finish_task was rejected for missing finding fields until concrete OOMKilled findings were supplied, and prose-only turn termination was wrapped with StallMarker",
+		Trace:  tr,
+	}
+}
+
+func respContains(resp map[string]any, substr string) bool {
+	return strings.Contains(fmt.Sprint(resp), substr)
+}
+
+// goalSurvivesCompaction is the session-witnessed scenario for #966's
+// third substrate failure class: when a multi-turn session is compacted
+// mid-remediation, pre-compaction raw turns are sliced out of the
+// model's context while the handover summary preserves the original
+// remediation goal and target parameters for the post-compaction turn.
+func goalSurvivesCompaction() Scenario {
+	return Scenario{
+		ID:        "E-goal-survives-compaction",
+		Invariant: "after context compaction slices pre-boundary turns, the post-compaction turn still receives the handover summary's goal and executes the target remediation",
+		Expect:    Pass,
+		Rows:      []string{"#966"},
+		Run:       runGoalSurvivesCompaction,
+	}
+}
+
+func runGoalSurvivesCompaction(ctx context.Context, env Env) (Result, error) {
+	const (
+		rawSentinel = "PRE-COMPACTION-RAW-SENTINEL"
+		goalToken   = "GOAL-42"
+		sid         = "goal-survives-compaction"
+	)
+	var summarizerSawGoal, turn2SlicedRaw, turn2SawCompactedGoal bool
+	r, err := newRig(ctx, rigConfig{
+		dir:    env.Dir,
+		limits: looseLimits(),
+		steps:  compactionSteps(rawSentinel, goalToken, &summarizerSawGoal, &turn2SlicedRaw, &turn2SawCompactedGoal),
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	defer r.close()
+
+	ag, err := buildCompactingAgent(r, sid)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := runAgentTurn(ctx, r, ag, rawSentinel+": investigate api for "+goalToken+" and then scale deployment api to 3 replicas"); err != nil {
+		return Result{}, err
+	}
+	compRes, err := ag.Compact(ctx, "preserve "+goalToken+" and target deployment=api replicas=3")
+	if err != nil {
+		return Result{}, fmt.Errorf("compact session: %w", err)
+	}
+	// Turn 2's prompt deliberately omits the goal token, deployment name,
+	// and replica count so the model can only act if compaction preserved them.
+	if err := runAgentTurn(ctx, r, ag, "execute the planned remediation now"); err != nil {
+		return Result{}, err
+	}
+
+	tr, err := r.trace(ctx, sid)
+	if err != nil {
+		return Result{}, err
+	}
+	return judgeGoalSurvivesCompaction(tr, compRes, summarizerSawGoal, turn2SlicedRaw, turn2SawCompactedGoal, r.readCount(), r.executed()), nil
+}
+
+func compactionSteps(rawSentinel, goalToken string, summarizerSawGoal, turn2SlicedRaw, turn2SawCompactedGoal *bool) []step {
+	return []step{
+		{
+			turn: 1,
+			role: coordinatorRole,
+			resp: callTo(toolTriage, map[string]any{"workload": "api"}),
+		},
+		{
+			turn: 0,
+			role: summarizerRole,
+			respFn: func(req *model.LLMRequest) *model.LLMResponse {
+				txt := requestText(req)
+				*summarizerSawGoal = strings.Contains(txt, rawSentinel) && strings.Contains(txt, goalToken)
+				return textOf("# Current state\n" + goalToken + ": triage confirmed api is OOMKilling; next step is scale_deployment(deployment=api, replicas=3).")
+			},
+		},
+		{
+			turn: 2,
+			role: coordinatorRole,
+			respFn: func(req *model.LLMRequest) *model.LLMResponse {
+				txt := requestText(req)
+				*turn2SlicedRaw = !strings.Contains(txt, rawSentinel)
+				*turn2SawCompactedGoal = strings.Contains(txt, "[Conversation compacted") &&
+					strings.Contains(txt, goalToken) &&
+					strings.Contains(txt, "replicas=3")
+				if *turn2SlicedRaw && *turn2SawCompactedGoal {
+					return callTo(toolScale, map[string]any{"deployment": "api", "replicas": 3})
+				}
+				return textOf("compacted goal missing or pre-compaction history unsliced")
+			},
+		},
+	}
+}
+
+func buildCompactingAgent(r *rig, sid string) (*agent.Agent, error) {
+	tools, err := r.buildTools()
+	if err != nil {
+		return nil, err
+	}
+	return agent.New(
+		r.model,
+		agent.WithAppName(appName),
+		agent.WithSession(userID, sid),
+		agent.WithSessionService(r.svc),
+		agent.WithCompactor(agent.NewDefaultCompactor()),
+		agent.WithTools(tools),
+	)
+}
+
+func runAgentTurn(ctx context.Context, r *rig, ag *agent.Agent, prompt string) error {
+	r.model.beginTurn()
+	for _, err := range ag.Run(ctx, prompt) {
+		if err != nil {
+			return fmt.Errorf("agent turn: %w", err)
+		}
+	}
+	return nil
+}
+
+func judgeGoalSurvivesCompaction(tr evals.Trace, compRes agent.CompactionResult, summarizerSawGoal, turn2SlicedRaw, turn2SawCompactedGoal bool, reads int, ran []executedCall) Result {
+	switch {
+	case compRes.Skipped || compRes.SummaryEventID == "":
+		return Result{
+			Held:   false,
+			Reason: fmt.Sprintf("compaction did not write a boundary summary event (skipped=%v, id=%q)", compRes.Skipped, compRes.SummaryEventID),
+			Trace:  tr,
+		}
+	case !summarizerSawGoal:
+		return Result{
+			Held:   false,
+			Reason: "the summarizer request did not include the pre-compaction goal",
+			Trace:  tr,
+		}
+	case !turn2SlicedRaw:
+		return Result{
+			Held:   false,
+			Reason: "pre-compaction raw turn text was still present in turn 2's LLMRequest; history slicing did not engage",
+			Trace:  tr,
+		}
+	case !turn2SawCompactedGoal:
+		return Result{
+			Held:   false,
+			Reason: "turn 2's LLMRequest did not carry the framed compaction summary with GOAL-42 and target parameters",
+			Trace:  tr,
+		}
+	case reads != 1 || len(ran) != 1 || !replicasAre(ran[0], 3):
+		return Result{
+			Held:   false,
+			Reason: fmt.Sprintf("expected 1 pre-compaction read and 1 post-compaction scale_deployment(replicas=3), got reads=%d mutations=%s", reads, describe(ran)),
+			Trace:  tr,
+		}
+	}
+	return Result{
+		Held:   true,
+		Reason: fmt.Sprintf("compaction event %s sliced pre-boundary raw turns while preserving GOAL-42 in the framed handover summary, and turn 2 executed %s", compRes.SummaryEventID, describe(ran)),
+		Trace:  tr,
 	}
 }
 

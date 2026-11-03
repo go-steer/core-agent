@@ -27,8 +27,8 @@ func TestScenariosAreWellFormed(t *testing.T) {
 	if err := Validate(All()); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(All()), 6; got != want {
-		t.Fatalf("registry has %d scenarios, want the %d named by docs/v0.3-plan.md W0.3 and docs/v0.4-plan.md W8", got, want)
+	if got, want := len(All()), 9; got != want {
+		t.Fatalf("registry has %d scenarios, want the %d named by docs/v0.3-plan.md W0.3, docs/v0.4-plan.md W8, and #966", got, want)
 	}
 	want := map[string]bool{
 		"E-exactly-once":      true,
@@ -40,6 +40,11 @@ func TestScenariosAreWellFormed(t *testing.T) {
 		// closed: a scenario nobody declared here is a scenario no plan
 		// row is claiming, and the scoreboard would not know about it.
 		"E-feedback-capture": true,
+		// #966: the three session-witnessed substrate failure shapes
+		// whose evidence lives in the session log rather than the cluster.
+		"E-runaway-loop-stopped":     true,
+		"E-subagent-return-contract": true,
+		"E-goal-survives-compaction": true,
 	}
 	for _, s := range All() {
 		if !want[s.ID] {
@@ -52,7 +57,7 @@ func TestScenariosAreWellFormed(t *testing.T) {
 	}
 }
 
-// TestDifferentiators runs all six and requires each to land on its
+// TestDifferentiators runs all nine and requires each to land on its
 // declared outcome.
 //
 // A mismatch fails in both directions on purpose:

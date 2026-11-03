@@ -35,9 +35,12 @@ to judge, and it needs re-running rather than filing.
 | daemon image |  |
 | content image |  |
 | daemon `-c` | _(from the sheet's coordinates table — must be a `gated-apply` config)_ |
+| grader commit | _(git rev-parse HEAD of the tree whose `score.py` graded this run; must not be edited in the same commit that records a pass)_ |
 | model flavor | ☐ gemini ☐ anthropic |
 | run directory |  |
+| artifact archive | _(release asset or durable URI for the raw run bundle, so a second maintainer can re-run the grader)_ |
 | scorer |  |
+| countersigned by | _(second maintainer who re-ran the grader against `artifact archive`)_ |
 
 The leg is not cosmetic. `LEG` lives in the operator's shell and the `-c` lives
 in the cluster, and they can disagree — a run scored as d1 against a d2

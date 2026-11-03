@@ -24,6 +24,20 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
+// waitForPending polls until the broker holds want pending prompts,
+// so tests do not depend on a fixed sleep for goroutine scheduling.
+func waitForPending(t *testing.T, b *PromptBroker, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(b.Pending()) == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("Pending() = %d after 2s, want %d", len(b.Pending()), want)
+}
+
 func TestPromptBroker_RoundTripsDecision(t *testing.T) {
 	t.Parallel()
 
@@ -101,8 +115,7 @@ func TestPromptBroker_CtxCancelDropsPending(t *testing.T) {
 			err error
 		}{d, err}
 	}()
-	// Allow the goroutine to register the pending entry.
-	time.Sleep(20 * time.Millisecond)
+	waitForPending(t, b, 1)
 
 	if got := len(b.Pending()); got != 1 {
 		t.Fatalf("Pending() = %d, want 1", got)
@@ -156,7 +169,7 @@ func TestPromptBroker_LateAnswerToExpiredPrompt(t *testing.T) {
 		_, err := b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"})
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitForPending(t, b, 1)
 
 	pending := b.Pending()
 	if len(pending) != 1 {
@@ -204,7 +217,7 @@ func TestPromptBroker_LateAnswerToACancelledPrompt(t *testing.T) {
 		_, err := b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"})
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitForPending(t, b, 1)
 
 	pending := b.Pending()
 	if len(pending) != 1 {
@@ -268,8 +281,7 @@ func TestPromptBroker_LateSubscriberSeesPending(t *testing.T) {
 	go func() {
 		_, _ = b.AskApproval(context.Background(), permissions.PromptRequest{ToolName: "bash", Detail: "ls"})
 	}()
-	// Wait for the pending entry to register.
-	time.Sleep(20 * time.Millisecond)
+	waitForPending(t, b, 1)
 
 	frames, cleanup := b.Subscribe(context.Background())
 	defer cleanup()
@@ -293,7 +305,7 @@ func TestPromptBroker_CloseUnblocksPending(t *testing.T) {
 		_, err := b.AskApproval(context.Background(), permissions.PromptRequest{ToolName: "bash"})
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitForPending(t, b, 1)
 
 	b.Close()
 	select {

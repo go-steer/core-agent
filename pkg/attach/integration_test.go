@@ -622,8 +622,12 @@ func TestIntegration_AgentCard(t *testing.T) {
 	bareErr := make(chan error, 1)
 	go func() { bareErr <- srvBare.ListenAndServe() }()
 	defer func() { _ = srvBare.Close(); <-bareErr }()
-	for srvBare.Addr() == "" && time.Now().Before(time.Now().Add(time.Second)) {
+	bareDeadline := time.Now().Add(time.Second)
+	for srvBare.Addr() == "" && time.Now().Before(bareDeadline) {
 		time.Sleep(5 * time.Millisecond)
+	}
+	if srvBare.Addr() == "" {
+		t.Fatal("bare server did not start listening within 1s")
 	}
 	respBare, err := http.Get("http://" + srvBare.Addr() + "/.well-known/agent-card.json")
 	if err != nil {

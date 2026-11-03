@@ -69,7 +69,7 @@ func TestLoadUsersFile_RejectsWorldReadable(t *testing.T) {
 		t.Skip("file-mode check skipped on Windows")
 	}
 	t.Parallel()
-	path := writeUsersFile(t, `{"version": 1, "users": []}`, 0o644)
+	path := writeUsersFile(t, `{"version": 1, "users": [{"identity": "alice", "token": "secret"}]}`, 0o644)
 
 	_, err := auth.LoadUsersFile(path)
 	if err == nil {
@@ -93,7 +93,7 @@ func TestLoadUsersFile_AcceptsGroupReadableOwnGroup(t *testing.T) {
 		t.Skip("file-mode check skipped on Windows")
 	}
 	t.Parallel()
-	path := writeUsersFile(t, `{"version": 1, "users": []}`, 0o640)
+	path := writeUsersFile(t, `{"version": 1, "users": [{"identity": "alice", "token": "secret"}]}`, 0o640)
 
 	if _, err := auth.LoadUsersFile(path); err != nil {
 		t.Errorf("0640 owned by our own group should be accepted, got: %v", err)
@@ -109,7 +109,7 @@ func TestLoadUsersFile_RejectsGroupWritable(t *testing.T) {
 		t.Skip("file-mode check skipped on Windows")
 	}
 	t.Parallel()
-	path := writeUsersFile(t, `{"version": 1, "users": []}`, 0o660)
+	path := writeUsersFile(t, `{"version": 1, "users": [{"identity": "alice", "token": "secret"}]}`, 0o660)
 
 	_, err := auth.LoadUsersFile(path)
 	if err == nil {

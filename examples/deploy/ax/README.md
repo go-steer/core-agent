@@ -95,13 +95,14 @@ wrapper, with:
   the [`gke-platform-agent`](../../gke-platform-agent/) recipe baked into the
   image;
 - `--no-repl` and `--attach-listen=127.0.0.1:8484`: serves the session API
-  (`POST /sessions/<app>/<sid>/inject`, `/wake`, the event stream) with no
-  stdin REPL. Creating sessions with `POST /sessions` also needs
-  multi-session in the config; with the attach token as its one caller,
-  that is `"attach": {"multi_session": {"enabled": true, "auth":
-  {"token_identity": "<name>"}}}` (see
-  [Multi-session](https://go-steer.github.io/core-agent/concepts/multi-session/#one-credential-token_identity)).
-  Without it, `POST /sessions` answers 501;
+  (`POST /sessions`, `POST /sessions/<app>/<sid>/inject`, `/wake`, the event
+  stream) with no stdin REPL. Passing `--attach-token` enables on-demand
+  `POST /sessions` out of the box (sessions are owned by `default_identity`,
+  `"anon"` by default). For named caller identities, per-session ACLs, or a
+  front-door proxy that asserts end-user identities via `X-Asserted-Caller`,
+  set `"attach": {"multi_session": {"enabled": true, "auth":
+  {"token_identity": "<name>"}}}` in the config (see
+  [Multi-session](https://go-steer.github.io/core-agent/concepts/multi-session/#one-credential-token_identity));
 - `--attach-token=CORE_AGENT_ATTACH_TOKEN`: requires callers to present the
   bearer token from `CORE_AGENT_ATTACH_TOKEN`;
 - `--session-db` and `--session-db-path=/workspace/.core-agent/sessions.db`:

@@ -400,6 +400,9 @@ func formatAuthLine(cfg *config.Config) string {
 	if len(ms.ProxyIdentities) > 0 {
 		proxies = "[" + strings.Join(ms.ProxyIdentities, ",") + "]"
 	}
+	if ms.ProxyUnprovisioned || (ms.Auth.TokenIdentity != "" && len(ms.ProxyIdentities) > 0) {
+		proxies += " (unprovisioned allowed)"
+	}
 
 	return fmt.Sprintf("multi-session auth: %s, %s, admin=%s proxy=%s", kind, userCount, admins, proxies)
 }

@@ -46,9 +46,9 @@ spec:
     # the runner kills the command 10s after SIGTERM.
     - name: AX_STOP_GRACE_PERIOD
       value: 60s
-  workspaces:
-    - name: core-agent-workspace
-      path: /workspace/repo
+  workspace:
+    name: core-agent-workspace
+    path: /workspace/repo
 ---
 apiVersion: ax.io/v1alpha1
 kind: Workspace

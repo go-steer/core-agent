@@ -75,6 +75,12 @@ var ErrAssertedCallerForbidden = errors.New("auth: caller is not permitted to as
 // map this to a 401 response.
 var ErrAssertedCallerUnknown = errors.New("auth: asserted identity is not provisioned")
 
+// ErrAssertedCallerInvalid is returned when a proxy Caller asserts an
+// identity that fails syntactic validation (empty, >256 bytes, invalid
+// UTF-8, whitespace/control characters, or path traversal). Callers
+// map this to a 401 response (#1485).
+var ErrAssertedCallerInvalid = errors.New("auth: asserted identity is invalid")
+
 type callerKey struct{}
 type proxyByKey struct{}
 

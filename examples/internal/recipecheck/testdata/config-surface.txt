@@ -60,6 +60,7 @@ attach.multi_session.auth.token_identity
 attach.multi_session.default_identity
 attach.multi_session.enabled
 attach.multi_session.proxy_identities
+attach.multi_session.proxy_unprovisioned
 attach.multi_session.session_idle_timeout
 attach.multi_session.users_dir
 attach.peer_hub

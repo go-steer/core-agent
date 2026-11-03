@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -299,4 +301,55 @@ func readerCandidates(t *testing.T, raw []byte) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+func TestLoadUsersFile_DigestOnlyAccepts0644AndRejectsWriteBits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits not enforced on Windows")
+	}
+	t.Parallel()
+
+	digestOnlyBody := `{"version":1,"users":[{"identity":"alice@example.com","token_sha256":"` + auth.HashToken(aliceToken) + `"}]}`
+	mixedBody := `{"version":1,"users":[{"identity":"alice@example.com","token_sha256":"` + auth.HashToken(aliceToken) + `"},{"identity":"bob@example.com","token":"plain-secret"}]}`
+
+	writeMode := func(name, body string, mode os.FileMode) string {
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// A digest-only table at 0644 (AX Workspace spec.files or ConfigMap) is accepted.
+	uf, err := auth.LoadUsersFile(writeMode("digest-0644.json", digestOnlyBody, 0o644))
+	if err != nil {
+		t.Fatalf("LoadUsersFile(digest-only 0644) error = %v, want nil", err)
+	}
+	if len(uf.Users) != 1 || uf.Users[0].Identity != "alice@example.com" {
+		t.Errorf("LoadUsersFile(digest-only 0644) = %+v", uf)
+	}
+
+	// Group or world write/execute bits on a digest-only table are still rejected.
+	for _, mode := range []os.FileMode{0o664, 0o646, 0o755} {
+		if _, err := auth.LoadUsersFile(writeMode("digest-writable.json", digestOnlyBody, mode)); err == nil {
+			t.Errorf("LoadUsersFile(digest-only %#o) succeeded, want rejection", mode)
+		}
+	}
+
+	// A mixed table (any plaintext token row) at 0644 is still rejected.
+	if _, err := auth.LoadUsersFile(writeMode("mixed-0644.json", mixedBody, 0o644)); err == nil || !strings.Contains(err.Error(), "world-accessible") {
+		t.Errorf("LoadUsersFile(mixed 0644) error = %v, want world-accessible error", err)
+	}
+
+	// Trailing data after a digest-only JSON object is rejected at both 0644 and 0600.
+	trailingBody := digestOnlyBody + "\n" + `{"token":"leaked-plaintext"}`
+	if _, err := auth.LoadUsersFile(writeMode("trailing-0644.json", trailingBody, 0o644)); err == nil || !strings.Contains(err.Error(), "world-accessible") {
+		t.Errorf("LoadUsersFile(trailing 0644) error = %v, want world-accessible error", err)
+	}
+	if _, err := auth.LoadUsersFile(writeMode("trailing-0600.json", trailingBody, 0o600)); err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Errorf("LoadUsersFile(trailing 0600) error = %v, want trailing data error", err)
+	}
 }

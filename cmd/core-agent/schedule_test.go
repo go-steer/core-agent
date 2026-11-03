@@ -281,3 +281,22 @@ func TestStartDaemonSchedule_ForwardsMaxFires(t *testing.T) {
 		t.Fatal("expected trigger to stop after MaxFires=1")
 	}
 }
+
+func TestServesSessionCreation_SingleTokenAndMultiSession(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	if servesSessionFactory(cfg, "") || servesSessionCreation(cfg, "") {
+		t.Error("expected false when multi_session, a2a, and token are all unset")
+	}
+	if !servesSessionFactory(cfg, "tok") || !servesSessionCreation(cfg, "tok") {
+		t.Error("expected true when --attach-token is set even with multi_session disabled (#1485)")
+	}
+	cfg.A2A.Expose = true
+	if !servesSessionFactory(cfg, "") || servesSessionCreation(cfg, "") {
+		t.Error("expected servesSessionFactory=true, servesSessionCreation=false for a2a-only without token")
+	}
+	cfg.Attach.MultiSession.Enabled = true
+	if !servesSessionFactory(cfg, "") || !servesSessionCreation(cfg, "") {
+		t.Error("expected both true when multi_session is enabled")
+	}
+}

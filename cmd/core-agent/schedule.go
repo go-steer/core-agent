@@ -587,3 +587,11 @@ func startDaemonSchedule(ctx context.Context, deps daemonScheduleDeps) (*daemonS
 	}
 	return handle, nil
 }
+
+func servesSessionFactory(cfg *config.Config, token string) bool {
+	return cfg.Attach.MultiSession.Enabled || cfg.A2A.Expose || token != ""
+}
+
+func servesSessionCreation(cfg *config.Config, token string) bool {
+	return cfg.Attach.MultiSession.Enabled || token != ""
+}

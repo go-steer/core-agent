@@ -75,7 +75,7 @@ type createSessionResponse struct {
 // factory's generator is buggy.
 func (h *handlers) createSession(w http.ResponseWriter, r *http.Request) {
 	if h.factory == nil {
-		http.Error(w, "POST /sessions not supported: this daemon does not have a SessionFactory configured (in core-agent: enable attach.multi_session; auth.token_identity serves the attach token as its one caller)", http.StatusNotImplemented)
+		http.Error(w, "POST /sessions not supported: this daemon does not have a SessionFactory configured (in core-agent: pass --attach-token or enable attach.multi_session; auth.token_identity serves the attach token as its one caller)", http.StatusNotImplemented)
 		return
 	}
 	caller, _ := auth.CallerFromContext(r.Context())

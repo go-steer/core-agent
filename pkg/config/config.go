@@ -28,6 +28,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-steer/core-models/profile"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -1965,6 +1967,12 @@ type MultiSessionConfig struct {
 	// Empty disables the proxy path.
 	ProxyIdentities []string `json:"proxy_identities,omitempty"`
 
+	// ProxyUnprovisioned, when true, lets a Caller in ProxyIdentities
+	// assert identities that are not pre-provisioned in the bearer
+	// table (receiving no Labels and Admin: false). Requires
+	// ProxyIdentities to be non-empty (#1485).
+	ProxyUnprovisioned bool `json:"proxy_unprovisioned,omitempty"`
+
 	// AssertedCallerHeader is the header name a proxy Caller uses to
 	// assert the effective identity. Default "X-Asserted-Caller".
 	AssertedCallerHeader string `json:"asserted_caller_header,omitempty"`
@@ -2367,9 +2375,16 @@ func (c *Config) validateMultiSession() error {
 				return fmt.Errorf("config: attach.multi_session.auth.table_file is required when multi_session is enabled with kind=%q (or set token_identity to serve the attach token as a one-row table)", MultiSessionAuthKindBearerTable)
 			case a.TokenIdentity != "" && strings.TrimSpace(a.TokenIdentity) != a.TokenIdentity:
 				return fmt.Errorf("config: attach.multi_session.auth.token_identity %q has surrounding whitespace", a.TokenIdentity)
+			case a.TokenIdentity != "" && (len(a.TokenIdentity) > 256 || !utf8.ValidString(a.TokenIdentity) || strings.IndexFunc(a.TokenIdentity, func(r rune) bool {
+				return unicode.IsSpace(r) || unicode.IsControl(r)
+			}) >= 0):
+				return fmt.Errorf("config: attach.multi_session.auth.token_identity %q must not contain whitespace or control characters", a.TokenIdentity)
 			}
 		default:
 			return fmt.Errorf("config: attach.multi_session.auth.kind=%q is not shipped in this version (only %q is supported; oidc/mtls/k8s_sa are designed but deferred)", c.Attach.MultiSession.Auth.Kind, MultiSessionAuthKindBearerTable)
+		}
+		if c.Attach.MultiSession.ProxyUnprovisioned && len(c.Attach.MultiSession.ProxyIdentities) == 0 {
+			return errors.New("config: attach.multi_session.proxy_unprovisioned requires proxy_identities")
 		}
 	}
 	return nil

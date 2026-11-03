@@ -2412,7 +2412,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
 		var a2aOptions attach.A2AOptions
-		if cfg.Attach.MultiSession.Enabled || cfg.A2A.Expose {
+		if servesSessionFactory(cfg, token) {
 			// Wake loops query the eventlog handle, and `defer
 			// handle.Close()` was registered ~200 lines above this
 			// point — so on any return from run() it fires while the
@@ -2480,7 +2480,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			}
 			a2aOptions = buildDaemonA2AOptions(wakeCtx, cfg, attachReg, &factoryDeps)
 			multiSessionFactoryDeps = &factoryDeps
-			if cfg.Attach.MultiSession.Enabled {
+			if servesSessionCreation(cfg, token) {
 				sessionFactory = compose.BuildSessionFactory(factoryDeps)
 				sessionResumer = compose.BuildSessionResumer(factoryDeps)
 			}

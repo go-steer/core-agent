@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -132,9 +133,12 @@ func (uf *UsersFile) PlaintextIdentities() []string {
 // Validation:
 //   - File mode must be 0600 on POSIX, or 0640 when the owning group
 //     is one this process belongs to — the shape a Kubernetes Secret
-//     volume with fsGroup produces. Every other group or other bit is
-//     a configuration error, not a tolerable laxity. See
-//     validateUsersFileMode for the argument. Skipped on Windows where
+//     volume with fsGroup produces — whenever any row carries a
+//     plaintext "token" (or the table is empty). When every row carries
+//     only "token_sha256", reading the file yields no usable credential,
+//     so 0644 (for example, an AX Workspace spec.files entry or a
+//     ConfigMap mount) is accepted as long as group/world write and
+//     execute bits are unset (#1483, #1485). Skipped on Windows where
 //     Unix mode bits don't map cleanly.
 //   - Schema version must match UsersFileSchemaVersion.
 //   - Every row must carry an identity and exactly one of token_sha256
@@ -152,9 +156,6 @@ func LoadUsersFile(path string) (*UsersFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: stat users file %q: %w", path, err)
 	}
-	if err := checkUsersFileMode(path, info); err != nil {
-		return nil, err
-	}
 
 	data, err := os.ReadFile(path) //nolint:gosec // path is operator-supplied config, not user input
 	if err != nil {
@@ -164,8 +165,28 @@ func LoadUsersFile(path string) (*UsersFile, error) {
 	var uf UsersFile
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&uf); err != nil {
-		return nil, fmt.Errorf("auth: parse users file %q: %w", path, err)
+	parseErr := dec.Decode(&uf)
+	if parseErr == nil {
+		var trailing any
+		if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+			parseErr = errors.New("trailing data after top-level JSON object")
+		}
+	}
+	if parseErr == nil && uf.Version == UsersFileSchemaVersion {
+		valErr := validateUsers(path, uf.Users)
+		if valErr == nil && len(uf.PlaintextIdentities()) == 0 {
+			if err := checkDigestOnlyUsersFileMode(path, info); err != nil {
+				return nil, err
+			}
+			return &uf, nil
+		}
+	}
+
+	if err := checkUsersFileMode(path, info); err != nil {
+		return nil, err
+	}
+	if parseErr != nil {
+		return nil, fmt.Errorf("auth: parse users file %q: %w", path, parseErr)
 	}
 	if uf.Version != UsersFileSchemaVersion {
 		return nil, fmt.Errorf("auth: users file %q has unsupported schema version %d (expected %d)", path, uf.Version, UsersFileSchemaVersion)

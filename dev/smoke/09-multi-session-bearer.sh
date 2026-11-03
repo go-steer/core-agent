@@ -418,17 +418,69 @@ if [[ "${code}" != "401" ]]; then
 fi
 pass "unauthenticated POST /sessions rejected (401)"
 
-log_step "loader rejects world-readable users.json at startup"
+log_step "loader rejects world-readable users.json with plaintext rows at startup"
 chmod 0644 "${USERS_FILE}"
 loose_log="${SMOKE_DIR}/loose-mode-startup.log"
 if (cd "${WORK_DIR}" && "${CORE_AGENT}" -c "${WORK_DIR}/.agents/config.json" --provider=echo \
         --session-db --session-db-path="${SMOKE_DIR}/loose.db" > "${loose_log}" 2>&1) ; then
-    fail "daemon should have refused to start with mode 0644 users.json"
+    fail "daemon should have refused to start with mode 0644 users.json containing plaintext rows"
 fi
 if ! grep -q "world-accessible bits must be unset" "${loose_log}"; then
     fail "expected file-mode error message; got:\n$(cat "${loose_log}")"
 fi
-pass "world-readable users.json rejected at startup (file-mode invariant)"
+pass "world-readable users.json with plaintext rows rejected at startup (file-mode invariant)"
 chmod 0600 "${USERS_FILE}"
+
+log_step "token_identity + proxy_identities allows X-Asserted-Caller session creation (#1485)"
+TI_DIR="${SMOKE_DIR}/token-identity"
+mkdir -p "${TI_DIR}/.agents"
+TI_PORT=$((PORT + 1))
+TI_TOKEN="tok-switchboard-secret-value-0000"
+cat > "${TI_DIR}/.agents/config.json" <<EOF
+{
+  "version": 1,
+  "model": { "provider": "echo", "name": "echo" },
+  "permissions": { "mode": "allow" },
+  "attach": {
+    "listen": "127.0.0.1:${TI_PORT}",
+    "multi_session": {
+      "enabled": true,
+      "auth": {
+        "kind": "bearer_table",
+        "token_identity": "switchboard"
+      },
+      "proxy_identities": ["switchboard"],
+      "proxy_unprovisioned": true
+    }
+  }
+}
+EOF
+TI_TOKEN_ENV="${TI_TOKEN}" "${CORE_AGENT}" -c "${TI_DIR}/.agents/config.json" \
+    --provider=echo --no-repl \
+    --attach-listen="127.0.0.1:${TI_PORT}" \
+    --attach-token=TI_TOKEN_ENV \
+    --session-db --session-db-path="${SMOKE_DIR}/ti.db" \
+    > "${SMOKE_DIR}/ti.log" 2>&1 &
+TI_PID=$!
+for _ in $(seq 1 50); do
+    if curl -sf "http://127.0.0.1:${TI_PORT}/healthz" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.1
+done
+ti_create=$(curl -s -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer ${TI_TOKEN}" \
+    -H "X-Asserted-Caller: U12345" \
+    -H "Content-Type: application/json" \
+    -d '{}' "http://127.0.0.1:${TI_PORT}/sessions")
+ti_code=$(tail -n1 <<<"${ti_create}")
+ti_body=$(sed '$d' <<<"${ti_create}")
+kill "${TI_PID}" 2>/dev/null || true
+wait "${TI_PID}" 2>/dev/null || true
+if [[ "${ti_code}" != "201" ]] || ! grep -q '"user":"U12345"' <<<"${ti_body}"; then
+    cat "${SMOKE_DIR}/ti.log" >&2
+    fail "token_identity + X-Asserted-Caller POST /sessions got ${ti_code}: ${ti_body}"
+fi
+pass "token_identity + proxy_identities creates session owned by X-Asserted-Caller (${ti_code})"
 
 printf '\n%sALL CHECKS PASSED%s — multi-session substrate + POST /sessions wired correctly.\n' "${GREEN}${BOLD}" "${RESET}"

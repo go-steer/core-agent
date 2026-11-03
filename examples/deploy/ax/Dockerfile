@@ -45,7 +45,7 @@ ARG TARGETARCH
 # pass-through is present; override AX_REPO=https://github.com/google/ax.git
 # and AX_REF=$(cat examples/deploy/ax/.ax-ref) for upstream one-shot only.
 ARG AX_REPO=https://github.com/mastersingh24/ax.git
-ARG AX_REF=e8bc98d87d9e3dcdee4aafa899bc802186d67dcb
+ARG AX_REF=12dbe163b207888b743b10705d5ce26c8f5c2697
 RUN apk add --no-cache git
 WORKDIR /src
 RUN git init -q . \

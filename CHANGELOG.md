@@ -14,6 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
+_No unreleased changes since [3.1.0-dev.3]._
+
+## [3.1.0-dev.3] — 2026-11-02
+
 #### Feature
 
 - **`attach.multi_session.auth.token_identity`: the attach token as a one-row bearer table.**

@@ -103,10 +103,11 @@ func (o *operator) consulted() int {
 }
 
 type specialistSpec struct {
-	Name        string
-	Description string
-	Instruction string
-	MaxCostUSD  float64
+	Name         string
+	Description  string
+	Instruction  string
+	MaxCostUSD   float64
+	OutputSchema *genai.Schema
 }
 
 type budgetLimits = evalcompose.Limits
@@ -120,6 +121,7 @@ type rigConfig struct {
 	steps         []step
 	onMutation    approval.OnMutation
 	op            *operator
+	loopGuard     *evalcompose.LoopGuardConfig
 }
 
 // rig is one composed runtime plus the counters a scenario checks.
@@ -191,11 +193,12 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	for _, s := range specs {
 		names = append(names, s.Name)
 		composeSpecs = append(composeSpecs, evalcompose.Spec{
-			Name:        s.Name,
-			Description: s.Description,
-			Mode:        evalcompose.ModeTask,
-			Instruction: s.Instruction,
-			Budget:      evalcompose.SpecialistBudget{MaxCostUSD: s.MaxCostUSD},
+			Name:         s.Name,
+			Description:  s.Description,
+			Mode:         evalcompose.ModeTask,
+			Instruction:  s.Instruction,
+			Budget:       evalcompose.SpecialistBudget{MaxCostUSD: s.MaxCostUSD},
+			OutputSchema: s.OutputSchema,
 		})
 	}
 	r.meter.Scopes = evalcompose.MeterScopes(composeSpecs, "", rigModel)
@@ -250,6 +253,15 @@ func newRig(ctx context.Context, cfg rigConfig) (*rig, error) {
 	}
 	if writeGate != nil {
 		plugins = append(plugins, writeGate)
+	}
+	if cfg.loopGuard != nil {
+		lg, err := evalcompose.LoopGuard(*cfg.loopGuard)
+		if err != nil {
+			return nil, fmt.Errorf("rig: construct loop guard: %w", err)
+		}
+		if lg != nil {
+			plugins = append(plugins, lg)
+		}
 	}
 	r.runner, err = runner.New(runner.Config{
 		AppName:           appName,
@@ -344,9 +356,30 @@ func (r *rig) readCount() int {
 	return r.reads
 }
 
+type turnStop struct {
+	mu     sync.Mutex
+	reason error
+}
+
+func (s *turnStop) StopTurn(reason error) {
+	s.mu.Lock()
+	if s.reason == nil {
+		s.reason = reason
+	}
+	s.mu.Unlock()
+}
+
+func (s *turnStop) why() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reason
+}
+
 func (r *rig) turn(ctx context.Context, sessionID, text string) (stopped error, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	tstop := &turnStop{}
+	ctx = approval.WithTurnStop(ctx, tstop)
 	r.model.beginTurn()
 	meter := evalcompose.NewMeter(r.meter)
 	ctx = agent.WithCallGate(ctx, meter)
@@ -355,14 +388,21 @@ func (r *rig) turn(ctx context.Context, sessionID, text string) (stopped error, 
 		StreamingMode: adkagent.StreamingModeNone,
 	}) {
 		if rerr != nil {
+			if why := tstop.why(); why != nil {
+				return why, nil
+			}
 			return stopped, fmt.Errorf("rig: run turn: %w", rerr)
 		}
 		if berr := meter.Observe(ev); berr != nil {
 			cancel()
 			return berr, nil
 		}
+		if why := tstop.why(); why != nil {
+			cancel()
+			return why, nil
+		}
 	}
-	return nil, nil
+	return tstop.why(), nil
 }
 
 func (r *rig) answerParks(ctx context.Context, sessionID string) error {
@@ -552,12 +592,14 @@ const (
 	anyRole role = iota
 	coordinatorRole
 	specialistRole
+	summarizerRole
 )
 
 type step struct {
-	turn int
-	role role
-	resp *model.LLMResponse
+	turn   int
+	role   role
+	resp   *model.LLMResponse
+	respFn func(req *model.LLMRequest) *model.LLMResponse
 }
 
 func specialistStep(resp *model.LLMResponse) step {
@@ -606,9 +648,15 @@ func (m *scriptModel) GenerateContent(_ context.Context, req *model.LLMRequest, 
 		if m.used == nil {
 			m.used = make([]bool, len(m.steps))
 		}
-		var resp *model.LLMResponse
+		var (
+			resp   *model.LLMResponse
+			respFn func(req *model.LLMRequest) *model.LLMResponse
+		)
 		for i, s := range m.steps {
-			if m.used[i] || s.turn != m.turnNo {
+			if m.used[i] {
+				continue
+			}
+			if s.turn != 0 && s.turn != m.turnNo {
 				continue
 			}
 			if s.role != anyRole && s.role != who {
@@ -616,10 +664,14 @@ func (m *scriptModel) GenerateContent(_ context.Context, req *model.LLMRequest, 
 			}
 			m.used[i] = true
 			resp = s.resp
+			respFn = s.respFn
 			break
 		}
 		m.mu.Unlock()
 
+		if respFn != nil {
+			resp = respFn(req)
+		}
 		if resp == nil {
 			resp = defaultReply(who)
 		}
@@ -646,17 +698,43 @@ func roleOf(req *model.LLMRequest) role {
 	if req == nil || req.Config == nil {
 		return anyRole
 	}
+	hasDecl := false
 	for _, t := range req.Config.Tools {
 		if t == nil {
 			continue
 		}
 		for _, d := range t.FunctionDeclarations {
-			if d != nil && d.Name == "finish_task" {
-				return specialistRole
+			if d != nil {
+				hasDecl = true
+				if d.Name == "finish_task" {
+					return specialistRole
+				}
 			}
 		}
 	}
+	if !hasDecl {
+		return summarizerRole
+	}
 	return coordinatorRole
+}
+
+func requestText(req *model.LLMRequest) string {
+	if req == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p != nil && p.Text != "" {
+				b.WriteString(p.Text)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	return b.String()
 }
 
 func callTo(name string, args map[string]any) *model.LLMResponse {

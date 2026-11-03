@@ -358,6 +358,11 @@ if grep -q 'No claim outruns the evidence' SCORECARD.md; then
 else
     bad "SCORECARD.md and score.py no longer state the same G2 rule"
 fi
+for sc in SCORECARD.md SCORECARD-D.md; do
+    for field in "grader commit" "artifact archive" "countersigned by"; do
+        check "${sc} requires ${field} (#1382)" "${sc}" "\\| ${field} \\|"
+    done
+done
 check  "keeps C's G2 question on the negative scenario" \
        "${CLEAN}" 'could not verify, and stops'
 check "quotes 'is now fully resolved'" "${DIRTY}" 'is now fully resolved'

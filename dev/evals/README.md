@@ -542,11 +542,15 @@ sequences after this. Nothing in this directory grades an answer against
 a rubric — every check is a fixed string that a fact about the world
 either does or does not contain.
 
-Not 15–30 scenarios yet, either. #966 names five shapes and two of them
-are here; the three that are left — the runaway loop that is stopped,
-the subagent that returns findings rather than a summary, the goal that
-survives compaction — need a witness this harness does not have, because
-their evidence is in the session rather than in the cluster.
+Not 15–30 scenarios in this directory alone, either. #966 names five
+substrate failure shapes: two of them (cluster-fact grounding and
+persona adherence over a long horizon) live here, and the three whose
+evidence is in the session log rather than the cluster — the runaway
+loop that is stopped (`E-runaway-loop-stopped`), the subagent that
+returns findings rather than a status summary or stall
+(`E-subagent-return-contract`), and the goal that survives compaction
+(`E-goal-survives-compaction`) — live in the deterministic session
+harness under `internal/evals/differentiators` (`dev/tools/evals`).
 
 Not a taxonomy of check types either. There is one `Check` type, and
 every question this skeleton can ask has the same shape.

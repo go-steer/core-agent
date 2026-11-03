@@ -16,8 +16,9 @@
 # Run the deterministic parity and differentiator eval suite (#1403).
 #
 # Validates metric reach across the 31-scenario LangChain SRE corpus and
-# executes all 6 differentiator scenarios against the composed runtime
-# (ScriptedModel, SQLite eventlog, durable approval gate, effect outbox).
+# executes all 9 differentiator scenarios against the composed runtime
+# (ScriptedModel, SQLite eventlog, durable approval gate, effect outbox,
+# loop guard, subagent return contracts, context compaction; #966, #1403).
 # Needs no network and no credentials.
 #
 # Usage:

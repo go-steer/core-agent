@@ -14,11 +14,22 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
+#### Feature
+
+- **Session-witnessed substrate failure scenarios in the deterministic differentiator eval suite (`internal/evals/differentiators`).**
+  - **What was missing:** `dev/evals` covered the two cluster-witnessed substrate failure shapes from `#966` (cluster-fact grounding and persona adherence over a long horizon), leaving the three session-witnessed shapes — an in-turn runaway loop stopped before exhausting the turn, a subagent held to its structured finding / non-stall return contract, and a remediation goal surviving context compaction — without deterministic session-store coverage.
+  - **What landed:** `internal/evals/differentiators` (`dev/tools/evals`, gated by `dev/ci/presubmits/evals`) now runs 9 deterministic scenarios against the SQLite-backed session runtime, adding `E-runaway-loop-stopped` (`evalcompose.LoopGuard` warning and stopping a repeated identical read call), `E-subagent-return-contract` (`OutputSchema` rejection of a status-only `finish_task` summary until concrete findings are supplied, plus `agent.FinishOnStall` wrapping prose-only specialist termination with `agent.StallMarker`), and `E-goal-survives-compaction` (`agent.Compact` + `compactingService` slicing pre-boundary raw turns while preserving the remediation goal and target parameters for the post-compaction turn). ([#966](https://github.com/go-steer/core-agent/issues/966))
+
 #### Bug or Regression
 
 - **Consult `RemoteAgentHandle.Status` on unexpected remote stream close and bound retained terminal subagent handles (`pkg/agent/background`).**
   - **What went wrong:** When `RemoteAgentHandle.Events()` closed without emitting a terminal event (`completed`, `failed`, or `stopped`), `fanInRemote` did not consult `rh.Status()` before finalizing the handle, and `Manager` only evicted terminal handles in `m.agents` when a subsequent spawn reused the same subagent name, causing the roster to grow without bound when a long-lived parent spawned subagents with unique names.
   - **What was fixed:** `fanInRemote` (`finalizeClosedRemoteStream`) now consults `rh.Status()` when `Events()` closes without a terminal event — honoring `RemoteStatusCompleted` and `RemoteStatusStopped` and failing closed to `StatusFailed` with a `"failed"` alert when status is still running, pending, failed, or unknown — and `Manager` caps retained terminal handles (`DefaultMaxTerminalHandles = 64`, configurable via `WithMaxTerminalHandles`), evicting the oldest terminal entries by `StartedAt` while never evicting running handles. ([#1366](https://github.com/go-steer/core-agent/issues/1366))
+
+#### Documentation
+
+- **Re-gradable milestone drill and soak evidence contract (`dev/uat/gke-drill/`, `docs/release-process.md`).**
+  - **What changed:** `dev/uat/gke-drill/SCORECARD.md` and `SCORECARD-D.md` now require `grader commit`, `artifact archive`, and `countersigned by` fields (enforced by `dev/uat/gke-drill/selftest.sh`), and `dev/uat/gke-drill/README.md` + `docs/release-process.md` codify the four re-gradability requirements for milestone box evidence: freezing the grader commit separately from the run note, archiving the raw run bundle, requiring two passes on distinct seeds/days, and requiring a second maintainer's re-grade and countersignature. ([#1382](https://github.com/go-steer/core-agent/issues/1382))
 
 ## [3.1.0-dev.3] — 2026-11-02
 

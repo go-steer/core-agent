@@ -28,7 +28,7 @@
 //     job (W0.5), and what the free tier gates is that the measurement
 //     is not a constant function.
 //
-//   - The differentiator suite runs the five scenarios upstream's
+//   - The differentiator suite runs the nine scenarios upstream's
 //     harness structurally cannot express, each against the composed
 //     runtime, and holds each to its declared outcome.
 //

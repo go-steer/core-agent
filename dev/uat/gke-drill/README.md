@@ -497,6 +497,32 @@ its header; that is the thing to check before copying.
 `fail` is an ordinary and expected verdict, especially early. A baseline that is
 mostly failing is the instrument working.
 
+### Re-gradable evidence ([#1382](https://github.com/go-steer/core-agent/issues/1382))
+
+Every committed run note or scorecard in `dev/uat/gke-drill/runs/` that closes a
+milestone box must be independently re-gradable by someone other than its
+author:
+
+1. **Freeze the grader commit.** Record the `core-agent` commit SHA (`git
+   rev-parse HEAD`) of the grader (`score.py`, `soak_verdict.py`, `a2_count.py`,
+   or `boundary_score.py`) in the scorecard's `grader commit` row alongside the
+   daemon image digest. Do not edit a grader in the same commit that records a
+   passing run: land the grader change with its self-test first, then grade the
+   run against that committed SHA.
+2. **Archive the raw run bundle.** Tar the raw run directory
+   (`~/.gke-drill/runs/<stamp>-*` or `~/.gke-drill/soak/<stamp>-*` —
+   `transcript.jsonl`, `timeline.jsonl`, `daemon.log`, `events.sse`,
+   `subagents.json`, `replay-*.sse`, `window.env`) and attach it to the release
+   or a durable artifact URI cited in the scorecard's `artifact archive` row so
+   `score.py`, `soak_verdict.py`, `a2_count.py`, and `boundary_score.py` can be
+   re-run without access to the author's workstation.
+3. **Two passes on distinct seeds/days.** Every milestone box requires at least
+   two passing runs on different seeds or days, matching the v2.9 drill rule.
+4. **Independent re-grade and countersignature.** Before a box is marked closed,
+   a second maintainer re-runs the deterministic grader against the archived
+   bundle (or runs the deterministic `go run ./internal/evals/cmd/outcome` gate)
+   at the recorded `grader commit` and fills in `countersigned by`.
+
 ## Files
 
 | | |

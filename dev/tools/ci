@@ -41,27 +41,60 @@ for arg in "$@"; do
 done
 
 # Order matters: cheap, format-style checks first; the slow scanners last.
+# Every script in dev/ci/presubmits/* (except e2e-*) must appear here, or the
+# coverage guard below fails before running anything (#1394).
 STEPS=(
-  "docs-lint       dev/tools/docs-lint"
-  "attribution     dev/tools/verify-no-agent-attribution"
-  "toolchain       dev/tools/verify-go-toolchain"
-  "format          dev/tools/verify-go-format"
-  "vet             dev/tools/vet"
-  "build           dev/tools/build"
-  "coretui-guards  dev/tools/verify-coretui-guards"
-  "slim-deps       dev/tools/verify-slim-deps"
-  "apidiff         dev/tools/verify-apidiff"
-  "config-pins     dev/tools/verify-harness-config-pinned"
-  "lint            dev/tools/lint-go"
-  "mod-tidy        dev/tools/verify-mod-tidy"
-  "test            dev/tools/test-unit"
-  "evals           dev/tools/evals"
-  "examples        dev/tools/examples-smoke"
-  "gke-drill       dev/tools/verify-gke-drill"
-  "terraform       dev/tools/verify-terraform"
-  "release-notes   dev/tools/verify-release-notes"
-  "vuln            dev/tools/verify-vuln"
+  "docs-lint         dev/tools/docs-lint"
+  "attribution       dev/tools/verify-no-agent-attribution"
+  "toolchain         dev/tools/verify-go-toolchain"
+  "version-fallback  dev/tools/verify-version-fallback"
+  "format            dev/tools/verify-go-format"
+  "vet               dev/tools/vet"
+  "build             dev/tools/build"
+  "coretui-guards    dev/tools/verify-coretui-guards"
+  "slim-deps         dev/tools/verify-slim-deps"
+  "apidiff           dev/tools/verify-apidiff"
+  "config-pins       dev/tools/verify-harness-config-pinned"
+  "lint              dev/tools/lint-go"
+  "mod-tidy          dev/tools/verify-mod-tidy"
+  "test              dev/tools/test-unit"
+  "evals             dev/tools/evals"
+  "examples          dev/tools/examples-smoke"
+  "gke-drill         dev/tools/verify-gke-drill"
+  "terraform         dev/tools/verify-terraform"
+  "release-notes     dev/tools/verify-release-notes"
+  "vuln              dev/tools/verify-vuln"
 )
+
+# Verify that every non-e2e script in dev/ci/presubmits/ is covered by STEPS.
+missing_presubmits=()
+for presubmit in dev/ci/presubmits/*; do
+  name="$(basename "$presubmit")"
+  case "$name" in
+    e2e-*) continue ;;
+  esac
+  # Resolve the dev/tools/ target that the presubmit delegates to (or matches by name).
+  target="dev/tools/${name}"
+  if [[ ! -e "$target" && "$name" == "verify-docs-lint" ]]; then
+    target="dev/tools/docs-lint"
+  fi
+  found=0
+  for entry in "${STEPS[@]}"; do
+    cmd="${entry#* }"
+    cmd="${cmd##* }"
+    if [[ "$cmd" == "$target" || "$cmd" == "$presubmit" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ "$found" -eq 0 ]]; then
+    missing_presubmits+=("$presubmit")
+  fi
+done
+if [[ "${#missing_presubmits[@]}" -gt 0 ]]; then
+  printf 'dev/tools/ci: presubmits missing from STEPS: %s\n' "${missing_presubmits[*]}" >&2
+  exit 1
+fi
 
 failures=()
 for entry in "${STEPS[@]}"; do

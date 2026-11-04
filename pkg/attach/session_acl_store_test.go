@@ -32,14 +32,12 @@ import (
 
 func newTestACLStore(t *testing.T) SessionACLStore {
 	t.Helper()
-	// busy_timeout mirrors the production connection config: the
-	// real store shares eventlog.Open's DB, whose DSN carries
-	// busy_timeout(5000). Without it this test DB had ZERO busy
-	// wait, so any two of ConcurrentPut's 50 writers colliding
-	// under full-suite -race CI load failed instantly with
-	// SQLITE_BUSY (#520) — a config gap in the test double, not a
-	// store bug.
-	dsn := filepath.Join(t.TempDir(), "acl.db") + "?_pragma=busy_timeout(5000)"
+	// Mirror the production SQLite connection config from eventlog.Open:
+	// WAL mode, busy_timeout(5000), and _txlock=immediate. Without
+	// _txlock=immediate, concurrent transactions begin as deferred readers
+	// and deadlock on write-lock upgrade, which SQLite rejects immediately
+	// with SQLITE_BUSY without consulting busy_timeout (#520).
+	dsn := filepath.Join(t.TempDir(), "acl.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})

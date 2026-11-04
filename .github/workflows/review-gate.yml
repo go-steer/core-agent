@@ -56,9 +56,10 @@ jobs:
     steps:
       - name: Require adversarial-review section on Go-touching PRs
         env:
-          # Body via env, never interpolated into the script — PR
-          # bodies are attacker-controlled on public repos.
+          # Body and title via env, never interpolated into the script —
+          # PR metadata is attacker-controlled on public repos.
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -69,9 +70,41 @@ jobs:
             echo "No Go changes — review gate not required."
             exit 0
           fi
-          if grep -qi 'adversarial review' <<<"${PR_BODY:-}"; then
-            echo "Adversarial-review section present."
-            exit 0
+
+          # Extract the "## Adversarial review" section (or the self-dev soak
+          # dispatcher's "Adversarial review:" commit-body paragraph;
+          # fence-aware, stops at the next heading of level <= 2).
+          section=$(awk '
+            /^[[:space:]]*```/ { fence = !fence }
+            !fence && tolower($0) ~ /^##[[:space:]]+adversarial[[:space:]]+review([[:space:]:—-].*)?$/ {
+              in_sec = 1
+              next
+            }
+            !fence && tolower($0) ~ /^adversarial[[:space:]]+review:[[:space:]]*/ {
+              in_sec = 1
+              line = $0
+              sub(/^[Aa][Dd][Vv][Ee][Rr][Ss][Aa][Rr][Ii][Aa][Ll][[:space:]]+[Rr][Ee][Vv][Ii][Ee][Ww]:[[:space:]]*/, "", line)
+              print line
+              next
+            }
+            in_sec && !fence && /^##?[[:space:]]+/ { exit }
+            in_sec { print }
+          ' <<<"${PR_BODY:-}")
+
+          non_ws=$(printf '%s' "$section" | tr -d '[:space:]' | wc -c | tr -d '[:space:]')
+          if [[ "$non_ws" -lt 80 ]]; then
+            echo '::error::This PR touches Go code but its body lacks a substantive "## Adversarial review" section (need a "## Adversarial review" heading followed by at least 80 non-whitespace characters recording the skeptic pass and findings/dispositions per AGENTS.md "How we develop").'
+            exit 1
           fi
-          echo '::error::This PR touches Go code but its body has no "Adversarial review" section. Run the skeptic pass per AGENTS.md "How we develop" (fix/pin findings; for bug fixes verify the regression test FAILS on pre-fix code) and record the outcome in the PR body.'
-          exit 1
+
+          # For fix: / fix(...) PRs, require explicit mention of pre-fix
+          # regression-test verification (or the documented exemption phrase).
+          fix_re='^fix(\([^)]+\))?!?:'
+          if [[ "${PR_TITLE:-}" =~ $fix_re ]]; then
+            if ! grep -qiE 'pre-fix|prefix-failure|before[[:space:]]+the[[:space:]]+fix|unfixed|passes[[:space:]]+before[[:space:]]+and[[:space:]]+after,[[:space:]]+by[[:space:]]+design' <<<"${PR_BODY:-}"; then
+              echo '::error::This is a fix: PR touching Go code, but the PR body does not record pre-fix regression test failure verification (see .agents/skills/prefix-failure-verification/SKILL.md). Patch the bug back, verify the new test fails before the fix, and record the pre-fix failure in the PR body.'
+              exit 1
+            fi
+          fi
+
+          echo "Adversarial-review section present (${non_ws} non-whitespace chars)."

@@ -367,8 +367,8 @@ func TestReleasedVersions(t *testing.T) {
 		seen[v.String()] = true
 	}
 	for _, want := range []string{
-		"2.8.0", "2.7.0", // GA headings
-		"2.8.0-dev.7", "2.7.0-dev.5", // recoverable only from a fold trailer
+		"3.0.0", "2.8.0", "2.7.0", // GA headings (live + archived)
+		"3.0.0-dev.5", "2.8.0-dev.7", "2.7.0-dev.5", // recoverable only from a fold trailer
 	} {
 		if !seen[want] {
 			t.Errorf("ReleasedVersions did not find %s; parsed %d versions", want, len(got))

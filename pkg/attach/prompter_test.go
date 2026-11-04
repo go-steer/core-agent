@@ -24,6 +24,21 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
+func waitForPending(t *testing.T, b *PromptBroker, want int) []PromptFrame {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pending := b.Pending()
+		if len(pending) == want {
+			return pending
+		}
+		time.Sleep(time.Millisecond)
+	}
+	got := b.Pending()
+	t.Fatalf("Pending() = %d after 2s, want %d", len(got), want)
+	return nil
+}
+
 func TestPromptBroker_RoundTripsDecision(t *testing.T) {
 	t.Parallel()
 
@@ -101,12 +116,7 @@ func TestPromptBroker_CtxCancelDropsPending(t *testing.T) {
 			err error
 		}{d, err}
 	}()
-	// Allow the goroutine to register the pending entry.
-	time.Sleep(20 * time.Millisecond)
-
-	if got := len(b.Pending()); got != 1 {
-		t.Fatalf("Pending() = %d, want 1", got)
-	}
+	waitForPending(t, b, 1)
 
 	cancel()
 	select {
@@ -156,12 +166,7 @@ func TestPromptBroker_LateAnswerToExpiredPrompt(t *testing.T) {
 		_, err := b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"})
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
-
-	pending := b.Pending()
-	if len(pending) != 1 {
-		t.Fatalf("Pending() = %d, want 1", len(pending))
-	}
+	pending := waitForPending(t, b, 1)
 	id := pending[0].ID
 
 	cancel(permissions.ErrPromptExpired)
@@ -204,12 +209,7 @@ func TestPromptBroker_LateAnswerToACancelledPrompt(t *testing.T) {
 		_, err := b.AskApproval(ctx, permissions.PromptRequest{ToolName: "bash"})
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
-
-	pending := b.Pending()
-	if len(pending) != 1 {
-		t.Fatalf("Pending() = %d, want 1", len(pending))
-	}
+	pending := waitForPending(t, b, 1)
 	id := pending[0].ID
 
 	cancel()
@@ -268,8 +268,7 @@ func TestPromptBroker_LateSubscriberSeesPending(t *testing.T) {
 	go func() {
 		_, _ = b.AskApproval(context.Background(), permissions.PromptRequest{ToolName: "bash", Detail: "ls"})
 	}()
-	// Wait for the pending entry to register.
-	time.Sleep(20 * time.Millisecond)
+	waitForPending(t, b, 1)
 
 	frames, cleanup := b.Subscribe(context.Background())
 	defer cleanup()
@@ -293,7 +292,7 @@ func TestPromptBroker_CloseUnblocksPending(t *testing.T) {
 		_, err := b.AskApproval(context.Background(), permissions.PromptRequest{ToolName: "bash"})
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
+	waitForPending(t, b, 1)
 
 	b.Close()
 	select {

@@ -130,9 +130,9 @@ silently duplicates the CHANGELOG version heading.
   rename, and git resolves two identical insertions **without a conflict**.
 - The stacked PR's bullet ends up filed under a release that was already
   tagged from a commit that demonstrably lacks it.
-- No check catches this. `verify-release-notes` runs against fixtures, not the
-  repo's `CHANGELOG.md`, and both it and `verify-docs-lint` pass on the
-  duplicated file.
+- No check catches the duplicate heading automatically (`verify-release-notes`
+  checks `[Unreleased]` bullet formatting on `CHANGELOG.md`, not duplicate
+  version headings, and `verify-docs-lint` passes on the duplicated file).
 
 **What to do.** After any base-update on such a branch, read
 `git diff <base>...HEAD -- CHANGELOG.md` (the three-dot diff), not the merge's
@@ -198,12 +198,14 @@ error is not evidence about an assertion.
 test that legitimately passes both ways is fine. Declare it in the PR as
 "passes before and after, by design" rather than quietly omitting it.
 
-**What `review-gate` checks.** The required check looks only for the phrase
-"adversarial review" in the PR body of a Go-touching PR. Docs-only PRs are
-exempt, and so are PRs authored by the automation bots (`go-steer-bot[bot]`,
-the GitHub App behind the weekly `lookout-pin-check` job, and
-`github-actions[bot]`). It is a reminder that the section exists, not a
-judge of its content (#1385).
+**What `review-gate` checks.** The required check verifies that the PR body of
+a Go-touching PR carries a `## Adversarial review` heading (or the soak
+dispatcher's `Adversarial review:` commit-body paragraph) with a non-trivial
+body (`>= 80` non-whitespace characters), and for `fix:` PRs a record of
+pre-fix failure verification (#1385). Docs-only PRs are exempt, and so are PRs
+authored by the automation bots (`go-steer-bot[bot]`, the GitHub App behind the
+weekly `lookout-pin-check` job, and `github-actions[bot]`). The substance of
+the review is still on you.
 
 `dev/claude/settings-review-gate.json` is an optional Claude Code hook that
 blocks `gh pr create` at the terminal when the section is missing.

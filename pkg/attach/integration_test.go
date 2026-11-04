@@ -387,6 +387,9 @@ func TestIntegration_BearerTokenAuth(t *testing.T) {
 	for srv.Addr() == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
+	if srv.Addr() == "" {
+		t.Fatal("listener never bound")
+	}
 	base := "http://" + srv.Addr()
 
 	// Without token → 401.
@@ -455,6 +458,9 @@ func TestIntegration_ReadOnlyBlocksWrites(t *testing.T) {
 	for srv.Addr() == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
+	if srv.Addr() == "" {
+		t.Fatal("listener never bound")
+	}
 	base := "http://" + srv.Addr()
 
 	// Read endpoint still works.
@@ -492,6 +498,9 @@ func TestIntegration_AddrEphemeralPort(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for srv.Addr() == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
+	}
+	if srv.Addr() == "" {
+		t.Fatal("listener never bound")
 	}
 	if !strings.HasPrefix(srv.Addr(), "127.0.0.1:") {
 		t.Errorf("Addr = %q, want 127.0.0.1:<port>", srv.Addr())
@@ -566,6 +575,9 @@ func TestIntegration_AgentCard(t *testing.T) {
 	for srv.Addr() == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
+	if srv.Addr() == "" {
+		t.Fatal("listener never bound")
+	}
 	base := "http://" + srv.Addr()
 
 	// 1) Public fetch — no auth header — must succeed.
@@ -622,8 +634,12 @@ func TestIntegration_AgentCard(t *testing.T) {
 	bareErr := make(chan error, 1)
 	go func() { bareErr <- srvBare.ListenAndServe() }()
 	defer func() { _ = srvBare.Close(); <-bareErr }()
-	for srvBare.Addr() == "" && time.Now().Before(time.Now().Add(time.Second)) {
+	bareDeadline := time.Now().Add(time.Second)
+	for srvBare.Addr() == "" && time.Now().Before(bareDeadline) {
 		time.Sleep(5 * time.Millisecond)
+	}
+	if srvBare.Addr() == "" {
+		t.Fatal("bare listener never bound")
 	}
 	respBare, err := http.Get("http://" + srvBare.Addr() + "/.well-known/agent-card.json")
 	if err != nil {

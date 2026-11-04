@@ -35,10 +35,17 @@ dev/
 │   ├── verify-mod-tidy    # `go mod tidy` clean check
 │   ├── verify-vuln        # govulncheck ./...
 │   ├── verify-go-toolchain # every named Go version agrees with go.mod
+│   ├── verify-version-fallback # internal/version.Version matches next release target
 │   ├── verify-coretui-guards # capability guards vs the pinned core-tui
 │   ├── verify-slim-deps   # slim-embed dependency denylist
 │   ├── verify-apidiff     # promised pkg/ API compatibility vs latest GA tag
+│   ├── verify-harness-config-pinned # harness scripts pin config with -c
+│   ├── verify-no-agent-attribution # no agent co-author or attribution trailers
+│   ├── verify-release-notes # release notes composition + CHANGELOG [Unreleased] checks
+│   ├── verify-gke-drill   # offline GKE drill harness verification
 │   ├── verify-terraform   # terraform fmt + validate + test on gke-platform-agent
+│   ├── docs-lint          # docs freshness linter
+│   ├── evals              # offline eval suite
 │   ├── examples-smoke     # the credential-free examples still run
 │   ├── add-license-headers # bulk-applier for SPDX + copyright headers
 │   ├── common.sh          # shared bash helpers (ensure_tool, run_step)
@@ -52,10 +59,17 @@ dev/
         ├── verify-go-format
         ├── verify-mod-tidy
         ├── verify-go-toolchain
+        ├── verify-version-fallback
         ├── verify-coretui-guards
         ├── verify-slim-deps
         ├── verify-apidiff
+        ├── verify-harness-config-pinned
+        ├── verify-no-agent-attribution
+        ├── verify-release-notes
+        ├── verify-gke-drill
         ├── verify-terraform
+        ├── verify-docs-lint
+        ├── evals
         ├── examples-smoke
         └── verify-vuln
 ```

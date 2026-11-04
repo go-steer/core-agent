@@ -1360,9 +1360,9 @@ func (g *Gate) checkFileWrite(ctx context.Context, toolName, path string, args l
 	}
 	// Control-plane classification runs next, on the symlink-
 	// resolved path, before any mode/session/allowlist short-circuit,
-	// so a write (or a symlink laundering one) to .agents/config.json
-	// or .agents/mcp.json cannot be auto-approved by yolo, acceptEdits,
-	// a session-tool grant, or an allowlist entry. See #378.
+	// so a write (or a symlink laundering one) to any boot-loaded or
+	// host-steering control-plane file cannot be auto-approved by yolo,
+	// acceptEdits, a session-tool grant, or an allowlist entry (#378, #1354).
 	//
 	// The approver's instructions file is in the same tier (#1175
 	// decision 7): it steers the gate, so a model that could rewrite it
@@ -1496,10 +1496,10 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 	// the user trusted "git *", not "git-then-anything". Compound or
 	// non-literal commands fall through to normal prompting.
 	var verb string
-	if kind == PromptKindBash {
+	if kind == PromptKindBash && hasOnlySafeEnvAssigns(key) {
 		verb = extractBashVerb(key)
 		if verb != "" && g.sessionVerbAllowed(toolName, verb) {
-			if _, safe := parseSafeArgv(key); safe {
+			if bashSafeForAutoAllow(key) {
 				return nil
 			}
 		}

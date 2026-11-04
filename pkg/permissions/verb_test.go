@@ -3,7 +3,10 @@
 
 package permissions
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestExtractBashVerb covers the cases the prompter relies on to decide
 // whether to show the "Allow `<verb> *` · session" option. Empty verb
@@ -77,5 +80,27 @@ func TestIsAssignmentKey(t *testing.T) {
 				t.Errorf("isAssignmentKey(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestVerbGrantWarning(t *testing.T) {
+	t.Parallel()
+	for _, verb := range []string{"git", "go", "make", "npm"} {
+		w := VerbGrantWarning(verb)
+		if !strings.Contains(w, "close to granting a shell") || !strings.Contains(w, verb) {
+			t.Errorf("VerbGrantWarning(%q) = %q, want shell-equivalent warning", verb, w)
+		}
+		d := FormatBashPromptDetail("git status", verb, false)
+		if !strings.Contains(d, "close to granting a shell") {
+			t.Errorf("FormatBashPromptDetail(%q) = %q, want warning comment", verb, d)
+		}
+		if got := FormatBashPromptDetail("git status", verb, true); got != "git status" {
+			t.Errorf("FormatBashPromptDetail(escalated=true) = %q, want unchanged detail", got)
+		}
+	}
+	for _, verb := range []string{"", "ls", "cat", "kubectl"} {
+		if got := VerbGrantWarning(verb); got != "" {
+			t.Errorf("VerbGrantWarning(%q) = %q, want empty", verb, got)
+		}
 	}
 }

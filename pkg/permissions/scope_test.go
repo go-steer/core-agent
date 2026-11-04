@@ -298,3 +298,30 @@ func TestPathScope_AddAlwaysAllow_PersistsAccess(t *testing.T) {
 		t.Errorf("AddAlwaysAllow(AccessRead): got %v, want AccessRead", got)
 	}
 }
+
+func TestPathScope_UserRootIsReadOnly(t *testing.T) {
+	t.Parallel()
+	proj := t.TempDir()
+	user := filepath.Join(t.TempDir(), ".core-agent")
+	if err := os.MkdirAll(user, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewPathScope(proj, user, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotUser, err := s.AccessFor(filepath.Join(user, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotUser != AccessRead {
+		t.Errorf("userRoot AccessFor = %v, want AccessRead (read-only to tools; #1354)", gotUser)
+	}
+	gotProj, err := s.AccessFor(filepath.Join(proj, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotProj != AccessReadWrite {
+		t.Errorf("projectRoot AccessFor = %v, want AccessReadWrite", gotProj)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -104,8 +105,10 @@ type pathEntry struct {
 // compatibility — anyone who already wrote to that list expected
 // the agent to be able to do anything inside the entry.
 type PathScope struct {
-	roots []string    // absolute, cleaned; always full-access
-	allow []pathEntry // absolute, cleaned; "/..." subtrees expanded as prefixes
+	roots     []string    // absolute, cleaned; all configured roots (project + user)
+	rwRoots   []string    // absolute, cleaned; project roots (AccessReadWrite)
+	userRoots []string    // absolute, cleaned; user-global roots (~/.core-agent, AccessRead; #1354)
+	allow     []pathEntry // absolute, cleaned; "/..." subtrees expanded as prefixes
 }
 
 // NewPathScope constructs a scope from the project root, the user-
@@ -123,29 +126,45 @@ func NewPathScope(projectRoot, userRoot string, allow []string) (*PathScope, err
 	return NewPathScopeFromEntries(projectRoot, userRoot, entries)
 }
 
+func appendResolvedRoot(dst []string, r string) ([]string, error) {
+	abs, err := filepath.Abs(r)
+	if err != nil {
+		return dst, fmt.Errorf("path scope: %w", err)
+	}
+	abs = filepath.Clean(abs)
+	dst = append(dst, abs)
+	if resolved, rerr := resolveSymlinks(abs); rerr == nil && resolved != abs {
+		dst = append(dst, resolved)
+	}
+	return dst, nil
+}
+
 // NewPathScopeFromEntries is the access-aware constructor. Each
 // entry's access is preserved verbatim; callers (FromConfig, tests)
 // build the slice from whatever shape their input has — typed
 // AllowPaths entries, parsed --allow-path flags, etc.
 func NewPathScopeFromEntries(projectRoot, userRoot string, entries []pathEntry) (*PathScope, error) {
 	s := &PathScope{}
-	for _, r := range []string{projectRoot, userRoot} {
-		if r == "" {
-			continue
-		}
-		abs, err := filepath.Abs(r)
+	if projectRoot != "" {
+		var err error
+		s.roots, err = appendResolvedRoot(s.roots, projectRoot)
 		if err != nil {
-			return nil, fmt.Errorf("path scope: %w", err)
+			return nil, err
 		}
-		abs = filepath.Clean(abs)
-		s.roots = append(s.roots, abs)
-		// Request paths are compared in symlink-RESOLVED form (see
-		// AccessFor), so a root that itself sits behind a symlink
-		// (macOS /tmp, a symlinked workspace) must also be present
-		// in resolved form or every in-root path would look
-		// out-of-scope. Keep both spellings; duplicates are cheap.
-		if resolved, rerr := resolveSymlinks(abs); rerr == nil && resolved != abs {
-			s.roots = append(s.roots, resolved)
+		s.rwRoots, err = appendResolvedRoot(s.rwRoots, projectRoot)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if userRoot != "" {
+		var err error
+		s.roots, err = appendResolvedRoot(s.roots, userRoot)
+		if err != nil {
+			return nil, err
+		}
+		s.userRoots, err = appendResolvedRoot(s.userRoots, userRoot)
+		if err != nil {
+			return nil, err
 		}
 	}
 	for _, e := range entries {
@@ -181,11 +200,12 @@ func (s *PathScope) AllowList() []string {
 }
 
 // AccessFor returns the access level granted for path. Paths inside
-// any configured root yield AccessReadWrite (roots are trusted by
-// definition). Otherwise the allow-list is scanned and the
-// longest-prefix match wins — a narrower entry can carve a more-
-// permissive exception inside a less-permissive parent. Returns
-// AccessNone when nothing covers the path.
+// the configured project root yield AccessReadWrite, and paths inside
+// the user-global root (~/.core-agent) yield AccessRead (#1354).
+// Otherwise the allow-list is scanned and the longest-prefix match
+// wins — a narrower entry can carve a more-permissive exception inside
+// a less-permissive parent. Returns AccessNone when nothing covers the
+// path.
 //
 // The path is resolved to an absolute, cleaned, SYMLINK-RESOLVED
 // form before comparison (ResolvePath). The file tools follow
@@ -206,15 +226,26 @@ func (s *PathScope) AccessFor(path string) (Access, error) {
 		return AccessNone, nil
 	}
 
-	for _, root := range s.roots {
+	isUserCoreAgent := slices.Contains(splitPathComponents(abs), userCoreAgentDirName)
+	for _, root := range s.rwRoots {
 		if isInside(abs, root) {
+			if isUserCoreAgent && !slices.Contains(splitPathComponents(root), userCoreAgentDirName) {
+				return AccessRead, nil
+			}
 			return AccessReadWrite, nil
 		}
 	}
 	// Longest-prefix wins: track the best match's pattern length so a
 	// narrower /a/b:rw beats a broader /a:r when resolving /a/b/foo.
+	// User-global roots (~/.core-agent) are read-only to tools (#1354).
 	best := AccessNone
 	bestLen := -1
+	for _, root := range s.userRoots {
+		if isInside(abs, root) && len(root) > bestLen {
+			best = AccessRead
+			bestLen = len(root)
+		}
+	}
 	for _, e := range s.allow {
 		if !matchesPattern(abs, e.Pattern) {
 			continue

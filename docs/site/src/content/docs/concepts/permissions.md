@@ -94,9 +94,18 @@ For **bash**, an open-prefix allow rule only auto-allows a command that is exact
 - Redirections of any kind (`>`, `>>`, `<`, `2>&1`, heredocs).
 - Any expansion: `$VAR`, `$(...)`, backticks, arithmetic, process substitution.
 
-So `bash:cat *` auto-allows `cat notes.txt` but **not** `cat notes.txt; rm -rf ~` or `cat f > /etc/passwd`. Plain quoting of literal text is fine (`find . -name '*.go'` matches `bash:find *`). Leading `KEY=VAL` environment assignments are skipped when computing the argv, so `CGO_ENABLED=0 go build` matches a `bash:go *` rule.
+So `bash:cat *` auto-allows `cat notes.txt` but **not** `cat notes.txt; rm -rf ~` or `cat f > /etc/passwd`. Plain quoting of literal text is fine (`find . -name '*.go'` matches `bash:find *`). Leading `KEY=VAL` environment assignments are skipped when computing the argv only when `KEY` is in the harmless build/locale allowlist (`CGO_ENABLED`, `GOOS`, `GOARCH`, `GOAMD64`, `GOARM`, `GOEXPERIMENT`, `GO111MODULE`, `GOWORK`, `TZ`, `LANG`, `LC_ALL`, `LC_CTYPE`, `NO_COLOR`, `TERM`), so `CGO_ENABLED=0 go build` rides a `go` verb grant while `LD_PRELOAD=/tmp/x.so cat f` and `GIT_EXTERNAL_DIFF=sh git diff` re-prompt.
 
-A small set of **verb profiles** additionally withholds auto-allow when a dangerous predicate appears in the argv of an otherwise read-only verb: `find . -exec …`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fls`, `-fprint`, `-fprint0`, `-fprintf` all prompt even though `bash:find *` is in the default bundle. A profile hit never hard-denies — it only removes the auto-allow.
+A small set of **verb profiles** additionally withholds auto-allow when a dangerous predicate or mutating flag appears in the argv of an otherwise read-only verb:
+- `find`: `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fls`, `-fprint`, `-fprint0`, `-fprintf`
+- `sort`: `-o`, `--output`, `--compress-program`
+- `uniq`: `-o`, `--output`, or two positional operands (`uniq IN OUT`)
+- `tree`: `-o`, `--output`
+- `rg`: `--pre`, `--pre-glob`
+- `git`: top-level `-c`, `--config-env`, `--exec-path`, plus `--output` and `--ext-diff`
+- `go`: `-vettool`, `-toolexec`, and `go env -w` / `go env -u`
+
+A profile hit never hard-denies — it only removes the auto-allow. Grant prompts for `git`, `go`, `make`, and `npm` also warn that granting the verb for the session is close to granting a shell.
 
 **Exact-match rules are exempt** from both guards: if you allowlist the literal string `bash:make build && make test`, that exact string passes. Deny rules are also unaffected — they stay as broad as written.
 
@@ -124,7 +133,7 @@ The `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, and `todo` tool 
 
 ## Path scope
 
-File tools may only touch paths inside the project root, the user-home root, or any explicit pattern in `path_scope.allow`. Out-of-scope access either prompts (in `ask` mode with a Prompter) or fails (everywhere else).
+File tools may touch paths inside the project root (read-write), the user-home root `~/.core-agent` (read-only), or any explicit pattern in `path_scope.allow`. Out-of-scope access either prompts (in `ask` mode with a Prompter) or fails (everywhere else).
 
 ```json
 {
@@ -206,12 +215,15 @@ For a real bash boundary, don't lean on the denylist — **allowlist** the comma
 
 ## Control-plane files (elevated writes)
 
-Two tiers of files live under `.agents/`:
+Writes to any file the boot path loads — or that steers the host's git toolchain on the human's next `git` command — belong to the **control-plane write tier**:
 
-- **Instruction-bearing** files — `AGENTS.md`, skills content — shape what the model is told. They stay normally writable; a change takes effect through the model, which is still gated.
-- **Privilege-bearing** control-plane files — the agent config (`.agents/config.json`) and the MCP config (`.agents/mcp.json`), in both the project and `~/.agents/` trees — directly control the permission gate, the `hooks` commands, and the stdio MCP servers the daemon spawns. A write here is a self-escalation + persistence vector (add an `allow` entry, flip the mode, register a hook that runs arbitrary shell, add a malicious MCP server) whose effect lands out-of-band on the next session/restart.
+- `.git/**` (`.git/config`, `.git/hooks/*`, worktree `.git` pointers).
+- Every boot-loaded `mcp.json` (`.agents/mcp.json`, `~/.agents/mcp.json`, `~/.core-agent/mcp.json`, and rooted declarative subagents' `<root>/mcp.json`).
+- `.agents/` boot files and subtrees: `config.json`, `env.yaml` / `env.yml` / `env.json`, `pricing.json`, `agent-card.json`, and `.agents/{skills,subagents,providers,AGENTS.d}/**`. Runtime output directories (`.agents/plans/`, `.agents/sessions/`) stay normally writable.
+- Instruction files: `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and `AGENTS.d/**` (project, rooted subagent, `~/.agents/`, and `~/.core-agent/`).
+- User-global `~/.core-agent/**` (including `~/.core-agent/pricing.json` and `~/.core-agent/AGENTS.md`), which is also read-only (`AccessRead`) in `PathScope`.
 
-Writes to the privilege-bearing files require a **new elevated interactive approval**. This approval is **never** satisfied by `yolo`/`acceptEdits` mode, a session/verb/tool grant, an allowlist entry, or a built-in bundle — only an explicit prompt approval passes. With no interactive prompter available (headless), the write is **denied** with a clear error. Classification runs on the symlink-resolved path, so a symlink pointing at a control-plane file is caught too. Each elevated approval authorizes exactly one write; it is not remembered.
+Writes to control-plane files require an **elevated interactive approval** (`PromptKindControlPlaneWrite`). This approval is **never** satisfied by `yolo`/`acceptEdits` mode, a session/verb/tool grant, an allowlist entry, or a built-in bundle — only an explicit prompt approval passes. With no interactive prompter available (headless), the write is **denied** with `ErrControlPlaneWrite`. Classification runs on the symlink-resolved path, so a symlink pointing at a control-plane file is caught too. Each elevated approval authorizes exactly one write; it is not remembered.
 
 ## Hook command execution
 

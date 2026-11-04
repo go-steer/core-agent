@@ -72,8 +72,9 @@ func parseSafeArgv(command string) (argv []string, ok bool) {
 		// all compound forms, none eligible for auto-allow.
 		return nil, false
 	}
-	// Environment assignments are skipped from the argv but must be
-	// literal: an expansion in the value executes at assignment time.
+	// Environment assignments are skipped from the argv, but their
+	// values must be literal: an expansion in the value executes at
+	// assignment time.
 	for _, assign := range call.Assigns {
 		if assign.Value == nil {
 			continue // bare `FOO=` — literal empty
@@ -132,6 +133,14 @@ func literalWord(w *syntax.Word) (string, bool) {
 	return sb.String(), true
 }
 
+// safeEnvAssignmentKeys is the short list of harmless build/locale
+// environment variable names permitted as leading KEY=VAL assignments
+// on a command that rides a verb grant or safecmd check (#1356).
+var safeEnvAssignmentKeys = setOf(
+	"CGO_ENABLED", "GOOS", "GOARCH", "GOAMD64", "GOARM", "GOEXPERIMENT",
+	"GO111MODULE", "GOWORK", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "TERM",
+)
+
 // verbAutoAllowDenyTokens maps a command verb to the set of argv
 // tokens that disable auto-allow for that verb ("verb profiles").
 // The canonical example is find: it is read-only by convention, but a
@@ -149,6 +158,20 @@ var verbAutoAllowDenyTokens = map[string]map[string]struct{}{
 	),
 }
 
+// verbAutoAllowProfiles holds per-verb argument validators for verbs
+// whose dangerous forms include attached flag values (--output=FILE,
+// -oFILE), top-level flags before a subcommand (git -c), or positional
+// output operands (uniq IN OUT) (#1352, #1356).
+var verbAutoAllowProfiles = map[string]func(args []string) bool{
+	"sort":  sortSafeProfile,
+	"tree":  treeSafeProfile,
+	"uniq":  uniqSafeProfile,
+	"rg":    rgSafeProfile,
+	"git":   gitSafeProfile,
+	"go":    goSafeProfile,
+	"gofmt": gofmtSafeProfile,
+}
+
 func setOf(items ...string) map[string]struct{} {
 	out := make(map[string]struct{}, len(items))
 	for _, s := range items {
@@ -157,20 +180,260 @@ func setOf(items ...string) map[string]struct{} {
 	return out
 }
 
-// bashSafeForAutoAllow reports whether command may be auto-allowed by
-// a prefix-matched allowlist rule: it must be a single simple literal
-// command (parseSafeArgv) AND clear its verb's profile, if one exists.
-func bashSafeForAutoAllow(command string) bool {
-	argv, ok := parseSafeArgv(command)
+func hasShortFlagRune(arg string, target rune) bool {
+	if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") || arg == "-" {
+		return false
+	}
+	return strings.ContainsRune(arg[1:], target)
+}
+
+func sortSafeProfile(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		// GNU sort uses getopt_long unambiguous prefix matching:
+		// --output is the only --o* long option, and --compress-program
+		// is the only --comp* long option.
+		if arg == "-o" || strings.HasPrefix(arg, "--o") ||
+			strings.HasPrefix(arg, "--comp") ||
+			hasShortFlagRune(arg, 'o') {
+			return false
+		}
+	}
+	return true
+}
+
+func treeSafeProfile(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "-o" || arg == "--output" || strings.HasPrefix(arg, "--output=") ||
+			hasShortFlagRune(arg, 'o') {
+			return false
+		}
+	}
+	return true
+}
+
+func uniqSafeProfile(args []string) bool {
+	afterDash := false
+	positional := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !afterDash {
+			if arg == "--" {
+				afterDash = true
+				continue
+			}
+			if arg == "-o" || arg == "--output" || strings.HasPrefix(arg, "--output=") ||
+				hasShortFlagRune(arg, 'o') {
+				return false
+			}
+			if arg == "-f" || arg == "-s" || arg == "-w" ||
+				arg == "--skip-fields" || arg == "--skip-chars" || arg == "--check-chars" {
+				i++ // skip flag value
+				continue
+			}
+			if strings.HasPrefix(arg, "-") && arg != "-" {
+				continue
+			}
+		}
+		positional++
+		if positional >= 2 {
+			return false
+		}
+	}
+	return true
+}
+
+func rgSafeProfile(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "--pre" || strings.HasPrefix(arg, "--pre=") ||
+			arg == "--pre-glob" || strings.HasPrefix(arg, "--pre-glob=") {
+			return false
+		}
+	}
+	return true
+}
+
+var gitBranchMutatingFlags = setOf(
+	"-d", "-D", "--delete", "--delete-merged",
+	"-m", "-M", "--move", "-c", "-C", "--copy",
+	"-u", "--set-upstream-to", "--unset-upstream",
+	"--edit-description", "--no-list", "-f", "--force",
+)
+
+var gitReflogMutatingSubcmds = setOf(
+	"delete", "expire", "drop", "write", "exists",
+)
+
+func gitSafeProfile(args []string) bool {
+	for _, arg := range args {
+		if arg == "--output" || strings.HasPrefix(arg, "--output=") ||
+			arg == "--ext-diff" ||
+			arg == "--config-env" || strings.HasPrefix(arg, "--config-env=") ||
+			arg == "--exec-path" || strings.HasPrefix(arg, "--exec-path=") {
+			return false
+		}
+	}
+	subIdx := -1
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			subIdx = i
+			break
+		}
+		if arg == "-c" || strings.HasPrefix(arg, "-c") {
+			return false
+		}
+		if arg == "-C" || arg == "--git-dir" || arg == "--work-tree" ||
+			arg == "--namespace" || arg == "--super-prefix" || arg == "--attr-source" {
+			i++ // consumes directory/path/tree argument before the subcommand
+		}
+	}
+	if subIdx < 0 {
+		return true
+	}
+	switch args[subIdx] {
+	case "branch":
+		return gitBranchArgsSafe(args[subIdx+1:])
+	case "reflog":
+		return gitReflogArgsSafe(args[subIdx+1:])
+	}
+	return true
+}
+
+func gitBranchArgsSafe(args []string) bool {
+	for _, arg := range args {
+		if _, bad := gitBranchMutatingFlags[arg]; bad {
+			return false
+		}
+		if strings.HasPrefix(arg, "--set-upstream-to=") {
+			return false
+		}
+	}
+	return true
+}
+
+func gitReflogArgsSafe(args []string) bool {
+	for _, arg := range args {
+		if _, bad := gitReflogMutatingSubcmds[arg]; bad {
+			return false
+		}
+	}
+	return true
+}
+
+func goSafeProfile(args []string) bool {
+	for _, arg := range args {
+		if arg == "-vettool" || arg == "--vettool" ||
+			strings.HasPrefix(arg, "-vettool=") || strings.HasPrefix(arg, "--vettool=") ||
+			arg == "-toolexec" || arg == "--toolexec" ||
+			strings.HasPrefix(arg, "-toolexec=") || strings.HasPrefix(arg, "--toolexec=") {
+			return false
+		}
+	}
+	sub, subArgs := goSubcommandArgs(args)
+	switch sub {
+	case "env":
+		for _, arg := range subArgs {
+			if arg == "-w" || arg == "--w" || strings.HasPrefix(arg, "-w=") || strings.HasPrefix(arg, "--w=") ||
+				arg == "-u" || arg == "--u" || strings.HasPrefix(arg, "-u=") || strings.HasPrefix(arg, "--u=") {
+				return false
+			}
+		}
+	case "vet":
+		for _, arg := range subArgs {
+			if arg == "-fix" || arg == "--fix" || strings.HasPrefix(arg, "-fix=") || strings.HasPrefix(arg, "--fix=") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func goSubcommandArgs(args []string) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-C" || arg == "--C" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-C=") || strings.HasPrefix(arg, "--C=") {
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return arg, args[i+1:]
+		}
+	}
+	return "", nil
+}
+
+// gofmtSafeProfile rejects combining list/diff flags (-l/-d, which are
+// in BundleDevTools) with in-place write (-w), while leaving plain
+// `gofmt -w ...` eligible for AutoBundleCoding (#1356).
+func gofmtSafeProfile(args []string) bool {
+	hasListOrDiff := false
+	hasWrite := false
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if hasShortFlagRune(arg, 'l') || hasShortFlagRune(arg, 'd') {
+			hasListOrDiff = true
+		}
+		if hasShortFlagRune(arg, 'w') || arg == "--w" {
+			hasWrite = true
+		}
+	}
+	return !hasListOrDiff || !hasWrite
+}
+
+func hasOnlySafeEnvAssigns(command string) bool {
+	parser := syntax.NewParser(syntax.Variant(syntax.LangBash))
+	file, err := parser.Parse(strings.NewReader(command), "")
+	if err != nil || len(file.Stmts) != 1 {
+		return false
+	}
+	call, ok := file.Stmts[0].Cmd.(*syntax.CallExpr)
 	if !ok {
 		return false
 	}
-	denied, hasProfile := verbAutoAllowDenyTokens[argv[0]]
-	if !hasProfile {
-		return true
+	for _, assign := range call.Assigns {
+		if assign.Name == nil || assign.Index != nil || assign.Append {
+			return false
+		}
+		if _, allowed := safeEnvAssignmentKeys[assign.Name.Value]; !allowed {
+			return false
+		}
 	}
-	for _, tok := range argv[1:] {
-		if _, hit := denied[tok]; hit {
+	return true
+}
+
+// bashSafeForAutoAllow reports whether command may be auto-allowed by
+// a prefix-matched allowlist rule or verb-scoped session grant: it
+// must be a single simple literal command (parseSafeArgv), carry only
+// harmless leading env assignments (hasOnlySafeEnvAssigns; #1356), AND
+// clear its verb's profile, if one exists.
+func bashSafeForAutoAllow(command string) bool {
+	argv, ok := parseSafeArgv(command)
+	if !ok || !hasOnlySafeEnvAssigns(command) {
+		return false
+	}
+	if denied, hasProfile := verbAutoAllowDenyTokens[argv[0]]; hasProfile {
+		for _, tok := range argv[1:] {
+			if _, hit := denied[tok]; hit {
+				return false
+			}
+		}
+	}
+	if profile, hasProfile := verbAutoAllowProfiles[argv[0]]; hasProfile {
+		if !profile(argv[1:]) {
 			return false
 		}
 	}

@@ -48,10 +48,20 @@ func TestIsControlPlanePath(t *testing.T) {
 		{"/home/u/proj/.agents/mcp.json", true},
 		{"/home/u/.agents/config.json", true}, // home scope
 		{"/home/u/.agents/mcp.json", true},
-		{"/home/u/proj/.agents/AGENTS.md", false},         // instruction-bearing
-		{"/home/u/proj/.agents/skills/x/SKILL.md", false}, // skills content
+		{"/home/u/proj/.git/config", true},
+		{"/home/u/proj/.git/hooks/pre-commit", true},
+		{"/home/u/proj/subagents/auditor/mcp.json", true},
+		{"/home/u/proj/.agents/env.yaml", true},
+		{"/home/u/proj/.agents/pricing.json", true},
+		{"/home/u/.core-agent/pricing.json", true},
+		{"/home/u/proj/AGENTS.md", true},
+		{"/home/u/proj/.agents/AGENTS.md", true},
+		{"/home/u/.core-agent/AGENTS.md", true},
+		{"/home/u/proj/.agents/skills/x/SKILL.md", true},
 		{"/home/u/proj/config.json", false},               // not under .agents
 		{"/home/u/proj/.agents/sub/config.json", false},   // not directly in .agents
+		{"/home/u/proj/.agents/plans/plan-1.md", false},   // runtime plan output
+		{"/home/u/proj/.agents/sessions/run.json", false}, // runtime transcript output
 		{"/home/u/proj/src/main.go", false},
 	}
 	for _, tt := range tests {
@@ -218,15 +228,63 @@ func TestControlPlaneWrite_SymlinkLaunderingCaught(t *testing.T) {
 	}
 }
 
-// TestControlPlaneWrite_AgentsMdUnaffected pins the two-tier boundary:
-// AGENTS.md (instruction-bearing) stays normally writable — under yolo
-// it auto-approves like any other file.
-func TestControlPlaneWrite_AgentsMdUnaffected(t *testing.T) {
+// TestControlPlaneWrite_WidenedTierAcceptance is the #1354 acceptance
+// table: every path in the widened control-plane tier requires elevated
+// interactive approval (PromptKindControlPlaneWrite) under both
+// acceptEdits and yolo.
+func TestControlPlaneWrite_WidenedTierAcceptance(t *testing.T) {
 	t.Parallel()
 	root, _ := agentsLayout(t)
-	agentsMd := filepath.Join(root, ".agents", "AGENTS.md")
+	userRoot := filepath.Join(root, ".core-agent")
+	if err := os.MkdirAll(userRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := []struct {
+		name string
+		path string
+	}{
+		{".git/config", filepath.Join(root, ".git", "config")},
+		{".git/hooks/*", filepath.Join(root, ".git", "hooks", "pre-commit")},
+		{"rooted declarative subagent mcp.json", filepath.Join(root, "subagents", "auditor", "mcp.json")},
+		{".agents/env.yaml", filepath.Join(root, ".agents", "env.yaml")},
+		{".agents/pricing.json", filepath.Join(root, ".agents", "pricing.json")},
+		{"~/.core-agent/pricing.json", filepath.Join(userRoot, "pricing.json")},
+		{"AGENTS.md", filepath.Join(root, "AGENTS.md")},
+		{"~/.core-agent/AGENTS.md", filepath.Join(userRoot, "AGENTS.md")},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			for _, mode := range []Mode{ModeAcceptEdits, ModeYolo} {
+				// Without prompter: denied with ErrControlPlaneWrite.
+				gNoPrompt := cpScopeGate(t, root, mode, nil)
+				err := gNoPrompt.CheckFileWrite(context.Background(), "write_file", row.path)
+				if !errors.Is(err, ErrControlPlaneWrite) {
+					t.Errorf("mode=%s no-prompter CheckFileWrite(%q) = %v, want ErrControlPlaneWrite", mode, row.path, err)
+				}
+				// With prompter: requires PromptKindControlPlaneWrite.
+				p := &fakePrompter{decision: DecisionAllowOnce}
+				gPrompt := cpScopeGate(t, root, mode, p)
+				if err := gPrompt.CheckFileWrite(context.Background(), "write_file", row.path); err != nil {
+					t.Fatalf("mode=%s with-prompter CheckFileWrite(%q): %v", mode, row.path, err)
+				}
+				if len(p.calls) != 1 || p.calls[0].Kind != PromptKindControlPlaneWrite {
+					t.Errorf("mode=%s calls = %+v, want 1 PromptKindControlPlaneWrite", mode, p.calls)
+				}
+			}
+		})
+	}
+}
+
+// TestControlPlaneWrite_RuntimeOutputsStayWritable pins that runtime
+// artifacts under .agents/plans/ and .agents/sessions/ stay normally
+// writable under yolo and acceptEdits.
+func TestControlPlaneWrite_RuntimeOutputsStayWritable(t *testing.T) {
+	t.Parallel()
+	root, _ := agentsLayout(t)
+	planFile := filepath.Join(root, ".agents", "plans", "plan-1.md")
 	g := cpScopeGate(t, root, ModeYolo, nil)
-	if err := g.CheckFileWrite(context.Background(), "write_file", agentsMd); err != nil {
-		t.Errorf("AGENTS.md write should behave as an ordinary write: %v", err)
+	if err := g.CheckFileWrite(context.Background(), "write_file", planFile); err != nil {
+		t.Errorf(".agents/plans/ write should behave as an ordinary write: %v", err)
 	}
 }

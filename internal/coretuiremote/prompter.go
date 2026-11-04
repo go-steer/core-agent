@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-steer/core-agent/v3/internal/attachclient"
 	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // denyReasonProtocol is the first attach protocol whose
@@ -313,7 +314,7 @@ func handleRemotePromptFrame(ctx context.Context, client *attachclient.Client, s
 	req := coretui.PermissionRequest{
 		Kind:        permissionKindFromWire(frame.Kind),
 		ToolName:    frame.ToolName,
-		Detail:      frame.Detail,
+		Detail:      permissions.FormatBashPromptDetail(frame.Detail, frame.Verb, frame.ApproverModel != ""),
 		DetailKind:  detailKindFor(frame),
 		Verb:        frame.Verb,
 		Source:      frame.Source,

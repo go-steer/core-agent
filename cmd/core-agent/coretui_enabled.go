@@ -1946,7 +1946,7 @@ func (g *gatePrompterBridge) AskApprovalAttributed(ctx context.Context, req perm
 	cReq := coretui.PermissionRequest{
 		Kind:        translateKind(req.Kind),
 		ToolName:    req.ToolName,
-		Detail:      req.Detail,
+		Detail:      permissions.FormatBashPromptDetail(req.Detail, req.Verb, req.ApproverModel != ""),
 		DetailKind:  translateDetailKind(req.Kind),
 		Verb:        req.Verb,
 		Source:      req.Source,

@@ -14,6 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
+_No unreleased changes since [3.1.0-rc.1]._
+
+## [3.1.0-rc.1] — 2026-11-04
+
 #### Feature
 
 - **Session-witnessed substrate failure scenarios (`internal/evals/differentiators`).** Adds deterministic scenarios `E-runaway-loop-stopped`, `E-subagent-return-contract`, and `E-goal-survives-compaction` to `dev/tools/evals`. ([#966](https://github.com/go-steer/core-agent/issues/966))

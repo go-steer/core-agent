@@ -45,6 +45,13 @@ func (s *permModeStub) AttachSetPermMode(req PermModeRequest) (PermModeResponse,
 	return PermModeResponse{Previous: "ask", Mode: req.Mode}, nil
 }
 
+func (s *permModeStub) AttachPerms() PermsInfo {
+	return PermsInfo{
+		Mode:          "ask",
+		SettableModes: []string{"plan", "ask", "auto", "acceptEdits", "yolo"},
+	}
+}
+
 func (s *permModeStub) seen() []PermModeRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -56,12 +63,17 @@ func (s *permModeStub) seen() []PermModeRequest {
 // /perms/mode routed through the real lookup + authorize chain.
 func permModeFixture(t *testing.T) (*http.ServeMux, *permModeStub) {
 	t.Helper()
+	return permModeFixtureWithOpts(t, false)
+}
+
+func permModeFixtureWithOpts(t *testing.T, allowNonAdminYolo bool) (*http.ServeMux, *permModeStub) {
+	t.Helper()
 	reg := NewSessionRegistry()
 	stub := &permModeStub{stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s-mode"}}
 	if _, err := reg.RegisterOwned(stub, "owner@example.com"); err != nil {
 		t.Fatalf("RegisterOwned: %v", err)
 	}
-	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: true}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: true, allowNonAdminYolo: allowNonAdminYolo}
 	mux := http.NewServeMux()
 	h.registerSessionACL(mux)
 	h.registerOperatorState(mux)
@@ -84,12 +96,13 @@ func postPermMode(t *testing.T, mux *http.ServeMux, body string, caller auth.Cal
 	return rr.Code, rr.Body.String()
 }
 
-// The session owner can change the mode, widening included, and the
-// capability receives the verified identity to record.
+// The session owner can change the mode, widening included (up to
+// acceptEdits by default; yolo requires an admin unless opted in, #1355),
+// and the capability receives the verified identity to record.
 func TestPermMode_OwnerCanWiden(t *testing.T) {
 	t.Parallel()
 	mux, stub := permModeFixture(t)
-	code, body := postPermMode(t, mux, `{"mode":"yolo"}`, auth.Caller{Identity: "owner@example.com"}, whoAmISourceBearer)
+	code, body := postPermMode(t, mux, `{"mode":"acceptEdits"}`, auth.Caller{Identity: "owner@example.com"}, whoAmISourceBearer)
 	if code != http.StatusOK {
 		t.Fatalf("owner POST: status = %d, want 200; body=%q", code, body)
 	}
@@ -97,12 +110,57 @@ func TestPermMode_OwnerCanWiden(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		t.Fatalf("decode %q: %v", body, err)
 	}
-	if resp.Mode != "yolo" || resp.Previous != "ask" {
-		t.Errorf("response = %+v, want ask → yolo", resp)
+	if resp.Mode != "acceptEdits" || resp.Previous != "ask" {
+		t.Errorf("response = %+v, want ask → acceptEdits", resp)
 	}
 	calls := stub.seen()
-	if len(calls) != 1 || calls[0].Mode != "yolo" || calls[0].Caller != "owner@example.com" {
-		t.Errorf("capability calls = %+v, want one yolo from owner@example.com", calls)
+	if len(calls) != 1 || calls[0].Mode != "acceptEdits" || calls[0].Caller != "owner@example.com" {
+		t.Errorf("capability calls = %+v, want one acceptEdits from owner@example.com", calls)
+	}
+}
+
+// #1355: On a multi-session daemon, non-admin owners cannot switch a
+// session to yolo unless attach.multi_session.allow_non_admin_yolo is
+// enabled; daemon admins always can. GET /perms also omits "yolo" from
+// SettableModes for non-admin callers when yolo is disallowed.
+func TestPermMode_NonAdminYoloRequiresAdminOrOptIn(t *testing.T) {
+	t.Parallel()
+	mux, stub := permModeFixture(t)
+	code, body := postPermMode(t, mux, `{"mode":"yolo"}`, auth.Caller{Identity: "owner@example.com"}, whoAmISourceBearer)
+	if code != http.StatusForbidden {
+		t.Fatalf("non-admin owner yolo POST: status = %d, want 403; body=%q", code, body)
+	}
+	if n := len(stub.seen()); n != 0 {
+		t.Fatalf("capability called %d times on refused yolo, want 0", n)
+	}
+
+	// GET /perms for non-admin owner omits "yolo" from SettableModes.
+	r, rr := aclRequest(t, http.MethodGet, "/sessions/core-agent/s-mode/perms", "", auth.Caller{Identity: "owner@example.com"})
+	mux.ServeHTTP(rr, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /perms: status = %d", rr.Code)
+	}
+	var pInfo PermsInfo
+	if err := json.Unmarshal(rr.Body.Bytes(), &pInfo); err != nil {
+		t.Fatalf("decode PermsInfo: %v", err)
+	}
+	for _, m := range pInfo.SettableModes {
+		if m == "yolo" {
+			t.Errorf("non-admin GET /perms included yolo in SettableModes: %v", pInfo.SettableModes)
+		}
+	}
+
+	// Admin can still switch to yolo on the default fixture.
+	code, body = postPermMode(t, mux, `{"mode":"yolo"}`, auth.Caller{Identity: "root@example.com", Admin: true}, whoAmISourceBearer)
+	if code != http.StatusOK {
+		t.Fatalf("admin yolo POST: status = %d, want 200; body=%q", code, body)
+	}
+
+	// With allowNonAdminYolo: true, non-admin owner can switch to yolo.
+	optInMux, optInStub := permModeFixtureWithOpts(t, true)
+	code, body = postPermMode(t, optInMux, `{"mode":"yolo"}`, auth.Caller{Identity: "owner@example.com"}, whoAmISourceBearer)
+	if code != http.StatusOK || len(optInStub.seen()) != 1 {
+		t.Fatalf("opt-in owner yolo POST: status = %d, calls = %d; want 200 and 1; body=%q", code, len(optInStub.seen()), body)
 	}
 }
 

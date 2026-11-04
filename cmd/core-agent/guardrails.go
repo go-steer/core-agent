@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/background"
@@ -39,6 +40,18 @@ import (
 // no ceiling pass --max-session-cost-usd=0 or set
 // agent.max_session_cost_usd to 0 in config.
 const DefaultUnattendedSessionCostUSD = 10.0
+
+// DefaultUnattendedApprovalTimeout is the permission-prompt deadline
+// applied when an unattended run with a prompt surface (e.g.
+// --attach-listen) runs in permissions.mode "ask" and leaves both
+// --approval-timeout and permissions.approval_timeout unset (#1364).
+//
+// Without a finite deadline, an unanswered permission prompt holds the
+// session's turnLock and wake-loop goroutine open forever. Operators
+// who want a different bound set one; operators who deliberately want
+// to wait indefinitely pass --approval-timeout=0s or set
+// permissions.approval_timeout to "0s".
+const DefaultUnattendedApprovalTimeout = 30 * time.Minute
 
 // guardrailOpts bundles the runaway-backstop CLI flags so run()'s
 // signature carries one parameter instead of three, and so the
@@ -60,6 +73,9 @@ type guardrailOpts struct {
 	// the watchdog this has no mode-dependent resolution: bash-as-grep
 	// is the wrong call whether or not an operator is watching.
 	bashSearchGate string
+	// approvalTimeout is --approval-timeout; empty == unset ("0s" is
+	// the explicit opt-out from the unattended default).
+	approvalTimeout string
 }
 
 // flagWasSet reports whether name was present on the command line, as
@@ -98,6 +114,19 @@ type guardrailInputs struct {
 	// output: -p one-shot, a --no-repl daemon, or a non-TTY stdin.
 	// Observe-and-log is not a backstop when nobody is reading the log.
 	Unattended bool
+
+	// ApprovalTimeoutFlag is --approval-timeout; empty == unset.
+	ApprovalTimeoutFlag string
+	// ApprovalTimeoutConfig is permissions.approval_timeout; empty == unset.
+	ApprovalTimeoutConfig string
+	// PermMode is the resolved permissions.mode (empty defaults to "ask").
+	PermMode string
+	// HasPromptSurface reports whether a permission prompt can be
+	// delivered to a prompter (e.g. an attach listener's PromptBroker
+	// or a TTY prompter). When true on an unattended run in "ask"
+	// mode, an unset approval_timeout defaults to
+	// DefaultUnattendedApprovalTimeout (#1364).
+	HasPromptSurface bool
 }
 
 // guardrailResolution is the decided posture plus, for each knob, the
@@ -113,6 +142,11 @@ type guardrailResolution struct {
 	// SessionCostUSD is the resolved session ceiling; 0 == disabled.
 	SessionCostUSD    float64
 	SessionCostSource string
+
+	// ApprovalTimeout is the resolved permission-prompt deadline; 0 ==
+	// wait indefinitely.
+	ApprovalTimeout       time.Duration
+	ApprovalTimeoutSource string
 }
 
 // Sources reported in guardrailResolution, kept as constants so the
@@ -127,6 +161,11 @@ const (
 	sourceCostConfig            = "agent.max_session_cost_usd config"
 	sourceCostUnattendedDefault = "unattended default"
 	sourceCostUnset             = "unset"
+
+	sourceApprovalTimeoutFlag              = "--approval-timeout flag"
+	sourceApprovalTimeoutConfig            = "permissions.approval_timeout config"
+	sourceApprovalTimeoutUnattendedDefault = "unattended default"
+	sourceApprovalTimeoutUnset             = "unset"
 )
 
 // resolveGuardrails decides the watchdog mode and session cost ceiling
@@ -191,6 +230,44 @@ func resolveGuardrails(in guardrailInputs) (guardrailResolution, error) {
 	// way the agent does and normalize to disabled.
 	if res.SessionCostUSD < 0 {
 		res.SessionCostUSD = 0
+	}
+
+	// Approval-timeout precedence (#1364): --approval-timeout >
+	// permissions.approval_timeout > DefaultUnattendedApprovalTimeout
+	// (when unattended in "ask" mode with a prompt surface) > unset (0).
+	// An explicit "0s" / "0" from either flag or config opts out of the
+	// unattended default and leaves ApprovalTimeout == 0.
+	mode := strings.TrimSpace(in.PermMode)
+	if mode == "" {
+		mode = config.PermissionModeAsk
+	}
+	parseApprovalDur := func(raw, label string) (time.Duration, error) {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s %q: %w (want a Go duration like \"30m\" or \"0s\")", label, raw, err)
+		}
+		if d < 0 {
+			return 0, fmt.Errorf("invalid %s %q: duration must not be negative (use \"0s\" to wait indefinitely)", label, raw)
+		}
+		return d, nil
+	}
+	switch flagDur, cfgDur := strings.TrimSpace(in.ApprovalTimeoutFlag), strings.TrimSpace(in.ApprovalTimeoutConfig); {
+	case flagDur != "":
+		d, err := parseApprovalDur(flagDur, "--approval-timeout")
+		if err != nil {
+			return res, err
+		}
+		res.ApprovalTimeout, res.ApprovalTimeoutSource = d, sourceApprovalTimeoutFlag
+	case cfgDur != "":
+		d, err := parseApprovalDur(cfgDur, "permissions.approval_timeout")
+		if err != nil {
+			return res, err
+		}
+		res.ApprovalTimeout, res.ApprovalTimeoutSource = d, sourceApprovalTimeoutConfig
+	case in.Unattended && mode == config.PermissionModeAsk && in.HasPromptSurface:
+		res.ApprovalTimeout, res.ApprovalTimeoutSource = DefaultUnattendedApprovalTimeout, sourceApprovalTimeoutUnattendedDefault
+	default:
+		res.ApprovalTimeout, res.ApprovalTimeoutSource = 0, sourceApprovalTimeoutUnset
 	}
 
 	return res, nil

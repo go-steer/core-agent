@@ -25,6 +25,7 @@ import (
 	"time"
 
 	adkmodel "google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
@@ -384,4 +385,95 @@ func newEchoWakeAgent(t *testing.T) *agent.Agent {
 		t.Fatalf("agent.New: %v", err)
 	}
 	return a
+}
+
+// TestWakeLoop_PanicInTurnRecoversAndKeepsLoopAlive (#1365): an
+// unexpected panic inside a model call or tool handler must be caught
+// by the per-turn bulkhead, reported via OnTurnError + EventTurnError,
+// and leave the WakeLoop alive to serve subsequent turns.
+func TestWakeLoop_PanicInTurnRecoversAndKeepsLoopAlive(t *testing.T) {
+	t.Parallel()
+	llm := &flakyLLM{}
+	llm.set(llmOK)
+	var panicHook atomic.Bool
+	panicHook.Store(true)
+	a, err := agent.New(llm, agent.WithEventHook(func(_ *session.Event) {
+		if panicHook.Load() {
+			panic("synthetic model panic (#1365)")
+		}
+	}, nil))
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	var turnErrors []attach.TurnError
+	a.SetOperatorEventEmitter(func(eventType string, payload any) {
+		if eventType == attach.EventTurnError {
+			if te, ok := payload.(attach.TurnError); ok {
+				turnErrors = append(turnErrors, te)
+			}
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	turnErrs := make(chan error, 4)
+	turnDone := make(chan string, 4)
+	go WakeLoop(ctx, a, WakeLoopOptions{
+		FailureBackoff: -1,
+		OnTurnError:    func(err error) { turnErrs <- err },
+		OnTurnDone:     func(text string, _ error) { turnDone <- text },
+	})
+
+	// First turn panics; WakeLoop recovers and reports the panic error.
+	if err := a.Inject("trigger panic"); err != nil {
+		t.Fatalf("Inject 1: %v", err)
+	}
+	select {
+	case gotErr := <-turnErrs:
+		if !strings.Contains(gotErr.Error(), "synthetic model panic (#1365)") {
+			t.Fatalf("OnTurnError = %v, want panic message", gotErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for OnTurnError after panic")
+	}
+	select {
+	case <-turnDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for OnTurnDone after panic")
+	}
+	if len(turnErrors) != 1 || !strings.Contains(turnErrors[0].Message, "synthetic model panic") {
+		t.Fatalf("EventTurnError frames = %+v, want 1 panic frame", turnErrors)
+	}
+
+	// Second turn succeeds on the same WakeLoop — proving the loop and
+	// turn lock were not wedged by the panic.
+	panicHook.Store(false)
+	if err := a.Inject("after panic"); err != nil {
+		t.Fatalf("Inject 2: %v", err)
+	}
+	select {
+	case text := <-turnDone:
+		if text != "ok" {
+			t.Errorf("second turn text = %q, want \"ok\"", text)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for second turn after panic recovery")
+	}
+
+	// Also verify a panic inside the caller's range body (inYield == true)
+	// does not trip Go's rangefunc double-yield panic and still executes
+	// post-turn cleanup so a subsequent Run succeeds.
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("expected consumer panic to propagate to caller recovery boundary")
+			}
+		}()
+		for range a.Run(ctx, "consumer panic") {
+			panic("synthetic consumer yield panic (#1365)")
+		}
+	}()
+	for range a.Run(ctx, "after consumer panic") {
+	}
 }

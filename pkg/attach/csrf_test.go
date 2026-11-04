@@ -150,11 +150,29 @@ func TestCSRF_NativeAndLocalClientsPass(t *testing.T) {
 }
 
 // TestCSRF_SelfOriginPass: an Origin whose host equals the request's
-// Host header (same-origin SPA behind a non-loopback hostname) passes.
+// Host header (same-origin SPA behind a non-loopback hostname) passes
+// when that hostname is in Options.AllowedHosts (#1358).
 func TestCSRF_SelfOriginPass(t *testing.T) {
 	t.Parallel()
-	base, ag, done := csrfTestServer(t)
-	defer done()
+	reg := NewSessionRegistry()
+	ag := &stubRegistrant{app: "core-agent", user: "u", sid: "default"}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	srv, err := NewServer(Options{
+		Registry:     reg,
+		Addr:         "127.0.0.1:0",
+		AllowedHosts: []string{"agent.example.com"},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Bind(); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	go func() { _ = srv.Serve() }()
+	defer func() { _ = srv.Close() }()
+	base := "http://" + srv.Addr()
 
 	req, err := http.NewRequest(http.MethodPost, base+"/sessions/default/inject",
 		strings.NewReader(`{"message":"self"}`))
@@ -174,6 +192,49 @@ func TestCSRF_SelfOriginPass(t *testing.T) {
 	}
 	if len(ag.injected) != 1 {
 		t.Fatalf("injected = %v, want the self-origin message", ag.injected)
+	}
+}
+
+// TestLoopbackDNSRebindingRejected (#1358): when bound to a loopback
+// address, requests carrying a non-loopback Host header (such as a
+// DNS-rebinding attack from http://evil.example:7777) must be rejected
+// with 421 Misdirected Request on BOTH reads (GET /sessions, GET
+// /events) and writes (POST /inject), even when Origin matches Host.
+func TestLoopbackDNSRebindingRejected(t *testing.T) {
+	t.Parallel()
+	base, ag, done := csrfTestServer(t)
+	defer done()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"GET /sessions", http.MethodGet, "/sessions", ""},
+		{"GET /events", http.MethodGet, "/sessions/default/events", ""},
+		{"POST /inject", http.MethodPost, "/sessions/default/inject", `{"message":"rebind"}`},
+	} {
+		req, err := http.NewRequest(tc.method, base+tc.path, strings.NewReader(tc.body))
+		if err != nil {
+			t.Fatalf("%s NewRequest: %v", tc.name, err)
+		}
+		if tc.method == http.MethodPost {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", "http://evil.example:7777")
+		}
+		req.Host = "evil.example:7777"
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s Do: %v", tc.name, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusMisdirectedRequest {
+			t.Errorf("%s with Host evil.example:7777 = %d, want 421 Misdirected Request", tc.name, resp.StatusCode)
+		}
+	}
+	if len(ag.injected) != 0 {
+		t.Fatalf("DNS-rebound POST must be rejected before handler; injected = %v", ag.injected)
 	}
 }
 

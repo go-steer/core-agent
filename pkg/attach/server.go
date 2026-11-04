@@ -81,6 +81,14 @@ type Options struct {
 	// — filesystem permissions on the socket file are the auth.
 	UnixSocket string
 
+	// AllowedHosts lists additional hostnames (without port) that a
+	// loopback TCP listener accepts in the HTTP Host header (#1358).
+	// Loopback addresses (127.0.0.0/8, ::1) and "localhost" are always
+	// accepted; any other Host header on a loopback listener is
+	// rejected with 421 Misdirected Request to block DNS-rebinding
+	// attacks from a browser tab unless the hostname is listed here.
+	AllowedHosts []string
+
 	// ShutdownTimeout caps how long Server.Close waits for in-flight
 	// SSE clients to drain. Default 5 seconds.
 	ShutdownTimeout time.Duration
@@ -149,6 +157,19 @@ type Options struct {
 	// auth.HeaderAssertedCaller ("X-Asserted-Caller"). Honored only
 	// when MultiSessionEnabled is true.
 	ProxyHeader string
+
+	// AllowNonAdminYolo, when MultiSessionEnabled is true, lets a
+	// non-admin session Owner or Writer switch the session's
+	// permission mode to "yolo" via POST /sessions/{id}/perms/mode
+	// (#1355). Default false requires an Admin identity.
+	AllowNonAdminYolo bool
+
+	// AllowNonAdminBash, when MultiSessionEnabled is true, lets a
+	// non-admin session Owner or Writer approve a "bash" permission
+	// prompt via POST /sessions/{id}/perms/respond or grant a "bash"
+	// allow pattern via POST /sessions/{id}/perms/allow (#1355).
+	// Default false requires an Admin identity.
+	AllowNonAdminBash bool
 
 	// UI, when non-nil, registers a /ui/* route that serves a SPA
 	// bundle from the supplied filesystem (typically the
@@ -401,6 +422,8 @@ func NewServer(opts Options) (*Server, error) {
 	h := newHandlers(opts.Registry, pool)
 	h.daemonCtx = opts.DaemonCtx
 	h.enforceACL = opts.MultiSessionEnabled
+	h.allowNonAdminYolo = opts.AllowNonAdminYolo
+	h.allowNonAdminBash = opts.AllowNonAdminBash
 	h.factory = opts.SessionFactory
 	h.monitorAck = opts.MonitorAck
 	// Per-caller cost limiter (#463). nil when Disabled — handlers
@@ -525,7 +548,16 @@ func (s *Server) Bind() error {
 	// mux: every state-changing route (sessions, perms, slash, peers)
 	// gets the anti-CSRF Origin + Content-Type checks (#383)
 	// regardless of token/auth mode.
-	handler := callerMiddlewareWithConfig(mcfg, browserWriteGuard(s.mux))
+	//
+	// When bound to a loopback TCP address, loopbackHostGuard also
+	// validates r.Host on every request (both reads and writes) to
+	// block DNS-rebinding attacks from a browser tab (#1358).
+	loopbackTCP := s.opts.Addr != "" && isLoopbackAddr(s.opts.Addr)
+	handler := callerMiddlewareWithConfig(mcfg, browserWriteGuardWithHosts(loopbackTCP, s.opts.AllowedHosts, s.mux))
+	innerHandler := publicBypass(s.public, s.opts.Auth.Middleware(handler))
+	if loopbackTCP {
+		innerHandler = loopbackHostGuard(s.opts.AllowedHosts, innerHandler)
+	}
 	// Wrap the outermost handler with OTel HTTP instrumentation. This
 	// extracts W3C traceparent from incoming requests (set by the
 	// watcher's otelhttp-wrapped client per #217) and starts a server
@@ -537,7 +569,7 @@ func (s *Server) Bind() error {
 	// SpanNameFormatter uses the route's method+path pattern for
 	// grep-friendly span names in the collector (e.g. "POST /inject").
 	tracedHandler := otelhttp.NewHandler(
-		publicBypass(s.public, s.opts.Auth.Middleware(handler)),
+		innerHandler,
 		"daemon.attach",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path

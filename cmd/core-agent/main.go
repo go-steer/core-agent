@@ -217,6 +217,7 @@ func main() {
 	smallTierParent := flag.String("small-tier-parent", "", "what to do when an interactive session starts on a small-tier parent model (Flash/Haiku-class). One of warn|refuse|allow. warn (default when unset) logs a one-line operator notice but proceeds; refuse exits with a config-error code; allow suppresses the check entirely. Skipped regardless when -p (one-shot), --yolo, or the model's tier doesn't classify. Per docs/model-selection-design.md / issue #121. Config-file equivalent: safety.small_tier_parent.")
 	watchdogMode := flag.String("watchdog", "", "behavioral watchdog mode (#123 PR 2). A ladder — each mode includes the one before it. 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'feedback' = same, plus the observation is injected into the model's next-turn context as a '[watchdog]' block, so the party actually making the looping call finds out about it (#159); a correction, not a backstop — nothing halts a model that reads it and loops anyway. 'enforce' = all of that, but a runaway also halts the turn in flight, trips a turn-error (kind=watchdog), and the agent refuses new turns until the operator resets it (/guardrail reset in the TUI, or POST /sessions/{id}/guardrails/reset over attach) (#623 — the hard backstop against tool loops an auto-continue re-drive would otherwise re-issue). 'off' = no observation. Empty (default) resolves per mode: 'enforce' for unattended runs (-p, --no-repl, or a non-TTY stdin — nobody is reading the warn-mode log there) and 'warn' for interactive REPL/TUI runs (#642). Eight signals ship today: four Critical (the args-keyed loop detectors repeated-tool-call, alternating-tool-cycle and dominant-tool-call, plus no-op-streak, which trips on 3 tool results in a row that each report changing nothing) and four Warn-level, repeated-tool-name, tool-failure-streak, no-new-state and tools-without-text (12 tool calls in a row with no assistant text between them), which never halt. Future modes (prompt, auto) are deferred per the design doc; its other proposed signals (files-not-touched, context-growth-rate, cost-burn-rate) are closed rather than deferred — see pkg/watchdog for which shipped component already covers each. Config-file equivalent: safety.watchdog.")
 	bashSearchGate := flag.String("bash-search-gate", "", "what to do when the model runs a search-shaped shell command (grep/egrep/fgrep/rgrep/rg/ag/ack/fd/find) while the native grep/glob tools are registered (#158). 'enforce' (default) refuses the call with a structured error naming the native replacement — bash-as-grep is a training prior strong enough that the existing 'PREFERRED over bash grep' tool descriptions bounce off it (measured: one Gemini variant picked bash for search 15/27 times anyway), and a refusal is the only feedback the model gets at the moment it makes the wrong choice. 'warn' runs the command but attaches the same advice to the tool result. 'allow' disables the check. Piping into a search binary is never gated ('go test ./... | grep -v ok' filters a stream, which the native tool cannot do), and 'find' with an action predicate (-delete, -exec, ...) is a file operation rather than a lookup, so it passes. Tests, builds, git and every other bash use are untouched — this is the surgical version of --disable-tools=bash. Config-file equivalent: safety.bash_search_gate.")
+	approvalTimeout := flag.String("approval-timeout", "", fmt.Sprintf("how long a permission prompt waits for an operator answer before denying the tool call, as a Go duration (e.g. \"15m\"). Overrides permissions.approval_timeout when set. When neither is set, unattended runs in \"ask\" mode with a prompt surface (e.g. --attach-listen) default to %s so an unanswered prompt cannot hold a session's turn lock and wake-loop goroutine open forever (#1364); pass --approval-timeout=0s to wait indefinitely.", DefaultUnattendedApprovalTimeout))
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-3.5-flash-lite, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-3.5-flash-lite for Gemini/Vertex, claude-haiku-5-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Despite the name this switch governs the whole digest layer: the same wrap covers the survey-shaped built-ins (read_many_files, grep, glob, list_dir) once their response clears the threshold, so a filesystem read and an MCP call cost the same for the same payload size. Kill switch for demos / debugging; leave on for production. The MCP half is additionally gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
@@ -274,6 +275,7 @@ func main() {
 			// unattended default, so record presence, not value.
 			maxSessionCostSet: flagWasSet(flag.CommandLine, "max-session-cost-usd"),
 			bashSearchGate:    *bashSearchGate,
+			approvalTimeout:   *approvalTimeout,
 		},
 		toolProfileOpts{
 			enableTools: *enableTools,
@@ -909,6 +911,36 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		}
 	}
 	prompter := resolveGatePrompter(yolo, os.Stdin, os.Stderr)
+	// Runaway backstops: the behavioral watchdog (#123/#623), the cost
+	// ceilings (#145), and the unattended approval-timeout bound (#1364).
+	// Resolved here, ahead of permissions.FromConfig, so the resolved
+	// ApprovalTimeout feeds the permission gate template that both the
+	// primary session and every multi-session tenant inherit.
+	unattended := prompt != "" || noREPL || !term.IsTerminal(int(os.Stdin.Fd()))
+	hasPromptSurface := prompter != nil || attachCfg.Listen != "" || attachCfg.UnixSocket != ""
+	guard, err := resolveGuardrails(guardrailInputs{
+		WatchdogFlag:          guardrails.watchdogMode,
+		WatchdogConfig:        cfg.Safety.Watchdog,
+		SessionCostFlag:       guardrails.maxSessionCostUSD,
+		SessionCostFlagSet:    guardrails.maxSessionCostSet,
+		SessionCostConfig:     cfg.Agent.MaxSessionCostUSD,
+		Unattended:            unattended,
+		ApprovalTimeoutFlag:   guardrails.approvalTimeout,
+		ApprovalTimeoutConfig: cfg.Permissions.ApprovalTimeout,
+		PermMode:              cfg.Permissions.Mode,
+		HasPromptSurface:      hasPromptSurface,
+	})
+	if err != nil {
+		log.Printf("%v", err)
+		return runner.ExitConfigError
+	}
+	if guard.ApprovalTimeout > 0 {
+		cfg.Permissions.ApprovalTimeout = guard.ApprovalTimeout.String()
+	} else if guard.ApprovalTimeoutSource != sourceApprovalTimeoutUnset {
+		// Explicit 0s opt-out from --approval-timeout or config: clear so
+		// ResolvedApprovalTimeout returns 0 (wait indefinitely).
+		cfg.Permissions.ApprovalTimeout = ""
+	}
 	template, err := permissions.FromConfig(cfg, cwd, coreHome, prompter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
@@ -1945,27 +1977,6 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		}
 		opts = append(opts, agent.WithCompactor(compactor))
 	}
-	// Runaway backstops: the behavioral watchdog (#123/#623) and the
-	// cost ceilings (#145). Resolution is a pure function so the
-	// per-mode default posture is table-tested — see guardrails.go.
-	//
-	// "Unattended" is the load-bearing input (#642): -p one-shot, a
-	// --no-repl daemon, or a piped stdin all mean nobody is watching
-	// the alert stream, so warn-mode is indistinguishable from off and
-	// an un-ceilinged session can spend without anyone noticing.
-	unattended := prompt != "" || noREPL || !term.IsTerminal(int(os.Stdin.Fd()))
-	guard, err := resolveGuardrails(guardrailInputs{
-		WatchdogFlag:       guardrails.watchdogMode,
-		WatchdogConfig:     cfg.Safety.Watchdog,
-		SessionCostFlag:    guardrails.maxSessionCostUSD,
-		SessionCostFlagSet: guardrails.maxSessionCostSet,
-		SessionCostConfig:  cfg.Agent.MaxSessionCostUSD,
-		Unattended:         unattended,
-	})
-	if err != nil {
-		log.Printf("%v", err)
-		return runner.ExitConfigError
-	}
 	// Cost-ceiling kill switch (#145). CLI flag > config field >
 	// unattended default > disabled. The per-turn bound keeps its
 	// simpler "positive value wins" rule — it has no mode default, so
@@ -1974,6 +1985,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		cfg.Agent.MaxTurnCostUSD = &guardrails.maxTurnCostUSD
 	}
 	cfg.Agent.MaxSessionCostUSD = &guard.SessionCostUSD
+	if guard.ApprovalTimeout > 0 {
+		send(fmt.Sprintf("approval timeout: %s [%s] (unanswered permission prompts are denied after this bound)", guard.ApprovalTimeout, guard.ApprovalTimeoutSource))
+	} else if guard.ApprovalTimeoutSource != sourceApprovalTimeoutUnset {
+		send(fmt.Sprintf("approval timeout: disabled [%s] (permission prompts wait indefinitely)", guard.ApprovalTimeoutSource))
+	}
 	ceiling := agent.CostCeiling{MaxSessionUSD: guard.SessionCostUSD}
 	if cfg.Agent.MaxTurnCostUSD != nil {
 		ceiling.MaxTurnUSD = *cfg.Agent.MaxTurnCostUSD
@@ -2520,6 +2536,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			PeerRegistry:    peerReg,
 			DaemonCtx:       ctx,
 			Addr:            attachCfg.Listen,
+			AllowedHosts:    cfg.Attach.AllowedHosts,
 			UnixSocket:      attachCfg.UnixSocket,
 			CostRateLimit:   costLimit,
 			ShutdownTimeout: attachShutdownTimeout,
@@ -2536,6 +2553,8 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			DefaultCaller:       defaultCaller,
 			MultiSessionEnabled: cfg.Attach.MultiSession.Enabled,
 			AllowAnonymous:      cfg.Attach.MultiSession.AllowAnonymous,
+			AllowNonAdminYolo:   cfg.Attach.MultiSession.AllowNonAdminYolo,
+			AllowNonAdminBash:   cfg.Attach.MultiSession.AllowNonAdminBash,
 			ProxyHeader:         cfg.Attach.MultiSession.AssertedCallerHeader,
 			UI:                  uiAssets,
 			SessionFactory:      sessionFactory,

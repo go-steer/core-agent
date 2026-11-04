@@ -51,10 +51,99 @@ import (
 // Read endpoints (GET /events, GET /sessions, ...) are unaffected:
 // cross-origin reads are already unreadable to the attacking page
 // because the server sets no Access-Control-Allow-Origin.
-func browserWriteGuard(next http.Handler) http.Handler {
+// loopbackHostGuard validates the HTTP Host header on every request
+// (both reads and writes) when the attach listener is bound to a
+// loopback address (#1358).
+//
+// Why this is needed alongside browserWriteGuard:
+//   - A DNS-rebinding page at http://evil.example:7777 initially
+//     resolves evil.example to the attacker's IP, then rebinds DNS to
+//     127.0.0.1. Because the browser considers subsequent requests to
+//     http://evil.example:7777 same-origin, it sends Host:
+//     evil.example:7777 and Origin: http://evil.example:7777.
+//   - Without Host validation, GET endpoints (/sessions, /events SSE)
+//     are readable directly across the rebound origin, and
+//     originAllowed's self-origin check (u.Host == r.Host) treats the
+//     attacker's own origin as a trusted reverse-proxy hostname.
+//
+// Only loopback literals (127.0.0.0/8, ::1), "localhost", and
+// operator-configured AllowedHosts pass; everything else is rejected
+// with 421 Misdirected Request before reaching any handler.
+func loopbackHostGuard(allowedHosts []string, next http.Handler) http.Handler {
+	allow := normalizeHostSet(allowedHosts)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !requestHostAllowed(r.Host, allow) {
+			http.Error(w, fmt.Sprintf("misdirected request: Host %q is not a loopback address or an allowed host for this loopback listener (#1358); "+
+				"set attach.allowed_hosts in config if a reverse proxy forwards to loopback under a custom hostname", r.Host),
+				http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func normalizeHostSet(hosts []string) map[string]struct{} {
+	if len(hosts) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		if host, _, err := net.SplitHostPort(h); err == nil && host != "" {
+			h = host
+		}
+		h = strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
+		out[strings.ToLower(h)] = struct{}{}
+	}
+	return out
+}
+
+func isLoopbackHost(hostname string) bool {
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	return ip != nil && ip.IsLoopback()
+}
+
+func extractHostname(hostport string) string {
+	hostport = strings.TrimSpace(hostport)
+	if hostport == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	// Bare IPv6 in brackets "[::1]" or bare hostname/IPv4 without port.
+	if strings.HasPrefix(hostport, "[") && strings.HasSuffix(hostport, "]") {
+		return hostport[1 : len(hostport)-1]
+	}
+	return hostport
+}
+
+func requestHostAllowed(requestHost string, allowedHosts map[string]struct{}) bool {
+	h := extractHostname(requestHost)
+	if h == "" {
+		return false
+	}
+	if isLoopbackHost(h) {
+		return true
+	}
+	if len(allowedHosts) > 0 {
+		_, ok := allowedHosts[strings.ToLower(h)]
+		return ok
+	}
+	return false
+}
+
+func browserWriteGuardWithHosts(loopbackListener bool, allowedHosts []string, next http.Handler) http.Handler {
+	allow := normalizeHostSet(allowedHosts)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isWriteMethod(r.Method) {
-			if origin := r.Header.Get("Origin"); origin != "" && !originAllowed(origin, r.Host) {
+			if origin := r.Header.Get("Origin"); origin != "" && !originAllowedWithHosts(origin, r.Host, loopbackListener, allow) {
 				http.Error(w, fmt.Sprintf("cross-origin request rejected: Origin %q is neither a loopback origin nor this listener (%q); "+
 					"browser pages may not drive the attach API cross-site. Native clients should omit the Origin header.", origin, r.Host),
 					http.StatusForbidden)
@@ -92,16 +181,25 @@ func isJSONContentType(ct string) bool {
 // sandboxed iframes and file:// pages, and unparseable values — is
 // rejected.
 func originAllowed(origin, requestHost string) bool {
+	return originAllowedWithHosts(origin, requestHost, false, nil)
+}
+
+func originAllowedWithHosts(origin, requestHost string, loopbackListener bool, allowedHosts map[string]struct{}) bool {
 	u, err := url.Parse(origin)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return false // includes "null" and malformed values
 	}
 	host := u.Hostname()
-	if strings.EqualFold(host, "localhost") {
+	if isLoopbackHost(host) {
 		return true
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return true
+	// On a loopback listener, the self-origin fallback (u.Host ==
+	// requestHost) is only trusted when requestHost itself passed the
+	// loopback/AllowedHosts allowlist (#1358). Otherwise a DNS-rebound
+	// browser request with Host: evil.example:7777 and Origin:
+	// http://evil.example:7777 would satisfy u.Host == requestHost.
+	if loopbackListener && !requestHostAllowed(requestHost, allowedHosts) {
+		return false
 	}
 	// Self origin: the origin's host:port equals the Host the request
 	// was addressed to. Scheme is deliberately not compared — behind a

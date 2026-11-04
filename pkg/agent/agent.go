@@ -32,6 +32,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"iter"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1843,6 +1844,30 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	// many model turns, which is where a runaway lives.
 	watchdogSeen := map[string]struct{}{}
 	tapped := func(yield func(*session.Event, error) bool) {
+		var inYield bool
+		defer func() {
+			if r := recover(); r != nil {
+				// Per-turn panic bulkhead (#1365): convert an unexpected
+				// panic inside a tool handler, provider stream, or
+				// observer into a regular turn error so wrapWithCleanup's
+				// deferred cleanup still runs (cancelling runCtx, writing
+				// the durable EventTurnError row, and emitting the
+				// terminal turn-error + status-update idle frames) and
+				// the hosting daemon / sibling sessions stay alive.
+				//
+				// If the caller's range body panicked inside yield(ev, err),
+				// Go's rangefunc contract forbids calling yield a second
+				// time; record turnErr so wrapWithCleanup's post-turn hooks
+				// run, and re-panic to the caller's own recovery boundary
+				// (such as WakeLoop's outer bulkhead).
+				pErr := fmt.Errorf("panic in agent turn: %v\n%s", r, debug.Stack())
+				turnErr = pErr
+				if inYield {
+					panic(r)
+				}
+				yield(nil, pErr)
+			}
+		}()
 		for ev, err := range inner {
 			if ev != nil && ev.UsageMetadata != nil {
 				promptTokens = int(ev.UsageMetadata.PromptTokenCount)
@@ -1928,7 +1953,10 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 			if a.onEvent != nil && ev != nil {
 				a.onEvent(ev)
 			}
-			if !yield(ev, err) {
+			inYield = true
+			cont := yield(ev, err)
+			inYield = false
+			if !cont {
 				return
 			}
 		}

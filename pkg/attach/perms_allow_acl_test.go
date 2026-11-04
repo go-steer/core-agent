@@ -45,10 +45,39 @@ func permsACLFixture(t *testing.T) (*http.ServeMux, *operatorMutationsRegistrant
 
 func postPerms(t *testing.T, mux *http.ServeMux, verb, who string, admin bool) int {
 	t.Helper()
+	return postPermsPattern(t, mux, verb, "write_file:*", who, admin)
+}
+
+func postPermsPattern(t *testing.T, mux *http.ServeMux, verb, pattern, who string, admin bool) int {
+	t.Helper()
 	r, rr := aclRequest(t, http.MethodPost, "/sessions/core-agent/s-perms/perms/"+verb,
-		`{"patterns":["*"]}`, auth.Caller{Identity: who, Admin: admin})
+		`{"patterns":["`+pattern+`"]}`, auth.Caller{Identity: who, Admin: admin})
 	mux.ServeHTTP(rr, r)
 	return rr.Code
+}
+
+// #1355: On a multi-session daemon, non-admin owners cannot add bash or
+// unprefixed (any-tool) allow patterns via POST /perms/allow unless
+// attach.multi_session.allow_non_admin_bash is enabled; admins always can.
+func TestPermsAllow_NonAdminCannotGrantBash(t *testing.T) {
+	t.Parallel()
+	for _, pat := range []string{"bash:ls *", "bash", "*", "cat /etc/passwd", ":*", ":cat /etc/passwd", "*:ls *"} {
+		mux, stub := permsACLFixture(t)
+		if got := postPermsPattern(t, mux, "allow", pat, "owner@example.com", false); got != http.StatusForbidden {
+			t.Errorf("non-admin owner allow %q = %d, want 403", pat, got)
+		}
+		stub.mu.Lock()
+		n := len(stub.addedAllow)
+		stub.mu.Unlock()
+		if n != 0 {
+			t.Errorf("non-admin owner allow %q reached session %d times, want 0", pat, n)
+		}
+
+		// Admin can grant the same pattern.
+		if got := postPermsPattern(t, mux, "allow", pat, "root@example.com", true); got != http.StatusNoContent {
+			t.Errorf("admin allow %q = %d, want 204", pat, got)
+		}
+	}
 }
 
 // #1176: an allow pattern widens what runs without a prompt ("*"

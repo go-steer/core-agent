@@ -22,6 +22,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/core-agent/v3/pkg/auth"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
@@ -32,10 +33,11 @@ import (
 // A mode change is the most privileged thing an operator can do to a
 // session — yolo removes the gate — so the route is ActionSessionAdmin:
 // the session owner or a daemon admin, the same bar as editing the ACL.
-// The owner may widen as well as narrow; there is no separate opt-in,
-// matching the local chip. On a daemon without --multi-session there is
-// no ACL to enforce and the transport credential is the whole gate, as
-// it is for every other session route.
+// On a multi-session daemon, switching to yolo requires a daemon admin
+// by default (#1355) unless AllowNonAdminYolo is enabled, because
+// sessions share the daemon's OS user and working directory. On a daemon
+// without --multi-session there is no ACL to enforce and the transport
+// credential is the whole gate, as it is for every other session route.
 
 // PermModeRequest is the body of POST /sessions/{sid}/perms/mode.
 type PermModeRequest struct {
@@ -140,9 +142,17 @@ func (h *handlers) doPermMode(w http.ResponseWriter, r *http.Request, entry *Ent
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if _, err := ParseRemotePermMode(body.Mode); err != nil {
+	mode, err := ParseRemotePermMode(body.Mode)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if mode == permissions.ModeYolo && h.enforceACL && !h.allowNonAdminYolo {
+		c, _ := auth.CallerFromContext(r.Context())
+		if !auth.Authorize(c, auth.ActionDaemonAdmin, auth.SessionACL{}) {
+			http.Error(w, "perms/mode: switching to \"yolo\" on a multi-session daemon requires an admin identity (or attach.multi_session.allow_non_admin_yolo in config) because sessions share the daemon's OS user and working directory (#1355)", http.StatusForbidden)
+			return
+		}
 	}
 	// Attribution comes from the authenticated context, like
 	// perms/respond: a bare transport with no verified identity

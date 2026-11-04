@@ -954,3 +954,74 @@ func TestSpawn_NameReusableAfterTerminal(t *testing.T) {
 		t.Fatal("re-spawned subagent never finished")
 	}
 }
+
+type panicProvider struct{}
+
+func (panicProvider) Name() string { return "panic-prov" }
+
+func (panicProvider) Model(_ context.Context, name string) (adkmodel.LLM, error) {
+	return &panicLLM{name: name}, nil
+}
+
+type panicLLM struct {
+	name  string
+	calls atomic.Int32
+}
+
+func (p *panicLLM) Name() string {
+	if p.calls.Add(1) > 1 {
+		panic("synthetic subagent panic (#1365)")
+	}
+	return p.name
+}
+
+func (*panicLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "ok"}}},
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+// TestSpawn_SubagentPanicRecoversToFailedStatus (#1365): a panic inside
+// a background subagent goroutine must be caught by the per-subagent
+// bulkhead, mark the handle StatusFailed, and push a "failed" terminal
+// alert to the parent instead of crashing the hosting process.
+func TestSpawn_SubagentPanicRecoversToFailedStatus(t *testing.T) {
+	t.Parallel()
+	mgr, err := NewManager(
+		WithProvider(panicProvider{}, "panic-model"),
+		WithMaxConcurrent(4),
+		WithAlertBuffer(16),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	newTestParent(t, mgr)
+	defer mgr.Close()
+
+	h, err := mgr.Spawn(context.Background(), "", Spec{
+		Name: "panicker", SystemPrompt: "p", Goal: "g",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	select {
+	case <-h.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("panicking subagent did not finish")
+	}
+	if h.Status() != StatusFailed {
+		t.Errorf("Status() = %v, want StatusFailed", h.Status())
+	}
+	select {
+	case a := <-mgr.Alerts():
+		if a.From != "panicker" || a.Kind != "failed" || !strings.Contains(a.Text, "synthetic subagent panic (#1365)") {
+			t.Errorf("terminal alert = %+v, want failed alert naming the panic", a)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("no terminal alert pushed after subagent panic")
+	}
+}

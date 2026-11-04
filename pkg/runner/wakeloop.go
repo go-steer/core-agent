@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -189,38 +190,52 @@ func WakeLoop(ctx context.Context, a *agent.Agent, opts WakeLoopOptions) {
 			var sawObeyed bool
 			var lastText string
 			var lastErr error
-			for ev, runErr := range a.Run(ctx, "") {
-				evCount++
-				tap.Observe(ev)
-				if ev != nil && !ev.Partial && ev.Author != "user" && ev.Content != nil {
-					var sb strings.Builder
-					for _, p := range ev.Content.Parts {
-						if p != nil && p.Text != "" && !p.Thought {
-							sb.WriteString(p.Text)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Per-session panic bulkhead (#1365): catch any
+						// panic in the turn body (including pre-turn setup
+						// or callbacks) so one session's fault never kills
+						// the multi-session daemon process.
+						pErr := fmt.Errorf("panic in session turn: %v\n%s", r, debug.Stack())
+						lastErr = pErr
+						onErr(pErr)
+						failKind = attach.TurnErrorUnknown
+					}
+				}()
+				for ev, runErr := range a.Run(ctx, "") {
+					evCount++
+					tap.Observe(ev)
+					if ev != nil && !ev.Partial && ev.Author != "user" && ev.Content != nil {
+						var sb strings.Builder
+						for _, p := range ev.Content.Parts {
+							if p != nil && p.Text != "" && !p.Thought {
+								sb.WriteString(p.Text)
+							}
+						}
+						if text := sb.String(); text != "" {
+							lastText = text
 						}
 					}
-					if text := sb.String(); text != "" {
-						lastText = text
+					if u, ok := tap.Commit(ev); ok && opts.Tracker != nil {
+						// Re-resolved per turn, not taken from
+						// opts.Pricing: a wake loop outlives any number of
+						// /pricing refreshes, and in multi-session mode
+						// opts.Pricing was resolved once when the session
+						// was constructed (#930).
+						opts.Tracker.AppendUsage(opts.Model, u, usage.PriceForRefreshed(opts.Model, opts.Pricing))
+					}
+					if runErr != nil {
+						lastErr = runErr
+						onErr(runErr)
+						if kind := attach.ClassifyTurnError(runErr).Kind; countsAsFailure(kind) {
+							failKind = kind
+						} else {
+							sawObeyed = true
+						}
 					}
 				}
-				if u, ok := tap.Commit(ev); ok && opts.Tracker != nil {
-					// Re-resolved per turn, not taken from
-					// opts.Pricing: a wake loop outlives any number of
-					// /pricing refreshes, and in multi-session mode
-					// opts.Pricing was resolved once when the session
-					// was constructed (#930).
-					opts.Tracker.AppendUsage(opts.Model, u, usage.PriceForRefreshed(opts.Model, opts.Pricing))
-				}
-				if runErr != nil {
-					lastErr = runErr
-					onErr(runErr)
-					if kind := attach.ClassifyTurnError(runErr).Kind; countsAsFailure(kind) {
-						failKind = kind
-					} else {
-						sawObeyed = true
-					}
-				}
-			}
+			}()
 			if opts.OnTurnDone != nil {
 				opts.OnTurnDone(lastText, lastErr)
 			}

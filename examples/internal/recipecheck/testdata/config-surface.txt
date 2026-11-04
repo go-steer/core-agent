@@ -46,6 +46,7 @@ alerts.targets[].name
 alerts.targets[].template
 alerts.targets[].url
 alerts.targets[].url_env
+attach.allowed_hosts
 attach.client_ca
 attach.cost_rate_limit.burst
 attach.cost_rate_limit.disabled
@@ -53,6 +54,8 @@ attach.cost_rate_limit.per_minute
 attach.listen
 attach.multi_session.admin_identities
 attach.multi_session.allow_anonymous
+attach.multi_session.allow_non_admin_bash
+attach.multi_session.allow_non_admin_yolo
 attach.multi_session.asserted_caller_header
 attach.multi_session.auth.kind
 attach.multi_session.auth.table_file

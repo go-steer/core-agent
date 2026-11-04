@@ -929,9 +929,10 @@ func appendInterruptAudit(ctx context.Context, entry *Entry) {
 		return
 	}
 	getResp, err := log.Service.Get(ctx, &session.GetRequest{
-		AppName:   entry.AppName,
-		UserID:    entry.UserID,
-		SessionID: entry.SessionID,
+		AppName:         entry.AppName,
+		UserID:          entry.UserID,
+		SessionID:       entry.SessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		return

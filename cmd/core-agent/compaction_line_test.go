@@ -18,9 +18,14 @@ import (
 	"strings"
 	"testing"
 
+	adkagent "google.golang.org/adk/v2/agent"
+	adktool "google.golang.org/adk/v2/tool"
+	"google.golang.org/adk/v2/tool/functiontool"
+
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/compose"
 	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/models/mock"
 )
 
 func ptr(v float64) *float64 { return &v }
@@ -61,5 +66,86 @@ func TestTheCompactionBootLineStatesTheAssumedWindowForAnUnknownModel(t *testing
 	got := compactionBootLine(dc, "some-unlisted-model")
 	if want := "assumed 128000-token window = 108800 tokens"; !strings.Contains(got, want) {
 		t.Fatalf("boot line = %q\nwant it to contain %q (0.85 of the assumed window)", got, want)
+	}
+}
+
+// #1376: When a model has a long-context pricing cliff below tier × window
+// (e.g. claude-haiku-5-5 at 100k vs 0.35×1M=350k, or gemini-2.5-pro at
+// 200k vs 0.65×1.048M=681,574), compaction fires at cliff - margin and the
+// startup line shows both figures and that the long-context cliff won.
+func TestCompactionBootLine_LongContextCliffWins(t *testing.T) {
+	t.Parallel()
+	dc := compose.BuildCompactor(config.CompactionConfig{}).(*agent.DefaultCompactor)
+
+	haikuLine := compactionBootLine(dc, "claude-haiku-5-5")
+	if want := "1000000-token window = 68000 tokens (long-context cliff 100000 - 32000 margin < 0.35 tier window = 350000 tokens)"; !strings.Contains(haikuLine, want) {
+		t.Errorf("claude-haiku-5-5 boot line = %q\nwant substring %q", haikuLine, want)
+	}
+
+	proLine := compactionBootLine(dc, "gemini-2.5-pro")
+	if want := "1048576-token window = 168000 tokens (long-context cliff 200000 - 32000 margin < 0.65 tier window = 681574 tokens)"; !strings.Contains(proLine, want) {
+		t.Errorf("gemini-2.5-pro boot line = %q\nwant substring %q", proLine, want)
+	}
+}
+
+// #1376: When an operator threshold puts tier × window below the model's
+// long-context cliff minus margin, tier × window wins and the startup line
+// states that.
+func TestCompactionBootLine_TierWindowBeatsLongContextCliff(t *testing.T) {
+	t.Parallel()
+	dc := compose.BuildCompactor(config.CompactionConfig{Threshold: ptr(0.021)}).(*agent.DefaultCompactor)
+	got := compactionBootLine(dc, "gemini-2.5-pro")
+	if want := "fires at 0.021 of gemini-2.5-pro's 1048576-token window = 22020 tokens (tier window < 200000 long-context cliff - 32000 margin = 168000 tokens)"; !strings.Contains(got, want) {
+		t.Errorf("boot line = %q\nwant substring %q", got, want)
+	}
+}
+
+func makeBareBuiltinTools(t *testing.T) []adktool.Tool {
+	t.Helper()
+	var out []adktool.Tool
+	for _, name := range []string{"read_file", "fetch_url", "grep", "list_dir", "glob"} {
+		tl, err := functiontool.New(functiontool.Config{
+			Name:        name,
+			Description: "stub " + name,
+		}, func(_ adkagent.Context, _ struct{}) (struct{}, error) {
+			return struct{}{}, nil
+		})
+		if err != nil {
+			t.Fatalf("functiontool.New(%s): %v", name, err)
+		}
+		out = append(out, tl)
+	}
+	return out
+}
+
+// #1377: When models.ResolveSmallModel returns "" (a provider with no
+// cheap-tier default and no --agentic-small-model override), resolveAgenticTools
+// skips registering the agentic_* cost-lever wrappers and logs why.
+func TestResolveAgenticTools_SkipsWhenNoSmallModelResolved(t *testing.T) {
+	t.Parallel()
+	builtins := makeBareBuiltinTools(t)
+	prov := mock.NewEcho()
+
+	agTools, bootLine, err := resolveAgenticTools(builtins, func() *agent.Agent { return nil }, prov, "")
+	if err != nil {
+		t.Fatalf("resolveAgenticTools: %v", err)
+	}
+	if len(agTools) != 0 {
+		t.Errorf("got %d agentic tools, want 0 when ResolveSmallModel returns empty", len(agTools))
+	}
+	if !strings.Contains(bootLine, "agentic subtasks: off") || !strings.Contains(bootLine, "--agentic-small-model") {
+		t.Errorf("bootLine = %q, want it to state agentic subtasks are off and mention --agentic-small-model", bootLine)
+	}
+
+	// Explicit --agentic-small-model override still registers the wrappers.
+	agToolsOverride, bootLineOverride, err := resolveAgenticTools(builtins, func() *agent.Agent { return nil }, prov, "custom-small")
+	if err != nil {
+		t.Fatalf("resolveAgenticTools(override): %v", err)
+	}
+	if len(agToolsOverride) == 0 {
+		t.Errorf("expected agentic tools when --agentic-small-model override is set")
+	}
+	if want := "agentic subtasks: custom-small (operator override)"; bootLineOverride != want {
+		t.Errorf("bootLineOverride = %q, want %q", bootLineOverride, want)
 	}
 }

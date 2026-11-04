@@ -237,3 +237,76 @@ func TestConsumeToken_ConcurrentCallsAllowExactlyOneWinner(t *testing.T) {
 		t.Errorf("concurrent ConsumeToken: wins=%d already=%d, want wins=1 already=%d", wins, already, workers-1)
 	}
 }
+
+type getSpyService struct {
+	session.Service
+	reqs []session.GetRequest
+}
+
+func (s *getSpyService) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
+	if req != nil {
+		s.reqs = append(s.reqs, *req)
+	}
+	return s.Service.Get(ctx, req)
+}
+
+// TestSingleRowAppendsAndStateReads_UseNumRecentEventsOne verifies (#1367)
+// that state-only reads and single-row audit/state appends in pkg/eventlog
+// pass NumRecentEvents: 1 to session.Service.Get rather than loading and
+// deserializing the full event history on every operation.
+func TestSingleRowAppendsAndStateReads_UseNumRecentEventsOne(t *testing.T) {
+	h, _ := openTestHandle(t)
+	ctx := context.Background()
+
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{
+		AppName: "app", UserID: "alice", SessionID: "s-1367",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	spy := &getSpyService{Service: h.Service}
+	h.Service = spy
+
+	if err := h.SaveSchedule(ctx, "app", ScheduleRecord{
+		Workload: "w1",
+		Interval: time.Hour,
+		Anchor:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSchedule: %v", err)
+	}
+	if _, err := h.Schedule(ctx, "app", "w1"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if err := h.RecordAck(ctx, "app", AckRecord{
+		Workload: "w1",
+		Subject:  "subj",
+		By:       "alice",
+		Reason:   "note",
+	}); err != nil {
+		t.Fatalf("RecordAck: %v", err)
+	}
+	if _, err := h.Ack(ctx, "app", "w1", "subj"); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	if _, err := h.Acks(ctx, "app", "w1"); err != nil {
+		t.Fatalf("Acks: %v", err)
+	}
+	if _, err := h.AckEffects(ctx, "app", "alice", "s-1367", "alice", "verified"); err != nil {
+		t.Fatalf("AckEffects: %v", err)
+	}
+	if _, ok := h.EffectsAckedAt(ctx, "app", "alice", "s-1367"); !ok {
+		t.Fatalf("EffectsAckedAt = false, want true")
+	}
+	if _, _, err := h.PauseGate(ctx, "app", "alice", "s-1367", PauseSpec{Reason: ReasonOperator}); err != nil {
+		t.Fatalf("PauseGate: %v", err)
+	}
+
+	if len(spy.reqs) == 0 {
+		t.Fatalf("expected Service.Get calls, got 0")
+	}
+	for i, req := range spy.reqs {
+		if req.NumRecentEvents != 1 {
+			t.Errorf("Get call #%d (session=%q): NumRecentEvents = %d, want 1", i, req.SessionID, req.NumRecentEvents)
+		}
+	}
+}

@@ -219,7 +219,7 @@ func main() {
 	bashSearchGate := flag.String("bash-search-gate", "", "what to do when the model runs a search-shaped shell command (grep/egrep/fgrep/rgrep/rg/ag/ack/fd/find) while the native grep/glob tools are registered (#158). 'enforce' (default) refuses the call with a structured error naming the native replacement — bash-as-grep is a training prior strong enough that the existing 'PREFERRED over bash grep' tool descriptions bounce off it (measured: one Gemini variant picked bash for search 15/27 times anyway), and a refusal is the only feedback the model gets at the moment it makes the wrong choice. 'warn' runs the command but attaches the same advice to the tool result. 'allow' disables the check. Piping into a search binary is never gated ('go test ./... | grep -v ok' filters a stream, which the native tool cannot do), and 'find' with an action predicate (-delete, -exec, ...) is a file operation rather than a lookup, so it passes. Tests, builds, git and every other bash use are untouched — this is the surgical version of --disable-tools=bash. Config-file equivalent: safety.bash_search_gate.")
 	approvalTimeout := flag.String("approval-timeout", "", fmt.Sprintf("how long a permission prompt waits for an operator answer before denying the tool call, as a Go duration (e.g. \"15m\"). Overrides permissions.approval_timeout when set. When neither is set, unattended runs in \"ask\" mode with a prompt surface (e.g. --attach-listen) default to %s so an unanswered prompt cannot hold a session's turn lock and wake-loop goroutine open forever (#1364); pass --approval-timeout=0s to wait indefinitely.", DefaultUnattendedApprovalTimeout))
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
-	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-3.5-flash-lite, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-3.5-flash-lite for Gemini/Vertex, claude-haiku-5-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
+	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-3.5-flash-lite, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-3.5-flash-lite for Gemini/Vertex, claude-haiku-5-5 for Anthropic); providers without a cheap tier (vertex-maas, custom profiles without tiers.small, echo, scripted) skip registering the agentic_* wrappers unless --agentic-small-model is set explicitly (#1377). Requires --agentic-tools.")
 	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Despite the name this switch governs the whole digest layer: the same wrap covers the survey-shaped built-ins (read_many_files, grep, glob, list_dir) once their response clears the threshold, so a filesystem read and an MCP call cost the same for the same payload size. Kill switch for demos / debugging; leave on for production. The MCP half is additionally gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
 	mcpAgenticWrapLLM := flag.Bool("mcp-agentic-wrap-llm", false, "enable the LLM subagent second-chance path for MCP responses the structural pruner can't reduce below threshold (docs/agentic-mcp-design.md #223). Default off — opt-in until the operator has confirmed the cost trade-off works for their MCP surface. Layered on top of --no-mcp-digest: structural runs first regardless, and the LLM subagent only fires when structural leaves the response above threshold. Config-file equivalent: mcp.json's agentic_wrap_llm.")
 	mcpAgenticWrapModel := flag.String("mcp-agentic-wrap-model", "", "MCP-specific small-model override for the --mcp-agentic-wrap-llm subagent. When empty, falls through to --agentic-small-model, then to the provider's cheap-tier default. Motivation: MCP responses can be shaped differently enough from built-in-tool wrappers that one tier works well for one surface but not the other. Requires --mcp-agentic-wrap-llm. Config-file equivalent: mcp.json's agentic_wrap_model.")
@@ -1587,19 +1587,13 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// builtinTools by canonical name, so the subtask shares the
 	// parent's gate + output caps.
 	if agenticTools {
-		resolvedSmallModel := models.ResolveSmallModel(provider, agenticSmallModel)
-		switch {
-		case resolvedSmallModel == "":
-			send(fmt.Sprintf("agentic subtasks: inherit parent (%s — no cheap-tier default for provider %q)", cfg.Model.Name, provider.Name()))
-		case agenticSmallModel != "":
-			send(fmt.Sprintf("agentic subtasks: %s (operator override)", resolvedSmallModel))
-		default:
-			send(fmt.Sprintf("agentic subtasks: %s (provider default)", resolvedSmallModel))
-		}
-		agTools, err := compose.BuildAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, resolvedSmallModel)
+		agTools, bootLine, err := resolveAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, agenticSmallModel)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: agentic tools: %v\n", err)
 			return runner.ExitConfigError
+		}
+		if bootLine != "" {
+			send(bootLine)
 		}
 		builtinTools = append(builtinTools, agTools...)
 	}
@@ -3153,4 +3147,37 @@ func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) 
 			CostUSD:      tot.CostUSD,
 		},
 	})
+}
+
+// resolveAgenticTools resolves the small-tier model for the agentic_*
+// wrapper tools and builds them only when a cheap-tier model is
+// actually available (#1377). When models.ResolveSmallModel returns ""
+// (providers with no cheap-tier default such as vertex-maas, custom
+// profiles without tiers.small, echo, or scripted, and no explicit
+// --agentic-small-model override), registering the wrappers would run
+// both the parent and the subtask at frontier rates and multiply cost
+// instead of saving it — so we skip registration and report why.
+func resolveAgenticTools(
+	builtinTools []adktool.Tool,
+	agentGetter func() *agent.Agent,
+	provider models.Provider,
+	smallModelOverride string,
+) ([]adktool.Tool, string, error) {
+	resolvedSmallModel := models.ResolveSmallModel(provider, smallModelOverride)
+	if resolvedSmallModel == "" {
+		provName := ""
+		if provider != nil {
+			provName = provider.Name()
+		}
+		return nil, fmt.Sprintf("agentic subtasks: off (no cheap-tier default for provider %q; pass --agentic-small-model to enable)", provName), nil
+	}
+	bootLine := fmt.Sprintf("agentic subtasks: %s (provider default)", resolvedSmallModel)
+	if smallModelOverride != "" {
+		bootLine = fmt.Sprintf("agentic subtasks: %s (operator override)", resolvedSmallModel)
+	}
+	agTools, err := compose.BuildAgenticTools(builtinTools, agentGetter, provider, resolvedSmallModel)
+	if err != nil {
+		return nil, "", err
+	}
+	return agTools, bootLine, nil
 }

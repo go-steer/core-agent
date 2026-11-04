@@ -19,8 +19,10 @@ import (
 	"iter"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	adkagent "google.golang.org/adk/v2/agent"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
@@ -28,6 +30,8 @@ import (
 
 	"github.com/go-steer/core-agent/v3/internal/testutil"
 	"github.com/go-steer/core-agent/v3/pkg/agent"
+	"github.com/go-steer/core-agent/v3/pkg/models"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // stubTool is a no-op tool.Tool used as a placeholder in
@@ -344,3 +348,174 @@ func TestAgenticTool_FunctionToolConstruction(t *testing.T) {
 // this test file too. (The agentic package uses functiontool
 // internally — this is a structural canary.)
 var _ = functiontool.New[struct{}, struct{}]
+
+type countingProvider struct {
+	calls atomic.Int32
+	llm   adkmodel.LLM
+}
+
+func (p *countingProvider) Name() string { return "counting" }
+
+func (p *countingProvider) Model(_ context.Context, _ string) (adkmodel.LLM, error) {
+	p.calls.Add(1)
+	return p.llm, nil
+}
+
+var _ models.Provider = (*countingProvider)(nil)
+
+// parentCallingAgenticLLM issues two parallel agentic_read_file tool calls on
+// its first turn and returns a final text response once their results arrive.
+type parentCallingAgenticLLM struct {
+	name string
+}
+
+func (m *parentCallingAgenticLLM) Name() string { return m.name }
+
+func (m *parentCallingAgenticLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	hasToolResp := false
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p != nil && p.FunctionResponse != nil {
+				hasToolResp = true
+				break
+			}
+		}
+	}
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if !hasToolResp {
+			yield(&adkmodel.LLMResponse{
+				Content: &genai.Content{
+					Role: genai.RoleModel,
+					Parts: []*genai.Part{
+						{FunctionCall: &genai.FunctionCall{ID: "call-1", Name: "agentic_read_file", Args: map[string]any{"request": "read file A"}}},
+						{FunctionCall: &genai.FunctionCall{ID: "call-2", Name: "agentic_read_file", Args: map[string]any{"request": "read file B"}}},
+					},
+				},
+				TurnComplete: true,
+			}, nil)
+			return
+		}
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}},
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+type subtaskEchoLLM struct {
+	name string
+}
+
+func (m *subtaskEchoLLM) Name() string { return m.name }
+
+func (m *subtaskEchoLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "subtask digest"}}},
+			TurnComplete: true,
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     100,
+				CandidatesTokenCount: 20,
+			},
+		}, nil)
+	}
+}
+
+func newReadStubTool(t *testing.T) tool.Tool {
+	t.Helper()
+	type readArgs struct {
+		Path string `json:"path"`
+	}
+	type readRes struct {
+		Content string `json:"content"`
+	}
+	tl, err := functiontool.New(functiontool.Config{
+		Name:        "read_file",
+		Description: "stub read_file",
+	}, func(_ adkagent.Context, _ readArgs) (readRes, error) {
+		return readRes{Content: "hello"}, nil
+	})
+	if err != nil {
+		t.Fatalf("functiontool.New(read_file): %v", err)
+	}
+	return tl
+}
+
+// TestAgenticTool_MultiSessionAndConcurrentRace verifies (#1362):
+//  1. Concurrent invocations of a single agentic_* tool instance (both within
+//     a turn via parallel read-only tool dispatch and across two concurrent
+//     multi-session tenants) initialize resolvedModel without data races.
+//  2. A shared agentic_* tool built with an AgentGetter returning nil (the
+//     --multi-session --no-repl daemon shape where the startup agentRef is
+//     never populated) resolves each calling tenant's *agent.Agent from the
+//     turn context (agent.FromContext) so subtasks run and record side usage
+//     against the right tenant's session and tracker.
+func TestAgenticTool_MultiSessionAndConcurrentRace(t *testing.T) {
+	t.Parallel()
+	prov := &countingProvider{llm: &subtaskEchoLLM{name: "small-subtask-model"}}
+	innerRead := newReadStubTool(t)
+
+	// Shared agentic_read_file built with AgentGetter returning nil,
+	// reproducing the multi-session daemon where agentRef is nil forever.
+	sharedAgenticRead := AgenticReadFile(AgenticToolOpts{
+		AgentGetter:  func() *agent.Agent { return nil },
+		Provider:     prov,
+		SmallModelID: "small-subtask-model",
+		InnerTools:   []tool.Tool{innerRead},
+	})
+
+	makeTenant := func(sid string) (*agent.Agent, *usage.Tracker) {
+		tr := usage.NewTracker()
+		a, err := agent.New(
+			&parentCallingAgenticLLM{name: "parent-model"},
+			agent.WithTools([]tool.Tool{innerRead, sharedAgenticRead}),
+			agent.WithUsageTracker(tr),
+			agent.WithSession("user-"+sid, sid),
+		)
+		if err != nil {
+			t.Fatalf("agent.New(%s): %v", sid, err)
+		}
+		return a, tr
+	}
+
+	tenantA, trackerA := makeTenant("tenant-a")
+	tenantB, trackerB := makeTenant("tenant-b")
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, a := range []*agent.Agent{tenantA, tenantB} {
+		wg.Add(1)
+		go func(ag *agent.Agent) {
+			defer wg.Done()
+			for _, err := range ag.Run(context.Background(), "summarize both files") {
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(a)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent tenant Run failed: %v", err)
+	}
+
+	if got := prov.calls.Load(); got != 1 {
+		t.Errorf("Provider.Model calls = %d, want 1 (lazy init must run once under mutex)", got)
+	}
+
+	for name, tr := range map[string]*usage.Tracker{"tenant-a": trackerA, "tenant-b": trackerB} {
+		byModel := tr.TotalsByModel()
+		subTotals, ok := byModel["small-subtask-model"]
+		if !ok {
+			t.Fatalf("%s: expected small-subtask-model usage in tracker, got %+v", name, byModel)
+		}
+		if subTotals.Turns != 2 {
+			t.Errorf("%s: small-subtask-model turns = %d, want 2 (isolated per tenant)", name, subTotals.Turns)
+		}
+	}
+}

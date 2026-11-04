@@ -41,9 +41,9 @@ import (
 // at runtime resolves its own threshold per turn; this line does not
 // follow it.
 func compactionBootLine(c *agent.DefaultCompactor, model string) string {
-	thr := c.ThresholdFor(model)
 	window := usage.ContextWindowSizeFor(model)
 	if window <= 0 {
+		thr := c.ThresholdFor(model)
 		// No catalogued window: compaction does not stop, it assumes one
 		// (pkg/agent compactionWindowSize → AssumedContextWindowSize), so
 		// the line states that figure rather than "unknown" — it is the
@@ -51,5 +51,14 @@ func compactionBootLine(c *agent.DefaultCompactor, model string) string {
 		return fmt.Sprintf("core-agent: compaction: fires at %.3g of %s's assumed %d-token window = %d tokens (no catalogued window size for this model)",
 			thr, model, agent.AssumedContextWindowSize, int(thr*float64(agent.AssumedContextWindowSize)))
 	}
-	return fmt.Sprintf("core-agent: compaction: fires at %.3g of %s's %d-token window = %d tokens", thr, model, window, int(thr*float64(window)))
+	trig := c.TriggerFor(model, window)
+	if trig.LongContextWon {
+		return fmt.Sprintf("core-agent: compaction: fires at %.3g of %s's %d-token window = %d tokens (long-context cliff %d - %d margin < %.3g tier window = %d tokens)",
+			trig.EffectiveFraction, model, window, trig.TriggerTokens, trig.LongContextThresholdTokens, trig.MarginTokens, trig.TierFraction, trig.TierTokens)
+	}
+	if trig.LongContextThresholdTokens > 0 {
+		return fmt.Sprintf("core-agent: compaction: fires at %.3g of %s's %d-token window = %d tokens (tier window < %d long-context cliff - %d margin = %d tokens)",
+			trig.TierFraction, model, window, trig.TriggerTokens, trig.LongContextThresholdTokens, trig.MarginTokens, trig.CliffTriggerTokens)
+	}
+	return fmt.Sprintf("core-agent: compaction: fires at %.3g of %s's %d-token window = %d tokens", trig.TierFraction, model, window, trig.TriggerTokens)
 }

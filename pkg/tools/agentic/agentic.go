@@ -127,7 +127,10 @@ func agenticTool(opts AgenticToolOpts, name, description, systemPrompt string) t
 	)
 
 	handler := func(toolCtx adkagent.Context, args agenticArgs) (agenticResult, error) {
-		a := opts.AgentGetter()
+		a := agent.FromContext(toolCtx)
+		if a == nil {
+			a = opts.AgentGetter()
+		}
 		if a == nil {
 			return agenticResult{}, fmt.Errorf("%s: agent not yet bound (registration race?)", name)
 		}

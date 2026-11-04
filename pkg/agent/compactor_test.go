@@ -27,6 +27,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/core-agent/v3/pkg/modeltier"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
@@ -759,4 +760,155 @@ func contentText(c *genai.Content) string {
 		}
 	}
 	return b.String()
+}
+
+// TestDefaultCompactor_LongContextCliffTrigger verifies (#1376):
+//  1. Compaction triggers at the lower of tier × window and
+//     long_context.threshold_tokens - margin (32,000 tokens by default).
+//  2. Models with long-context pricing cliffs (claude-haiku-5-5 at 100k,
+//     gemini-2.5-pro at 200k, gemini-3.1-pro-preview at 200k) trigger at
+//     cliff - margin (68,000 and 168,000 tokens) instead of waiting for
+//     tier × window (350,000, 681,574, and 891,289 tokens).
+//  3. Full billed prompt (uncached + cache_read + cache_creation) plus
+//     unmeasured tool output bytes are compared against the cliff trigger.
+//  4. When tier × window is lower than cliff - margin (e.g. a small
+//     operator threshold), tier × window wins.
+func TestDefaultCompactor_LongContextCliffTrigger(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		model     string
+		compactor *DefaultCompactor
+		used      int
+		pendingB  int
+		want      bool
+	}{
+		{
+			name:      "claude-haiku-5-5 under cliff-margin (67,999 < 68,000)",
+			model:     "claude-haiku-5-5",
+			compactor: NewDefaultCompactor().(*DefaultCompactor),
+			used:      67_999,
+			want:      false,
+		},
+		{
+			name:      "claude-haiku-5-5 at cliff-margin (68,000 >= 100k - 32k, well below 350k tier)",
+			model:     "claude-haiku-5-5",
+			compactor: NewDefaultCompactor().(*DefaultCompactor),
+			used:      68_000,
+			want:      true,
+		},
+		{
+			name:      "gemini-2.5-pro under cliff-margin (167,999 < 168,000)",
+			model:     "gemini-2.5-pro",
+			compactor: NewDefaultCompactor().(*DefaultCompactor),
+			used:      167_999,
+			want:      false,
+		},
+		{
+			name:      "gemini-2.5-pro at cliff-margin (168,000 >= 200k - 32k, well below 681,574 tier)",
+			model:     "gemini-2.5-pro",
+			compactor: NewDefaultCompactor().(*DefaultCompactor),
+			used:      168_000,
+			want:      true,
+		},
+		{
+			name:      "gemini-3.1-pro-preview pushed over cliff-margin by pending tool bytes",
+			model:     "gemini-3.1-pro-preview",
+			compactor: NewDefaultCompactor().(*DefaultCompactor),
+			used:      150_000,
+			pendingB:  18_000 * 3, // +18,000 estimated tokens (at 3 bytes/token) -> 168,000
+			want:      true,
+		},
+		{
+			name:  "tier window lower than cliff-margin wins",
+			model: "gemini-2.5-pro",
+			compactor: &DefaultCompactor{
+				Threshold: 0.05, // 0.05 * 1,048,576 = 52,428 < 168,000
+			},
+			used: 60_000,
+			want: true,
+		},
+		{
+			name:  "negative LongContextMarginTokens disables cliff cap",
+			model: "claude-haiku-5-5",
+			compactor: &DefaultCompactor{
+				Threshold:               DefaultCompactionThreshold,
+				ThresholdByTier:         modeltier.DefaultCompactionThresholds(),
+				LongContextMarginTokens: -1,
+			},
+			used: 200_000, // above 100k cliff, below 350k small-tier trigger
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tr := usage.NewTracker()
+			// Record prompt with cache read + cache creation buckets to verify
+			// the full billed prompt is compared against the cliff trigger.
+			tr.AppendUsage(tc.model, usage.TurnUsage{
+				InputTokens:              tc.used,
+				CachedInputTokens:        tc.used / 2,
+				CacheCreationInputTokens: tc.used / 4,
+				OutputTokens:             100,
+			}, usage.Pricing{})
+			if tc.pendingB > 0 {
+				tr.AddPendingContextBytes(tc.pendingB)
+			}
+			a, err := New(&captureLLM{response: "ok"}, WithUsageTracker(tr))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if got := tc.compactor.ShouldCompact(context.Background(), a); got != tc.want {
+				t.Errorf("ShouldCompact(%s, used=%d, pendingB=%d) = %v, want %v", tc.model, tc.used, tc.pendingB, got, tc.want)
+			}
+		})
+	}
+}
+
+type getRecordingSessionService struct {
+	session.Service
+	lastGetReq *session.GetRequest
+}
+
+func (s *getRecordingSessionService) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
+	cp := *req
+	s.lastGetReq = &cp
+	return s.Service.Get(ctx, req)
+}
+
+// TestAppendBoundaryEvent_RequestsSingleRecentEvent verifies (#1367) that
+// appendBoundaryEvent passes NumRecentEvents: 1 when loading the session
+// handle so appending a compaction or checkpoint marker does not reload
+// and deserialize the entire session history.
+func TestAppendBoundaryEvent_RequestsSingleRecentEvent(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "summary text"}
+	a, err := New(llm, WithCompactor(NewDefaultCompactor()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plantEvent(t, a, genai.RoleUser, "turn 1")
+	plantEvent(t, a, genai.RoleModel, "turn 2")
+
+	recSvc := &getRecordingSessionService{Service: a.sessionService}
+	a.sessionService = recSvc
+
+	id, err := a.appendBoundaryEvent(context.Background(), "summary", summarizerSpec{
+		operation: "Compact",
+		tag:       CompactionEventTag,
+	})
+	if err != nil {
+		t.Fatalf("appendBoundaryEvent: %v", err)
+	}
+	if id == "" {
+		t.Fatalf("expected non-empty boundary event ID")
+	}
+	if recSvc.lastGetReq == nil {
+		t.Fatalf("expected Service.Get to be called")
+	}
+	if recSvc.lastGetReq.NumRecentEvents != 1 {
+		t.Errorf("GetRequest.NumRecentEvents = %d, want 1", recSvc.lastGetReq.NumRecentEvents)
+	}
 }

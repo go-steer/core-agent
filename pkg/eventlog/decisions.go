@@ -479,9 +479,10 @@ func (h *Handle) AckEffects(ctx context.Context, appName, userID, sessionID, by,
 		return time.Time{}, err
 	}
 	resp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName:   appName,
-		UserID:    resolvedUser,
-		SessionID: sessionID,
+		AppName:         appName,
+		UserID:          resolvedUser,
+		SessionID:       sessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		return time.Time{}, fmt.Errorf("eventlog: get session %q: %w", sessionID, err)
@@ -520,9 +521,10 @@ func (h *Handle) EffectsAckedAt(ctx context.Context, appName, userID, sessionID 
 		return time.Time{}, false
 	}
 	resp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName:   appName,
-		UserID:    resolvedUser,
-		SessionID: sessionID,
+		AppName:         appName,
+		UserID:          resolvedUser,
+		SessionID:       sessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil || resp == nil || resp.Session == nil {
 		return time.Time{}, false

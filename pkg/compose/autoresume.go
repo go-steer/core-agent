@@ -294,9 +294,10 @@ func (a *AutoResumer) resumeCandidate(ctx context.Context, c autoResumeCandidate
 
 func (a *AutoResumer) appendRepair(ctx context.Context, userID, sessionID string, repair *genai.Content) error {
 	resp, err := a.cfg.Handle.Service.Get(ctx, &session.GetRequest{
-		AppName:   a.cfg.AppName,
-		UserID:    userID,
-		SessionID: sessionID,
+		AppName:         a.cfg.AppName,
+		UserID:          userID,
+		SessionID:       sessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		return err
@@ -371,9 +372,10 @@ func nonTrailingRepairedCallIDs(events session.Events) map[string]bool {
 func (a *AutoResumer) attempts(ctx context.Context, userID, sessionID string) (int, time.Time) {
 	opsID := sessionID + autoResumeOpsSuffix
 	resp, err := a.cfg.Handle.Service.Get(ctx, &session.GetRequest{
-		AppName:   a.cfg.AppName,
-		UserID:    userID,
-		SessionID: opsID,
+		AppName:         a.cfg.AppName,
+		UserID:          userID,
+		SessionID:       opsID,
+		NumRecentEvents: 1,
 	})
 	if err != nil || resp == nil || resp.Session == nil {
 		return 0, time.Time{}
@@ -405,9 +407,10 @@ func (a *AutoResumer) recordAttempt(ctx context.Context, userID, sessionID strin
 	opsID := sessionID + autoResumeOpsSuffix
 	var sess session.Session
 	if resp, err := a.cfg.Handle.Service.Get(ctx, &session.GetRequest{
-		AppName:   a.cfg.AppName,
-		UserID:    userID,
-		SessionID: opsID,
+		AppName:         a.cfg.AppName,
+		UserID:          userID,
+		SessionID:       opsID,
+		NumRecentEvents: 1,
 	}); err == nil && resp != nil && resp.Session != nil {
 		sess = resp.Session
 	} else {

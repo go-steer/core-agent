@@ -57,9 +57,10 @@ type Provider interface {
 // implements this declares its preferred cheap-tier model — used by
 // core-agent as the default for --agentic-small-model when the operator
 // hasn't pinned one explicitly. Providers without a cheap-tier concept
-// (echo, scripted) simply don't implement this; ResolveSmallModel
-// returns "" for them and callers fall back to inheriting the parent's
-// model.
+// (vertex-maas, custom profiles without tiers.small, echo, scripted)
+// simply don't implement this; ResolveSmallModel returns "" for them,
+// and cmd/core-agent skips registering the agentic_* cost-lever wrappers
+// unless --agentic-small-model is set (#1377).
 type SmallModelDefaulter interface {
 	DefaultSmallModel() string
 }

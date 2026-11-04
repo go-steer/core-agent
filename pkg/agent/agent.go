@@ -1793,6 +1793,12 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	// permissions.WithSessionGate(nil) is a no-op so the guard is
 	// covered by the helper.
 	runCtx = permissions.WithSessionGate(runCtx, a.gate)
+	// Stamp this session's *Agent onto runCtx so tool wrappers and
+	// callbacks built at daemon startup (e.g. pkg/tools/agentic and
+	// pkg/compose.BuildMCPDigestLLMFallback) can resolve the running
+	// session's agent from tool.Context rather than a daemon-global
+	// pointer (#1362).
+	runCtx = WithRunningAgent(runCtx, a)
 	// This session's record of a served model call (#1247), for the
 	// provider's retry policy. Always installed, even nil, so a Run
 	// nested under another agent's turn never reads that agent's.
@@ -2400,4 +2406,29 @@ func wrapWithCleanup(seq iter.Seq2[*session.Event, error], cleanup func()) iter.
 // Deprecated: use SetOperatorEventEmitter. Removed in v4.0.
 func (a *Agent) SetAttachEmitter(f func(eventType string, payload any)) {
 	a.SetOperatorEventEmitter(f)
+}
+
+type runningAgentCtxKey struct{}
+
+// WithRunningAgent attaches the executing *Agent to ctx so tool wrappers
+// and callbacks shared across sessions can resolve the owning session's
+// agent via FromContext (#1362). A nil agent is a no-op, and an outer
+// session *Agent already on ctx is preserved so nested child-agent runs
+// (e.g. background subagents whose inner *Agent has no standalone
+// tracker) keep resolving to the owning session's *Agent.
+func WithRunningAgent(ctx context.Context, a *Agent) context.Context {
+	if a == nil || FromContext(ctx) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, runningAgentCtxKey{}, a)
+}
+
+// FromContext returns the *Agent attached to ctx by WithRunningAgent, or
+// nil when none is present.
+func FromContext(ctx context.Context) *Agent {
+	if ctx == nil {
+		return nil
+	}
+	a, _ := ctx.Value(runningAgentCtxKey{}).(*Agent)
+	return a
 }

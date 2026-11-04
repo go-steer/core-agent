@@ -193,9 +193,10 @@ func emitCheckpoint(ctx context.Context, a *agent.Agent, payload checkpointPaylo
 		return nil
 	}
 	resp, err := svc.Get(ctx, &session.GetRequest{
-		AppName:   a.AppName(),
-		UserID:    a.UserID(),
-		SessionID: a.SessionID(),
+		AppName:         a.AppName(),
+		UserID:          a.UserID(),
+		SessionID:       a.SessionID(),
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		return fmt.Errorf("checkpoint: load session: %w", err)
@@ -212,9 +213,10 @@ func emitCheckpoint(ctx context.Context, a *agent.Agent, payload checkpointPaylo
 			return fmt.Errorf("checkpoint: create session: %w", cerr)
 		}
 		resp, err = svc.Get(ctx, &session.GetRequest{
-			AppName:   a.AppName(),
-			UserID:    a.UserID(),
-			SessionID: a.SessionID(),
+			AppName:         a.AppName(),
+			UserID:          a.UserID(),
+			SessionID:       a.SessionID(),
+			NumRecentEvents: 1,
 		})
 		if err != nil || resp == nil || resp.Session == nil {
 			return errors.New("checkpoint: session unavailable after create")
@@ -251,9 +253,10 @@ func emitNoteEvent(ctx context.Context, a *agent.Agent, kind, text string) error
 		return nil
 	}
 	resp, err := svc.Get(ctx, &session.GetRequest{
-		AppName:   a.AppName(),
-		UserID:    a.UserID(),
-		SessionID: a.SessionID(),
+		AppName:         a.AppName(),
+		UserID:          a.UserID(),
+		SessionID:       a.SessionID(),
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		return fmt.Errorf("note: load session: %w", err)
@@ -268,9 +271,10 @@ func emitNoteEvent(ctx context.Context, a *agent.Agent, kind, text string) error
 			return fmt.Errorf("note: create session: %w", cerr)
 		}
 		resp, err = svc.Get(ctx, &session.GetRequest{
-			AppName:   a.AppName(),
-			UserID:    a.UserID(),
-			SessionID: a.SessionID(),
+			AppName:         a.AppName(),
+			UserID:          a.UserID(),
+			SessionID:       a.SessionID(),
+			NumRecentEvents: 1,
 		})
 		if err != nil || resp == nil || resp.Session == nil {
 			return errors.New("note: session unavailable after create")

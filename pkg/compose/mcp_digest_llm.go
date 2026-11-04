@@ -80,7 +80,10 @@ func BuildMCPDigestLLMFallback(
 		done     bool
 	)
 	return func(ctx context.Context, raw []byte) (mcp.LLMFallbackResult, error) {
-		a := *agentRef
+		a := agent.FromContext(ctx)
+		if a == nil && agentRef != nil {
+			a = *agentRef
+		}
 		if a == nil {
 			return mcp.LLMFallbackResult{}, fmt.Errorf("mcp digest LLM: agent not yet bound (registration race?)")
 		}
@@ -119,13 +122,12 @@ func BuildMCPDigestLLMFallback(
 			span.SetAttributes(attribute.String("gen_ai.system", provider.Name()))
 		}
 
-		// SkipParentUsage because `a` is the PRIMARY agent, bound once
-		// at boot — not the agent whose session made the MCP call.
-		// Billing it here charged every session's digests to the
-		// primary session and counted them against the primary's cost
-		// ceiling (#717). The calling session picks the cost up from
-		// the `savings` sidecar on the tool result instead, which puts
-		// it on the right books AND under the right ceiling.
+		// SkipParentUsage because the calling session picks the cost up
+		// from the `savings` sidecar on the tool result via
+		// observeToolSavings (#717), so charging it inside RunSubtask as
+		// well would double-bill the session's tracker and cost ceiling.
+		// (`a` resolves from agent.FromContext(ctx) per turn since #1362,
+		// falling back to *agentRef for direct callers outside a.Run.)
 		// Effective model name for the savings sidecar. Empty modelID
 		// means the subtask inherits the parent's model, and RunSubtask
 		// runs it on `a` — so `a.ModelName()` is the model that actually

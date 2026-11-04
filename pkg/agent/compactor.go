@@ -31,6 +31,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/attach"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/modeltier"
+	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
 // CompactionEventTag is the value stored under
@@ -104,6 +105,23 @@ type DefaultCompactor struct {
 	// to inject deterministic tier resolutions without depending on
 	// the modeltier table's current state.
 	TierClassifier func(modelID string) string
+
+	// LongContextMarginTokens is the headroom (in tokens) subtracted
+	// from a model's long-context pricing cliff
+	// (pricing.LongContextRates.ThresholdTokens) when computing the
+	// cliff-aware compaction trigger (#1376). Zero uses
+	// DefaultLongContextMarginTokens; a negative value disables the
+	// long-context cliff cap so compaction triggers solely on
+	// tier × window.
+	LongContextMarginTokens int
+
+	// LongContextThresholdFor looks up the long-context pricing cliff
+	// (in prompt tokens) for modelID, returning 0 when the model has
+	// flat pricing across its entire context window. Defaults to
+	// reading usage.PriceFor(modelID, nil).LongContext. Override in
+	// tests for deterministic cliff resolution independent of the
+	// pricing catalog.
+	LongContextThresholdFor func(modelID string) int
 }
 
 // DefaultCompactionThreshold is the fallback for
@@ -112,6 +130,46 @@ type DefaultCompactor struct {
 // context wall, and matches the historical universal default so
 // frontier sessions see no behavior change.
 const DefaultCompactionThreshold = 0.85
+
+// DefaultLongContextMarginTokens is the default token headroom
+// subtracted from a model's long-context pricing cliff (#1376).
+// 32,000 tokens (~96 KiB at usage.BytesPerEstimatedToken = 3, or
+// ~128 KiB at 4 bytes/token) covers a full single-tool result (e.g.
+// bash or fetch_url's 64 KiB cap) plus model output so one big tool
+// read does not push the next turn across the pricing cliff before
+// compaction fires.
+const DefaultLongContextMarginTokens = 32_000
+
+// CompactionTrigger describes the resolved compaction trigger for a
+// model and context window (#1376), reporting both candidates (the
+// tier-fraction × window token count and the long-context pricing
+// cliff minus margin) and which one won.
+type CompactionTrigger struct {
+	// TriggerTokens is the effective prompt-token count at which
+	// compaction fires: the lower of TierTokens and CliffTriggerTokens
+	// when a long-context cliff applies, or TierTokens otherwise.
+	TriggerTokens int
+	// EffectiveFraction is TriggerTokens / Window (or TierFraction
+	// when Window <= 0 or TierTokens won).
+	EffectiveFraction float64
+	// TierFraction is c.ThresholdFor(model).
+	TierFraction float64
+	// TierTokens is int(TierFraction * float64(Window)).
+	TierTokens int
+	// LongContextThresholdTokens is the model's pricing cliff in
+	// prompt tokens (0 when the model has no long-context step).
+	LongContextThresholdTokens int
+	// MarginTokens is the headroom subtracted from
+	// LongContextThresholdTokens.
+	MarginTokens int
+	// CliffTriggerTokens is LongContextThresholdTokens - MarginTokens
+	// (clamped to at least LongContextThresholdTokens / 2), or 0 when
+	// LongContextThresholdTokens == 0.
+	CliffTriggerTokens int
+	// LongContextWon is true when CliffTriggerTokens > 0 and is
+	// strictly lower than TierTokens.
+	LongContextWon bool
+}
 
 // NewDefaultCompactor returns a DefaultCompactor with the package-
 // default fallback threshold AND the default per-tier overrides
@@ -127,7 +185,8 @@ func NewDefaultCompactor() Compactor {
 
 // ShouldCompact returns true when the agent's usage tracker reports
 // context-window utilization at or above the resolved threshold for
-// the current model's tier.
+// the current model's tier, or at or above the model's long-context
+// pricing cliff minus margin when that is lower (#1376).
 //
 // An unknown model is measured against AssumedContextWindowSize and
 // announced once, rather than treated as "not full yet" (#974). Until
@@ -148,34 +207,102 @@ func (c *DefaultCompactor) ShouldCompact(_ context.Context, a *Agent) bool {
 		return false
 	}
 	used := a.tracker.ContextWindowUsed()
-	threshold := c.resolveThreshold(a)
-	return float64(used)/float64(size) >= threshold
+	trig := c.triggerForAgent(a, size)
+	if trig.LongContextWon {
+		return used >= trig.TriggerTokens
+	}
+	return float64(used)/float64(size) >= trig.TierFraction
 }
 
-// resolveThreshold picks the compaction trigger for the current
-// session's model. Per-tier overrides win; fall through to
-// c.Threshold; final fallback is the package default. Exposed for
-// observability via the wrapping interfaces in the rest of the
-// package — kept lowercase because the resolution policy is an
-// implementation detail of this Compactor.
-func (c *DefaultCompactor) resolveThreshold(a *Agent) float64 {
+// TriggerFor resolves the effective compaction trigger for model and
+// window (#1376), comparing tier × window against the model's
+// long-context pricing cliff minus margin and taking the lower of the
+// two. Shared by ShouldCompact (via triggerForAgent) and
+// cmd/core-agent's startup summary so the boot log line reports the
+// exact trigger ShouldCompact acts on.
+func (c *DefaultCompactor) TriggerFor(model string, window int) CompactionTrigger {
+	return c.resolveTrigger(model, window, nil)
+}
+
+func (c *DefaultCompactor) triggerForAgent(a *Agent, window int) CompactionTrigger {
 	model := ""
-	if last, ok := a.tracker.Last(); ok {
-		model = last.Model
+	if a != nil && a.tracker != nil {
+		if last, ok := a.tracker.Last(); ok {
+			model = last.Model
+		}
 	}
-	return c.ThresholdFor(model)
+	return c.resolveTrigger(model, window, a)
+}
+
+func (c *DefaultCompactor) resolveTrigger(model string, window int, a *Agent) CompactionTrigger {
+	thr := c.ThresholdFor(model)
+	tierTokens := int(thr * float64(window))
+	out := CompactionTrigger{
+		TriggerTokens:     tierTokens,
+		EffectiveFraction: thr,
+		TierFraction:      thr,
+		TierTokens:        tierTokens,
+	}
+	if c == nil || c.LongContextMarginTokens < 0 {
+		return out
+	}
+	lcThreshold := c.longContextThreshold(model, a)
+	if lcThreshold <= 0 {
+		return out
+	}
+	margin := c.LongContextMarginTokens
+	if margin == 0 {
+		margin = DefaultLongContextMarginTokens
+	}
+	cliffTokens := lcThreshold - margin
+	if cliffTokens < lcThreshold/2 {
+		cliffTokens = lcThreshold / 2
+	}
+	out.LongContextThresholdTokens = lcThreshold
+	out.MarginTokens = lcThreshold - cliffTokens
+	out.CliffTriggerTokens = cliffTokens
+	if window <= 0 || cliffTokens < tierTokens {
+		out.TriggerTokens = cliffTokens
+		out.LongContextWon = true
+		if window > 0 {
+			out.EffectiveFraction = float64(cliffTokens) / float64(window)
+		}
+	}
+	return out
+}
+
+func (c *DefaultCompactor) longContextThreshold(model string, a *Agent) int {
+	if c != nil && c.LongContextThresholdFor != nil {
+		return c.LongContextThresholdFor(model)
+	}
+	if model == "" {
+		return 0
+	}
+	if a != nil {
+		if p := a.price(model); p.LongContext != nil {
+			return p.LongContext.ThresholdTokens
+		}
+		return 0
+	}
+	if p := usage.PriceFor(model, nil); p.LongContext != nil {
+		return p.LongContext.ThresholdTokens
+	}
+	return 0
 }
 
 // ThresholdFor is the utilization fraction at which this compactor fires
 // for model; "" (no turn yet, or an unknown model) gets the fallback. It
-// is the one resolution path: resolveThreshold calls it with the session's
-// current model, and cmd/core-agent calls it at boot to print the
-// effective threshold. Sharing the path is the point — a startup line
-// computed separately could disagree with the decision it describes, and
-// #1226 (an operator threshold silently outranked by the tier defaults)
-// would have been visible the first time anyone read that line, had it
-// existed.
+// is the one tier-fraction resolution path: resolveTrigger calls it with
+// the session's current model, and cmd/core-agent calls TriggerFor at
+// boot to print the effective threshold. Sharing the path is the point —
+// a startup line computed separately could disagree with the decision it
+// describes, and #1226 (an operator threshold silently outranked by the
+// tier defaults) would have been visible the first time anyone read that
+// line, had it existed.
 func (c *DefaultCompactor) ThresholdFor(model string) float64 {
+	if c == nil {
+		return DefaultCompactionThreshold
+	}
 	if len(c.ThresholdByTier) > 0 && model != "" {
 		classifier := c.TierClassifier
 		if classifier == nil {
@@ -555,10 +682,13 @@ func compactionBackoffTurns(failures int) int {
 // holding the operator/model note, plus any extra metadata the
 // caller wants to attach (e.g. CheckpointStartedKey).
 func (a *Agent) appendBoundaryEvent(ctx context.Context, summary string, spec summarizerSpec) (string, error) {
+	// NumRecentEvents: 1 skips deserializing the full event history when
+	// we only need the session handle to append the boundary event (#1367).
 	resp, err := a.sessionService.Get(ctx, &session.GetRequest{
-		AppName:   a.appName,
-		UserID:    a.userID,
-		SessionID: a.sessionID,
+		AppName:         a.appName,
+		UserID:          a.userID,
+		SessionID:       a.sessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		return "", err

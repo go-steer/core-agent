@@ -892,9 +892,10 @@ func (b *A2ABackend) persistSessionTaskCorrelation(ctx context.Context, ag *agen
 		return false
 	}
 	resp, err := svc.Get(ctx, &session.GetRequest{
-		AppName:   ag.AppName(),
-		UserID:    ag.UserID(),
-		SessionID: ag.SessionID(),
+		AppName:         ag.AppName(),
+		UserID:          ag.UserID(),
+		SessionID:       ag.SessionID(),
+		NumRecentEvents: 1,
 	})
 	if err != nil || resp == nil || resp.Session == nil {
 		return false

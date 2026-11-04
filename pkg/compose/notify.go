@@ -484,9 +484,10 @@ func (n *Notifier) ensureStateLoaded(ctx context.Context) {
 	}
 	n.loaded = true
 	resp, err := n.eventLog.Service.Get(ctx, &session.GetRequest{
-		AppName:   n.appName,
-		UserID:    notifyOpsUserID,
-		SessionID: notifyOpsSessionID,
+		AppName:         n.appName,
+		UserID:          notifyOpsUserID,
+		SessionID:       notifyOpsSessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil || resp == nil || resp.Session == nil || resp.Session.State() == nil {
 		return
@@ -538,9 +539,10 @@ func (n *Notifier) saveState(ctx context.Context) {
 
 func (n *Notifier) ensureNotifyOpsSession(ctx context.Context) session.Session {
 	resp, err := n.eventLog.Service.Get(ctx, &session.GetRequest{
-		AppName:   n.appName,
-		UserID:    notifyOpsUserID,
-		SessionID: notifyOpsSessionID,
+		AppName:         n.appName,
+		UserID:          notifyOpsUserID,
+		SessionID:       notifyOpsSessionID,
+		NumRecentEvents: 1,
 	})
 	if err == nil && resp != nil && resp.Session != nil {
 		return resp.Session
@@ -554,9 +556,10 @@ func (n *Notifier) ensureNotifyOpsSession(ctx context.Context) session.Session {
 		return created.Session
 	}
 	resp, err = n.eventLog.Service.Get(ctx, &session.GetRequest{
-		AppName:   n.appName,
-		UserID:    notifyOpsUserID,
-		SessionID: notifyOpsSessionID,
+		AppName:         n.appName,
+		UserID:          notifyOpsUserID,
+		SessionID:       notifyOpsSessionID,
+		NumRecentEvents: 1,
 	})
 	if err == nil && resp != nil {
 		return resp.Session

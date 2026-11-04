@@ -59,7 +59,7 @@ The daemon states the threshold in force at startup, in tokens, for its configur
 core-agent: compaction: fires at 0.85 of gemini-3.7-flash's 1048576-token window = 891289 tokens
 ```
 
-Read the token figure rather than multiplying it out yourself: model windows are not round numbers. A session that switches model at runtime resolves its own threshold per turn; the line describes the boot model.
+Read the token figure rather than multiplying it out yourself: model windows are not round numbers. When a model has a long-context pricing cliff (for example, `claude-haiku-5-5` steps 5× above 100,000 prompt tokens, and `gemini-2.5-pro` / `gemini-3.1-pro-preview` step 2× above 200,000 prompt tokens), compaction triggers at the **lower** of `tier × window` and the model's `long_context.threshold_tokens` minus a 32,000-token margin ([#1376](https://github.com/go-steer/core-agent/issues/1376)), and the startup summary shows both figures and which one won. A session that switches model at runtime resolves its own threshold per turn; the line describes the boot model.
 
 Override per-tier defaults in `.agents/config.json`:
 
@@ -571,7 +571,7 @@ Add `agent.WithWatchdogEnforce()` to promote it from observe-only to a kill swit
 
 **The proactive bloat prevention.** Compaction and checkpoints are *reactive* — they clean up after raw tool output has already landed in the parent's context. Agentic wrappers are *proactive* — they route the underlying tool call through a single-purpose subtask on a (typically cheaper) model so only the digest reaches the parent. The raw 5,000-line read never enters the parent's context.
 
-On by default since v2.1. Pass `--agentic-tools=false` to register only the bare tools.
+On by default since v2.1 when the provider defines a cheap-tier subtask model (or `--agentic-small-model` is set explicitly). When a provider has no cheap-tier default (for example `vertex-maas` or a custom profile without `tiers.small`) and `--agentic-small-model` is omitted, the `agentic_*` wrappers are not registered so subtasks do not silently run on the parent's frontier model at 2–3× cost ([#1377](https://github.com/go-steer/core-agent/issues/1377)). Pass `--agentic-tools=false` to register only the bare tools.
 
 ### Configuring
 

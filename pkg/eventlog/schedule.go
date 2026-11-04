@@ -75,9 +75,10 @@ func (h *Handle) Schedule(ctx context.Context, appName, workload string) (*Sched
 		return nil, nil
 	}
 	resp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName:   appName,
-		UserID:    scheduleUserID,
-		SessionID: scheduleSessionID,
+		AppName:         appName,
+		UserID:          scheduleUserID,
+		SessionID:       scheduleSessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		if isNotFoundErr(err) {
@@ -144,9 +145,10 @@ func (h *Handle) SaveSchedule(ctx context.Context, appName string, rec ScheduleR
 
 func (h *Handle) getOrCreateOpsSession(ctx context.Context, appName, userID, opsSessionID string) (session.Session, error) {
 	if resp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName:   appName,
-		UserID:    userID,
-		SessionID: opsSessionID,
+		AppName:         appName,
+		UserID:          userID,
+		SessionID:       opsSessionID,
+		NumRecentEvents: 1,
 	}); err == nil && resp != nil && resp.Session != nil {
 		return resp.Session, nil
 	}
@@ -159,9 +161,10 @@ func (h *Handle) getOrCreateOpsSession(ctx context.Context, appName, userID, ops
 		return created.Session, nil
 	}
 	retry, gerr := h.Service.Get(ctx, &session.GetRequest{
-		AppName:   appName,
-		UserID:    userID,
-		SessionID: opsSessionID,
+		AppName:         appName,
+		UserID:          userID,
+		SessionID:       opsSessionID,
+		NumRecentEvents: 1,
 	})
 	if gerr != nil || retry == nil || retry.Session == nil {
 		return nil, fmt.Errorf("eventlog: open ops session %q: %w", opsSessionID, cerr)

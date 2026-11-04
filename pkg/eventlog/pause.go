@@ -181,7 +181,7 @@ func (h *Handle) PauseGate(ctx context.Context, appName, userID, sessionID strin
 		return PauseHandle{}, false, err
 	}
 	if _, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName: appName, UserID: resolvedUser, SessionID: sessionID,
+		AppName: appName, UserID: resolvedUser, SessionID: sessionID, NumRecentEvents: 1,
 	}); err != nil {
 		return PauseHandle{}, false, fmt.Errorf("eventlog: get session %q: %w", sessionID, err)
 	}
@@ -443,7 +443,7 @@ func (h *Handle) writePauseRecord(ctx context.Context, appName, userID, sessionI
 
 func (h *Handle) opsPauseRecords(ctx context.Context, appName, userID, sessionID string) map[string]*PauseRecord {
 	resp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName: appName, UserID: userID, SessionID: sessionID + reservedOpsSuffix,
+		AppName: appName, UserID: userID, SessionID: sessionID + reservedOpsSuffix, NumRecentEvents: 1,
 	})
 	if err != nil || resp == nil || resp.Session == nil {
 		return nil

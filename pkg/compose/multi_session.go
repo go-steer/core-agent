@@ -181,12 +181,14 @@ func PlaintextTokenWarning(path string, identities []string) string {
 // CostCeiling (these are pure config, so per-session reconstruction
 // is trivial and the alternative was /compact and /done erroring on
 // every session-created agent). Background subagents are wired
-// per-session too since #637 (see SessionBackground), and the
+// per-session too since #637 (see SessionBackground), the
 // behavioral watchdog since #665 (see WatchdogMode — every mode on the
-// ladder, alerts routed to the daemon log). Features that need
-// per-session scoping decisions the daemon doesn't yet make (agentic
-// tool wrappers, MCP custom auth) remain deferred — sessions created
-// via POST /sessions see the substrate without them.
+// ladder, alerts routed to the daemon log), and agentic_* tool wrappers
+// plus the MCP digest LLM fallback since #1362 (resolved per turn via
+// agent.FromContext on the turn context). Features that need
+// per-session scoping decisions the daemon doesn't yet make (MCP
+// custom auth) remain deferred — sessions created via POST /sessions
+// see the substrate without them.
 type SessionFactoryDeps struct {
 	// DaemonCtx is the daemon's lifetime context — every per-session
 	// wake loop spawned by the factory uses it as the cancellation

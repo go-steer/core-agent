@@ -333,6 +333,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	// checked against is "which subagents am I inside of" (#732).
 	goCtx = subsession.WithLineage(goCtx, rs.specName)
 	goCtx = permissions.WithSubagentSource(goCtx, rs.name)
+	goCtx = agent.WithRunningAgent(goCtx, parent)
 	handle := &Handle{
 		Name:      rs.name,
 		Branch:    branch,

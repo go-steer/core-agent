@@ -120,9 +120,10 @@ func (h *Handle) Ack(ctx context.Context, appName, workload, subject string) (*A
 	}
 	app := resolveAckApp(appName)
 	getResp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName:   app,
-		UserID:    ackOpsUserID,
-		SessionID: ackOpsSessionID,
+		AppName:         app,
+		UserID:          ackOpsUserID,
+		SessionID:       ackOpsSessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil || getResp == nil || getResp.Session == nil {
 		return nil, nil
@@ -150,9 +151,10 @@ func (h *Handle) Acks(ctx context.Context, appName, workload string) ([]AckRecor
 	}
 	app := resolveAckApp(appName)
 	getResp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName:   app,
-		UserID:    ackOpsUserID,
-		SessionID: ackOpsSessionID,
+		AppName:         app,
+		UserID:          ackOpsUserID,
+		SessionID:       ackOpsSessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil || getResp == nil || getResp.Session == nil {
 		return nil, nil
@@ -186,9 +188,10 @@ func (h *Handle) Acks(ctx context.Context, appName, workload string) ([]AckRecor
 
 func (h *Handle) ensureAckOpsSession(ctx context.Context, appName string) (session.Session, error) {
 	getResp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName:   appName,
-		UserID:    ackOpsUserID,
-		SessionID: ackOpsSessionID,
+		AppName:         appName,
+		UserID:          ackOpsUserID,
+		SessionID:       ackOpsSessionID,
+		NumRecentEvents: 1,
 	})
 	if err == nil && getResp != nil && getResp.Session != nil {
 		return getResp.Session, nil
@@ -202,9 +205,10 @@ func (h *Handle) ensureAckOpsSession(ctx context.Context, appName string) (sessi
 		return createResp.Session, nil
 	}
 	getResp, err = h.Service.Get(ctx, &session.GetRequest{
-		AppName:   appName,
-		UserID:    ackOpsUserID,
-		SessionID: ackOpsSessionID,
+		AppName:         appName,
+		UserID:          ackOpsUserID,
+		SessionID:       ackOpsSessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("eventlog: create/get ack ops session: %w (create err: %v)", err, createErr)

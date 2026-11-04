@@ -258,9 +258,10 @@ func (s *EventlogStore) ensureDerivedSession(ctx context.Context) error {
 		// we don't rely on the specific error shape Create returns
 		// for a duplicate primary key across dialectors.
 		_, err := s.handle.Service.Get(ctx, &session.GetRequest{
-			AppName:   s.appName,
-			UserID:    s.userID,
-			SessionID: s.derivedSessionID,
+			AppName:         s.appName,
+			UserID:          s.userID,
+			SessionID:       s.derivedSessionID,
+			NumRecentEvents: 1,
 		})
 		if err == nil {
 			return
@@ -282,9 +283,10 @@ func (s *EventlogStore) ensureDerivedSession(ctx context.Context) error {
 // network / DB hop on the write path after ensureDerivedSession.
 func (s *EventlogStore) fetchDerivedSession(ctx context.Context) (session.Session, error) {
 	resp, err := s.handle.Service.Get(ctx, &session.GetRequest{
-		AppName:   s.appName,
-		UserID:    s.userID,
-		SessionID: s.derivedSessionID,
+		AppName:         s.appName,
+		UserID:          s.userID,
+		SessionID:       s.derivedSessionID,
+		NumRecentEvents: 1,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("session Get: %w", err)

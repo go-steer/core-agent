@@ -248,3 +248,73 @@ func TestTouchEntry_BumpsLastTouched(t *testing.T) {
 		t.Errorf("TouchEntry didn't bump: before=%d after=%d", oldTs, afterTs)
 	}
 }
+
+type busyStubRegistrant struct {
+	stubRegistrant
+	status StatusInfo
+	agents []AgentInfo
+}
+
+func (b *busyStubRegistrant) AttachStatus() StatusInfo  { return b.status }
+func (b *busyStubRegistrant) AttachAgents() []AgentInfo { return b.agents }
+
+// TestEvictBefore_SkipsBusyEntries (#1363): a session that has no SSE
+// subscriber (so no broadcaster exists to call TouchEntry on eventlog
+// events) must NOT be evicted while a turn is in flight, deferred, or
+// running a background subagent.
+func TestEvictBefore_SkipsBusyEntries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		status StatusInfo
+		agents []AgentInfo
+	}{
+		{"TurnInFlight", StatusInfo{TurnInFlight: true}, nil},
+		{"StateRunning", StatusInfo{State: AgentStateRunning}, nil},
+		{"StateDeferred", StatusInfo{State: AgentStateDeferred}, nil},
+		{"RunningSubagent", StatusInfo{State: AgentStateIdle}, []AgentInfo{{ID: "sub-1", Status: AgentStatusRunning}}},
+		{"DeferredSubagent", StatusInfo{State: AgentStateIdle}, []AgentInfo{{ID: "sub-2", Status: AgentStatusDeferred}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reg := NewSessionRegistry()
+			var cancelFired atomic.Bool
+			ag := &busyStubRegistrant{
+				stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "sess-busy"},
+				status:         tc.status,
+				agents:         tc.agents,
+			}
+			if _, err := reg.RegisterOwnedWithCancel(ag, "alice@example.com", func() { cancelFired.Store(true) }); err != nil {
+				t.Fatalf("RegisterOwnedWithCancel: %v", err)
+			}
+			oldTs := time.Now().Add(-2 * time.Hour).UnixNano()
+			reg.mu.RLock()
+			for _, e := range reg.byTriple {
+				e.lastTouchedNs.Store(oldTs)
+			}
+			reg.mu.RUnlock()
+
+			if n := reg.EvictBefore(time.Now().Add(-1 * time.Hour)); n != 0 {
+				t.Fatalf("EvictBefore evicted busy entry (%s): got %d, want 0", tc.name, n)
+			}
+			if cancelFired.Load() {
+				t.Fatalf("cancelOnEvict fired for busy entry (%s)", tc.name)
+			}
+			if got := reg.Len(); got != 1 {
+				t.Fatalf("registry.Len = %d, want 1", got)
+			}
+			// And the sweep refreshed lastTouchedNs so the session gets
+			// a full idle window after its turn completes.
+			reg.mu.RLock()
+			var afterTs int64
+			for _, e := range reg.byTriple {
+				afterTs = e.lastTouchedNs.Load()
+			}
+			reg.mu.RUnlock()
+			if afterTs <= oldTs {
+				t.Errorf("EvictBefore did not refresh lastTouchedNs on busy entry: before=%d after=%d", oldTs, afterTs)
+			}
+		})
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/background"
@@ -516,5 +517,91 @@ func TestCeilingPricing_SpawnDoorVetsTheSpawnsBudget(t *testing.T) {
 	turn := ceilingPricing{ceiling: agent.CostCeiling{MaxTurnUSD: 1}, sessionSource: sourceCostFlag}
 	if _, err := turn.spawnDoor(spawn(unpricedTestModel, 1.0, false), &fresh); err == nil {
 		t.Error("an operator ceiling no longer refuses a spawn on an unpriced model")
+	}
+}
+
+// TestResolveGuardrails_ApprovalTimeout (#1364): an unattended run in
+// "ask" mode with a prompt surface (e.g. --attach-listen) defaults to
+// DefaultUnattendedApprovalTimeout so an unanswered permission prompt
+// cannot hold turnLock and the wake-loop goroutine open forever.
+func TestResolveGuardrails_ApprovalTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		in         guardrailInputs
+		want       time.Duration
+		wantSource string
+	}{
+		{
+			name:       "unattended ask with prompt surface defaults to 30m",
+			in:         guardrailInputs{Unattended: true, PermMode: config.PermissionModeAsk, HasPromptSurface: true},
+			want:       DefaultUnattendedApprovalTimeout,
+			wantSource: sourceApprovalTimeoutUnattendedDefault,
+		},
+		{
+			name:       "unattended empty perm mode defaults to ask and gets 30m",
+			in:         guardrailInputs{Unattended: true, HasPromptSurface: true},
+			want:       DefaultUnattendedApprovalTimeout,
+			wantSource: sourceApprovalTimeoutUnattendedDefault,
+		},
+		{
+			name:       "interactive ask with prompt surface stays unset",
+			in:         guardrailInputs{Unattended: false, PermMode: config.PermissionModeAsk, HasPromptSurface: true},
+			want:       0,
+			wantSource: sourceApprovalTimeoutUnset,
+		},
+		{
+			name:       "unattended without prompt surface stays unset",
+			in:         guardrailInputs{Unattended: true, PermMode: config.PermissionModeAsk, HasPromptSurface: false},
+			want:       0,
+			wantSource: sourceApprovalTimeoutUnset,
+		},
+		{
+			name:       "config overrides unattended default",
+			in:         guardrailInputs{Unattended: true, HasPromptSurface: true, ApprovalTimeoutConfig: "15m"},
+			want:       15 * time.Minute,
+			wantSource: sourceApprovalTimeoutConfig,
+		},
+		{
+			name:       "flag overrides config and unattended default",
+			in:         guardrailInputs{Unattended: true, HasPromptSurface: true, ApprovalTimeoutFlag: "5m", ApprovalTimeoutConfig: "15m"},
+			want:       5 * time.Minute,
+			wantSource: sourceApprovalTimeoutFlag,
+		},
+		{
+			name:       "explicit flag 0s opts out of unattended default",
+			in:         guardrailInputs{Unattended: true, HasPromptSurface: true, ApprovalTimeoutFlag: "0s"},
+			want:       0,
+			wantSource: sourceApprovalTimeoutFlag,
+		},
+		{
+			name:       "explicit config 0s opts out of unattended default",
+			in:         guardrailInputs{Unattended: true, HasPromptSurface: true, ApprovalTimeoutConfig: "0s"},
+			want:       0,
+			wantSource: sourceApprovalTimeoutConfig,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveGuardrails(tc.in)
+			if err != nil {
+				t.Fatalf("resolveGuardrails: %v", err)
+			}
+			if got.ApprovalTimeout != tc.want {
+				t.Errorf("ApprovalTimeout = %v, want %v", got.ApprovalTimeout, tc.want)
+			}
+			if got.ApprovalTimeoutSource != tc.wantSource {
+				t.Errorf("ApprovalTimeoutSource = %q, want %q", got.ApprovalTimeoutSource, tc.wantSource)
+			}
+		})
+	}
+
+	if _, err := resolveGuardrails(guardrailInputs{ApprovalTimeoutFlag: "-5m"}); err == nil {
+		t.Error("negative --approval-timeout: got nil error, want error")
+	}
+	if _, err := resolveGuardrails(guardrailInputs{ApprovalTimeoutFlag: "not-a-duration"}); err == nil {
+		t.Error("malformed --approval-timeout: got nil error, want error")
 	}
 }

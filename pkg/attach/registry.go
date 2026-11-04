@@ -1157,6 +1157,39 @@ func (r *SessionRegistry) TouchEntry(appName, sessionID string) {
 // Callers: the sweep goroutine started by SweepIdle. Test code
 // may call directly to exercise the eviction path without the
 // ticker overhead.
+// entryBusy reports whether an entry has a turn in flight (running or
+// deferred), a pending permission prompt, or an active/deferred
+// background subagent (#1363). Busy entries must never be
+// idle-evicted: evicting a running session cancels its wake loop
+// mid-turn even though the session has no SSE subscriber pumping the
+// broadcaster to refresh lastTouchedNs.
+func entryBusy(e *Entry) bool {
+	if e == nil || e.Agent == nil {
+		return false
+	}
+	if sp, ok := e.Agent.(StatusProvider); ok {
+		st := sp.AttachStatus()
+		if st.TurnInFlight ||
+			st.State == AgentStateRunning ||
+			st.State == AgentStateDeferred {
+			return true
+		}
+	}
+	if pbp, ok := e.Agent.(PromptBrokerProvider); ok {
+		if b := pbp.AttachPromptBroker(); b != nil && len(b.Pending()) > 0 {
+			return true
+		}
+	}
+	if ap, ok := e.Agent.(AgentsProvider); ok {
+		for _, sub := range ap.AttachAgents() {
+			if sub.Status == AgentStatusRunning || sub.Status == AgentStatusDeferred {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (r *SessionRegistry) EvictBefore(cutoff time.Time) int {
 	cutoffNs := cutoff.UnixNano()
 	// Two-phase to keep the critical section short. Phase 1:
@@ -1173,6 +1206,13 @@ func (r *SessionRegistry) EvictBefore(cutoff time.Time) int {
 	r.mu.Lock()
 	for k, e := range r.byTriple {
 		if e.lastTouchedNs.Load() < cutoffNs {
+			if entryBusy(e) {
+				// Refresh lastTouchedNs so a long turn that finishes
+				// right before the next sweep tick gets a full idle
+				// window before becoming eligible for eviction (#1363).
+				e.touch()
+				continue
+			}
 			evicted = append(evicted, candidate{key: k, entry: e, cancel: e.cancelOnEvict, lastTouchedNs: e.lastTouchedNs.Load()})
 			delete(r.byTriple, k)
 		}

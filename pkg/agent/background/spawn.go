@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -525,7 +526,18 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 			opts = append(opts, autonomous.WithPricing(price))
 		}
 
-		result, runErr := autonomous.Run(goCtx, build, goal, opts...)
+		var (
+			result autonomous.RunResult
+			runErr error
+		)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					runErr = fmt.Errorf("panic in background subagent %q: %v\n%s", name, r, debug.Stack())
+				}
+			}()
+			result, runErr = autonomous.Run(goCtx, build, goal, opts...)
+		}()
 
 		handle.mu.Lock()
 		handle.result = &result

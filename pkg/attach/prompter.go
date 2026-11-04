@@ -525,6 +525,18 @@ func (b *PromptBroker) Pending() []PromptFrame {
 	return out
 }
 
+// PendingFrame returns the PromptFrame for a currently-pending prompt id,
+// if one exists.
+func (b *PromptBroker) PendingFrame(id string) (PromptFrame, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p, ok := b.pending[id]
+	if !ok {
+		return PromptFrame{}, false
+	}
+	return p.frame, true
+}
+
 // Close unblocks every pending AskApproval with a closed-broker
 // error and disconnects every active subscriber. Idempotent.
 func (b *PromptBroker) Close() {

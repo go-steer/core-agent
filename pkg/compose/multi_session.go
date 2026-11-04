@@ -812,11 +812,23 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	go func() {
 		defer deps.WakeLoops.done()
 		defer unregisterHealth()
+		touchRegistry := func() {
+			if deps.Registry != nil {
+				deps.Registry.TouchEntry(ag.AppName(), ag.SessionID())
+			}
+		}
 		runner.WakeLoop(loopCtx, ag, runner.WakeLoopOptions{
 			Tracker: sessionTracker,
 			Model:   cust.Model.Name(),
 			Pricing: pricingRate,
 			Health:  loopHealth,
+			OnTurnDone: func(_ string, _ error) {
+				touchRegistry()
+			},
+			OnTurnError: func(err error) {
+				touchRegistry()
+				fmt.Fprintf(os.Stderr, "core-agent: session %s turn: %v\n", ag.SessionID(), err)
+			},
 		})
 	}()
 	if bgClose == nil {

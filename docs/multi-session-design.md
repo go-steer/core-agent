@@ -102,8 +102,11 @@ attach API + per-session isolation in the substrate.
   daemon process where it was created; we don't try to relocate
   it. (Crash-resume via `--session-db` works the same as today.)
 - **Inter-session message routing.** A user can't say "send this
-  message to user B's session from inside mine." Sessions stay
-  isolated end-to-end.
+  message to user B's session from inside mine." Conversation
+  histories and session ACLs stay isolated, though tool execution
+  still shares the daemon's OS user and filesystem until per-session
+  sandboxing ([#651](https://github.com/go-steer/core-agent/issues/651))
+  lands; see [#1355](https://github.com/go-steer/core-agent/issues/1355).
 - **Federated identity across daemons.** Each daemon owns its
   own user identity scope. Federating across daemons (single
   sign-on across a fleet) is an SSO concern, not core-agent's.

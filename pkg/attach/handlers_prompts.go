@@ -122,6 +122,15 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		http.Error(w, rerr.Error(), http.StatusBadRequest)
 		return
 	}
+	if decision != permissions.DecisionDeny && h.enforceACL && !h.allowNonAdminBash {
+		c, _ := auth.CallerFromContext(r.Context())
+		if !auth.Authorize(c, auth.ActionDaemonAdmin, auth.SessionACL{}) {
+			if frame, ok := broker.PendingFrame(req.ID); ok && (frame.Kind == "bash" || frame.ToolName == "bash" || frame.PersistTool == "bash") {
+				http.Error(w, "perms/respond: approving bash on a multi-session daemon requires an admin identity (or attach.multi_session.allow_non_admin_bash in config) because sessions share the daemon's OS user (#1355)", http.StatusForbidden)
+				return
+			}
+		}
+	}
 	decision, downgraded := h.capAlways(r, decision)
 	// The gate applies any allow on an approver-escalated prompt as
 	// allow-once (#1175 decision 11). Say so, rather than acknowledge a

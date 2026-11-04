@@ -1840,6 +1840,15 @@ type AttachConfig struct {
 	Listen     string `json:"listen,omitempty"`      // e.g. "127.0.0.1:7777"
 	UnixSocket string `json:"unix_socket,omitempty"` // e.g. "/var/run/core-agent.sock"
 
+	// AllowedHosts lists additional hostnames (without port) that a
+	// loopback TCP listener accepts in the HTTP Host header (#1358).
+	// Loopback addresses (127.0.0.0/8, ::1) and "localhost" are always
+	// accepted; any other Host header on a loopback listener is
+	// rejected with 421 Misdirected Request to block DNS-rebinding
+	// attacks from a browser tab unless the hostname is listed here
+	// (e.g. for a reverse proxy terminating on loopback).
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+
 	// TLS material. TLSCert + TLSKey enable HTTPS; ClientCA additionally
 	// enables mTLS (client cert required). Paths only — keys live on disk.
 	TLSCert  string `json:"tls_cert,omitempty"`
@@ -1992,6 +2001,22 @@ type MultiSessionConfig struct {
 	// aclStore wired (i.e., --session-db is set). See
 	// docs/session-resume-design.md §"Lifecycle primitive".
 	SessionIdleTimeout string `json:"session_idle_timeout,omitempty"`
+
+	// AllowNonAdminYolo, when true, lets a non-admin session Owner or
+	// Writer switch the session's permission mode to "yolo" via
+	// POST /sessions/{id}/perms/mode (#1355). Default false: because all
+	// sessions share the daemon's OS user and working directory until
+	// per-session sandboxing (#651) lands, "yolo" is a host-level
+	// capability that requires an admin identity by default.
+	AllowNonAdminYolo bool `json:"allow_non_admin_yolo,omitempty"`
+
+	// AllowNonAdminBash, when true, lets a non-admin session Owner or
+	// Writer approve a "bash" permission prompt via
+	// POST /sessions/{id}/perms/respond or grant a "bash" allow pattern
+	// via POST /sessions/{id}/perms/allow (#1355). Default false: raw
+	// shell execution runs as the daemon's OS user across all tenant
+	// sessions and requires an admin identity by default.
+	AllowNonAdminBash bool `json:"allow_non_admin_bash,omitempty"`
 }
 
 // MultiSessionAuthConfig selects which Authenticator implementation

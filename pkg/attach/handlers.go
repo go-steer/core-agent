@@ -48,9 +48,11 @@ const wakeMaxBytes = 8 * 1024
 // Options.MultiSessionEnabled; default false preserves single-user
 // behavior (every request passes the auth gate).
 type handlers struct {
-	reg        *SessionRegistry
-	pool       *broadcasterPool
-	enforceACL bool
+	reg               *SessionRegistry
+	pool              *broadcasterPool
+	enforceACL        bool
+	allowNonAdminYolo bool
+	allowNonAdminBash bool
 	// factory, when non-nil, enables the POST /sessions endpoint.
 	// Set from Options.SessionFactory by the Server constructor.
 	factory SessionFactory

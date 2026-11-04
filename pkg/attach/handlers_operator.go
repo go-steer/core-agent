@@ -17,10 +17,13 @@ package attach
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-steer/core-agent/v3/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // Operator-state read endpoints — feed the remote TUI's slash
@@ -163,10 +166,22 @@ const operatorPostMaxBytes = 8 * 1024
 
 // doPerms — GET /perms.
 
-func (h *handlers) doPerms(w http.ResponseWriter, _ *http.Request, entry *Entry) {
+func (h *handlers) doPerms(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	out := PermsInfo{}
 	if p, ok := entry.Agent.(PermsProvider); ok {
 		out = p.AttachPerms()
+	}
+	if h.enforceACL && !h.allowNonAdminYolo && len(out.SettableModes) > 0 {
+		c, _ := auth.CallerFromContext(r.Context())
+		if !auth.Authorize(c, auth.ActionDaemonAdmin, auth.SessionACL{}) {
+			filtered := make([]string, 0, len(out.SettableModes))
+			for _, m := range out.SettableModes {
+				if m != string(permissions.ModeYolo) {
+					filtered = append(filtered, m)
+				}
+			}
+			out.SettableModes = filtered
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -178,6 +193,21 @@ func (h *handlers) doPermsAllow(w http.ResponseWriter, r *http.Request, entry *E
 
 func (h *handlers) doPermsDeny(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	h.doPermsMutation(w, r, entry, true)
+}
+
+// patternMatchesBash reports whether a policy pattern could match a
+// bash call in permissions.Policy.Match: either it names the "bash"
+// tool explicitly ("bash:..."), or it omits or empties the "<tool>:"
+// prefix (an any-tool wildcard rule in Policy.parseRules, including
+// leading-colon forms like ":*").
+func patternMatchesBash(pat string) bool {
+	trimmed := strings.TrimSpace(pat)
+	i := strings.Index(trimmed, ":")
+	if i <= 0 {
+		return true
+	}
+	toolPrefix := strings.TrimSpace(trimmed[:i])
+	return toolPrefix == "" || toolPrefix == "*" || toolPrefix == "bash"
 }
 
 func (h *handlers) doPermsMutation(w http.ResponseWriter, r *http.Request, entry *Entry, deny bool) {
@@ -194,6 +224,17 @@ func (h *handlers) doPermsMutation(w http.ResponseWriter, r *http.Request, entry
 	if len(body.Patterns) == 0 {
 		http.Error(w, "patterns: empty list", http.StatusBadRequest)
 		return
+	}
+	if !deny && h.enforceACL && !h.allowNonAdminBash {
+		c, _ := auth.CallerFromContext(r.Context())
+		if !auth.Authorize(c, auth.ActionDaemonAdmin, auth.SessionACL{}) {
+			for _, pat := range body.Patterns {
+				if patternMatchesBash(pat) {
+					http.Error(w, fmt.Sprintf("perms/allow: pattern %q can allow bash execution, which requires an admin identity on a multi-session daemon (or attach.multi_session.allow_non_admin_bash in config) because sessions share the daemon's OS user (#1355)", pat), http.StatusForbidden)
+					return
+				}
+			}
+		}
 	}
 	var err error
 	if deny {

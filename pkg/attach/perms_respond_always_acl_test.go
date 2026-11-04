@@ -28,6 +28,11 @@ import (
 // added through the real PATCH /acl route.
 func ownedPromptFixture(t *testing.T) (*http.ServeMux, *PromptBroker) {
 	t.Helper()
+	return ownedPromptFixtureWithBash(t, true)
+}
+
+func ownedPromptFixtureWithBash(t *testing.T, allowNonAdminBash bool) (*http.ServeMux, *PromptBroker) {
+	t.Helper()
 	broker := NewPromptBroker()
 	t.Cleanup(broker.Close)
 	reg := NewSessionRegistry()
@@ -38,7 +43,7 @@ func ownedPromptFixture(t *testing.T) (*http.ServeMux, *PromptBroker) {
 	if _, err := reg.RegisterOwned(ag, "owner@example.com"); err != nil {
 		t.Fatalf("RegisterOwned: %v", err)
 	}
-	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: true}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: true, allowNonAdminBash: allowNonAdminBash}
 	mux := http.NewServeMux()
 	h.registerSessionACL(mux)
 	h.registerPrompts(mux)
@@ -181,5 +186,50 @@ func TestDecisionWireRoundTrip(t *testing.T) {
 		if got, ok := DecisionFromWire(d.String()); !ok || got != d {
 			t.Errorf("DecisionFromWire(%q) = %v, %v; want %v, true", d.String(), got, ok, d)
 		}
+	}
+}
+
+// #1355: By default on a multi-session daemon, non-admin callers cannot
+// approve bash prompts (even in their own session) because bash executes
+// as the daemon's OS user; they can still deny bash prompts, and an admin
+// can approve them.
+func TestPermsRespond_NonAdminBashPromptRequiresAdminOrOptIn(t *testing.T) {
+	t.Parallel()
+	mux, broker := ownedPromptFixtureWithBash(t, false)
+	done, id := askInBackground(t, broker)
+
+	for _, caller := range []auth.Caller{
+		{Identity: "owner@example.com"},
+		{Identity: "contributor@example.com"},
+	} {
+		r, rr := respondRequest(t, `{"id":"`+id+`","decision":"allow-once"}`, caller, whoAmISourceBearer)
+		mux.ServeHTTP(rr, r)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("%s allow-once on bash prompt: status = %d, want 403; body=%q", caller.Identity, rr.Code, rr.Body.String())
+		}
+		if n := len(broker.Pending()); n != 1 {
+			t.Fatalf("prompt resolved after refused %s answer (%d pending)", caller.Identity, n)
+		}
+	}
+
+	// Admin can approve the same pending bash prompt.
+	r, rr := respondRequest(t, `{"id":"`+id+`","decision":"allow-once"}`, auth.Caller{Identity: "root@example.com", Admin: true}, whoAmISourceBearer)
+	mux.ServeHTTP(rr, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin allow-once on bash prompt: status = %d, want 200; body=%q", rr.Code, rr.Body.String())
+	}
+	if a := awaitApproval(t, done); a.Decision != permissions.DecisionAllowOnce {
+		t.Errorf("prompt resolved with %v, want allow-once", a.Decision)
+	}
+
+	// Non-admin owner CAN deny a bash prompt even when allowNonAdminBash is false.
+	doneDeny, idDeny := askInBackground(t, broker)
+	rDeny, rrDeny := respondRequest(t, `{"id":"`+idDeny+`","decision":"deny"}`, auth.Caller{Identity: "owner@example.com"}, whoAmISourceBearer)
+	mux.ServeHTTP(rrDeny, rDeny)
+	if rrDeny.Code != http.StatusOK {
+		t.Fatalf("owner deny on bash prompt: status = %d, want 200; body=%q", rrDeny.Code, rrDeny.Body.String())
+	}
+	if a := awaitApproval(t, doneDeny); a.Decision != permissions.DecisionDeny {
+		t.Errorf("prompt resolved with %v, want deny", a.Decision)
 	}
 }

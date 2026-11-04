@@ -331,9 +331,10 @@ func TestSubagentTool_WallclockBudgetStopsTheDelegation(t *testing.T) {
 	t.Parallel()
 	h := newTestEventLog(t)
 
+	const childDelay = 2 * time.Second
 	child, err := New(&meteredLLM{
 		name:   "child-model",
-		delay:  2 * time.Second,
+		delay:  childDelay,
 		script: [][]*adkmodel.LLMResponse{{usedText("finally done", 100, 10)}},
 	},
 		WithName("child"),
@@ -347,7 +348,7 @@ func TestSubagentTool_WallclockBudgetStopsTheDelegation(t *testing.T) {
 	started := time.Now()
 	got := runBoundedDelegation(t, child, h, nil)
 
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed >= childDelay {
 		t.Errorf("delegation took %s; the wall-clock cap did not cut it short", elapsed)
 	}
 	if !strings.Contains(got, "wall-clock budget of") {

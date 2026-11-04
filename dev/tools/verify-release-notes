@@ -451,6 +451,89 @@ assert_contains "$FAKE_GH_DIR/calls.log" 'attestation verify core-agent_1.1.0_li
 assert_contains "$FAKE_GH_DIR/calls.log" 'attestation verify core-agent-tui_1.1.0_linux_amd64.tar.gz'
 rm -rf "$FAKE_GH_DIR"
 
+# ── 13. [Unreleased] bullet cap (<= 300 chars + trailing issue/PR link) ─
+# See #1387: multi-paragraph CHANGELOG bullets bloated [3.0.0] to 391 KB
+# (over GitHub's 125 KB release body limit). Every bullet under
+# `## [Unreleased]` must be a single line <= 300 characters ending with a
+# `([#NNN](...))` link.
+MAX_BULLET_CHARS="${MAX_BULLET_CHARS:-300}"
+REAL_CHANGELOG="$(cd "$(dirname "$0")/../.." && pwd)/CHANGELOG.md"
+
+check_unreleased_bullets() {
+  local cl="$1"
+  python3 - "$cl" "$MAX_BULLET_CHARS" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+limit = int(sys.argv[2])
+text = path.read_text(encoding="utf-8")
+
+m = re.search(r"^## \[Unreleased\]\s*$", text, re.MULTILINE)
+if not m:
+    print(f"{path}: missing '## [Unreleased]' section", file=sys.stderr)
+    sys.exit(1)
+
+rest = text[m.end():]
+next_sec = re.search(r"^## \[", rest, re.MULTILINE)
+unreleased = rest[:next_sec.start()] if next_sec else rest
+
+link_re = re.compile(r"\(\[#[0-9]+\]\(https://github\.com/[^)]+\)(?:,\s*\[#[0-9]+\]\(https://github\.com/[^)]+\))*\)\s*$")
+
+errors = []
+for lineno, raw in enumerate(unreleased.splitlines(), start=1):
+    if not raw.strip():
+        continue
+    if raw.startswith(" ") or raw.startswith("\t"):
+        if raw.lstrip().startswith("- "):
+            errors.append(f"line {lineno}: nested sub-bullet under [Unreleased] is forbidden (write one single-line bullet <= {limit} chars)")
+        else:
+            errors.append(f"line {lineno}: multi-line continuation under [Unreleased] is forbidden (write one single-line bullet <= {limit} chars)")
+        continue
+    if raw.startswith("### ") or raw.startswith("#### ") or raw.strip() == "---" or raw.startswith("_No unreleased changes"):
+        continue
+    if raw.startswith("- "):
+        if len(raw) > limit:
+            errors.append(f"line {lineno}: bullet is {len(raw)} chars (max {limit}): {raw[:80]}...")
+        if not link_re.search(raw):
+            errors.append(f"line {lineno}: bullet must end with a ([#NNN](https://github.com/...)) link: {raw[:80]}...")
+        continue
+    errors.append(f"line {lineno}: unexpected line under [Unreleased] (expected single-line '- ' bullet or '#### ' heading): {raw[:80]}...")
+
+if errors:
+    for e in errors:
+        print(f"  {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+start_case 'CHANGELOG.md [Unreleased] bullets are single-line, <= 300 chars, and end with an issue link (#1387)'
+if ! check_unreleased_bullets "$REAL_CHANGELOG"; then
+  fail "CHANGELOG.md [Unreleased] failed the ${MAX_BULLET_CHARS}-char bullet check"
+fi
+
+# Verify the check rejects an overlong or unlinked bullet on a fixture.
+BAD_CL="$REPO/cl-overlong-bullet.md"
+{
+  printf '# Changelog\n\n## [Unreleased]\n\n#### Bug or Regression\n\n'
+  printf -- '- **Too long.** %0310d ([#1](https://github.com/go-steer/core-agent/issues/1))\n' 0
+  printf '\n## [1.0.0] — 2026-01-01\n'
+} > "$BAD_CL"
+if check_unreleased_bullets "$BAD_CL" 2>/dev/null; then
+  fail "expected check_unreleased_bullets to reject a >300-char bullet"
+fi
+
+BAD_LINK_CL="$REPO/cl-missing-link.md"
+{
+  printf '# Changelog\n\n## [Unreleased]\n\n#### Bug or Regression\n\n'
+  printf -- '- **Missing trailing link.** Short enough but no issue reference at the end.\n'
+  printf '\n## [1.0.0] — 2026-01-01\n'
+} > "$BAD_LINK_CL"
+if check_unreleased_bullets "$BAD_LINK_CL" 2>/dev/null; then
+  fail "expected check_unreleased_bullets to reject a bullet without a trailing ([#NNN](url)) link"
+fi
+
 if [[ "$FAILURES" -ne 0 ]]; then
   echo "verify-release-notes: ${FAILURES} assertion(s) failed" >&2
   exit 1

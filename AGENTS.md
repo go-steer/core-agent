@@ -229,10 +229,12 @@ There is one long-lived branch, `main`. Work happens on short-lived branches
   and
   [`prefix-failure-verification`](./.agents/skills/prefix-failure-verification/SKILL.md).
 
-  The required `review-gate` check only greps the PR body for the phrase
-  "adversarial review", so the substance is on you. Evidence that the gate
-  pays: across the seven substantive PRs of the #537–#567 shutdown/resume
-  train, it caught a P0/P1-class defect in nearly every first draft.
+  The required `review-gate` check verifies the `## Adversarial review`
+  heading has a non-trivial body (and for `fix:` PRs, a record of pre-fix
+  failure verification), but the substance of the review is still on you.
+  Evidence that the gate pays: across the seven substantive PRs of the
+  #537–#567 shutdown/resume train, it caught a P0/P1-class defect in nearly
+  every first draft.
 - **Rebase, don't merge.** Keep feature branches rebased on `main`.
   `git push --force-with-lease` on your own branch is normal, but a preceding
   `git fetch` disarms the lease. Never force-push `main`.
@@ -271,9 +273,10 @@ There is one long-lived branch, `main`. Work happens on short-lived branches
 - **`[Unreleased]` grows on every merged PR that ships a user-visible
   change.** Add one bullet to `## [Unreleased]` in `CHANGELOG.md`, under
   `#### Feature`, `#### Bug or Regression`, `#### Documentation`,
-  `#### Other (Cleanup)` or `#### Security`, with a trailing
-  `([#NNN](url))` link. Breaking changes get a `**BREAKING:**` prefix under
-  `#### Changed`. Cite the issue, not the PR. Skill:
+  `#### Other (Cleanup)` or `#### Security`, capped at 300 characters and
+  ending with a `([#NNN](url))` link. Breaking changes get a `**BREAKING:**`
+  prefix under `#### Changed`. Cite the issue, not the PR. Enforced by
+  `verify-release-notes`. Skill:
   [`changelog-bullet`](./.agents/skills/changelog-bullet/SKILL.md).
 - **Which doc changes are user-visible.** Three kinds get a
   `#### Documentation` bullet:

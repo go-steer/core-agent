@@ -174,3 +174,142 @@ func isExemptFromAPISurface(rel string) bool {
 	}
 	return false
 }
+
+// TestReviewGateWorkflowRequiresHeadingAndFixVerification exercises the
+// awk + bash logic in .github/workflows/review-gate.yml against representative
+// PR bodies and titles so "no adversarial review done", a heading with an
+// empty body, or a fix: PR without pre-fix verification are rejected (#1385).
+func TestReviewGateWorkflowRequiresHeadingAndFixVerification(t *testing.T) {
+	t.Parallel()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root, err := RepoRoot(thisFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfPath := filepath.Join(root, ".github", "workflows", "review-gate.yml")
+	wfBytes, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", wfPath, err)
+	}
+	wfText := string(wfBytes)
+	idx := strings.Index(wfText, "# Extract the \"## Adversarial review\"")
+	if idx < 0 {
+		t.Fatalf("could not find section extractor in %s", wfPath)
+	}
+	var snippet strings.Builder
+	snippet.WriteString("set -euo pipefail\n")
+	for _, line := range strings.Split(wfText[idx:], "\n") {
+		trimmed := strings.TrimPrefix(line, "          ")
+		snippet.WriteString(trimmed)
+		snippet.WriteByte('\n')
+	}
+	script := snippet.String()
+
+	validBody := "## Summary\n\nFixes race.\n\n## Adversarial review\n\nSkeptic subagent over the staged diff. No correctness defects found after checking lock ordering and SQLite pragmas. Pre-fix failure verified.\n"
+
+	cases := []struct {
+		name    string
+		title   string
+		body    string
+		wantErr bool
+	}{
+		{
+			name:    "bare phrase without heading is rejected",
+			title:   "feat: add thing",
+			body:    "no adversarial review done",
+			wantErr: true,
+		},
+		{
+			name:    "heading with trivial body is rejected",
+			title:   "feat: add thing",
+			body:    "## Adversarial review\n\nLGTM\n## Next section\nMore text here that should not count toward the adversarial review section.",
+			wantErr: true,
+		},
+		{
+			name:    "fix PR without pre-fix mention is rejected",
+			title:   "fix(attach): close race",
+			body:    "## Adversarial review\n\nSkeptic subagent over the staged diff. Checked lock ordering, channel lifecycles, and goroutine teardown across all callers.",
+			wantErr: true,
+		},
+		{
+			name:    "feat PR with substantive section passes without pre-fix mention",
+			title:   "feat(attach): add endpoint",
+			body:    "## Adversarial review\n\nSkeptic subagent over the staged diff. Checked lock ordering, channel lifecycles, and goroutine teardown across all callers.",
+			wantErr: false,
+		},
+		{
+			name:    "fix PR with substantive section and pre-fix mention passes",
+			title:   "fix(attach): close race",
+			body:    validBody,
+			wantErr: false,
+		},
+		{
+			name:    "soak dispatcher PR with Adversarial review: commit paragraph passes",
+			title:   "fix(agent): fall back on empty summary",
+			body:    "## Commits\n\nAdversarial review: skeptic subagent checked lock ordering, nil-slice returns, and pre-fix test failure before the fix landed.\n",
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range cases {
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Env = append(os.Environ(), "PR_TITLE="+tc.title, "PR_BODY="+tc.body)
+		out, runErr := cmd.CombinedOutput()
+		if tc.wantErr && runErr == nil {
+			t.Errorf("%s: expected failure, got exit 0:\n%s", tc.name, out)
+		}
+		if !tc.wantErr && runErr != nil {
+			t.Errorf("%s: expected exit 0, got %v:\n%s", tc.name, runErr, out)
+		}
+	}
+}
+
+// TestEveryPresubmitHasACIStep enforces that every script in
+// dev/ci/presubmits/ (other than the credential-gated e2e-* scripts)
+// has a corresponding entry in dev/tools/ci's STEPS array (#1394).
+func TestEveryPresubmitHasACIStep(t *testing.T) {
+	t.Parallel()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root, err := RepoRoot(thisFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ciPath := filepath.Join(root, "dev", "tools", "ci")
+	ciBytes, err := os.ReadFile(ciPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", ciPath, err)
+	}
+	ciText := string(ciBytes)
+
+	presubmitDir := filepath.Join(root, "dev", "ci", "presubmits")
+	entries, err := os.ReadDir(presubmitDir)
+	if err != nil {
+		t.Fatalf("readdir %s: %v", presubmitDir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "e2e-") {
+			continue
+		}
+		target := "dev/tools/" + name
+		if name == "verify-docs-lint" {
+			target = "dev/tools/docs-lint"
+		}
+		if _, statErr := os.Stat(filepath.Join(root, target)); statErr != nil {
+			t.Errorf("presubmit %s has no corresponding tool script %s: %v", name, target, statErr)
+		}
+		if !strings.Contains(ciText, target) {
+			t.Errorf("presubmit dev/ci/presubmits/%s is not invoked in dev/tools/ci (expected %q in STEPS)", name, target)
+		}
+	}
+}

@@ -44,6 +44,7 @@ package recipecheck
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -509,13 +510,53 @@ var foldTrailerTag = regexp.MustCompile("`([^`]+)`")
 // earlier) have no such record, so their dev tags are not recoverable.
 // That is acceptable: nothing in this repo can usefully pin a v2.6-era
 // pre-release, and the failure is the loud direction.
+var archiveLinkPattern = regexp.MustCompile(`docs/changelog-archive/[A-Za-z0-9._-]+\.md`)
+
 func ReleasedVersions(changelogPath string) ([]Version, error) {
 	body, err := os.ReadFile(changelogPath)
 	if err != nil {
 		return nil, fmt.Errorf("recipecheck: read changelog: %w", err)
 	}
+	text := string(body)
+	hasPrimaryHeading := false
+	for _, line := range strings.Split(text, "\n") {
+		if changelogHeading.MatchString(line) {
+			hasPrimaryHeading = true
+			break
+		}
+	}
+	if !hasPrimaryHeading {
+		return nil, fmt.Errorf("recipecheck: %s: no released version headings found; "+
+			"the changelog format changed and this check has gone blind", changelogPath)
+	}
+	// Also read docs/changelog-archive/*.md when present alongside the root
+	// CHANGELOG.md (#1387 archived pre-3.0 sections there). When a test copies
+	// CHANGELOG.md into t.TempDir() (e.g. TestOverlayPinsSurviveTheGAFold),
+	// resolve archive links against either the changelog's directory or the
+	// repo root if the changelog contains a docs/changelog-archive/ pointer.
+	archiveDirs := []string{filepath.Join(filepath.Dir(changelogPath), "docs", "changelog-archive")}
+	if archiveLinkPattern.MatchString(text) {
+		archiveDirs = append(archiveDirs, filepath.Join("..", "..", "..", "docs", "changelog-archive"))
+	}
+	seenArchive := map[string]bool{}
+	for _, dir := range archiveDirs {
+		matches, globErr := filepath.Glob(filepath.Join(dir, "*.md"))
+		if globErr != nil {
+			continue
+		}
+		for _, m := range matches {
+			base := filepath.Base(m)
+			if seenArchive[base] {
+				continue
+			}
+			if archBytes, readErr := os.ReadFile(m); readErr == nil {
+				seenArchive[base] = true
+				text += "\n" + string(archBytes)
+			}
+		}
+	}
 	var headings, folded []Version
-	for _, line := range strings.Split(string(body), "\n") {
+	for _, line := range strings.Split(text, "\n") {
 		switch {
 		case changelogHeading.MatchString(line):
 			m := changelogHeadingVersion.FindStringSubmatch(line)

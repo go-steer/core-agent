@@ -153,6 +153,7 @@ research + friction logs, or handover notes.
 ## Release
 
 - [`release-process.md`](release-process.md) — dev/GA tag cutting (`cut-dev-tag.sh` / `cut-ga-tag.sh`) + release conventions
+- [`changelog-archive/pre-v3.0.md`](changelog-archive/pre-v3.0.md) — archived `CHANGELOG.md` sections for `v0.1.0` through `v2.9.0` ([#1387](https://github.com/go-steer/core-agent/issues/1387))
 
 ## Published site
 

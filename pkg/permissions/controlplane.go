@@ -16,65 +16,151 @@ package permissions
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
-// Control-plane file classification (#378).
+// Control-plane file classification (#378, #1354).
 //
-// Two tiers of files live under the `.agents/` project tree:
-//
-//   - Instruction-bearing files (AGENTS.md, skills content) shape what
-//     the model is told, but a change to them takes effect through the
-//     model, which is still gated. These stay normally writable.
-//   - Privilege-bearing files — the agent config and the MCP config —
-//     directly control the permission gate, the hook commands, and the
-//     stdio MCP servers that the daemon spawns on the next
-//     session/restart. A model with any write capability could add
-//     `permissions.allow` entries, flip the mode, register a hook that
-//     runs arbitrary `/bin/sh -c`, or add a malicious stdio MCP server
-//     — a self-escalation + persistence path that no amount of
-//     in-session gating catches, because the effect lands out-of-band.
-//
-// Writes to the privilege-bearing files therefore require an explicit
-// interactive approval that no mode, session grant, allowlist entry,
-// or built-in bundle can satisfy. See Gate.CheckFileWrite.
+// Writes to any file the boot path loads — or that steers the host's
+// git toolchain on the human's next git command — require an explicit
+// interactive approval (PromptKindControlPlaneWrite) that no mode
+// (yolo/acceptEdits), session grant, allowlist entry, or built-in
+// bundle can satisfy. See Gate.CheckFileWrite.
 
-// controlPlaneBasenames is the set of privilege-bearing filenames,
-// recognized inside any `.agents/` directory. The values mirror the
-// loader constants (config.ConfigFileName = "config.json",
-// mcp.MCPFileName = "mcp.json"); they are duplicated here as literals
-// rather than imported to avoid a permissions→config/mcp dependency
-// (and a potential import cycle). Lockstep tests assert the literals
-// track the loader constants: config.ConfigFileName in
-// controlplane_test.go here, and mcp.MCPFileName in pkg/mcp
-// (which imports permissions).
+// controlPlaneBasenames is the set of privilege-bearing filenames
+// recognized directly inside any `.agents/` directory. The values
+// mirror the loader constants (config.ConfigFileName = "config.json",
+// mcp.MCPFileName = "mcp.json", etc.); they are duplicated here as
+// literals rather than imported to avoid a permissions→config/mcp
+// dependency (and a potential import cycle). Lockstep tests assert the
+// literals track the loader constants: config.ConfigFileName in
+// controlplane_test.go here, and mcp.MCPFileName in pkg/mcp.
 var controlPlaneBasenames = map[string]struct{}{
-	"config.json": {}, // config.ConfigFileName — permissions/hooks/mode
-	"mcp.json":    {}, // mcp.MCPFileName — stdio MCP server commands
+	"config.json":     {}, // config.ConfigFileName — permissions/hooks/mode
+	"mcp.json":        {}, // mcp.MCPFileName — stdio MCP server commands
+	"env.yaml":        {}, // agentenv manifest
+	"env.yml":         {}, // agentenv manifest alternate extension
+	"env.json":        {}, // agentenv manifest JSON form
+	"pricing.json":    {}, // pricing override layer (lowering prices defeats cost ceilings)
+	"agent-card.json": {}, // A2A agent card config
 }
 
 // controlPlaneDirName is the directory (config.AgentsDirName) whose
-// config.json / mcp.json are privilege-bearing. Both the project-scope
-// (`<workspace>/.agents/`) and user-scope (`~/.agents/`) trees the
-// loaders read are covered, since classification keys on the immediate
-// parent directory name rather than an absolute prefix.
+// boot-loaded files and subtrees are privilege-bearing. Both the
+// project-scope (`<workspace>/.agents/`) and user-scope (`~/.agents/`)
+// trees are covered.
 const controlPlaneDirName = ".agents"
 
+// userCoreAgentDirName is the user-global runtime directory
+// (`~/.core-agent`), which holds user-scope AGENTS.md, pricing.json,
+// skills, and session state (#1354).
+const userCoreAgentDirName = ".core-agent"
+
+// controlPlaneAgentsSubtrees are the subdirectories under `.agents/`
+// whose contents the boot path loads (skills, declarative subagents,
+// provider profiles, and instruction overlays). Runtime output
+// directories (.agents/plans/, .agents/sessions/) are intentionally
+// excluded.
+var controlPlaneAgentsSubtrees = setOf(
+	"skills",
+	"subagents",
+	"providers",
+	"AGENTS.d",
+)
+
+// controlPlaneInstructionBasenames are the instruction filenames
+// pkg/instruction loads from the project root, `.agents/`, rooted
+// subagents, `~/.agents/`, and `~/.core-agent/`.
+var controlPlaneInstructionBasenames = setOf(
+	"AGENTS.md",
+	"CLAUDE.md",
+	"GEMINI.md",
+)
+
+type controlPlaneRule struct {
+	name  string
+	match func(parts []string, base string) bool
+}
+
+// controlPlaneRules is the declarative list of everything the boot
+// path loads plus `.git/**` host hooks/config (#1354).
+var controlPlaneRules = []controlPlaneRule{
+	{
+		name: "git-metadata",
+		match: func(parts []string, _ string) bool {
+			return slices.Contains(parts, ".git")
+		},
+	},
+	{
+		name: "mcp-config",
+		match: func(_ []string, base string) bool {
+			// Covers .agents/mcp.json, ~/.agents/mcp.json,
+			// ~/.core-agent/mcp.json, and any rooted declarative
+			// subagent's <root>/mcp.json.
+			return base == "mcp.json"
+		},
+	},
+	{
+		name: "agents-boot-files",
+		match: func(parts []string, base string) bool {
+			if _, ok := controlPlaneBasenames[base]; !ok {
+				return false
+			}
+			return len(parts) >= 2 && parts[len(parts)-2] == controlPlaneDirName
+		},
+	},
+	{
+		name: "agents-boot-subtrees",
+		match: func(parts []string, _ string) bool {
+			for i := 0; i+1 < len(parts); i++ {
+				if parts[i] == controlPlaneDirName {
+					if _, ok := controlPlaneAgentsSubtrees[parts[i+1]]; ok {
+						return true
+					}
+				}
+			}
+			return false
+		},
+	},
+	{
+		name: "boot-instructions",
+		match: func(parts []string, base string) bool {
+			if _, ok := controlPlaneInstructionBasenames[base]; ok {
+				return true
+			}
+			return slices.Contains(parts, "AGENTS.d")
+		},
+	},
+	{
+		name: "user-core-agent-tree",
+		match: func(parts []string, _ string) bool {
+			return slices.Contains(parts, userCoreAgentDirName)
+		},
+	},
+}
+
 // isControlPlanePath reports whether resolved (which MUST already be a
-// symlink-resolved absolute path — see Gate.CheckFileWrite) is a
-// privilege-bearing control-plane file: a config.json or mcp.json
-// sitting directly inside a `.agents/` directory.
-//
-// Keying on the immediate parent's base name (rather than a specific
-// absolute path) means a symlink laundering trick can't dodge the
-// classification — the caller resolves symlinks first — and both the
-// project and home `.agents/` trees are covered without threading
-// their absolute locations into the gate.
+// symlink-resolved absolute path — see Gate.CheckFileWrite) matches any
+// rule in controlPlaneRules.
 func isControlPlanePath(resolved string) bool {
-	if _, ok := controlPlaneBasenames[filepath.Base(resolved)]; !ok {
-		return false
+	clean := filepath.Clean(resolved)
+	base := filepath.Base(clean)
+	parts := splitPathComponents(clean)
+	for _, r := range controlPlaneRules {
+		if r.match(parts, base) {
+			return true
+		}
 	}
-	return filepath.Base(filepath.Dir(resolved)) == controlPlaneDirName
+	return false
+}
+
+func splitPathComponents(clean string) []string {
+	trimmed := strings.Trim(clean, string(filepath.Separator))
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, string(filepath.Separator))
 }
 
 // resolvedInstructionsPath is the approver instructions file in the

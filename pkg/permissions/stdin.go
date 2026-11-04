@@ -62,6 +62,9 @@ func (p *stdinPrompter) AskApproval(ctx context.Context, req PromptRequest) (Dec
 	if req.ApproverModel != "" {
 		return p.askEscalated(ctx, req)
 	}
+	if warn := VerbGrantWarning(req.Verb); warn != "" {
+		_, _ = fmt.Fprintf(p.out, "  %s\n", warn)
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return DecisionDeny, err
@@ -76,6 +79,11 @@ func (p *stdinPrompter) AskApproval(ctx context.Context, req PromptRequest) (Dec
 			return DecisionAllowOnce, nil
 		case "s":
 			return DecisionAllowSession, nil
+		case "v":
+			if req.Verb != "" {
+				return DecisionAllowSessionVerb, nil
+			}
+			_, _ = fmt.Fprintf(p.out, "unrecognized choice %q; expected y/s/t/a/n\n", strings.TrimSpace(line))
 		case "t":
 			return DecisionAllowSessionTool, nil
 		case "a":

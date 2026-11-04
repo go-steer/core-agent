@@ -197,3 +197,26 @@ func TestApproverName_EscapesWhatWouldReorderTheLine(t *testing.T) {
 		t.Errorf("name with a bidi control = %q, want it quoted and escaped", got)
 	}
 }
+
+func TestStdinPrompter_ShellEquivalentVerbWarning(t *testing.T) {
+	t.Parallel()
+	for _, verb := range []string{"git", "go", "make", "npm"} {
+		var out bytes.Buffer
+		p := StdinPrompter(strings.NewReader("v\n"), &out)
+		got, err := p.AskApproval(context.Background(), PromptRequest{
+			Kind:     PromptKindBash,
+			ToolName: "bash",
+			Detail:   verb + " test",
+			Verb:     verb,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", verb, err)
+		}
+		if got != DecisionAllowSessionVerb {
+			t.Errorf("%s: decision = %v, want DecisionAllowSessionVerb", verb, got)
+		}
+		if !strings.Contains(out.String(), "close to granting a shell") {
+			t.Errorf("%s: prompt output missing shell warning:\n%s", verb, out.String())
+		}
+	}
+}

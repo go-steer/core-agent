@@ -62,12 +62,12 @@ const (
 	PromptKindGeneric                     // anything else
 
 	// PromptKindControlPlaneWrite is an ELEVATED prompt for writes to
-	// privilege-bearing control-plane files (.agents/config.json,
-	// .agents/mcp.json). Unlike every other kind, it is never
-	// satisfied by mode (yolo/acceptEdits), session/verb/tool grants,
-	// allowlist entries, or built-in bundles — only an explicit
-	// interactive approval passes, and with no prompter available the
-	// gate denies. See Gate.CheckFileWrite and docs #378.
+	// privilege-bearing control-plane files (controlplane.go; #378,
+	// #1354). Unlike every other kind, it is never satisfied by mode
+	// (yolo/acceptEdits), session/verb/tool grants, allowlist entries,
+	// or built-in bundles — only an explicit interactive approval
+	// passes, and with no prompter available the gate denies. See
+	// Gate.CheckFileWrite.
 	PromptKindControlPlaneWrite
 )
 
@@ -272,7 +272,7 @@ var ErrNoPrompter = errors.New("permissions: interactive approval required but n
 var ErrPromptExpired = errors.New("permissions: approval request expired with no answer; the action was not taken")
 
 // ErrControlPlaneWrite wraps denials of writes to privilege-bearing
-// control-plane files (.agents/config.json, .agents/mcp.json) when no
+// control-plane files (controlplane.go; #378, #1354) when no
 // interactive prompter is available to elevate. Exposed as a sentinel
 // so callers can distinguish it from an ordinary out-of-scope denial.
 var ErrControlPlaneWrite = errors.New("permissions: control-plane write requires interactive approval")

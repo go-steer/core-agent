@@ -133,7 +133,7 @@ func TestPolicy_BashPrefixAllow_RequiresSafeCommand(t *testing.T) {
 		"ls -la",
 		"grep -r foo .",
 		"find . -name '*.go'",
-		"printenv PATH",
+		"uname -a",
 		"tree -L 2",
 	}
 	for _, cmd := range stillAllowed {
@@ -153,6 +153,9 @@ func TestPolicy_BashPrefixAllow_RequiresSafeCommand(t *testing.T) {
 		"tail -f log & disown",
 		"find . -exec sh -c evil \\;",
 		"find . -delete",
+		"env",
+		"printenv",
+		"printenv PATH",
 	}
 	for _, cmd := range noAutoAllow {
 		if got := p.Match("bash", cmd); got != OutcomeUnmatched {
@@ -286,5 +289,154 @@ func TestGate_AllowSessionVerb_EnvAssignmentPrefix(t *testing.T) {
 	}
 	if len(p.calls) != 1 {
 		t.Errorf("env-assignment-prefixed command re-prompted; calls = %d", len(p.calls))
+	}
+}
+
+// TestBundleReadOnly_NoWriteOrExecOrEnvLeak is the #1352 acceptance
+// table: none of the file-writing, program-executing, or environment-
+// dumping forms may be auto-allowed by the default read_only bundle in
+// ask or plan mode.
+func TestBundleReadOnly_NoWriteOrExecOrEnvLeak(t *testing.T) {
+	t.Parallel()
+	builtin, err := ResolveBuiltinAllow(true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol, err := NewPolicy(builtin, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	mustPromptOrDeny := []string{
+		"sort -o ~/.bashrc /dev/null",
+		"sort --output=/tmp/out /dev/null",
+		"sort --out=/tmp/out /dev/null",
+		"sort -ro /tmp/out /dev/null",
+		"sort --compress-program=sh /dev/null",
+		"sort --compress=sh /dev/null",
+		"uniq /dev/null ~/.bashrc",
+		"uniq - ~/.bashrc",
+		"uniq -o ~/.bashrc /dev/null",
+		"tree -o ~/.bashrc /",
+		"tree --output=/tmp/out /",
+		"rg --pre sh pattern",
+		"rg --pre=sh pattern",
+		"rg --pre-glob='*' pattern",
+		"env",
+		"printenv",
+		"printenv ANTHROPIC_API_KEY",
+	}
+	for _, cmd := range mustPromptOrDeny {
+		for _, mode := range []Mode{ModeAsk, ModePlan} {
+			g := New(Options{Mode: mode, Policy: pol, BashSearchGate: "allow"}) // no prompter -> auto-allow is the only way through
+			if err := g.CheckBash(ctx, cmd); err == nil {
+				t.Errorf("mode=%s CheckBash(%q) auto-allowed by read_only bundle; want denial/prompt", mode, cmd)
+			}
+		}
+	}
+
+	safeReadForms := []string{
+		"sort file.txt",
+		"sort -r -u file.txt",
+		"uniq file.txt",
+		"uniq -c file.txt",
+		"tree -L 2",
+		"rg pattern pkg/",
+	}
+	gAsk := New(Options{Mode: ModeAsk, Policy: pol, BashSearchGate: "allow"})
+	for _, cmd := range safeReadForms {
+		if err := gAsk.CheckBash(ctx, cmd); err != nil {
+			t.Errorf("safe read form CheckBash(%q) rejected: %v", cmd, err)
+		}
+	}
+}
+
+// TestBundleDevTools_ReadOnlyAndVerbGrantEnvPrefix is the #1356
+// acceptance table covering both the dev_tools bundle and verb-grant
+// env-prefix / git-config-override bypasses.
+func TestBundleDevTools_ReadOnlyAndVerbGrantEnvPrefix(t *testing.T) {
+	t.Parallel()
+	allow, err := ResolveBuiltinAllow(true, []string{BundleDevTools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol, err := NewPolicy(allow, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	devToolsDenied := []string{
+		"git branch -D main",
+		"git branch --list --no-list -D main",
+		"git tag -d v3.0.0",
+		"git remote set-url origin https://evil",
+		"git reflog delete HEAD@{0}",
+		"git reflog expire --expire=now --all",
+		"git diff --output=~/.bashrc",
+		"git diff --ext-diff",
+		"go env -w GOPROXY=https://evil",
+		"go vet -vettool=./x",
+		"go vet -fix ./...",
+		"gofmt -l -w .",
+		"gofmt -lw .",
+	}
+	gDev := New(Options{Mode: ModeAsk, Policy: pol})
+	for _, cmd := range devToolsDenied {
+		if err := gDev.CheckBash(ctx, cmd); err == nil {
+			t.Errorf("dev_tools auto-allowed %q; want prompt/denial", cmd)
+		}
+	}
+
+	devToolsAllowed := []string{
+		"git branch",
+		"git branch --list 'feat/*'",
+		"git branch --show-current",
+		"git tag",
+		"git tag -l 'v3.*'",
+		"git remote -v",
+		"git remote get-url origin",
+		"git diff HEAD~1",
+		"go env GOPATH",
+		"go vet ./...",
+	}
+	for _, cmd := range devToolsAllowed {
+		if err := gDev.CheckBash(ctx, cmd); err != nil {
+			t.Errorf("dev_tools rejected read-only %q: %v", cmd, err)
+		}
+	}
+
+	// Verb grant for "cat" must NOT approve LD_PRELOAD=/tmp/x.so cat f.
+	pCat := &fakePrompter{decision: DecisionAllowSessionVerb}
+	gCat := New(Options{Mode: ModeAsk, Prompter: pCat})
+	if err := gCat.CheckBash(ctx, "cat README.md"); err != nil {
+		t.Fatalf("seed cat verb grant: %v", err)
+	}
+	pCat.decision = DecisionDeny
+	if err := gCat.CheckBash(ctx, "LD_PRELOAD=/tmp/x.so cat f"); err == nil {
+		t.Error("LD_PRELOAD=/tmp/x.so cat f rode a cat verb grant; want re-prompt + denial")
+	}
+	if last := pCat.calls[len(pCat.calls)-1]; last.Verb != "" {
+		t.Errorf("LD_PRELOAD prompt offered Verb=%q; want empty", last.Verb)
+	}
+
+	// Verb grant for "git" must NOT approve GIT_EXTERNAL_DIFF=sh git diff
+	// or git -c 'alias.x=!sh -c id' x (including after --attr-source).
+	pGit := &fakePrompter{decision: DecisionAllowSessionVerb}
+	gGit := New(Options{Mode: ModeAsk, Prompter: pGit})
+	if err := gGit.CheckBash(ctx, "git status"); err != nil {
+		t.Fatalf("seed git verb grant: %v", err)
+	}
+	pGit.decision = DecisionDeny
+	for _, cmd := range []string{
+		"GIT_EXTERNAL_DIFF=sh git diff",
+		"git -c 'alias.x=!sh -c id' x",
+		"git --attr-source HEAD -c 'alias.x=!sh -c id' x",
+		"git --exec-path=/tmp status",
+	} {
+		if err := gGit.CheckBash(ctx, cmd); err == nil {
+			t.Errorf("%q rode a git verb grant; want re-prompt + denial", cmd)
+		}
 	}
 }

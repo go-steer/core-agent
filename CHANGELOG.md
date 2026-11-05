@@ -14,6 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
+_No unreleased changes since [3.1.0-rc.2]._
+
+## [3.1.0-rc.2] — 2026-11-05
+
 #### Bug or Regression
 
 - **Allow Substrate router `Host` headers in `examples/deploy/ax`.** Merges `config.ax.json` (`attach.allowed_hosts`) into the image's recipe config so `ax-task-runner`'s pass-through does not 421. ([#1497](https://github.com/go-steer/core-agent/issues/1497))

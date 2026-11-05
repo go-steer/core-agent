@@ -585,6 +585,14 @@ type Agent struct {
 	// maxWallclock bounds the wall-clock duration of each Run invocation
 	// (WithMaxWallclock). Zero or negative means unbounded.
 	maxWallclock time.Duration
+
+	// maxSteps bounds the number of tool-call cycles within a single Run /
+	// RunWithContents turn (WithMaxSteps, #1500). Zero or negative means
+	// unbounded. When finalReport is true (WithFinalReport), reaching
+	// maxSteps grants one additional tool-less model call with a user-role
+	// synthesis nudge before stopping the turn.
+	maxSteps    int
+	finalReport bool
 }
 
 // Option mutates Agent construction. Use the With* helpers below.
@@ -651,6 +659,8 @@ type options struct {
 	noMarkTaskDone   bool
 	costCeiling      CostCeiling
 	maxWallclock     time.Duration
+	maxSteps         int
+	finalReport      bool
 	watchdog         watchdog.Watchdog
 	onWatchdogAlert  func(watchdog.Alert)
 	watchdogEnforce  bool
@@ -766,6 +776,23 @@ func WithToolsets(ts []tool.Toolset) Option {
 // Run invocation. Zero or negative disables the timeout.
 func WithMaxWallclock(d time.Duration) Option {
 	return func(o *options) { o.maxWallclock = d }
+}
+
+// WithMaxSteps sets a per-turn tool-call cycle cap applied to each Run or
+// RunWithContents invocation (#1500). Zero or negative disables the cap.
+// When the agent reaches n tool-call cycles in a single turn and attempts
+// another model call, the turn is stopped (or, when paired with
+// WithFinalReport(true), granted one final tool-less model call to
+// synthesize findings gathered so far).
+func WithMaxSteps(n int) Option {
+	return func(o *options) { o.maxSteps = n }
+}
+
+// WithFinalReport configures whether hitting WithMaxSteps grants one
+// final tool-less model call with a user-role synthesis nudge rather than
+// stopping the turn immediately (#1500).
+func WithFinalReport(enabled bool) Option {
+	return func(o *options) { o.finalReport = enabled }
 }
 
 // WithPlugins registers ADK runner plugins (such as pkg/approval and
@@ -1289,6 +1316,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		checkpointer:         o.checkpointer,
 		costCeiling:          o.costCeiling,
 		maxWallclock:         o.maxWallclock,
+		maxSteps:             o.maxSteps,
+		finalReport:          o.finalReport,
 		watchdog:             o.watchdog,
 		onWatchdogAlert:      o.onWatchdogAlert,
 		watchdogEnforce:      o.watchdogEnforce,
@@ -1805,6 +1834,7 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	runCtx = models.WithPriorSuccess(runCtx, a.priorSuccess)
 	preflight, endPreflight := a.turnPreflight()
 	runCtx = withCostPreflight(runCtx, preflight)
+	runCtx = withTurnStepGate(runCtx, a.agentName, a.maxSteps, a.finalReport)
 	// And the auto-mode approver's view of this turn (#1175): the
 	// operator's task, the turn's earlier calls, the bill and the
 	// audit. Only with an approver wired; without it the gate never
@@ -2220,6 +2250,7 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		preflight, endPreflight := a.turnPreflight()
 		defer endPreflight()
 		runCtx = withCostPreflight(runCtx, preflight)
+		runCtx = withTurnStepGate(runCtx, a.agentName, a.maxSteps, a.finalReport)
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {

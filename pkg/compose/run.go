@@ -77,16 +77,14 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 			gate.SetPrompter(cfg.Prompter)
 		}
 
-		mcpDir := agentsDir
-		if _, err := os.Stat(filepath.Join(agentsDir, "mcp.json")); errors.Is(err, fs.ErrNotExist) {
-			if _, perr := os.Stat(filepath.Join(projectRoot, "mcp.json")); perr == nil {
-				mcpDir = projectRoot
-			}
-		}
+		mcpDir, mainInheritsMCP := resolveComposeMainMCPDir(projectRoot, agentsDir, effectiveCfg.Subagents)
 		servers, mcpToolsets, mcpErr := mcp.Build(ctx, mcpDir, "", nil, gate, nil, nil)
 		defer mcp.CloseAll(servers)
 		if mcpErr != nil {
 			return nil, fmt.Errorf("compose: mcp: %w", mcpErr)
+		}
+		if !mainInheritsMCP {
+			mcpToolsets = nil
 		}
 
 		contentRoots := resolveComposeContentRoots(agentsDir, effectiveCfg.ContentRoots)
@@ -261,6 +259,10 @@ func mergeComposeConfig(base, override *config.Config) *config.Config {
 	if override.Agent.MaxWallclockSeconds != 0 {
 		cp.Agent.MaxWallclockSeconds = override.Agent.MaxWallclockSeconds
 	}
+	defaultMaxSteps := config.DefaultConfig().Agent.MaxSteps
+	if override.Agent.MaxSteps != 0 && (cp.Agent.MaxSteps == 0 || cp.Agent.MaxSteps == defaultMaxSteps || override.Agent.MaxSteps != defaultMaxSteps) {
+		cp.Agent.MaxSteps = override.Agent.MaxSteps
+	}
 	if override.Agent.FinalReport {
 		cp.Agent.FinalReport = true
 	}
@@ -292,6 +294,41 @@ func loadComposeDirConfig(projectRoot, agentsDir string) (*config.Config, error)
 		}
 	}
 	return config.Load(agentsDir)
+}
+
+func resolveComposeMainMCPDir(projectRoot, agentsDir string, subagents []config.SubagentSpec) (mcpDir string, mainInheritsMCP bool) {
+	if _, err := os.Stat(filepath.Join(agentsDir, "mcp.json")); !errors.Is(err, fs.ErrNotExist) {
+		if agentsDir == projectRoot {
+			if _, cerr := os.Stat(filepath.Join(agentsDir, config.ConfigFileName)); errors.Is(cerr, fs.ErrNotExist) {
+				if _, werr := os.Stat(filepath.Join(projectRoot, config.WorkloadFileName)); werr == nil {
+					return projectRoot, false
+				}
+			}
+		}
+		return agentsDir, true
+	}
+	if _, perr := os.Stat(filepath.Join(projectRoot, "mcp.json")); perr == nil {
+		if _, werr := os.Stat(filepath.Join(projectRoot, config.WorkloadFileName)); werr == nil {
+			if hasUnrootedMCPSubagents(subagents) {
+				return projectRoot, false
+			}
+			return agentsDir, false
+		}
+		return projectRoot, true
+	}
+	return agentsDir, true
+}
+
+func hasUnrootedMCPSubagents(specs []config.SubagentSpec) bool {
+	for _, s := range specs {
+		if s.EffectiveMode() == config.SubagentModeSingleTurn {
+			continue
+		}
+		if s.Root == "" && (len(s.MCPTools) > 0 || len(s.MCP) > 0 || s.MCP == nil) {
+			return true
+		}
+	}
+	return false
 }
 
 type composeNamedToolset struct {

@@ -300,3 +300,31 @@ func TestServesSessionCreation_SingleTokenAndMultiSession(t *testing.T) {
 		t.Error("expected both true when multi_session is enabled")
 	}
 }
+
+func TestExcludeSelfRunMCPToolsets(t *testing.T) {
+	t.Parallel()
+	ts := fakeHintedToolset{
+		tools: []adktool.Tool{
+			roWrappedTool{name: "fake_mcp_watch_diff", ro: true},
+			roWrappedTool{name: "fake_mcp_watch_ack", ro: false},
+			roWrappedTool{name: "fake_mcp_get_pods", ro: true},
+		},
+	}
+	cfg := &config.Config{
+		Monitor: &config.MonitorConfig{
+			Collect: &config.MonitorCollectConfig{Tool: "watch_diff"},
+			Ack:     &config.MonitorAckConfig{Tool: "fake_mcp_watch_ack"},
+		},
+	}
+	filtered := excludeSelfRunMCPToolsets(cfg, []adktool.Toolset{ts})
+	if len(filtered) != 1 {
+		t.Fatalf("len(filtered) = %d, want 1", len(filtered))
+	}
+	got, err := filtered[0].Tools(nil)
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	if len(got) != 1 || got[0].Name() != "fake_mcp_get_pods" {
+		t.Errorf("filtered tools = %v, want only [fake_mcp_get_pods]", got)
+	}
+}

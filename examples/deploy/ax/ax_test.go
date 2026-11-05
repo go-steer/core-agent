@@ -16,17 +16,25 @@ package ax_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/go-steer/core-agent/v3/pkg/agentenv"
+	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 var sha40Re = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -123,6 +131,8 @@ func TestPinsAndDockerfile(t *testing.T) {
 		"/out/core-agent",
 		"/out/ax-agent-entry",
 		"/opt/core-agent/recipes/gke-platform-agent",
+		"/src/examples/deploy/ax/config.ax.json",
+		"jq -s '.[0] * .[1]'",
 	} {
 		if !strings.Contains(df, want) {
 			t.Errorf("Dockerfile missing %q", want)
@@ -242,5 +252,126 @@ func TestTaskServe_MatchesRecipeAndInjectedAuth(t *testing.T) {
 		if entry.Required && envMap[entry.Name] == "" {
 			t.Errorf("task-serve.yaml spec.env missing required recipe env var %q", entry.Name)
 		}
+	}
+}
+
+func TestTaskServe_RouterHostPassThrough(t *testing.T) {
+	t.Parallel()
+
+	baseBytes, err := os.ReadFile(filepath.Join("..", "..", "gke-platform-agent", ".agents", "config.json"))
+	if err != nil {
+		t.Fatalf("read base config.json: %v", err)
+	}
+	overlayBytes, err := os.ReadFile("config.ax.json")
+	if err != nil {
+		t.Fatalf("read config.ax.json: %v", err)
+	}
+	var baseMap, overlayMap map[string]any
+	if err := json.Unmarshal(baseBytes, &baseMap); err != nil {
+		t.Fatalf("unmarshal base config.json: %v", err)
+	}
+	if err := json.Unmarshal(overlayBytes, &overlayMap); err != nil {
+		t.Fatalf("unmarshal config.ax.json: %v", err)
+	}
+	mergeJSONMaps(baseMap, overlayMap)
+	mergedBytes, err := json.MarshalIndent(baseMap, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal merged config: %v", err)
+	}
+
+	tmpAgents := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpAgents, "config.json"), mergedBytes, 0o600); err != nil {
+		t.Fatalf("write merged config.json: %v", err)
+	}
+	cfg, err := config.Load(tmpAgents)
+	if err != nil {
+		t.Fatalf("config.Load merged AX config: %v", err)
+	}
+
+	wantRouterHosts := []string{
+		"atenet-router.ate-system.svc.cluster.local",
+		"atenet-router.ate-system.svc",
+		"atenet-router.ate-system",
+	}
+	if !slices.Equal(cfg.Attach.AllowedHosts, wantRouterHosts) {
+		t.Fatalf("cfg.Attach.AllowedHosts = %q, want %q", cfg.Attach.AllowedHosts, wantRouterHosts)
+	}
+
+	startLoopbackBehindRunnerProxy := func(t *testing.T, allowedHosts []string) *httptest.Server {
+		t.Helper()
+		srv, err := attach.NewServer(attach.Options{
+			Addr:         "127.0.0.1:0",
+			Registry:     attach.NewSessionRegistry(),
+			Auth:         attach.AuthConfig{BearerToken: "smoke-token"},
+			AllowedHosts: allowedHosts,
+		})
+		if err != nil {
+			t.Fatalf("attach.NewServer: %v", err)
+		}
+		if err := srv.Bind(); err != nil {
+			t.Fatalf("attach.Server.Bind: %v", err)
+		}
+		go func() { _ = srv.Serve() }()
+		t.Cleanup(func() { _ = srv.Close() })
+
+		targetURL, err := url.Parse("http://" + srv.Addr())
+		if err != nil {
+			t.Fatalf("parse attach server addr: %v", err)
+		}
+		// ax-task-runner's spec.http.port pass-through uses
+		// httputil.NewSingleHostReverseProxy, which preserves the incoming
+		// Host header when forwarding to 127.0.0.1:8484 (#1497).
+		proxy := httptest.NewServer(httputil.NewSingleHostReverseProxy(targetURL))
+		t.Cleanup(proxy.Close)
+		return proxy
+	}
+
+	requestAsRouter := func(t *testing.T, proxyURL, hostHeader string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, proxyURL+"/sessions", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Host = hostHeader
+		req.Header.Set("Authorization", "Bearer smoke-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /sessions (Host=%q): %v", hostHeader, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// With config.ax.json's allowed_hosts, every router Host spelling (bare and
+	// with port) succeeds with 200 OK, while an unknown Host is still rejected
+	// with 421 Misdirected Request (#1358, #1497).
+	proxyWithOverlay := startLoopbackBehindRunnerProxy(t, cfg.Attach.AllowedHosts)
+	for _, host := range wantRouterHosts {
+		for _, h := range []string{host, host + ":80"} {
+			if code := requestAsRouter(t, proxyWithOverlay.URL, h); code != http.StatusOK {
+				t.Errorf("GET /sessions with Host %q = %d, want 200 OK", h, code)
+			}
+		}
+	}
+	if code := requestAsRouter(t, proxyWithOverlay.URL, "evil.example.com"); code != http.StatusMisdirectedRequest {
+		t.Errorf("GET /sessions with unknown Host evil.example.com = %d, want 421 Misdirected Request", code)
+	}
+
+	// Without allowed_hosts (the pre-#1497 state), the router's Host gets 421.
+	proxyWithoutOverlay := startLoopbackBehindRunnerProxy(t, nil)
+	if code := requestAsRouter(t, proxyWithoutOverlay.URL, wantRouterHosts[0]); code != http.StatusMisdirectedRequest {
+		t.Errorf("GET /sessions without allowed_hosts (Host=%q) = %d, want 421 Misdirected Request", wantRouterHosts[0], code)
+	}
+}
+
+func mergeJSONMaps(dst, src map[string]any) {
+	for k, v := range src {
+		if srcMap, ok := v.(map[string]any); ok {
+			if dstMap, ok := dst[k].(map[string]any); ok {
+				mergeJSONMaps(dstMap, srcMap)
+				continue
+			}
+		}
+		dst[k] = v
 	}
 }

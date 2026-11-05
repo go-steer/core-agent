@@ -84,7 +84,7 @@ RUN go build \
 # markers under /ax, so the image runs as root, as AX's default image does.
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git curl \
+ && apt-get install -y --no-install-recommends ca-certificates git curl jq \
  && rm -rf /var/lib/apt/lists/*
 
 LABEL org.opencontainers.image.source="https://github.com/go-steer/core-agent" \
@@ -93,9 +93,17 @@ LABEL org.opencontainers.image.source="https://github.com/go-steer/core-agent" \
 
 COPY --from=ax-runner /out/ax-task-runner /usr/local/bin/ax-task-runner
 COPY --from=builder /out/core-agent /out/ax-agent-entry /usr/local/bin/
-# The recipe task-serve.yaml runs.
+# The recipe task-serve.yaml runs, overlaid with config.ax.json so the
+# loopback attach listener accepts Substrate's router Host (#1497).
 COPY --from=builder /src/examples/gke-platform-agent /opt/core-agent/recipes/gke-platform-agent
-RUN mkdir -p /opt/core-agent/recipes/gke-platform-agent/.agents/plans
+COPY --from=builder /src/examples/deploy/ax/config.ax.json /tmp/config.ax.json
+RUN jq -s '.[0] * .[1]' \
+      /opt/core-agent/recipes/gke-platform-agent/.agents/config.json \
+      /tmp/config.ax.json \
+    > /tmp/config.json \
+ && mv /tmp/config.json /opt/core-agent/recipes/gke-platform-agent/.agents/config.json \
+ && rm /tmp/config.ax.json \
+ && mkdir -p /opt/core-agent/recipes/gke-platform-agent/.agents/plans
 
 # Matches what AX sets; useful for a plain `docker run`.
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]

@@ -29,12 +29,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Workload bundle file and directory names (#1402).
+// Workload bundle file and directory names (#1402, #1498).
 const (
 	CurrentWorkloadSchemaVersion = 1
 	WorkloadFileName             = "workload.yaml"
 	SpecialistsDirName           = "specialists"
 	SchemasDirName               = "schemas"
+	SubagentRootsDirName         = "roots"
 	SpecialistFileExt            = ".specialist.md"
 )
 
@@ -768,9 +769,16 @@ func LoadWorkloadConfig(workloadDir string) (*Config, error) {
 // into a core-agent recipe directory (<outDir>):
 //   - <outDir>/AGENTS.md
 //   - <outDir>/.agents/config.json
-//   - <outDir>/.agents/mcp.json (copied from <workloadDir>/mcp.json if present)
+//   - <outDir>/.agents/roots/<name>/mcp.json (per-specialist MCP roots from <workloadDir>/mcp.json; #1498)
 //   - <outDir>/.agents/subagents/<name>.md
 //   - <outDir>/.agents/schemas/*.json (copied from <workloadDir>/schemas/)
+//
+// In mast, a workload's tool_catalog only classifies tools for the write gate;
+// the coordinator (main agent) never holds MCP servers itself — only
+// specialists hold MCP tools via their frontmatter allowlists (#1498). Each
+// specialist that references MCP servers is therefore emitted with a dedicated
+// content root (root: roots/<name>) holding only the servers it names, and
+// the main agent receives no .agents/mcp.json.
 //
 // It then loads and validates the generated recipe with Load(<outDir>/.agents)
 // and returns the resulting *Config (#1402).
@@ -791,13 +799,14 @@ func ImportWorkload(workloadDir, outDir string) (*Config, error) {
 	if err := copyWorkloadSchemas(workloadDir, agentsDir); err != nil {
 		return nil, err
 	}
-	if err := copyWorkloadMCPConfig(workloadDir, agentsDir); err != nil {
+	specs, err := writeWorkloadSpecialistRoots(workloadDir, agentsDir, b)
+	if err != nil {
 		return nil, err
 	}
-	if err := pruneStaleSubagentMarkdownFiles(subagentsDir, b.ResolvedSpecs); err != nil {
+	if err := pruneStaleSubagentMarkdownFiles(subagentsDir, specs); err != nil {
 		return nil, err
 	}
-	for _, spec := range b.ResolvedSpecs {
+	for _, spec := range specs {
 		if err := writeSubagentMarkdownFile(filepath.Join(subagentsDir, spec.Name+SubagentMarkdownExt), spec); err != nil {
 			return nil, err
 		}
@@ -1001,6 +1010,7 @@ type subagentFrontmatterOut struct {
 	MCP          *[]string          `yaml:"mcp,omitempty"`
 	MCPTools     []MCPToolAllowlist `yaml:"mcp_tools,omitempty"`
 	Skills       *[]string          `yaml:"skills,omitempty"`
+	Root         string             `yaml:"root,omitempty"`
 	Budgets      *SubagentBudgets   `yaml:"budgets,omitempty"`
 }
 
@@ -1013,6 +1023,7 @@ func writeSubagentMarkdownFile(path string, spec SubagentSpec) error {
 		Tier:         spec.Tier,
 		Capability:   spec.Capability,
 		MCPTools:     spec.MCPTools,
+		Root:         spec.Root,
 		Budgets:      spec.Budgets,
 	}
 	if spec.Model != nil {
@@ -1135,22 +1146,238 @@ func copyWorkloadSchemas(workloadDir, agentsDir string) error {
 	})
 }
 
-func copyWorkloadMCPConfig(workloadDir, agentsDir string) error {
-	src := filepath.Join(workloadDir, "mcp.json")
-	// #nosec G703 -- src is mcp.json inside caller-selected workloadDir.
-	data, err := os.ReadFile(src)
+func writeWorkloadSpecialistRoots(workloadDir, agentsDir string, b *WorkloadBundle) ([]SubagentSpec, error) {
+	out := make([]SubagentSpec, len(b.ResolvedSpecs))
+	copy(out, b.ResolvedSpecs)
+
+	mainMCP := filepath.Join(agentsDir, "mcp.json")
+	srcMCP := filepath.Join(workloadDir, "mcp.json")
+
+	// #nosec G703 -- srcMCP is mcp.json inside caller-selected workloadDir.
+	rawMCP, readErr := os.ReadFile(srcMCP)
+	hasSrcMCP := true
+	if readErr != nil {
+		if errors.Is(readErr, fs.ErrNotExist) {
+			hasSrcMCP = false
+		} else {
+			return nil, fmt.Errorf("config: read %q: %w", srcMCP, readErr)
+		}
+	}
+
+	// Remove any stale main-agent .agents/mcp.json left by an earlier import
+	// so the coordinator does not inherit the workload's MCP servers (#1498).
+	// When the workload declares self-run monitor tools (monitor.collect /
+	// monitor.ack), write a main-agent .agents/mcp.json narrowed strictly to
+	// those self-run tools so MonitorCollector and MonitorAcker can execute
+	// them on the runtime's behalf while cmd/core-agent strips them from the
+	// model-facing agent toolsets.
+	var selfRunTools []string
+	if monCfg := workloadMonitorToConfig(b.Monitor); monCfg != nil {
+		selfRunTools = monCfg.SelfRunTools()
+	}
+	if len(selfRunTools) > 0 && hasSrcMCP {
+		narrowed, err := narrowWorkloadMCPTools(rawMCP, selfRunTools)
+		if err != nil {
+			return nil, fmt.Errorf("config: narrow %q for monitor self-run tools: %w", srcMCP, err)
+		}
+		// #nosec G703 -- mainMCP is .agents/mcp.json inside caller-selected agentsDir.
+		if err := os.WriteFile(mainMCP, narrowed, 0o644); err != nil {
+			return nil, fmt.Errorf("config: write %q: %w", mainMCP, err)
+		}
+	} else if filepath.Clean(srcMCP) != filepath.Clean(mainMCP) {
+		if err := os.Remove(mainMCP); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("config: remove main-agent %q: %w", mainMCP, err)
+		}
+	}
+
+	hasWorkloadMCP := hasSrcMCP || len(b.ToolCatalog.MCP) > 0
+	rootsDir := filepath.Join(agentsDir, SubagentRootsDirName)
+	keepRoots := make(map[string]bool, len(out))
+	for i := range out {
+		servers, inheritAll := specialistMCPServers(out[i], hasWorkloadMCP)
+		if len(servers) == 0 && !inheritAll {
+			continue
+		}
+		out[i].Root = filepath.ToSlash(filepath.Join(SubagentRootsDirName, out[i].Name))
+		keepRoots[out[i].Name] = true
+		specRootDir := filepath.Join(rootsDir, out[i].Name)
+		// #nosec G703 -- specRootDir is .agents/roots/<name> with validated subagent name.
+		if err := os.MkdirAll(specRootDir, 0o755); err != nil {
+			return nil, fmt.Errorf("config: create specialist root %q: %w", specRootDir, err)
+		}
+		dstMCP := filepath.Join(specRootDir, "mcp.json")
+		if !hasSrcMCP {
+			if err := os.Remove(dstMCP); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return nil, fmt.Errorf("config: remove %q: %w", dstMCP, err)
+			}
+			continue
+		}
+		filtered, err := filterWorkloadMCPJSON(rawMCP, servers)
+		if err != nil {
+			return nil, fmt.Errorf("config: filter %q for specialist %q: %w", srcMCP, out[i].Name, err)
+		}
+		// #nosec G703 -- dstMCP is .agents/roots/<name>/mcp.json inside caller-selected agentsDir.
+		if err := os.WriteFile(dstMCP, filtered, 0o644); err != nil {
+			return nil, fmt.Errorf("config: write %q: %w", dstMCP, err)
+		}
+	}
+	if err := pruneStaleSubagentRoots(rootsDir, keepRoots); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func specialistMCPServers(spec SubagentSpec, hasWorkloadMCP bool) (servers []string, inheritAll bool) {
+	if spec.EffectiveMode() == SubagentModeSingleTurn {
+		return nil, false
+	}
+	if spec.MCP == nil && len(spec.MCPTools) == 0 {
+		return nil, hasWorkloadMCP
+	}
+	var out []string
+	seen := make(map[string]bool)
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, mt := range spec.MCPTools {
+		add(mt.Server)
+	}
+	for _, m := range spec.MCP {
+		add(m)
+	}
+	return out, false
+}
+
+func filterWorkloadMCPJSON(raw []byte, wantServers []string) ([]byte, error) {
+	if len(wantServers) == 0 {
+		out := append([]byte(nil), raw...)
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			out = append(out, '\n')
+		}
+		return out, nil
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return nil, err
+	}
+	serverKey := ""
+	switch {
+	case len(top["servers"]) > 0:
+		serverKey = "servers"
+	case len(top["mcpServers"]) > 0:
+		serverKey = "mcpServers"
+	default:
+		out := append([]byte(nil), raw...)
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			out = append(out, '\n')
+		}
+		return out, nil
+	}
+	var allServers map[string]json.RawMessage
+	if err := json.Unmarshal(top[serverKey], &allServers); err != nil {
+		return nil, err
+	}
+	filtered := make(map[string]json.RawMessage, len(wantServers))
+	for _, want := range wantServers {
+		if entry, ok := allServers[want]; ok {
+			filtered[want] = entry
+			continue
+		}
+		wantPrefix := sanitizeMCPServerPrefix(want)
+		for k, entry := range allServers {
+			if sanitizeMCPServerPrefix(k) == wantPrefix {
+				filtered[k] = entry
+			}
+		}
+	}
+	if len(filtered) == len(allServers) {
+		out := append([]byte(nil), raw...)
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			out = append(out, '\n')
+		}
+		return out, nil
+	}
+	filteredRaw, err := json.Marshal(filtered)
+	if err != nil {
+		return nil, err
+	}
+	top[serverKey] = filteredRaw
+	out, err := json.MarshalIndent(top, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+func narrowWorkloadMCPTools(raw []byte, tools []string) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return nil, err
+	}
+	serverKey := ""
+	switch {
+	case len(top["servers"]) > 0:
+		serverKey = "servers"
+	case len(top["mcpServers"]) > 0:
+		serverKey = "mcpServers"
+	default:
+		return append(append([]byte(nil), raw...), '\n'), nil
+	}
+	var allServers map[string]map[string]any
+	if err := json.Unmarshal(top[serverKey], &allServers); err != nil {
+		return nil, err
+	}
+	for k, srv := range allServers {
+		if srv == nil {
+			continue
+		}
+		prefix := sanitizeMCPServerPrefix(k) + "_"
+		unprefixed := make([]string, 0, len(tools))
+		seen := make(map[string]bool, len(tools))
+		for _, t := range tools {
+			u := strings.TrimSpace(strings.TrimPrefix(t, prefix))
+			if u != "" && !seen[u] {
+				seen[u] = true
+				unprefixed = append(unprefixed, u)
+			}
+		}
+		srv["tools"] = unprefixed
+		allServers[k] = srv
+	}
+	srvRaw, err := json.Marshal(allServers)
+	if err != nil {
+		return nil, err
+	}
+	top[serverKey] = srvRaw
+	out, err := json.MarshalIndent(top, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+func pruneStaleSubagentRoots(rootsDir string, keep map[string]bool) error {
+	entries, err := os.ReadDir(rootsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("config: read %q: %w", src, err)
+		return fmt.Errorf("config: read roots dir %q: %w", rootsDir, err)
 	}
-	dst := filepath.Join(agentsDir, "mcp.json")
-	if filepath.Clean(src) == filepath.Clean(dst) {
-		return nil
+	for _, e := range entries {
+		if keep[e.Name()] {
+			continue
+		}
+		// #nosec G703 -- e.Name() is a directory entry inside .agents/roots.
+		if err := os.RemoveAll(filepath.Join(rootsDir, e.Name())); err != nil {
+			return fmt.Errorf("config: remove stale specialist root %q: %w", e.Name(), err)
+		}
 	}
-	// #nosec G703 -- dst is mcp.json inside caller-selected agentsDir.
-	return os.WriteFile(dst, data, 0o644)
+	return nil
 }
 
 func writeWorkloadAgentsMD(workloadDir, outDir, path string, b *WorkloadBundle) error {

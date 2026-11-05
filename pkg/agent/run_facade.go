@@ -418,7 +418,8 @@ func mergeFacadePermissionsConfig(dst, src *config.PermissionsConfig) {
 }
 
 func mergeFacadeAgentConfig(dst, src *config.AgentConfig) {
-	if src.MaxSteps != 0 {
+	defaultMaxSteps := config.DefaultConfig().Agent.MaxSteps
+	if src.MaxSteps != 0 && (dst.MaxSteps == 0 || dst.MaxSteps == defaultMaxSteps || src.MaxSteps != defaultMaxSteps) {
 		dst.MaxSteps = src.MaxSteps
 	}
 	if src.AppendSystemPrompt != "" {
@@ -1349,6 +1350,12 @@ func buildFacadeAgentOptions(
 	opts = appendFacadeGuardrailOptions(opts, loadedCfg)
 	if loadedCfg.Agent.MaxWallclockSeconds > 0 {
 		opts = append(opts, WithMaxWallclock(time.Duration(loadedCfg.Agent.MaxWallclockSeconds)*time.Second))
+	}
+	if loadedCfg.Agent.MaxSteps > 0 {
+		opts = append(opts, WithMaxSteps(loadedCfg.Agent.MaxSteps))
+	}
+	if loadedCfg.Agent.FinalReport {
+		opts = append(opts, WithFinalReport(true))
 	}
 	name := cfg.Name
 	if name == "" && loadedCfg.Agent.DisplayName != "" {

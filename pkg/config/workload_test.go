@@ -15,6 +15,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -258,21 +259,27 @@ func TestImportWorkload_GKETriageF(t *testing.T) {
 		t.Fatalf("len(Subagents) = %d, want 2", len(cfg.Subagents))
 	}
 	fb := cfg.Subagents[0]
-	if fb.Name != "_fallback" || fb.Mode != SubagentModeTask || fb.OutputSchema != "../schemas/finding.json" {
+	if fb.Name != "_fallback" || fb.Mode != SubagentModeTask || fb.OutputSchema != "../schemas/finding.json" || fb.Root != "roots/_fallback" {
 		t.Errorf("Subagents[0] = %+v", fb)
 	}
 	if fb.Tools == nil || len(fb.Tools) != 0 {
 		t.Errorf("Subagents[0].Tools = %v, want non-nil empty slice", fb.Tools)
 	}
 	ce := cfg.Subagents[1]
-	if ce.Name != "change-executor" || ce.Mode != SubagentModeTask || ce.Capability != CapabilityChangeExecutor || ce.OutputSchema != "../schemas/change-report.json" {
+	if ce.Name != "change-executor" || ce.Mode != SubagentModeTask || ce.Capability != CapabilityChangeExecutor || ce.OutputSchema != "../schemas/change-report.json" || ce.Root != "roots/change-executor" {
 		t.Errorf("Subagents[1] = %+v", ce)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "AGENTS.md")); err != nil {
 		t.Errorf("AGENTS.md not written: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, ".agents", "mcp.json")); err != nil {
-		t.Errorf(".agents/mcp.json not copied: %v", err)
+	if _, err := os.Stat(filepath.Join(outDir, ".agents", "mcp.json")); !os.IsNotExist(err) {
+		t.Errorf(".agents/mcp.json exists (err=%v); want main agent to have no mcp.json (#1498)", err)
+	}
+	for _, specName := range []string{"_fallback", "change-executor"} {
+		rootMCP := filepath.Join(outDir, ".agents", "roots", specName, "mcp.json")
+		if _, err := os.Stat(rootMCP); err != nil {
+			t.Errorf("%s not written: %v", rootMCP, err)
+		}
 	}
 }
 
@@ -811,4 +818,145 @@ func TestImportWorkload_HardeningAndPolicies(t *testing.T) {
 			t.Fatalf("Load(tools.polices) = %v, want fatal typo error", err)
 		}
 	})
+}
+
+func TestImportWorkload_SpecialistRootsIsolateMCPFromMainAgent(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(srcDir, "specialists"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpJSON := `{
+  "version": 1,
+  "servers": {
+    "gke": {"transport": "http", "url": "https://container.googleapis.com/mcp"},
+    "lookout": {"transport": "http", "url": "http://lookout.default.svc:8080/mcp"}
+  }
+}`
+	if err := os.WriteFile(filepath.Join(srcDir, "mcp.json"), []byte(mcpJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	diagMD := `---
+name: _fallback
+description: Diagnoses cluster incidents.
+mode: Task
+tools:
+  mcp:
+    - server: gke
+      tools: [get_k8s_resource]
+---
+Diagnose it.
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "specialists", "_fallback.specialist.md"), []byte(diagMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	synthMD := `---
+name: synthesizer
+description: Synthesizes findings without MCP tools.
+mode: SingleTurn
+---
+Synthesize findings.
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "specialists", "synthesizer.specialist.md"), []byte(synthMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inheritMD := `---
+name: inherit-reader
+description: Inherits all workload MCP servers when no mutating tools exist.
+mode: Task
+---
+Read from all servers.
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "specialists", "inherit-reader.specialist.md"), []byte(inheritMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wlYAML := `schema_version: 1
+name: multi-server-triage
+specialists: [_fallback, synthesizer, inherit-reader]
+tool_catalog:
+  mcp:
+    - server: gke
+    - server: lookout
+  tools:
+    - name: get_k8s_resource
+      mutating: false
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "workload.yaml"), []byte(wlYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a stale main-agent .agents/mcp.json and a stale specialist root to
+	// verify re-importing removes both (#1498).
+	if err := os.MkdirAll(filepath.Join(outDir, ".agents", "roots", "retired-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, ".agents", "mcp.json"), []byte(mcpJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, ".agents", "roots", "retired-spec", "mcp.json"), []byte(mcpJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := ImportWorkload(srcDir, outDir)
+	if err != nil {
+		t.Fatalf("ImportWorkload: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, ".agents", "mcp.json")); !os.IsNotExist(err) {
+		t.Errorf("main-agent .agents/mcp.json exists (err=%v); want removed so coordinator has no MCP servers (#1498)", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, ".agents", "roots", "retired-spec")); !os.IsNotExist(err) {
+		t.Errorf("stale root .agents/roots/retired-spec still exists (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, ".agents", "roots", "synthesizer")); !os.IsNotExist(err) {
+		t.Errorf("synthesizer (SingleTurn, no MCP) unexpectedly got a root directory (err=%v)", err)
+	}
+
+	byName := make(map[string]SubagentSpec, len(cfg.Subagents))
+	for _, s := range cfg.Subagents {
+		byName[s.Name] = s
+	}
+	if got := byName["_fallback"].Root; got != "roots/_fallback" {
+		t.Errorf("_fallback.Root = %q, want roots/_fallback", got)
+	}
+	if got := byName["synthesizer"].Root; got != "" {
+		t.Errorf("synthesizer.Root = %q, want empty", got)
+	}
+
+	rootMCPBytes, err := os.ReadFile(filepath.Join(outDir, ".agents", "roots", "_fallback", "mcp.json"))
+	if err != nil {
+		t.Fatalf("read _fallback root mcp.json: %v", err)
+	}
+	var parsed struct {
+		Servers map[string]any `json:"servers"`
+	}
+	if err := json.Unmarshal(rootMCPBytes, &parsed); err != nil {
+		t.Fatalf("unmarshal _fallback root mcp.json: %v", err)
+	}
+	if _, ok := parsed.Servers["gke"]; !ok {
+		t.Errorf("_fallback root mcp.json servers = %v, want gke", parsed.Servers)
+	}
+	if _, ok := parsed.Servers["lookout"]; ok {
+		t.Errorf("_fallback root mcp.json servers = %v, unexpectedly includes unreferenced server lookout", parsed.Servers)
+	}
+
+	if got := byName["inherit-reader"].Root; got != "roots/inherit-reader" {
+		t.Errorf("inherit-reader.Root = %q, want roots/inherit-reader", got)
+	}
+	inheritMCPBytes, err := os.ReadFile(filepath.Join(outDir, ".agents", "roots", "inherit-reader", "mcp.json"))
+	if err != nil {
+		t.Fatalf("read inherit-reader root mcp.json: %v", err)
+	}
+	var inheritParsed struct {
+		Servers map[string]any `json:"servers"`
+	}
+	if err := json.Unmarshal(inheritMCPBytes, &inheritParsed); err != nil {
+		t.Fatalf("unmarshal inherit-reader root mcp.json: %v", err)
+	}
+	if _, okGKE := inheritParsed.Servers["gke"]; !okGKE {
+		t.Errorf("inherit-reader root mcp.json servers = %v, want gke", inheritParsed.Servers)
+	}
+	if _, okLookout := inheritParsed.Servers["lookout"]; !okLookout {
+		t.Errorf("inherit-reader root mcp.json servers = %v, want lookout", inheritParsed.Servers)
+	}
 }

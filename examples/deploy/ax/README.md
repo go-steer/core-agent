@@ -93,7 +93,17 @@ wrapper, with:
 
 - `-c /opt/core-agent/recipes/gke-platform-agent/.agents/config.json`: loads
   the [`gke-platform-agent`](../../gke-platform-agent/) recipe baked into the
-  image;
+  image. At image build time, [`Dockerfile`](Dockerfile) merges
+  [`config.ax.json`](config.ax.json) into this file so `attach.allowed_hosts`
+  lists Substrate's router (`atenet-router.ate-system.svc.cluster.local`,
+  `atenet-router.ate-system.svc`, `atenet-router.ate-system`). Because
+  `ax-task-runner`'s `spec.http.port` pass-through preserves the incoming
+  `Host` header and a loopback attach listener rejects unknown `Host` values
+  with `421 Misdirected Request`
+  ([#1358](https://github.com/go-steer/core-agent/issues/1358),
+  [#1497](https://github.com/go-steer/core-agent/issues/1497)), any custom recipe
+  served behind Substrate's router (or an ingress fronting it) must list those
+  hostnames in `attach.allowed_hosts`;
 - `--no-repl` and `--attach-listen=127.0.0.1:8484`: serves the session API
   (`POST /sessions`, `POST /sessions/<app>/<sid>/inject`, `/wake`, the event
   stream) with no stdin REPL. Passing `--attach-token` enables on-demand

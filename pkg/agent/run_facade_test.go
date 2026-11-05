@@ -1196,3 +1196,215 @@ tool_catalog:
 		t.Errorf("Text = %q, want 'completed raw workload'", res.Text)
 	}
 }
+
+func TestWithMaxSteps_EnforcesPerTurnCapAndFinalReport(t *testing.T) {
+	t.Parallel()
+
+	type pingIn struct{}
+	type pingOut struct {
+		OK bool `json:"ok"`
+	}
+	pingTool, err := functiontool.New(functiontool.Config{
+		Name:        "ping_tool",
+		Description: "Pings a target.",
+	}, func(_ adkagent.Context, _ pingIn) (pingOut, error) {
+		return pingOut{OK: true}, nil
+	})
+	if err != nil {
+		t.Fatalf("functiontool.New: %v", err)
+	}
+
+	t.Run("stops turn after max_steps without final_report", func(t *testing.T) {
+		t.Parallel()
+		var providerCalls int
+		llm := &scriptedFacadeLLM{
+			name: "gemini-2.5-flash",
+			steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+				func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+					providerCalls++
+					return &adkmodel.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{ID: "c1", Name: "ping_tool", Args: map[string]any{}}}},
+						},
+						TurnComplete: true,
+					}, nil
+				},
+				func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+					providerCalls++
+					return &adkmodel.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{ID: "c2", Name: "ping_tool", Args: map[string]any{}}}},
+						},
+						TurnComplete: true,
+					}, nil
+				},
+				func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+					providerCalls++
+					return &adkmodel.LLMResponse{
+						Content:      genai.NewContentFromText("unreachable third call", genai.RoleModel),
+						TurnComplete: true,
+					}, nil
+				},
+			},
+		}
+
+		a, err := New(llm,
+			WithName("step_capped"),
+			WithTools([]adktool.Tool{pingTool}),
+			WithMaxSteps(2),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		var sb strings.Builder
+		for ev, err := range a.Run(context.Background(), "loop forever") {
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			collectFinalText(&sb, ev)
+		}
+		if providerCalls != 2 {
+			t.Fatalf("providerCalls = %d, want 2 (stopped before 3rd call)", providerCalls)
+		}
+		if !Refused(sb.String()) || !strings.Contains(sb.String(), "max_steps limit of 2") {
+			t.Errorf("final text = %q, want refusal naming max_steps limit of 2", sb.String())
+		}
+
+		// A subsequent turn on the same Agent gets a fresh step counter.
+		providerCalls = 0
+		llm.calls = nil
+		llm.steps = []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				providerCalls++
+				return &adkmodel.LLMResponse{
+					Content:      genai.NewContentFromText("second turn ok", genai.RoleModel),
+					TurnComplete: true,
+				}, nil
+			},
+		}
+		sb.Reset()
+		for ev, err := range a.Run(context.Background(), "next turn") {
+			if err != nil {
+				t.Fatalf("second Run: %v", err)
+			}
+			collectFinalText(&sb, ev)
+		}
+		if providerCalls != 1 || sb.String() != "second turn ok" {
+			t.Errorf("second turn: calls=%d text=%q, want 1 and 'second turn ok'", providerCalls, sb.String())
+		}
+	})
+
+	t.Run("final_report grants one tool-less synthesis call on workload max_turns", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "specialists"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "specialists", "_fallback.specialist.md"), []byte(`---
+name: _fallback
+description: Fallback specialist.
+mode: SingleTurn
+---
+Return ok.
+`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		wlYAML := `schema_version: 1
+name: capped-wl
+specialists: [_fallback]
+budget:
+  max_turns: 2
+  final_report: true
+`
+		if err := os.WriteFile(filepath.Join(dir, "workload.yaml"), []byte(wlYAML), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		var (
+			providerCalls       int
+			thirdCallToolCount  int
+			sawFinalReportNudge bool
+		)
+		llm := &scriptedFacadeLLM{
+			name: "gemini-2.5-flash",
+			steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+				func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+					providerCalls++
+					return &adkmodel.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{ID: "c1", Name: "ping_tool", Args: map[string]any{}}}},
+						},
+						TurnComplete: true,
+					}, nil
+				},
+				func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+					providerCalls++
+					return &adkmodel.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{ID: "c2", Name: "ping_tool", Args: map[string]any{}}}},
+						},
+						TurnComplete: true,
+					}, nil
+				},
+				func(req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+					providerCalls++
+					if req.Config != nil {
+						for _, gt := range req.Config.Tools {
+							if gt != nil {
+								thirdCallToolCount += len(gt.FunctionDeclarations)
+							}
+						}
+					}
+					for _, c := range req.Contents {
+						if c == nil || c.Role != genai.RoleUser {
+							continue
+						}
+						for _, p := range c.Parts {
+							if p != nil && strings.Contains(p.Text, "reached your step limit for this turn (max_steps limit of 2)") {
+								sawFinalReportNudge = true
+							}
+						}
+					}
+					return &adkmodel.LLMResponse{
+						Content:      genai.NewContentFromText("Synthesized final report from 2 tool cycles.", genai.RoleModel),
+						TurnComplete: true,
+					}, nil
+				},
+				func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+					providerCalls++
+					return &adkmodel.LLMResponse{
+						Content:      genai.NewContentFromText("unreachable fourth call", genai.RoleModel),
+						TurnComplete: true,
+					}, nil
+				},
+			},
+		}
+
+		cfg := config.DefaultConfig()
+		cfg.Permissions.Mode = config.PermissionModeYolo
+		res, err := RunWorkload(context.Background(), dir, OneShotConfig{
+			Config: cfg,
+			Model:  llm,
+			Tools:  []adktool.Tool{pingTool},
+		}, "triage incident")
+		if err != nil {
+			t.Fatalf("RunWorkload: %v", err)
+		}
+		if providerCalls != 3 {
+			t.Fatalf("providerCalls = %d, want 3 (2 tool cycles + 1 tool-less final report)", providerCalls)
+		}
+		if thirdCallToolCount != 0 {
+			t.Errorf("thirdCallToolCount = %d, want 0 (all tools stripped on final report call)", thirdCallToolCount)
+		}
+		if !sawFinalReportNudge {
+			t.Error("third call did not receive ChatFinalReportInstruction user nudge")
+		}
+		if res.Text != "Synthesized final report from 2 tool cycles." {
+			t.Errorf("res.Text = %q, want 'Synthesized final report from 2 tool cycles.'", res.Text)
+		}
+	})
+}

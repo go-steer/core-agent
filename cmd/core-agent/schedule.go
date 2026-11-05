@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/session"
 	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
@@ -40,6 +41,60 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
+
+type excludedSelfRunToolset struct {
+	inner   adktool.Toolset
+	selfRun []string
+}
+
+func (e *excludedSelfRunToolset) Name() string { return e.inner.Name() }
+
+func (e *excludedSelfRunToolset) Tools(ctx adkagent.ReadonlyContext) ([]adktool.Tool, error) {
+	upstream, err := e.inner.Tools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	serverName := strings.TrimSuffix(strings.TrimSuffix(e.inner.Name(), "_mcp_tool_set"), "_toolset")
+	out := make([]adktool.Tool, 0, len(upstream))
+	for _, t := range upstream {
+		if t != nil && !mcp.MatchesToolAllowlist(t.Name(), serverName, e.selfRun) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func excludeSelfRunMCPToolsets(cfg *config.Config, mcpToolsets []adktool.Toolset) []adktool.Toolset {
+	if cfg == nil || cfg.Monitor == nil {
+		return mcpToolsets
+	}
+	selfRun := cfg.Monitor.SelfRunTools()
+	if len(selfRun) == 0 || len(mcpToolsets) == 0 {
+		return mcpToolsets
+	}
+	out := make([]adktool.Toolset, 0, len(mcpToolsets))
+	for _, ts := range mcpToolsets {
+		if ts == nil {
+			continue
+		}
+		out = append(out, &excludedSelfRunToolset{inner: ts, selfRun: selfRun})
+	}
+	return out
+}
+
+func daemonToolsets(baseToolsets []adktool.Toolset, subagentServers []*mcp.Server) []adktool.Toolset {
+	if len(subagentServers) == 0 {
+		return baseToolsets
+	}
+	out := make([]adktool.Toolset, 0, len(baseToolsets)+len(subagentServers))
+	out = append(out, baseToolsets...)
+	for _, s := range subagentServers {
+		if s != nil && s.Toolset() != nil {
+			out = append(out, s.Toolset())
+		}
+	}
+	return out
+}
 
 func buildMonitorAckHandler(cfg *config.Config, eventlogHandle *eventlog.Handle, toolsets []adktool.Toolset, hasMCPServers bool) (attach.MonitorAckHandler, error) {
 	if cfg == nil || cfg.Monitor == nil {

@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
-_No unreleased changes since [3.1.0-rc.1]._
+#### Bug or Regression
+
+- **Allow Substrate router `Host` headers in `examples/deploy/ax`.** Merges `config.ax.json` (`attach.allowed_hosts`) into the image's recipe config so `ax-task-runner`'s pass-through does not 421. ([#1497](https://github.com/go-steer/core-agent/issues/1497))
+- **Scope imported workload MCP servers to specialist content roots (`pkg/config`, `pkg/compose`).** `ImportWorkload` writes per-specialist `.agents/roots/<name>/mcp.json` instead of a main-agent `.agents/mcp.json`. ([#1498](https://github.com/go-steer/core-agent/issues/1498))
+- **Enforce `agent.max_steps` per-turn cap and `final_report` (`pkg/agent`, `pkg/compose`, `cmd/core-agent`).** `WithMaxSteps` and `WithFinalReport` bound each turn's tool-call cycles and optionally grant one tool-less synthesis call. ([#1500](https://github.com/go-steer/core-agent/issues/1500))
 
 ## [3.1.0-rc.1] — 2026-11-04
 

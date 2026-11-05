@@ -25,6 +25,8 @@ import (
 
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 type composeTestLLM struct {
@@ -435,4 +437,67 @@ func stringifyAny(v any) string {
 	default:
 		return ""
 	}
+}
+
+func TestResolveComposeMainMCPDir_WorkloadIsolation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unimported workload bundle builds MCP only for specialists", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "workload.yaml"), []byte("name: w\nspecialists: [s]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(`{"servers":{}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		subs := []config.SubagentSpec{{Name: "s", MCPTools: []config.MCPToolAllowlist{{Server: "gke"}}}}
+		mcpDir, mainInherits := resolveComposeMainMCPDir(dir, dir, subs)
+		if mcpDir != dir || mainInherits {
+			t.Errorf("resolveComposeMainMCPDir = (%q, %v), want (%q, false)", mcpDir, mainInherits, dir)
+		}
+	})
+
+	t.Run("in-place imported workload bundle ignores root mcp.json for main agent", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		agentsDir := filepath.Join(dir, ".agents")
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "workload.yaml"), []byte("name: w\nspecialists: [s]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(`{"servers":{}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(agentsDir, "config.json"), []byte(`{"version":1}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		subs := []config.SubagentSpec{{Name: "s", Root: "roots/s", MCPTools: []config.MCPToolAllowlist{{Server: "gke"}}}}
+		mcpDir, mainInherits := resolveComposeMainMCPDir(dir, agentsDir, subs)
+		if mcpDir != agentsDir || mainInherits {
+			t.Errorf("resolveComposeMainMCPDir = (%q, %v), want (%q, false)", mcpDir, mainInherits, agentsDir)
+		}
+	})
+
+	t.Run("explicit .agents/mcp.json is inherited by main agent", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		agentsDir := filepath.Join(dir, ".agents")
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "workload.yaml"), []byte("name: w\nspecialists: [s]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(agentsDir, "mcp.json"), []byte(`{"servers":{}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		subs := []config.SubagentSpec{{Name: "s", Root: "roots/s"}}
+		mcpDir, mainInherits := resolveComposeMainMCPDir(dir, agentsDir, subs)
+		if mcpDir != agentsDir || !mainInherits {
+			t.Errorf("resolveComposeMainMCPDir = (%q, %v), want (%q, true)", mcpDir, mainInherits, agentsDir)
+		}
+	})
 }

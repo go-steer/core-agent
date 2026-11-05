@@ -26,6 +26,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -443,6 +444,9 @@ func RefuseOnGate(agentName string, taskMode bool, payload RefusalPayload) llmag
 					FinishReason: genai.FinishReasonStop,
 				}, nil
 			}
+		} else if frg, ok := gate.(FinalReportGate); ok && frg.AllowFinalReport(agentName) {
+			stripToChatFinalReport(req, reason)
+			return nil, nil
 		}
 
 		return &adkmodel.LLMResponse{
@@ -470,11 +474,95 @@ const FinalReportInstruction = "You have reached your call limit for this delega
 	"tools have been removed. Call " + FinishTaskToolName + " now to report what you have already found from the " +
 	"evidence above. If an aspect of the request was not yet checked, say so in the report rather than guessing."
 
-// FinalReportGate is an optional extension of CallGate for ModeTask
-// specialists that have already gathered evidence when the ceiling hits.
+// ChatFinalReportInstruction is the user-role nudge appended to a Chat-mode
+// agent's last request when it hits its per-turn step limit (WithMaxSteps)
+// and FinalReport is enabled (#1500).
+const ChatFinalReportInstruction = "You have reached your step limit for this turn (%s) and your tools " +
+	"have been removed. Respond now with your final report based on the evidence already gathered above. " +
+	"If an aspect of the request was not yet checked, say so in the response rather than guessing."
+
+// FinalReportGate is an optional extension of CallGate for agents that have
+// already gathered evidence when the ceiling hits and are granted one final
+// report call.
 type FinalReportGate interface {
 	CallGate
 	AllowFinalReport(agentName string) bool
+}
+
+type turnStepGate struct {
+	parent     CallGate
+	targetName string
+	maxSteps   int
+	allowFinal bool
+	mu         sync.Mutex
+	steps      int
+	granted    bool
+}
+
+func (g *turnStepGate) Allow(agentName string) error {
+	if g.parent != nil {
+		if err := g.parent.Allow(agentName); err != nil {
+			return err
+		}
+	}
+	if g.targetName != "" && agentName != g.targetName {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.steps++
+	if g.steps > g.maxSteps {
+		return fmt.Errorf("max_steps limit of %d", g.maxSteps)
+	}
+	return nil
+}
+
+func (g *turnStepGate) AllowFinalReport(agentName string) bool {
+	if g.targetName != "" && agentName != g.targetName {
+		if frg, ok := g.parent.(FinalReportGate); ok {
+			return frg.AllowFinalReport(agentName)
+		}
+		return false
+	}
+	g.mu.Lock()
+	if g.steps > g.maxSteps {
+		if g.allowFinal && !g.granted {
+			g.granted = true
+			g.mu.Unlock()
+			return true
+		}
+		g.mu.Unlock()
+		return false
+	}
+	g.mu.Unlock()
+	if frg, ok := g.parent.(FinalReportGate); ok {
+		return frg.AllowFinalReport(agentName)
+	}
+	return false
+}
+
+func withTurnStepGate(ctx context.Context, agentName string, maxSteps int, finalReport bool) context.Context {
+	if maxSteps <= 0 {
+		return ctx
+	}
+	return WithCallGate(ctx, &turnStepGate{
+		parent:     CallGateFrom(ctx),
+		targetName: agentName,
+		maxSteps:   maxSteps,
+		allowFinal: finalReport,
+	})
+}
+
+func stripToChatFinalReport(req *adkmodel.LLMRequest, reason string) {
+	if req == nil {
+		return
+	}
+	req.Tools = nil
+	if req.Config != nil {
+		req.Config.Tools = nil
+	}
+	nudge := fmt.Sprintf(ChatFinalReportInstruction, reason)
+	req.Contents = append(req.Contents, genai.NewContentFromText(nudge, genai.RoleUser))
 }
 
 func stripToFinalReport(req *adkmodel.LLMRequest, reason string) {
@@ -579,7 +667,7 @@ func buildInnerLLMAgent(o *options, model adkmodel.LLM, instruction string) (inn
 		cfg.DisallowTransferToPeers = true
 		cfg.BeforeModelCallbacks = gated(o.name, o.outputSchema, false, o.beforeModelCallbacks)
 	default:
-		cfg.BeforeModelCallbacks = o.beforeModelCallbacks
+		cfg.BeforeModelCallbacks = gated(o.name, nil, false, o.beforeModelCallbacks)
 		if o.disallowTransferSet {
 			cfg.DisallowTransferToParent = o.disallowTransferToParent
 			cfg.DisallowTransferToPeers = o.disallowTransferToPeers

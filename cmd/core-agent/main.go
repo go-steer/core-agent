@@ -1303,7 +1303,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		send(line)
 	}
 
-	allToolsets := append([]adktool.Toolset{}, mcpToolsets...)
+	allToolsets := append([]adktool.Toolset{}, excludeSelfRunMCPToolsets(cfg, mcpToolsets)...)
 	if !loadedSkills.Empty() {
 		allToolsets = append(allToolsets, loadedSkills.Toolset)
 	}
@@ -2404,7 +2404,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			fmt.Fprintf(os.Stderr, "core-agent: multi-session auth: %v\n", authErr)
 			return runner.ExitConfigError
 		}
-		monitorAckHandler, monErr := buildMonitorAckHandler(cfg, eventlogHandle, allToolsets, len(mcpServers) > 0)
+		monitorAckHandler, monErr := buildMonitorAckHandler(cfg, eventlogHandle, daemonToolsets(mcpToolsets, subagentServers), len(mcpServers) > 0)
 		if monErr != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", monErr)
 			return runner.ExitConfigError
@@ -2442,7 +2442,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 					fmt.Fprintf(os.Stderr, "core-agent: shutdown: session wake loops still running after %s; closing the session db anyway\n", wakeLoopDrainTimeout)
 				}
 			}()
-			isReadOnly, subAgentNames := buildDaemonEffectControls(cfg, allToolsets...)
+			isReadOnly, subAgentNames := buildDaemonEffectControls(cfg, daemonToolsets(mcpToolsets, subagentServers)...)
 			factoryDeps := compose.SessionFactoryDeps{
 				DaemonCtx:    wakeCtx,
 				WakeLoops:    wakeLoops,
@@ -2696,7 +2696,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// breaker math (its bootstrap `default` session has no ACL
 		// row and stays uncovered — status quo since #539).
 		schedHandle, schedErr := startSingleSessionScheduleAndAutoContinue(
-			ctx, autoContinueDriverCtx, &autoContinueWG, cfg, eventlogHandle, a, allToolsets, multiSessionFactoryDeps,
+			ctx, autoContinueDriverCtx, &autoContinueWG, cfg, eventlogHandle, a, daemonToolsets(mcpToolsets, subagentServers), multiSessionFactoryDeps,
 			autoContinueEnabled, autoContinueRetry,
 			autoContinueFreshness, autoContinueRetryInterval,
 		)
@@ -3126,6 +3126,12 @@ func appendCostAndWallclockOpts(opts []agent.Option, cfg *config.Config, ceiling
 	}
 	if cfg != nil && cfg.Agent.MaxWallclockSeconds > 0 {
 		opts = append(opts, agent.WithMaxWallclock(time.Duration(cfg.Agent.MaxWallclockSeconds)*time.Second))
+	}
+	if cfg != nil && cfg.Agent.MaxSteps > 0 {
+		opts = append(opts, agent.WithMaxSteps(cfg.Agent.MaxSteps))
+	}
+	if cfg != nil && cfg.Agent.FinalReport {
+		opts = append(opts, agent.WithFinalReport(true))
 	}
 	return opts
 }

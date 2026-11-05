@@ -27,6 +27,7 @@ Two orthogonal layers run on every request, with two deliberate exceptions: `/he
 
 - **`Content-Type: application/json` is required** on writes — even body-less ones (`/interrupt`, `/pricing/refresh`, `DELETE`s, peer heartbeats) — otherwise **415**. This kills the CORS "simple request" vector (`text/plain` POST fires without a preflight).
 - **Origin enforcement** — when an `Origin` header is present it must be a loopback origin (`localhost` / `127.0.0.0/8` / `[::1]`) or a self origin (host matching the request's `Host`), otherwise **403**. Browsers always attach `Origin` to cross-site POSTs; native clients (curl, `core-agent-tui`, SDKs) send no `Origin` and pass untouched. The literal `null` origin (sandboxed iframes, `file://` pages) is rejected.
+- **Loopback `Host` guard** (v3.1+, [#1358](https://github.com/go-steer/core-agent/issues/1358)) — a listener bound to loopback (`127.0.0.1`, `[::1]`, `localhost`) rejects any request whose `Host` header is neither loopback nor listed in `attach.allowed_hosts` with **421 Misdirected Request** (blocking DNS-rebinding attacks). When an in-sandbox reverse proxy forwards traffic to a loopback listener without rewriting `Host` (such as `ax-task-runner`'s `spec.http.port` pass-through behind Agent Substrate's router), add the router or ingress hostnames to `attach.allowed_hosts` ([#1497](https://github.com/go-steer/core-agent/issues/1497)).
 
 Scripted callers: add `-H "Content-Type: application/json"` to every `curl -X POST/DELETE` against this API.
 

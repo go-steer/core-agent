@@ -1,0 +1,9 @@
+{
+  "attach": {
+    "allowed_hosts": [
+      "atenet-router.ate-system.svc.cluster.local",
+      "atenet-router.ate-system.svc",
+      "atenet-router.ate-system"
+    ]
+  }
+}

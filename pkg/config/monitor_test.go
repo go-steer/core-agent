@@ -92,6 +92,9 @@ Summarize the transitions.
 func TestLoadMonitorWorkload_ValidFullConfig(t *testing.T) {
 	t.Parallel()
 	dir := writeMonitorWorkloadFixture(t, validMonitorWorkloadYAML)
+	if err := os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(`{"servers":{"lookout":{"transport":"http","url":"http://lookout.default.svc:8080/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	outDir := t.TempDir()
 	cfg, err := ImportWorkload(dir, outDir)
 	if err != nil {
@@ -121,6 +124,13 @@ func TestLoadMonitorWorkload_ValidFullConfig(t *testing.T) {
 	selfRun := cfg.Monitor.SelfRunTools()
 	if len(selfRun) != 2 || selfRun[0] != "cluster_watch_diff" || selfRun[1] != "cluster_watch_ack" {
 		t.Errorf("SelfRunTools() = %v, want [cluster_watch_diff cluster_watch_ack]", selfRun)
+	}
+	mainMCPBytes, err := os.ReadFile(filepath.Join(outDir, ".agents", "mcp.json"))
+	if err != nil {
+		t.Fatalf("expected narrowed .agents/mcp.json for monitor self-run tools: %v", err)
+	}
+	if !strings.Contains(string(mainMCPBytes), `"tools"`) || !strings.Contains(string(mainMCPBytes), `"cluster_watch_diff"`) || !strings.Contains(string(mainMCPBytes), `"cluster_watch_ack"`) {
+		t.Errorf("monitor .agents/mcp.json = %s, want self-run tools [cluster_watch_diff cluster_watch_ack] under \"tools\"", mainMCPBytes)
 	}
 }
 

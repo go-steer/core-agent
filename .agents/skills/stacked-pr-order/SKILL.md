@@ -24,6 +24,21 @@ gh pr merge A --admin --squash --delete-branch   # then
 
 Before deleting any remote branch, check for an open PR pointed at it.
 
+## 1a. A stacked child gets no real CI until it targets `main`
+
+`ci.yml` runs on `pull_request: branches: [main]`, as do `docs-lint`,
+`go-toolchain`, `version-fallback`, `ci-docs` and the PR-time agent
+attribution check. A PR based on another feature branch gets only the
+workflows without that filter — in practice `review-gate`; `test`,
+`lint`, `apidiff` and `govulncheck` never run on it. A green check list
+on a stacked PR is therefore not evidence about its Go code.
+
+- Say so in the PR body, and lean on the full local presubmit sweep
+  until it is retargeted.
+- After `gh pr edit <child> --base main`, wait for the real `CI` run to
+  conclude (`gh run list --branch <b>`) before merging the child — the
+  same check as for `--admin` merges below.
+
 ## 2. Rebase the downstream onto new main after each parent lands
 
 ```bash

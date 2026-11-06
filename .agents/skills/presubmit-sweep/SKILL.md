@@ -76,6 +76,22 @@ means the change is unverified.
 - **`verify-mod-tidy` fails.** `go mod tidy` and stage the result.
 - **`test-unit` fails in a package you did not touch.** Check it fails on a
   clean tree too before assuming you caused it.
+- **A registry test fails after you added a package, config key or
+  harness script.** These are deliberate tripwires; each wants one line,
+  in the same PR:
+  - `TestEveryImportablePackageIsADecision` (`internal/testutil`): a new
+    `pkg/...` package needs `promised` or `unsupported` in
+    `dev/api-surface.txt`, **and** the same name in the unsupported list
+    in `docs/compatibility-policy.md` and in the CHANGELOG "Stability
+    promise" paragraph (the test checks all three).
+  - `TestConfigSurfaceIsAccountedFor` (`examples/internal/recipecheck`):
+    a new config path. Decide whether it is version-gated (registers a
+    tool, changes topology or loaded content, or asserts a safety or
+    durability property → add a `GatedFeatures` row), then
+    `go test ./examples/internal/recipecheck -run TestConfigSurfaceIsAccountedFor -update`.
+  - `TestInvocationCensus` (`dev/harness-config-check`): a new script
+    under `dev/` that runs the binary needs its expected count in the
+    census.
 
 ## What the sweep does not prove
 

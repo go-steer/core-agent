@@ -241,6 +241,9 @@ schedule.max_fires
 schedule.prompt
 schedule.timeout
 session.task_class
+state.transcript.agentengine.reasoning_engine
+state.transcript.agentengine.session_ttl
+state.transcript.backend
 subagents[].budgets.max_cost_usd
 subagents[].budgets.max_turns
 subagents[].budgets.max_wallclock_seconds

@@ -4,7 +4,11 @@
 only — `eventlog.Transcript`, `eventlog.OpenTranscript`,
 `pkg/statestore/{memory,conformance}` — with control, index and the
 per-session state stores still on the local SQL database (see
-Amendments). Phase 3, the Agent Engine transcript backend, follows.
+Amendments). Phase 3, the Agent Engine transcript backend, is
+`pkg/statestore/agentengine`, selected with `state.transcript.backend:
+"agentengine"` in `.agents/config.json`; the site's Sessions page says
+what survives a machine loss at this point and what (the ACL index,
+phase 4) does not.
 Open questions 1–4 of the first draft were settled by the maintainer
 on 2026-10-01 (decisions 13–16).
 

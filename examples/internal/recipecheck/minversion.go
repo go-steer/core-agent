@@ -164,6 +164,13 @@ type GatedFeature struct {
 // a path this package has never seen, which forces the question.
 var GatedFeatures = []GatedFeature{
 	{
+		Path: "state.transcript.backend",
+		Min:  "3.2.0-dev.1",
+		Why: "a non-sql transcript backend is a durability assertion (#1192): the session is meant to " +
+			"outlive the machine. An older daemon drops the `state` block, keeps the transcript in the " +
+			"local SQLite file, and the sessions the recipe believed were in Agent Engine are not",
+	},
+	{
 		Path: "alerts.targets",
 		Min:  "2.9.0-dev.1",
 		Why: "the `alert` tool registers only when a target is configured (#607). " +

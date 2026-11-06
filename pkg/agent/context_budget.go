@@ -53,11 +53,8 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"google.golang.org/adk/v2/session"
-
-	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // ContextBudgetHardCeiling is the fraction of the context window past
@@ -188,44 +185,15 @@ func (a *Agent) enforceContextBudgetInTurn() {
 // different report from a session that cut one, and collapsing the two
 // would hide the worse of them.
 func (a *Agent) cutTurnForContextBudget(used, size int) {
-	a.mu.Lock()
-	if a.contextBudgetCut {
-		a.mu.Unlock()
+	if a == nil {
 		return
 	}
-	a.contextBudgetCut = true
-	// Pending regardless of what the compactor's own threshold said: at
-	// this fill the next request does not fit, so the next turn has to
-	// reduce before it does anything else.
-	a.compactionPending = true
-	pending := a.tracker.PendingContextBytes()
-	a.mu.Unlock()
-
-	detail := fmt.Sprintf(
-		"a tool result took the estimated context to %d of %d tokens (%.0f%%, including %d unmeasured bytes); "+
-			"cut the turn before building a request the provider would reject, and compaction runs first on any further turn.",
-		used, size, 100*float64(used)/float64(size), pending)
-	// The session goes on the log line only, not into detail (#1136).
-	// detail is also the durable degraded row's text, and that row is
-	// already filed under its session — repeating the id inside it would
-	// be noise in the one place it is redundant. Leading rather than
-	// mid-sentence, which every operator line in this package now is
-	// (#1137): this one always was, and the guardrail lines that used to
-	// splice theirs in after the guardrail's name were moved to match.
-	// The fixed slot is a rule, not a per-site judgement — see
-	// logSessionSuffix.
-	//
-	// turnCutNoNextTurn rides the log line for the same reason and not
-	// the same one (#1140). "Compaction will run first on the next
-	// turn" promised a turn a one-shot never takes — that half is fixed
-	// in detail itself, in the subjunctive, because a stale promise is
-	// wrong in the durable row too. Naming the one-shot is the half
-	// that is log-only: the row is read by a surface that queried the
-	// session, so it has a caller by construction and is exactly the
-	// reader for whom "a -p run ends here" is noise.
-	log.Printf("agent:%s %s %s", a.logSessionSuffix(), detail, turnCutNoNextTurn)
-	a.recordContextReductionDegraded(wire.ContextReductionTurnCut, detail)
-	a.Interrupt()
+	a.applyTurnSignal(turnSignal{
+		kind:        signalContextBudget,
+		inTurn:      true,
+		contextUsed: used,
+		contextSize: size,
+	})
 }
 
 // clearContextBudgetCut resets the per-turn latch at turn start, the

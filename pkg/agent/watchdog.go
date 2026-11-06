@@ -26,7 +26,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -606,29 +605,10 @@ func (a *Agent) enforceWatchdogInTurn() {
 	if a == nil || a.watchdog == nil || !a.watchdogEnforce {
 		return
 	}
-	// Already stopped: the Interrupt below has fired and the turn is
-	// unwinding. Re-draining would be harmless but re-interrupting a
-	// turn whose cancel has been cleared is pointless work on every
-	// remaining event in the stream. Both stops are checked — a
-	// turn-scoped cut (#1090) leaves watchdogTripped clear, and reading
-	// only that flag would re-enter the drain after every cut.
 	if a.watchdogStopped() {
 		return
 	}
-	// Cut the turn on what this pass decided, not on the session flag.
-	// A turn-scoped trip does not set that flag, and the whole point of
-	// a turn-scoped bound is that it stops the turn — reading the
-	// session flag back here would have left the looping turn running.
-	if a.drainWatchdogAlerts(true) {
-		// Mark before cutting so the turn's metric point is labelled
-		// with the guardrail rather than the bare `canceled` the
-		// Interrupt produces (#818 part 2; see guardrail_halt.go). The
-		// `canceled` turn-error itself now stands as this turn's one
-		// terminal frame — the trip went out on its own non-terminal
-		// event above, so there is nothing left to suppress (#891).
-		a.markGuardrailHalt(wire.TurnErrorWatchdog)
-		a.Interrupt()
-	}
+	a.drainWatchdogAlerts(true)
 }
 
 // watchdogStopped reports whether the watchdog has already stopped
@@ -739,64 +719,16 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert, haltedTurn bool) bool
 		return false
 	}
 
-	// halt says whether this trip takes the session down with the turn.
-	halt := true
-	var reason string
+	kind := signalWatchdogSession
 	if trigger.Scope == watchdog.ScopeTurn {
-		streak := a.recordWatchdogTurnCut()
-		if streak >= maxConsecutiveWatchdogTurnCuts {
-			reason = fmt.Sprintf(
-				"watchdog halted the agent (%s): %d turns in a row were cut for this signal. The last one: %s Ending the turn stopped each of them and the next turn started the same behavior again, which is the pattern a turn-scoped cut cannot answer on its own. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
-				trigger.Signal, streak, trigger.Reason,
-			)
-		} else {
-			halt = false
-			reason = fmt.Sprintf(
-				"watchdog cut the turn (%s): %s "+
-					"The turn was stopped with its work unfinished; the session is NOT halted, "+
-					"and a further turn would start clean. "+turnCutNoNextTurn+
-					" %d in a row now — at %d the session halts and needs an operator reset.",
-				trigger.Signal, trigger.Reason, streak, maxConsecutiveWatchdogTurnCuts,
-			)
-			// Scrub the signals' accumulated evidence, exactly as the
-			// gate's own cut does (#1086). Two reasons, and the second is
-			// load-bearing. The evidence has been disposed of by other
-			// means — the turn it was about is over — so holding it against
-			// the next turn would cut that one too, on a run of calls the
-			// model can no longer be making. And the signals that latch
-			// "one alert per streak" (NoOpStreakSignal does) would
-			// otherwise never alert again, which would leave the
-			// escalation below permanently stuck at one and the loop it
-			// guards against unbounded.
-			a.resetWatchdogSignals()
-		}
-	} else {
-		reason = fmt.Sprintf(
-			"watchdog halted the agent (%s): %s Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
-			trigger.Signal, trigger.Reason,
-		)
+		kind = signalWatchdogTurn
 	}
-
-	if halt {
-		a.mu.Lock()
-		a.watchdogTripped = true
-		a.watchdogReason = reason
-		a.mu.Unlock()
-
-		// Durable halt (#643). This is the trip that most needs to survive
-		// a restart: a runaway loop that ends in an OOM kill is exactly the
-		// shape that would otherwise resume looping in the next pod. Only a
-		// halt writes the halt row; a turn-scoped cut has nothing to
-		// restore, and re-arming it in the next process would mean one cut
-		// turn refusing a session it never refused, so its row (#1258) is a
-		// different kind the fold ignores.
-	}
-
-	// The durable row — the halt row when halt, a per-turn trip row
-	// otherwise (#1258) — is written by emitGuardrailTrip, so the log
-	// line, the row and the frame come from one site.
-	a.emitGuardrailTrip(wire.GuardrailWatchdog, reason, haltedTurn, halt)
-	return true
+	return a.applyTurnSignal(turnSignal{
+		kind:           kind,
+		inTurn:         haltedTurn,
+		watchdogSignal: trigger.Signal,
+		rawReason:      trigger.Reason,
+	}).stoppedTurn()
 }
 
 // maxConsecutiveWatchdogTurnCuts is how many turns may end in a
@@ -813,17 +745,6 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert, haltedTurn bool) bool
 // streak is the session-level answer to that, so the per-turn decision
 // can stay proportionate to a per-turn problem.
 const maxConsecutiveWatchdogTurnCuts = 3
-
-// recordWatchdogTurnCut latches this turn as cut and returns the
-// resulting consecutive-cut count. Called exactly once per turn, from
-// the arm above, under the latch that arm checks first.
-func (a *Agent) recordWatchdogTurnCut() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.watchdogTurnCut = true
-	a.watchdogTurnCutStreak++
-	return a.watchdogTurnCutStreak
-}
 
 // preflightWatchdog returns a non-nil watchdogError when a prior turn
 // tripped the watchdog under enforce mode and the operator hasn't

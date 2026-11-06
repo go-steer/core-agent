@@ -130,11 +130,13 @@ func logSites() []struct {
 		needle:  "wake fenced while the guardrail is tripped",
 		drive: func(t *testing.T, session string) {
 			a := &Agent{
-				sessionID:       session,
-				inbox:           newInbox(),
-				wake:            newWakeSignal(),
-				watchdogTripped: true,
-				watchdogReason:  "watchdog halted the agent (repeated-tool-call): looping.",
+				sessionID: session,
+				inbox:     newInbox(),
+				wake:      newWakeSignal(),
+				guardrailState: guardrailState{
+					watchdogTripped: true,
+					watchdogReason:  "watchdog halted the agent (repeated-tool-call): looping.",
+				},
 			}
 			a.fireWakeFenced()
 		},

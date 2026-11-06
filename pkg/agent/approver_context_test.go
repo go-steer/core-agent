@@ -441,8 +441,16 @@ func TestCostCeilingReached(t *testing.T) {
 	for _, tc := range cases {
 		tr := usage.NewTracker()
 		tr.Append("m", 1_000_000, 0, usage.Pricing{InputPerMTok: tc.spend})
-		a := &Agent{tracker: tr, costCeiling: tc.ceiling, costCeilingExceeded: tc.exceeded, turnCeilingTripped: tc.tripped,
-			turnStartCost: tc.turnStart, turnStartCostSet: true}
+		a := &Agent{
+			tracker:     tr,
+			costCeiling: tc.ceiling,
+			guardrailState: guardrailState{
+				costCeilingExceeded: tc.exceeded,
+				turnCeilingTripped:  tc.tripped,
+				turnStartCost:       tc.turnStart,
+				turnStartCostSet:    true,
+			},
+		}
 		if got := a.costCeilingReached(); got != tc.want {
 			t.Errorf("%s: costCeilingReached() = %v, want %v", tc.name, got, tc.want)
 		}

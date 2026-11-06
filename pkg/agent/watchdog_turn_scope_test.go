@@ -253,7 +253,14 @@ func TestEnforceWatchdogInTurn_CutsOnATurnScopedCritical(t *testing.T) {
 func TestResetWatchdog_ClearsTheTurnCutStreak(t *testing.T) {
 	t.Parallel()
 
-	a := &Agent{watchdog: &fakeWatchdog{}, watchdogEnforce: true, watchdogTurnCut: true, watchdogTurnCutStreak: maxConsecutiveWatchdogTurnCuts}
+	a := &Agent{
+		watchdog:        &fakeWatchdog{},
+		watchdogEnforce: true,
+		guardrailState: guardrailState{
+			watchdogTurnCut:       true,
+			watchdogTurnCutStreak: maxConsecutiveWatchdogTurnCuts,
+		},
+	}
 	a.ResetWatchdog()
 
 	a.mu.Lock()

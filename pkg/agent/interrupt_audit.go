@@ -15,10 +15,10 @@
 package agent
 
 import (
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
-// MarkInterruptPending is the agent side of attach.InterruptSelfAuditor.
+// MarkInterruptPending is the agent side of wire.InterruptSelfAuditor.
 // The attach /interrupt handler calls it (via the adapter) after an
 // operator cancel actually fired, instead of appending the audit row
 // out-of-band. The row is then written from the post-turn cleanup (see
@@ -56,5 +56,5 @@ func (a *Agent) drainInterruptAudit() {
 	if a == nil || !a.pendingInterruptAudit.Swap(false) {
 		return
 	}
-	a.queueOutOfBandEvent(attach.NewInterruptAuditEvent())
+	a.queueOutOfBandEvent(wire.NewInterruptAuditEvent())
 }

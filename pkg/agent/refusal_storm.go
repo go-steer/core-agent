@@ -59,13 +59,13 @@
 // refused requests is in the same state as one repeating a single
 // request, and both are unambiguous.
 //
-// NO GUARDRAIL-TRIP EVENT. attach.GuardrailTrip's vocabulary is shared
+// NO GUARDRAIL-TRIP EVENT. wire.GuardrailTrip's vocabulary is shared
 // with the reset endpoint and the durable trip row, so announcing a cut
 // that needs no reset through it would tell a client there is something
 // to reset. The turn's terminal frame is the ordinary `canceled` that
 // Interrupt produces; the reason is durable in the eventlog as an audit
 // row, and the model's own history already carries the refusals that
-// caused it. The metric gets attach.TurnErrorRefusalStorm so a backend
+// caused it. The metric gets wire.TurnErrorRefusalStorm so a backend
 // can still tell this stop from an operator pressing stop.
 //
 // It does, since #1131, write a log line. That is not a reversal of the
@@ -83,7 +83,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // refusalStormThreshold is how many calls the gate may refuse without
@@ -158,7 +158,7 @@ func (a *Agent) enforceRefusalStormInTurn(ctx context.Context) {
 	// the Interrupt produces. The reason text deliberately states that
 	// nothing needs resetting — the thing the event was withheld to
 	// avoid implying.
-	a.logGuardrailCut(attach.TurnErrorRefusalStorm, fmt.Sprintf(
+	a.logGuardrailCut(wire.TurnErrorRefusalStorm, fmt.Sprintf(
 		"the approval gate refused %d tool calls in this turn and the model kept "+
 			"re-issuing them. The turn was stopped with its work unfinished; nothing "+
 			"is tripped, no operator reset is needed, and a further turn would start "+
@@ -169,7 +169,7 @@ func (a *Agent) enforceRefusalStormInTurn(ctx context.Context) {
 	// context.Canceled and nothing downstream could otherwise tell this
 	// stop from an operator interrupt. This is NOT a guardrail trip —
 	// markGuardrailHalt only relabels, it does not trip anything.
-	a.markGuardrailHalt(attach.TurnErrorRefusalStorm)
+	a.markGuardrailHalt(wire.TurnErrorRefusalStorm)
 	// Take the repetition off the watchdog's books on the way out
 	// (#1086). The calls being cut here are the watchdog's evidence too —
 	// it is watching the same stream — and its run length is not

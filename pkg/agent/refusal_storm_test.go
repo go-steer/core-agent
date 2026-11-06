@@ -32,7 +32,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
@@ -250,12 +250,12 @@ func TestRun_RefusalStorm_1081_EndsTheTurnWithoutEndingTheSession(t *testing.T) 
 		t.Errorf("the operator was paged %d times for one refused request, want 1", p.asked)
 	}
 
-	if got, want := rec.frames(), []string{"turn-error:" + attach.TurnErrorCanceled}; !slices.Equal(got, want) {
+	if got, want := rec.frames(), []string{"turn-error:" + wire.TurnErrorCanceled}; !slices.Equal(got, want) {
 		t.Errorf("terminal frames = %v, want %v — the turn was cut, and `canceled` is "+
 			"what happened to it", got, want)
 	}
 	if trips := rec.guardrailTrips(); len(trips) != 0 {
-		t.Errorf("got %d guardrail-trip frames %+v, want 0 — attach.GuardrailTrip's "+
+		t.Errorf("got %d guardrail-trip frames %+v, want 0 — wire.GuardrailTrip's "+
 			"vocabulary is shared with the reset endpoint and the durable trip row, so "+
 			"announcing a cut that needs no reset through it tells the client there is "+
 			"something to reset", len(trips), trips)
@@ -271,9 +271,9 @@ func TestRun_RefusalStorm_1081_EndsTheTurnWithoutEndingTheSession(t *testing.T) 
 	if len(pts) != 1 {
 		t.Fatalf("got %d invocation points, want 1", len(pts))
 	}
-	if et, _ := invAttr(pts[0].Attributes, AttrErrorType); et != attach.TurnErrorRefusalStorm {
+	if et, _ := invAttr(pts[0].Attributes, AttrErrorType); et != wire.TurnErrorRefusalStorm {
 		t.Errorf("%s = %q, want %q — the cancel is how the cut was carried out, not why",
-			AttrErrorType, et, attach.TurnErrorRefusalStorm)
+			AttrErrorType, et, wire.TurnErrorRefusalStorm)
 	}
 
 	rows := refusalStormRows(t, a)
@@ -298,7 +298,7 @@ func TestRun_RefusalStorm_1081_EndsTheTurnWithoutEndingTheSession(t *testing.T) 
 	llm.setBudget(0)
 	drainTurn(t, a, "just tell me what you found")
 	if got, want := rec.frames(), []string{
-		"turn-error:" + attach.TurnErrorCanceled,
+		"turn-error:" + wire.TurnErrorCanceled,
 		"turn-complete",
 	}; !slices.Equal(got, want) {
 		t.Errorf("terminal frames across both turns = %v, want %v — the turn after a "+
@@ -337,7 +337,7 @@ func TestRun_RefusalStorm_ThresholdIsExactlyThree(t *testing.T) {
 		{
 			name:      "three is",
 			toolCalls: 4,
-			wantFrame: "turn-error:" + attach.TurnErrorCanceled,
+			wantFrame: "turn-error:" + wire.TurnErrorCanceled,
 			wantRows:  1,
 		},
 	}
@@ -388,7 +388,7 @@ func TestRun_RefusalStorm_AWatchdogDoesNotChangeTheOutcome(t *testing.T) {
 
 	drainTurn(t, a, "clean up the cluster")
 
-	if got, want := rec.frames(), []string{"turn-error:" + attach.TurnErrorCanceled}; !slices.Equal(got, want) {
+	if got, want := rec.frames(), []string{"turn-error:" + wire.TurnErrorCanceled}; !slices.Equal(got, want) {
 		t.Errorf("terminal frames = %v, want %v", got, want)
 	}
 	if tripped, reason := a.WatchdogTripped(); tripped {
@@ -544,7 +544,7 @@ func TestRun_RefusalStorm_1086_TheCutTakesTheRepetitionOffTheWatchdogsBooks(t *t
 			"fixing it", reason)
 	}
 	if got, want := rec.frames(), []string{
-		"turn-error:" + attach.TurnErrorCanceled, "turn-complete",
+		"turn-error:" + wire.TurnErrorCanceled, "turn-complete",
 	}; !slices.Equal(got, want) {
 		t.Errorf("terminal frames = %v, want %v — the gate cut the first turn and the "+
 			"second one ran", got, want)

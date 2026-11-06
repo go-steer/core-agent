@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Durable guardrail halt state (#643) — the agent side of the eventlog
-// rows defined in pkg/attach/guardrail_events.go.
+// rows defined in pkg/attach/wire/guardrail_events.go.
 //
 // Before this, a watchdog trip or a cost-ceiling halt lived only in the
 // Agent struct. A crash, an OOM kill, or a pod roll started a fresh
@@ -61,7 +61,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
@@ -270,17 +270,17 @@ func (a *Agent) RecordGuardrailReset(reset []string, budgetUSD float64, caller s
 		a.mu.Lock()
 		for _, g := range reset {
 			switch g {
-			case attach.GuardrailWatchdog:
+			case wire.GuardrailWatchdog:
 				a.watchdogTripped = false
 				a.watchdogReason = ""
-			case attach.GuardrailCostCeiling:
+			case wire.GuardrailCostCeiling:
 				a.costCeilingExceeded = false
 				a.costCeilingReason = ""
 			}
 		}
 		a.mu.Unlock()
 	}
-	a.queueOutOfBandEvent(attach.NewGuardrailResetAuditEvent(caller, reset, budgetUSD))
+	a.queueOutOfBandEvent(wire.NewGuardrailResetAuditEvent(caller, reset, budgetUSD))
 }
 
 // RestoreGuardrails folds this session's durable guardrail rows and
@@ -320,7 +320,7 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 	if done {
 		return nil
 	}
-	var st attach.GuardrailPersistedState
+	var st wire.GuardrailPersistedState
 	if a.eventLog.Guardrail != nil {
 		if _, err := a.eventLog.Service.Get(ctx, &session.GetRequest{
 			AppName:         a.appName,
@@ -343,7 +343,7 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			st = attach.FoldGuardrailEvents(eventSeq(getResp.Session))
+			st = wire.FoldGuardrailEvents(eventSeq(getResp.Session))
 			if err := a.eventLog.Guardrail.SaveState(ctx, eventlog.GuardrailState{
 				AppName:            a.appName,
 				UserID:             a.userID,
@@ -360,7 +360,7 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 				)
 			}
 		} else {
-			st = attach.GuardrailPersistedState{
+			st = wire.GuardrailPersistedState{
 				WatchdogTripped: gs.WatchdogTripped,
 				WatchdogReason:  gs.WatchdogReason,
 				CostTripped:     gs.CostTripped,
@@ -377,7 +377,7 @@ func (a *Agent) RestoreGuardrails(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		st = attach.FoldGuardrailEvents(eventSeq(getResp.Session))
+		st = wire.FoldGuardrailEvents(eventSeq(getResp.Session))
 	}
 
 	a.mu.Lock()
@@ -407,7 +407,7 @@ func (a *Agent) ensureGuardrailsRestored(ctx context.Context) {
 // process's configuration. Caller must hold a.mu. See the package
 // comment: durable state restores a halt the operator hasn't cleared,
 // it does not re-enable a backstop the operator has since turned off.
-func (a *Agent) applyGuardrailStateLocked(st attach.GuardrailPersistedState) {
+func (a *Agent) applyGuardrailStateLocked(st wire.GuardrailPersistedState) {
 
 	// Budget first: it is what makes a restored cost trip evaluable
 	// against the bar the operator actually left in place. Only

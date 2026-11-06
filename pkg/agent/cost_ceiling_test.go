@@ -28,7 +28,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
@@ -118,7 +118,7 @@ func TestMaybeEnforceCostCeiling_PerTurn_Trips(t *testing.T) {
 	// per-turn bound bounds a turn: it does not halt the session, so
 	// CostCeilingTripped — which answers "is the agent refusing turns?"
 	// — must still say no.
-	assertOneTrip(t, &rec, attach.GuardrailCostCeiling, false)
+	assertOneTrip(t, &rec, wire.GuardrailCostCeiling, false)
 	if tripped, reason := a.CostCeilingTripped(); tripped {
 		t.Fatalf("a single per-turn trip must not halt the session; got tripped=%v reason=%q", tripped, reason)
 	}
@@ -546,7 +546,7 @@ func TestRun_CostCeiling_SettlesAfterHarnessAppend(t *testing.T) {
 			gotErr = err
 		}
 	}
-	assertOneTrip(t, &rec, attach.GuardrailCostCeiling, false)
+	assertOneTrip(t, &rec, wire.GuardrailCostCeiling, false)
 	if reason := rec.guardrailTrips()[0].Reason; !strings.Contains(reason, "per-turn") {
 		t.Errorf("settle-time trip should name the per-turn bound; got %q", reason)
 	}
@@ -784,7 +784,7 @@ func TestRun_CostCeiling_RetainsEstimatesUntilHarnessSettlement(t *testing.T) {
 	if !errors.Is(runErr, context.Canceled) {
 		t.Errorf("Run error = %v, want the per-turn guardrail cancellation", runErr)
 	}
-	assertOneTrip(t, rec, attach.GuardrailCostCeiling, true)
+	assertOneTrip(t, rec, wire.GuardrailCostCeiling, true)
 }
 
 func TestRun_CostCeiling_DoesNotDoubleCountInlineSettledEstimate(t *testing.T) {
@@ -885,7 +885,7 @@ func TestRun_CostCeiling_HaltsAnIntraTurnBurn(t *testing.T) {
 	if len(trips) == 0 {
 		t.Fatalf("ceiling never tripped after %d model calls costing $%.4f", calls, tr.Totals().CostUSD)
 	}
-	assertOneTrip(t, &rec, attach.GuardrailCostCeiling, true)
+	assertOneTrip(t, &rec, wire.GuardrailCostCeiling, true)
 	if reason := trips[0].Reason; !strings.Contains(reason, "per-turn") {
 		t.Errorf("trip reason = %q, want the per-turn ceiling", reason)
 	}
@@ -971,7 +971,7 @@ func TestRun_CostCeiling_PreflightsInputBeforeCallingModel(t *testing.T) {
 	if !errors.Is(runErr, context.Canceled) {
 		t.Errorf("Run error = %v, want the existing per-turn guardrail cancellation", runErr)
 	}
-	assertOneTrip(t, &rec, attach.GuardrailCostCeiling, true)
+	assertOneTrip(t, &rec, wire.GuardrailCostCeiling, true)
 	if halted, _ := a.CostCeilingTripped(); halted {
 		t.Error("one per-turn preflight trip must not halt the session")
 	}

@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // wakeSignal multiplexes an arbitrary number of "wake the loop"
@@ -279,7 +279,7 @@ func (a *Agent) RequestWake() {
 		return
 	}
 	a.fireWakeFenced()
-	a.emit(attach.EventWake, attach.WakeEvent{At: time.Now().UTC()})
+	a.emit(wire.EventWake, wire.WakeEvent{At: time.Now().UTC()})
 }
 
 // WakeRequested returns the agent's DEFAULT wake subscription: a

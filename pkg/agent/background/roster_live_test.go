@@ -28,7 +28,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // stepLLM answers its Nth model call with steps[N]; calls past the end
@@ -93,7 +93,7 @@ func gated(started, release chan struct{}, next func(context.Context) *adkmodel.
 	}
 }
 
-func rosterRow(t *testing.T, mgr *Manager, name string) attach.AgentInfo {
+func rosterRow(t *testing.T, mgr *Manager, name string) wire.AgentInfo {
 	t.Helper()
 	for _, ai := range mgr.ListSubagents() {
 		if ai.Name == name {
@@ -101,7 +101,7 @@ func rosterRow(t *testing.T, mgr *Manager, name string) attach.AgentInfo {
 		}
 	}
 	t.Fatalf("subagent %q not on the roster", name)
-	return attach.AgentInfo{}
+	return wire.AgentInfo{}
 }
 
 func spawnStepped(t *testing.T, llm *stepLLM, scheduler string) (*Manager, *Handle) {
@@ -140,7 +140,7 @@ func TestListSubagents_ReportsPendingWake(t *testing.T) {
 	mgr, h := spawnStepped(t, llm, "sleep")
 	defer close(release)
 
-	var asleep attach.AgentInfo
+	var asleep wire.AgentInfo
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		asleep = rosterRow(t, mgr, h.Name)
@@ -157,8 +157,8 @@ func TestListSubagents_ReportsPendingWake(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if asleep.Status != attach.AgentStatusRunning {
-		t.Errorf("status while asleep = %q, want %q — a new word reads as finished to shipped TUIs", asleep.Status, attach.AgentStatusRunning)
+	if asleep.Status != wire.AgentStatusRunning {
+		t.Errorf("status while asleep = %q, want %q — a new word reads as finished to shipped TUIs", asleep.Status, wire.AgentStatusRunning)
 	}
 	if asleep.WakeDetail != "polling cluster-A" {
 		t.Errorf("wake_detail = %q, want the model's reason %q", asleep.WakeDetail, "polling cluster-A")
@@ -179,7 +179,7 @@ func TestListSubagents_ReportsPendingWake(t *testing.T) {
 	if !awake.NextWakeAt.IsZero() || awake.WakeDetail != "" {
 		t.Errorf("mid-turn row = %+v, want no wake fields — the subagent is working, not sleeping", awake)
 	}
-	if awake.Status != attach.AgentStatusRunning {
+	if awake.Status != wire.AgentStatusRunning {
 		t.Errorf("mid-turn status = %q, want running", awake.Status)
 	}
 
@@ -235,7 +235,7 @@ func TestListSubagents_LiveLastReportFollowsAlerts(t *testing.T) {
 // "asleep". omitempty would not do this for a time.Time.
 func TestAgentInfo_WakeFieldsAbsentWhenUnset(t *testing.T) {
 	t.Parallel()
-	b, err := json.Marshal(attach.AgentInfo{ID: "m", Name: "m", Status: attach.AgentStatusRunning})
+	b, err := json.Marshal(wire.AgentInfo{ID: "m", Name: "m", Status: wire.AgentStatusRunning})
 	if err != nil {
 		t.Fatal(err)
 	}

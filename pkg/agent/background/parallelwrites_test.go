@@ -27,7 +27,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // parkedProvider yields an LLM that parks until release is closed,
@@ -275,8 +275,8 @@ func (s stubToolset) Tools(adkagent.ReadonlyContext) ([]tool.Tool, error) {
 func TestSpawnWritesSharedFilesystem(t *testing.T) {
 	t.Parallel()
 	ts := []tool.Toolset{stubToolset{name: "some-server"}}
-	skillInfo := attach.ToolInfo{Name: "load_skill", Source: attach.ToolSourceSkill}
-	mcpInfo := attach.ToolInfo{Name: "k8s_apply", Source: "mcp", Server: "k8s"}
+	skillInfo := wire.ToolInfo{Name: "load_skill", Source: wire.ToolSourceSkill}
+	mcpInfo := wire.ToolInfo{Name: "k8s_apply", Source: "mcp", Server: "k8s"}
 
 	cases := []struct {
 		name string
@@ -287,15 +287,15 @@ func TestSpawnWritesSharedFilesystem(t *testing.T) {
 		{"read-only builtin", resolvedSpawn{tools: []tool.Tool{newNamedStubTool(t, "grep")}}, false},
 		{"mutating builtin", resolvedSpawn{tools: []tool.Tool{newNamedStubTool(t, "write_file")}}, true},
 		{"control-plane only", resolvedSpawn{tools: []tool.Tool{newNamedStubTool(t, "report_completed")}}, false},
-		{"skills-only toolset", resolvedSpawn{toolsets: ts, toolsetTools: []attach.ToolInfo{skillInfo}}, false},
-		{"mcp toolset", resolvedSpawn{toolsets: ts, toolsetTools: []attach.ToolInfo{mcpInfo}}, true},
-		{"mcp among skills", resolvedSpawn{toolsets: ts, toolsetTools: []attach.ToolInfo{skillInfo, mcpInfo}}, true},
+		{"skills-only toolset", resolvedSpawn{toolsets: ts, toolsetTools: []wire.ToolInfo{skillInfo}}, false},
+		{"mcp toolset", resolvedSpawn{toolsets: ts, toolsetTools: []wire.ToolInfo{mcpInfo}}, true},
+		{"mcp among skills", resolvedSpawn{toolsets: ts, toolsetTools: []wire.ToolInfo{skillInfo, mcpInfo}}, true},
 		// The snapshot is optional (SubagentTemplate.ToolsetTools), so
 		// its absence means "unknown surface" — which resolves the
 		// fail-safe way, not the convenient one.
 		{"toolset with no snapshot", resolvedSpawn{toolsets: ts}, true},
 		// A snapshot with no toolsets cannot describe anything runnable.
-		{"snapshot with no toolsets", resolvedSpawn{toolsetTools: []attach.ToolInfo{mcpInfo}}, false},
+		{"snapshot with no toolsets", resolvedSpawn{toolsetTools: []wire.ToolInfo{mcpInfo}}, false},
 	}
 	for _, tc := range cases {
 		if got := spawnWritesSharedFilesystem(tc.rs); got != tc.want {
@@ -313,7 +313,7 @@ func TestSpawnWritesSharedFilesystem_McpDoesNotInheritBuiltinNames(t *testing.T)
 	t.Parallel()
 	rs := resolvedSpawn{
 		toolsets:     []tool.Toolset{stubToolset{name: "impostor"}},
-		toolsetTools: []attach.ToolInfo{{Name: "grep", Source: "mcp", Server: "impostor"}},
+		toolsetTools: []wire.ToolInfo{{Name: "grep", Source: "mcp", Server: "impostor"}},
 	}
 	if !spawnWritesSharedFilesystem(rs) {
 		t.Error("an MCP tool named `grep` was classified read-only by name; source must decide first")
@@ -328,7 +328,7 @@ func TestSpawnWritesSharedFilesystem_UnclassifiedSkillToolIsFailSafe(t *testing.
 	t.Parallel()
 	rs := resolvedSpawn{
 		toolsets:     []tool.Toolset{stubToolset{name: "skills"}},
-		toolsetTools: []attach.ToolInfo{{Name: "mutate_skill", Source: attach.ToolSourceSkill}},
+		toolsetTools: []wire.ToolInfo{{Name: "mutate_skill", Source: wire.ToolSourceSkill}},
 	}
 	if !spawnWritesSharedFilesystem(rs) {
 		t.Error("an unrecognised skill tool must classify as writing — a namespace blanket would have hidden it")

@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 func TestWakeSignal_FireAndDrain(t *testing.T) {
@@ -143,12 +143,12 @@ func TestAgent_RequestWakePublishesWakeEvent(t *testing.T) {
 
 	a.RequestWake()
 
-	if got := rec.count(attach.EventWake); got != 1 {
+	if got := rec.count(wire.EventWake); got != 1 {
 		t.Fatalf("wake events emitted = %d, want 1 — nothing outside this process can see the wake", got)
 	}
-	ev, ok := rec.last.(attach.WakeEvent)
+	ev, ok := rec.last.(wire.WakeEvent)
 	if !ok {
-		t.Fatalf("payload = %T, want attach.WakeEvent", rec.last)
+		t.Fatalf("payload = %T, want wire.WakeEvent", rec.last)
 	}
 	if ev.At.IsZero() {
 		t.Error("WakeEvent.At is zero; consumers stamp the notice with it")
@@ -170,10 +170,10 @@ func TestAgent_InjectDoesNotPublishWakeEvent(t *testing.T) {
 		t.Fatalf("Inject: %v", err)
 	}
 
-	if got := rec.count(attach.EventInbox); got != 1 {
+	if got := rec.count(wire.EventInbox); got != 1 {
 		t.Errorf("inbox events = %d, want 1 (the inject's own frame)", got)
 	}
-	if got := rec.count(attach.EventWake); got != 0 {
+	if got := rec.count(wire.EventWake); got != 0 {
 		t.Errorf("wake events = %d, want 0 — inject is reported by its inbox frame, not by a wake", got)
 	}
 	// The signal itself still fires: the local scheduler must still be
@@ -196,7 +196,7 @@ func TestAgent_RequestWakePublishesWithoutWakeSignal(t *testing.T) {
 
 	a.RequestWake() // must not panic
 
-	if got := rec.count(attach.EventWake); got != 1 {
+	if got := rec.count(wire.EventWake); got != 1 {
 		t.Errorf("wake events = %d, want 1", got)
 	}
 }

@@ -48,7 +48,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // CheckpointEventTag is the value stored under
@@ -425,6 +425,6 @@ func (a *Agent) runPendingCheckpoint(ctx context.Context) {
 		// the durable row (#908). No backoff counters to report here —
 		// the checkpoint path has none; the cleared flag is what stops
 		// it looping.
-		a.recordContextReductionFailure(attach.ContextReductionCheckpoint, err, 0, 0)
+		a.recordContextReductionFailure(wire.ContextReductionCheckpoint, err, 0, 0)
 	}
 }

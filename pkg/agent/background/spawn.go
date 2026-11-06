@@ -30,7 +30,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
@@ -126,7 +126,7 @@ type resolvedSpawn struct {
 	// dimension from this rather than enumerating a live MCP server at
 	// spawn time; empty means "unknown surface", which classifies as
 	// writing. Nil on the catalog path, which has no toolsets.
-	toolsetTools []attach.ToolInfo
+	toolsetTools []wire.ToolInfo
 	// buildModel builds a fresh LLM for this spawn. Called after the
 	// reservation so a Stop arriving during its (network) I/O still
 	// cancels cleanly (#366). priceModelID labels the model for /usage,

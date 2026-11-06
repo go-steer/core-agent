@@ -80,7 +80,10 @@ two repositories answering "which one is the product?".
    `pkg/usage` reference core-tui, charm and prometheus only in comments. The
    weight is API surface, and the fix is the apidiff + promised-subset
    discipline (#1368, #1398) plus a one-call facade (#1404), inside
-   core-agent. **Extraction trigger:** when a second real consumer needs the
+   core-agent. The attach protocol's vocabulary lives in `pkg/attach/wire`
+   so `pkg/agent` emits it without linking the HTTP/SSE server (#1415);
+   `gorm.io/gorm` core (driverless) is accepted in the slim slice because
+   `eventlog.Handle` is part of `pkg/agent`'s contract. **Extraction trigger:** when a second real consumer needs the
    governance plugins (gate, outbox, meter, guardrail store) without the
    daemon, extract them from core-agent into a new leaf module — core-models
    is the template — under a new name. Not before, and not as "mast".

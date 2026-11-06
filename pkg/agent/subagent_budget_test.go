@@ -23,7 +23,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
@@ -318,7 +318,7 @@ func TestSubagentTool_ParentTurnCeilingPreflightsChildRequest(t *testing.T) {
 	if calls != 0 {
 		t.Errorf("child provider calls = %d, want 0 when its estimated input alone exceeds the parent's per-turn ceiling", calls)
 	}
-	assertOneTrip(t, &rec, attach.GuardrailCostCeiling, true)
+	assertOneTrip(t, &rec, wire.GuardrailCostCeiling, true)
 }
 
 // TestSubagentTool_WallclockBudgetStopsTheDelegation. Wall-clock is the

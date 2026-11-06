@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // TestPushAlert_WakesParent is the #780 regression pin. Alerts are
@@ -71,13 +71,13 @@ func TestPushAlert_WakePublishesEvent(t *testing.T) {
 
 	var sawWake bool
 	for _, k := range kinds {
-		if k == attach.EventWake {
+		if k == wire.EventWake {
 			sawWake = true
 		}
 	}
 	if !sawWake {
 		t.Errorf("emitted events = %v, want one %q — an attached operator has no other way to see that a child report woke the parent",
-			kinds, attach.EventWake)
+			kinds, wire.EventWake)
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // register plants a handle under a name, the way a completed spawn
@@ -106,12 +106,12 @@ func TestStopSubagent_ReportsTheThreeAnswersTheRouteNeeds(t *testing.T) {
 
 	cases := []struct {
 		name string
-		want attach.StopAgentOutcome
+		want wire.StopAgentOutcome
 	}{
-		{"cluster", attach.StopAgentOutcome{Found: true, Stopped: true, Status: "stopped"}},
-		{"scribe", attach.StopAgentOutcome{Found: true, Status: "completed"}},
-		{"auditor", attach.StopAgentOutcome{Found: true, Status: "failed"}},
-		{"ghost", attach.StopAgentOutcome{}},
+		{"cluster", wire.StopAgentOutcome{Found: true, Stopped: true, Status: "stopped"}},
+		{"scribe", wire.StopAgentOutcome{Found: true, Status: "completed"}},
+		{"auditor", wire.StopAgentOutcome{Found: true, Status: "failed"}},
+		{"ghost", wire.StopAgentOutcome{}},
 	}
 	for _, tc := range cases {
 		got, err := mgr.StopSubagent(tc.name)

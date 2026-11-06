@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
@@ -144,7 +144,7 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 			// $10/MTok x 1000 tokens = $0.01 per model call against a
 			// $0.05 per-turn ceiling: the trip lands mid-loop.
 			name:    "cost ceiling",
-			label:   attach.TurnErrorCostCeiling,
+			label:   wire.TurnErrorCostCeiling,
 			reason:  "per-turn cost ceiling exceeded",
 			session: "s-1131-cost",
 			drive: func(t *testing.T) {
@@ -180,7 +180,7 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 			// Critical on the first observed tool call, so the halt lands
 			// inside the turn rather than at its boundary.
 			name:    "watchdog enforce",
-			label:   attach.TurnErrorWatchdog,
+			label:   wire.TurnErrorWatchdog,
 			reason:  "looping on todo.",
 			session: "s-1131-wd",
 			drive: func(t *testing.T) {
@@ -214,7 +214,7 @@ func TestGuardrailCutIsLoggedOnAHeadlessRun(t *testing.T) {
 			// that exists — #1132's stderr emitter would not surface it
 			// either.
 			name:    "refusal storm",
-			label:   attach.TurnErrorRefusalStorm,
+			label:   wire.TurnErrorRefusalStorm,
 			reason:  "no operator reset is needed",
 			session: "s-1131-storm",
 			drive: func(t *testing.T) {

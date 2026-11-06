@@ -29,7 +29,7 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
@@ -100,7 +100,7 @@ type SubagentTemplate struct {
 	// both, snapshots the answer at registration and Catalog stays a pure
 	// in-memory projection. Optional: a template built without it simply
 	// reports its built-in tools.
-	ToolsetTools []attach.ToolInfo
+	ToolsetTools []wire.ToolInfo
 	// MaxDepth caps the subagent's OWN nesting (0 = substrate default).
 	MaxDepth int
 	// Budgets bound each async run; per-spawn overrides may only tighten.
@@ -551,7 +551,7 @@ func (m *Manager) syncSubagentNames() map[string]struct{} {
 // exposes it as a tool, which is a property of that parent's
 // WithSubagents set, not of the template. Predefined catalog specs are
 // always "async" only (spawn-by-reference, no synchronous tool).
-func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
+func (m *Manager) Catalog() []wire.SubagentCatalogInfo {
 	// Read before taking m.mu: Parent() locks, and SubagentNames() is a
 	// call out of this package, which we'd rather not make under our own
 	// lock.
@@ -560,7 +560,7 @@ func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	templates := make([]attach.SubagentCatalogInfo, 0, len(m.templates))
+	templates := make([]wire.SubagentCatalogInfo, 0, len(m.templates))
 	for _, t := range m.templates {
 		modes := []string{"async"}
 		if _, ok := sync[t.Name]; ok {
@@ -570,7 +570,7 @@ func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
 		if model == "" && t.Remote != nil {
 			model = "remote (a2a)"
 		}
-		templates = append(templates, attach.SubagentCatalogInfo{
+		templates = append(templates, wire.SubagentCatalogInfo{
 			Name:        t.Name,
 			Description: t.Description,
 			Model:       model,
@@ -581,9 +581,9 @@ func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
 	}
 	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })
 
-	predefined := make([]attach.SubagentCatalogInfo, 0, len(m.predefined))
+	predefined := make([]wire.SubagentCatalogInfo, 0, len(m.predefined))
 	for _, s := range m.predefined {
-		predefined = append(predefined, attach.SubagentCatalogInfo{
+		predefined = append(predefined, wire.SubagentCatalogInfo{
 			Name:        s.Name,
 			Description: s.Description,
 			Model:       s.ModelID,
@@ -613,9 +613,9 @@ var builtinToolNameSet = func() map[string]struct{} {
 
 func classifyBuiltin(name string) string {
 	if _, ok := builtinToolNameSet[name]; ok {
-		return attach.ToolSourceBuiltin
+		return wire.ToolSourceBuiltin
 	}
-	return attach.ToolSourceOther
+	return wire.ToolSourceOther
 }
 
 // toolInfoSet accumulates catalog tool rows, first writer wins. The
@@ -625,11 +625,11 @@ func classifyBuiltin(name string) string {
 // ambiguous for any client that indexes by it. Same rule, same reason,
 // as AttachTools (#767).
 type toolInfoSet struct {
-	out  []attach.ToolInfo
+	out  []wire.ToolInfo
 	seen map[string]struct{}
 }
 
-func (s *toolInfoSet) add(info attach.ToolInfo) {
+func (s *toolInfoSet) add(info wire.ToolInfo) {
 	if info.Name == "" {
 		return
 	}
@@ -646,7 +646,7 @@ func (s *toolInfoSet) add(info attach.ToolInfo) {
 // sorted returns the rows by name, or nil when there are none — an
 // omitted `tools` key reads as "no grant recorded", which is what an
 // empty grant is.
-func (s *toolInfoSet) sorted() []attach.ToolInfo {
+func (s *toolInfoSet) sorted() []wire.ToolInfo {
 	if len(s.out) == 0 {
 		return nil
 	}
@@ -660,13 +660,13 @@ func (s *toolInfoSet) sorted() []attach.ToolInfo {
 // registration-time snapshot, because a tool.Toolset cannot be
 // enumerated here without a stub context and a possible round-trip to a
 // live server (see SubagentTemplate.ToolsetTools).
-func templateToolInfos(t SubagentTemplate) []attach.ToolInfo {
+func templateToolInfos(t SubagentTemplate) []wire.ToolInfo {
 	var set toolInfoSet
 	for _, tl := range t.Tools {
 		if tl == nil {
 			continue
 		}
-		set.add(attach.ToolInfo{
+		set.add(wire.ToolInfo{
 			Name:        tl.Name(),
 			Description: tl.Description(),
 			Source:      classifyBuiltin(tl.Name()),
@@ -691,13 +691,13 @@ func templateToolInfos(t SubagentTemplate) []attach.ToolInfo {
 // runtime registers the real implementations itself.
 //
 // Caller holds m.mu.
-func (m *Manager) specToolInfos(s Spec) []attach.ToolInfo {
+func (m *Manager) specToolInfos(s Spec) []wire.ToolInfo {
 	var set toolInfoSet
 	for _, n := range append(append([]string{}, s.Tools...), s.Extras...) {
 		if _, autoWired := autoWiredSubagentTools[n]; autoWired {
 			continue
 		}
-		info := attach.ToolInfo{Name: n, Source: classifyBuiltin(n)}
+		info := wire.ToolInfo{Name: n, Source: classifyBuiltin(n)}
 		if t, ok := m.catalog[n]; ok && t != nil {
 			info.Description = t.Description()
 		}
@@ -711,6 +711,6 @@ func (m *Manager) specToolInfos(s Spec) []attach.ToolInfo {
 // so the adapter can serve GET .../subagents without importing this
 // package. Identical data to Catalog (which callers holding the concrete
 // *Manager may use directly).
-func (m *Manager) ListSubagentCatalog() []attach.SubagentCatalogInfo {
+func (m *Manager) ListSubagentCatalog() []wire.SubagentCatalogInfo {
 	return m.Catalog()
 }

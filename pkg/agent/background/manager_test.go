@@ -31,7 +31,7 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/models/mock"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
@@ -192,12 +192,12 @@ func TestSpawn_PricingCheckIsToldWhoWroteTheBudget(t *testing.T) {
 		{"spawn_agent, model-written budget", func() error { _, err := mgr.Spawn(ctx, "", spec(Budgets{MaxCost: 3})); return err },
 			SpawnPricing{MaxCost: 3}},
 		{"attach, no budget", func() error {
-			_, err := mgr.SpawnSubagent(ctx, attach.SubagentSpec{Name: "x", SystemPrompt: "go", Goal: "go"})
+			_, err := mgr.SpawnSubagent(ctx, wire.SubagentSpec{Name: "x", SystemPrompt: "go", Goal: "go"})
 			return err
 		},
 			SpawnPricing{MaxCost: 1.0}},
 		{"attach, caller's budget", func() error {
-			_, err := mgr.SpawnSubagent(ctx, attach.SubagentSpec{Name: "x", SystemPrompt: "go", Goal: "go", Budgets: attach.SubagentBudget{MaxCostUSD: 2.5}})
+			_, err := mgr.SpawnSubagent(ctx, wire.SubagentSpec{Name: "x", SystemPrompt: "go", Goal: "go", Budgets: wire.SubagentBudget{MaxCostUSD: 2.5}})
 			return err
 		}, SpawnPricing{MaxCost: 2.5, MaxCostExplicit: true}},
 		{"declared subagent downshifted to small", func() error {

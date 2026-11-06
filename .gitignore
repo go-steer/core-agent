@@ -95,6 +95,9 @@ profile.cov
 TODO.md
 /persona-probe
 
+# Local git worktrees used for isolated feature and parallel-branch development.
+/.worktrees/
+
 # The drill's scorer is the repo's only Python that gets imported rather
 # than only executed (selftest.sh imports score for the negation cases),
 # so it leaves a __pycache__ behind. One .pyc reached main this way.

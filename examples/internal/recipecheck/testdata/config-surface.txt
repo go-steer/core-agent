@@ -232,6 +232,12 @@ providers[].tiers
 providers[].usage.cached_tokens
 safety.bash_search_gate
 safety.parallel_subagent_writes
+safety.sandbox.container_image
+safety.sandbox.container_runtime
+safety.sandbox.driver
+safety.sandbox.mode
+safety.sandbox.network
+safety.sandbox.writable_paths
 safety.small_tier_parent
 safety.watchdog
 schedule.every

@@ -160,17 +160,28 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		execCtx, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
 
+		wd := permissions.WorkDirFromContext(parent)
+		bin := "/bin/sh"
+		cmdArgs := []string{"-c", in.Command}
+		if gate != nil {
+			var wrapErr error
+			bin, cmdArgs, wrapErr = gate.WrapBashCommand(parent, in.Command, wd)
+			if wrapErr != nil {
+				return bashResult{}, wrapErr
+			}
+		}
+
 		// Running an arbitrary user-supplied command is the whole point
 		// of the bash tool; gating happens via the permission gate, not
 		// at the exec call site.
-		cmd := exec.CommandContext(execCtx, "/bin/sh", "-c", in.Command) // #nosec G204
+		cmd := exec.CommandContext(execCtx, bin, cmdArgs...) // #nosec G204
 		// Bound how long we wait on inherited stdout/stderr after the
 		// shell exits or the context cancels. See bashWaitDelay docs.
 		cmd.WaitDelay = bashWaitDelay
 		// Never inherit the daemon's own credentials: the attach token
 		// answers this agent's permission prompts (#1157).
 		cmd.Env = childenv.Environ()
-		if wd := permissions.WorkDirFromContext(parent); wd != "" {
+		if wd != "" {
 			cmd.Dir = wd
 			filtered := make([]string, 0, len(cmd.Env)+1)
 			for _, kv := range cmd.Env {

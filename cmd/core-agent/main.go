@@ -168,6 +168,8 @@ func main() {
 	resumeSession := flag.String("resume", "", "resume a previous session from the session database: pass --resume <session-id> to resume a specific session, or bare --resume to select interactively from this project's sessions (implies --session-db)")
 	permissionMode := flag.String("permission-mode", "", "permission gate mode: ask|auto|acceptEdits|plan|allow|yolo (overrides permissions.mode)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
+	sandboxFlag := flag.String("sandbox", "", "execution sandbox mode or driver: auto|enforce|off|bwrap|seatbelt|container (overrides safety.sandbox.mode / driver)")
+	noSandbox := flag.Bool("no-sandbox", false, "disable execution sandboxing and workspace write containment (equivalent to --sandbox=off or safety.sandbox.mode=\"off\")")
 	trustWorkspace := flag.Bool("trust", false, "trust the discovered .agents/ workspace configuration (stdio MCP servers, command hooks, elevated permission modes, rooted subagents, and content_roots) and remember its SHA-256 content hash in ~/.core-agent/trusted_workspaces.json (#1353).")
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	subagentSyncWait := flag.String("subagent-sync-wait", "", "how long spawn_agent {wait: true} holds the parent's turn open, as a duration (\"10m\"). Default 5m. The cap is on the wait, not the subagent: past it the tool returns and the subagent's result arrives later as a pushed report. Raise it for deep diagnostics, where a parent that gets a timeout tends to redo the work itself. \"0s\" removes the cap and leaves the subagent's own turn/wallclock budgets as the only bound. Config-file equivalent: tools.spawn_agent.sync_wait_timeout.")
@@ -293,6 +295,8 @@ func main() {
 			approvalTimeout:   *approvalTimeout,
 			trust:             *trustWorkspace,
 			permissionMode:    *permissionMode,
+			sandbox:           *sandboxFlag,
+			noSandbox:         *noSandbox,
 		},
 		toolProfileOpts{
 			enableTools: *enableTools,
@@ -867,7 +871,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		homeAgentsDir = filepath.Join(userHome, ".agents")
 	}
 
-	if err := resolvePermissionModeFlag(&cfg.Permissions.Mode, &yolo, guardrails.permissionMode, send); err != nil {
+	if err := applyPermissionAndSandboxFlags(cfg, &yolo, guardrails, send); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}

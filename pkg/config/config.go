@@ -235,6 +235,67 @@ type SafetyConfig struct {
 	// out-of-process subagents (spawn_remote_agent), which get their
 	// own filesystem, not "allow".
 	ParallelSubagentWrites string `json:"parallel_subagent_writes,omitempty"`
+
+	// Sandbox configures built-in execution sandboxing for bash and
+	// mutating file tools (#651). By default (Mode == "" or "auto"),
+	// filesystem write containment (workspace + /tmp + explicit
+	// writable_paths / write-granted path_scope entries, plus hard refusal
+	// of writes to protected host credential/startup paths such as
+	// ~/.ssh, ~/.gnupg, ~/.bashrc, /etc/cron*, and /etc/systemd) is
+	// enforced on both bash and file-mutation tools even in acceptEdits
+	// and yolo modes, and bash commands are wrapped in an OS/container
+	// sandbox when Mode == "enforce" or an explicit Driver ("bwrap",
+	// "seatbelt", "container") is configured.
+	Sandbox SandboxConfig `json:"sandbox,omitempty"`
+}
+
+// SandboxConfig configures built-in execution sandboxing (#651).
+type SandboxConfig struct {
+	// Mode selects the sandbox enforcement posture:
+	//   - "auto" (default when empty): enforces filesystem/network
+	//     containment in the harness and wraps bash when an explicit
+	//     OS/container Driver is configured (falling back cleanly to
+	//     policy containment if no OS/container driver is present).
+	//   - "enforce": requires a working OS/container sandbox driver
+	//     (bwrap, seatbelt, or container) for bash and refuses shell
+	//     execution when none is available on the host.
+	//   - "off": disables built-in execution sandboxing (CLI override:
+	//     --no-sandbox or --sandbox=off).
+	Mode string `json:"mode,omitempty"`
+
+	// Driver selects the OS/container sandbox backend for bash:
+	//   - "auto" (default when empty): selects "container" when
+	//     ContainerImage is set, "bwrap" on Linux when bubblewrap is
+	//     usable, or "seatbelt" on macOS when sandbox-exec is present.
+	//   - "policy": harness-level policy containment only (no OS/container
+	//     command wrapper).
+	//   - "bwrap": Linux bubblewrap mount/PID/IPC/user namespaces.
+	//   - "seatbelt": macOS sandbox-exec (Seatbelt profile).
+	//   - "container": first-class OCI container execution via docker
+	//     or podman (requires ContainerImage).
+	Driver string `json:"driver,omitempty"`
+
+	// Network controls network access inside the sandbox:
+	//   - "allow" (default when empty): network access is permitted.
+	//   - "none": isolates network access (--unshare-net in bwrap,
+	//     (deny network*) in seatbelt, --network=none in container,
+	//     and refuses outbound network CLI verbs in bash).
+	Network string `json:"network,omitempty"`
+
+	// WritablePaths lists additional host directory trees mounted or
+	// permitted read-write inside the sandbox beyond the project root
+	// (or active subagent worktree), os.TempDir(), and write-granted
+	// path_scope.allow entries.
+	WritablePaths []string `json:"writable_paths,omitempty"`
+
+	// ContainerImage is the OCI image (e.g. "alpine:3.20" or
+	// "debian:bookworm-slim") used when Driver resolves to "container".
+	ContainerImage string `json:"container_image,omitempty"`
+
+	// ContainerRuntime is the OCI runtime binary ("docker" or "podman")
+	// used when Driver resolves to "container". Empty auto-detects
+	// docker then podman on PATH.
+	ContainerRuntime string `json:"container_runtime,omitempty"`
 }
 
 // SessionConfig carries per-session presets — currently just the
@@ -2431,9 +2492,12 @@ func (c *Config) Validate() error {
 }
 
 // validateMemoryAndMultiSession runs the agent_engine / memory checks
-// (#948) and then the multi-session checks. Split out of Validate to
-// keep it under the funlen statement ratchet.
+// (#948), sandbox checks (#651), and then the multi-session checks. Split out
+// of Validate to keep it under the funlen statement ratchet.
 func (c *Config) validateMemoryAndMultiSession() error {
+	if err := c.validateSandbox(); err != nil {
+		return err
+	}
 	if err := c.validateAgentEngine(); err != nil {
 		return err
 	}
@@ -2441,6 +2505,36 @@ func (c *Config) validateMemoryAndMultiSession() error {
 		return err
 	}
 	return c.validateMultiSession()
+}
+
+func (c *Config) validateSandbox() error {
+	switch c.Safety.Sandbox.Mode {
+	case "", SandboxModeAuto, SandboxModeEnforce, SandboxModeOff:
+	default:
+		return fmt.Errorf("config: unknown safety.sandbox.mode %q (want one of %q, %q, %q)",
+			c.Safety.Sandbox.Mode, SandboxModeAuto, SandboxModeEnforce, SandboxModeOff)
+	}
+	switch c.Safety.Sandbox.Driver {
+	case "", SandboxDriverAuto, SandboxDriverPolicy, SandboxDriverBwrap, SandboxDriverSeatbelt, SandboxDriverContainer:
+	default:
+		return fmt.Errorf("config: unknown safety.sandbox.driver %q (want one of %q, %q, %q, %q, %q)",
+			c.Safety.Sandbox.Driver, SandboxDriverAuto, SandboxDriverPolicy, SandboxDriverBwrap, SandboxDriverSeatbelt, SandboxDriverContainer)
+	}
+	if c.Safety.Sandbox.Driver == SandboxDriverContainer && strings.TrimSpace(c.Safety.Sandbox.ContainerImage) == "" {
+		return fmt.Errorf("config: safety.sandbox.driver=%q requires a non-empty safety.sandbox.container_image", SandboxDriverContainer)
+	}
+	switch c.Safety.Sandbox.Network {
+	case "", SandboxNetworkAllow, SandboxNetworkNone:
+	default:
+		return fmt.Errorf("config: unknown safety.sandbox.network %q (want one of %q, %q)",
+			c.Safety.Sandbox.Network, SandboxNetworkAllow, SandboxNetworkNone)
+	}
+	for i, wp := range c.Safety.Sandbox.WritablePaths {
+		if strings.TrimSpace(wp) == "" {
+			return fmt.Errorf("config: safety.sandbox.writable_paths[%d] must not be empty", i)
+		}
+	}
+	return nil
 }
 
 func (c *Config) validateMultiSession() error {
@@ -2517,6 +2611,22 @@ const (
 	ParallelSubagentWritesWarn     = "warn"
 	ParallelSubagentWritesAllow    = "allow"
 	ParallelSubagentWritesWorktree = "worktree"
+)
+
+// Sandbox configuration constants (#651). See SafetyConfig.Sandbox.
+const (
+	SandboxModeAuto    = "auto"
+	SandboxModeEnforce = "enforce"
+	SandboxModeOff     = "off"
+
+	SandboxDriverAuto      = "auto"
+	SandboxDriverPolicy    = "policy"
+	SandboxDriverBwrap     = "bwrap"
+	SandboxDriverSeatbelt  = "seatbelt"
+	SandboxDriverContainer = "container"
+
+	SandboxNetworkAllow = "allow"
+	SandboxNetworkNone  = "none"
 )
 
 // Plan-mode constants. See PermissionsConfig.PlanMode for behavior.

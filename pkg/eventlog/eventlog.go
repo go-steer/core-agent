@@ -22,11 +22,11 @@
 // The package layers on top of ADK's session/database service: ADK
 // owns the events / sessions / state tables, and we add a thin
 // agent_eventlog overlay table whose rows reference ADK's events by
-// id and add the seq column. Two GORM connections (ADK's and ours)
-// share the same database file/DSN — atomic-across-tables writes are
-// not provided in v1; the AppendEvent path writes ADK first, then
-// the overlay, and surfaces overlay-write errors so callers can
-// retry (event_id is unique-indexed for safe idempotency).
+// id and add the seq column. Both run on one GORM connection pool,
+// and the overlay row is written inside ADK's own AppendEvent
+// transaction (see atomic.go), so an event and its seq commit
+// together. event_id is unique-indexed so the fallback two-write path
+// stays idempotent on retry.
 //
 // See docs/eventlog-plan.md and docs/eventlog-decisions.md for the
 // design rationale and milestone breakdown.

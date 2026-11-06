@@ -170,6 +170,17 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		// Never inherit the daemon's own credentials: the attach token
 		// answers this agent's permission prompts (#1157).
 		cmd.Env = childenv.Environ()
+		if wd := permissions.WorkDirFromContext(parent); wd != "" {
+			cmd.Dir = wd
+			filtered := make([]string, 0, len(cmd.Env)+1)
+			for _, kv := range cmd.Env {
+				if !strings.HasPrefix(kv, "PWD=") {
+					filtered = append(filtered, kv)
+				}
+			}
+			filtered = append(filtered, "PWD="+wd)
+			cmd.Env = filtered
+		}
 		var stdout, stderr capBuffer
 		caps := capsFor(cfg, "bash", 64*1024, 2000)
 		stdout.maxBytes = caps.bytes

@@ -15,10 +15,18 @@
 package background
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
@@ -50,9 +58,10 @@ import (
 // with head-of-line blocking of the interactive session is not one an
 // operator would choose.
 const (
-	policyRefuse = "refuse"
-	policyWarn   = "warn"
-	policyAllow  = "allow"
+	policyRefuse   = "refuse"
+	policyWarn     = "warn"
+	policyAllow    = "allow"
+	policyWorktree = "worktree"
 )
 
 // ErrConcurrentWriters is returned by Spawn/SpawnTemplate when a
@@ -67,11 +76,77 @@ var ErrConcurrentWriters = errors.New("background: another write-capable subagen
 // worth avoiding.
 func resolveWritePolicy(s string) string {
 	switch s {
-	case policyRefuse, policyWarn, policyAllow:
+	case policyRefuse, policyWarn, policyAllow, policyWorktree:
 		return s
 	default:
 		return policyRefuse
 	}
+}
+
+// provisionSubagentWorktree creates a detached git worktree at HEAD for
+// a write-capable background subagent when safety.parallel_subagent_writes
+// is "worktree" (#653). Returns the symlink-resolved worktree directory
+// and an idempotent cleanup function that removes the worktree and its
+// temporary parent directory.
+func provisionSubagentWorktree(ctx context.Context, baseDir, name string) (string, func(), error) {
+	if strings.TrimSpace(baseDir) == "" {
+		if wd := permissions.WorkDirFromContext(ctx); wd != "" {
+			baseDir = wd
+		} else {
+			wd, err := os.Getwd()
+			if err != nil {
+				return "", nil, fmt.Errorf("background: resolve working directory for worktree %q: %w", name, err)
+			}
+			baseDir = wd
+		}
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	topOut, err := exec.CommandContext(cmdCtx, "git", "-C", baseDir, "rev-parse", "--show-toplevel").CombinedOutput() // #nosec G204
+	if err != nil {
+		return "", nil, fmt.Errorf("background: safety.parallel_subagent_writes=worktree requires a git repository at %q for subagent %q: %w (%s)",
+			baseDir, name, err, strings.TrimSpace(string(topOut)))
+	}
+	repoRoot := strings.TrimSpace(string(topOut))
+	tmpParent, err := os.MkdirTemp("", "core-agent-subagent-wt-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("background: create temp dir for subagent %q worktree: %w", name, err)
+	}
+	wtDir := filepath.Join(tmpParent, filepath.Base(tmpParent)+"-"+sanitizeWorktreeName(name))
+	addOut, err := exec.CommandContext(cmdCtx, "git", "-C", repoRoot, "worktree", "add", "--detach", wtDir, "HEAD").CombinedOutput() // #nosec G204
+	if err != nil {
+		_ = os.RemoveAll(tmpParent)
+		return "", nil, fmt.Errorf("background: git worktree add for subagent %q: %w (%s)",
+			name, err, strings.TrimSpace(string(addOut)))
+	}
+	if resolved, rerr := filepath.EvalSymlinks(wtDir); rerr == nil {
+		wtDir = resolved
+	}
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer rmCancel()
+			_ = exec.CommandContext(rmCtx, "git", "-C", repoRoot, "worktree", "remove", "--force", wtDir).Run() // #nosec G204
+			_ = os.RemoveAll(tmpParent)
+		})
+	}
+	return wtDir, cleanup, nil
+}
+
+func sanitizeWorktreeName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "subagent"
+	}
+	return b.String()
 }
 
 // spawnWritesSharedFilesystem reports whether the surface granted to
@@ -159,6 +234,7 @@ func (m *Manager) runningWriterLocked() string {
 func concurrentWriterRefusal(newName, holder string) error {
 	return fmt.Errorf("%w: %q holds the shared working directory, so starting %q could interleave writes to the same files. "+
 		"Wait for %q to finish (or stop_agent it) and spawn again, give %q only read-only tools, "+
-		"or — if the two really must write in parallel — use spawn_remote_agent, which runs out of process with its own filesystem",
+		"configure safety.parallel_subagent_writes: \"worktree\" for per-subagent git worktrees, "+
+		"or — if the two really must write in parallel out of process — use spawn_remote_agent, which runs out of process with its own filesystem",
 		ErrConcurrentWriters, holder, newName, holder, newName)
 }

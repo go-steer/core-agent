@@ -96,7 +96,7 @@ func readManyFilesFunc(gate *permissions.Gate, cfg *config.Config) functiontool.
 		seen := make(map[string]bool)
 		var ordered []string
 		for _, p := range in.Paths {
-			abs, err := absolutize(p)
+			abs, err := absolutizeIn(ctx, p)
 			if err != nil {
 				// Empty / malformed path — surface as a synthetic
 				// skipped entry below so the model sees it.
@@ -114,7 +114,7 @@ func readManyFilesFunc(gate *permissions.Gate, cfg *config.Config) functiontool.
 			if root == "" {
 				root = "."
 			}
-			absRoot, err := absolutize(root)
+			absRoot, err := absolutizeIn(ctx, root)
 			if err != nil {
 				return readManyFilesResult{}, err
 			}

@@ -15,6 +15,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -110,7 +111,7 @@ type statResult struct {
 // returned closure consults gate.CheckFileRead before touching disk.
 func readFileFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[readFileArgs, readFileResult] {
 	return func(ctx adkagent.Context, in readFileArgs) (readFileResult, error) {
-		path, err := absolutize(in.Path)
+		path, err := absolutizeIn(ctx, in.Path)
 		if err != nil {
 			return readFileResult{}, err
 		}
@@ -132,7 +133,7 @@ func readFileFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[
 
 func writeFileFunc(gate *permissions.Gate) functiontool.Func[writeFileArgs, writeFileResult] {
 	return func(ctx adkagent.Context, in writeFileArgs) (writeFileResult, error) {
-		path, err := absolutize(in.Path)
+		path, err := absolutizeIn(ctx, in.Path)
 		if err != nil {
 			return writeFileResult{}, err
 		}
@@ -151,7 +152,7 @@ func writeFileFunc(gate *permissions.Gate) functiontool.Func[writeFileArgs, writ
 
 func editFileFunc(gate *permissions.Gate) functiontool.Func[editFileArgs, editFileResult] {
 	return func(ctx adkagent.Context, in editFileArgs) (editFileResult, error) {
-		path, err := absolutize(in.Path)
+		path, err := absolutizeIn(ctx, in.Path)
 		if err != nil {
 			return editFileResult{}, err
 		}
@@ -211,7 +212,7 @@ func listDirFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[l
 		if path == "" {
 			path = "."
 		}
-		abs, err := absolutize(path)
+		abs, err := absolutizeIn(ctx, path)
 		if err != nil {
 			return listDirResult{}, err
 		}
@@ -251,13 +252,17 @@ func listDirFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[l
 // fails for any other reason the lexical path is kept and the scope
 // check fails closed on its own resolution attempt (see
 // permissions.PathScope.AccessFor).
-func absolutize(path string) (string, error) {
+func absolutizeIn(ctx context.Context, path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("path is required")
 	}
 	if strings.HasPrefix(path, "~") {
 		if home, err := os.UserHomeDir(); err == nil {
 			path = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
+		}
+	} else if !filepath.IsAbs(path) {
+		if wd := permissions.WorkDirFromContext(ctx); wd != "" {
+			path = filepath.Join(wd, path)
 		}
 	}
 	abs, err := filepath.Abs(path)
@@ -316,7 +321,7 @@ func atomicWrite(path string, data []byte, mode fs.FileMode) error {
 // covers path-scope and per-tool denylists.
 func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, deleteFileResult] {
 	return func(ctx adkagent.Context, in deleteFileArgs) (deleteFileResult, error) {
-		path, err := absolutize(in.Path)
+		path, err := absolutizeIn(ctx, in.Path)
 		if err != nil {
 			return deleteFileResult{}, err
 		}
@@ -359,7 +364,7 @@ func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, de
 // model do "does X exist yet?" checks without exception handling.
 func statFunc(gate *permissions.Gate) functiontool.Func[statArgs, statResult] {
 	return func(ctx adkagent.Context, in statArgs) (statResult, error) {
-		path, err := absolutize(in.Path)
+		path, err := absolutizeIn(ctx, in.Path)
 		if err != nil {
 			return statResult{}, err
 		}

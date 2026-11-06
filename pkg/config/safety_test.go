@@ -165,6 +165,7 @@ func TestValidate_SafetyParallelSubagentWrites(t *testing.T) {
 		{ParallelSubagentWritesRefuse, false},
 		{ParallelSubagentWritesWarn, false},
 		{ParallelSubagentWritesAllow, false},
+		{ParallelSubagentWritesWorktree, false},
 		{"enforce", true}, // watchdog's vocabulary, not this one
 		{"REFUSE", true},  // case-sensitive, matching every sibling
 		{"allow ", true},
@@ -207,6 +208,7 @@ func TestSmallTierParentConstants_AreStable(t *testing.T) {
 		{ParallelSubagentWritesRefuse, "refuse"},
 		{ParallelSubagentWritesWarn, "warn"},
 		{ParallelSubagentWritesAllow, "allow"},
+		{ParallelSubagentWritesWorktree, "worktree"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

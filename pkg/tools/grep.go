@@ -81,7 +81,7 @@ func grepFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[grep
 		if root == "" {
 			root = "."
 		}
-		absRoot, err := absolutize(root)
+		absRoot, err := absolutizeIn(ctx, root)
 		if err != nil {
 			return grepResult{}, err
 		}

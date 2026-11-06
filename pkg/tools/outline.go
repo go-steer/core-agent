@@ -129,7 +129,7 @@ var heuristicLangs = map[string]heuristicLang{
 // Truncate on the way out.
 func viewFileOutlineFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[viewFileOutlineArgs, viewFileOutlineResult] {
 	return func(ctx adkagent.Context, in viewFileOutlineArgs) (viewFileOutlineResult, error) {
-		path, err := absolutize(in.Path)
+		path, err := absolutizeIn(ctx, in.Path)
 		if err != nil {
 			return viewFileOutlineResult{}, err
 		}

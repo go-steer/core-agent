@@ -294,6 +294,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// so the name is reusable. Without the eviction a name was
 		// burned forever once its subagent finished, which broke
 		// re-spawn-with-same-name workflows.
+		existing.cleanupWorktree()
 		delete(m.agents, rs.name)
 	}
 	if m.maxConcurrent > 0 && m.runningCount() >= m.maxConcurrent {
@@ -301,13 +302,16 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		return nil, fmt.Errorf("%w (running=%d, max=%d)", ErrTooManyConcurrent, m.runningCount(), m.maxConcurrent)
 	}
 	// Two background subagents that can both write share one working
-	// directory, and unlike two tool calls inside one agent they are not
-	// covered by #460's mutation serializer — each launch builds its own
-	// (#653). Checked here, under the same lock as the caps, so a burst
-	// of concurrent launches cannot all observe "no writer running".
+	// directory unless safety.parallel_subagent_writes is "worktree",
+	// and unlike two tool calls inside one agent they are not covered
+	// by #460's mutation serializer — each launch builds its own (#653).
+	// Checked here, under the same lock as the caps, so a burst of
+	// concurrent launches cannot all observe "no writer running".
 	writesFS := spawnWritesSharedFilesystem(rs)
+	useWorktree := writesFS && m.parallelWrites == policyWorktree
+	writesSharedFS := writesFS && !useWorktree
 	warnHolder := ""
-	if writesFS && m.parallelWrites != policyAllow {
+	if writesSharedFS && m.parallelWrites != policyAllow {
 		if holder := m.runningWriterLocked(); holder != "" {
 			if m.parallelWrites == policyRefuse {
 				m.mu.Unlock()
@@ -344,7 +348,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		status:    StatusRunning,
 		done:      make(chan struct{}),
 		cancel:    cancel,
-		writesFS:  writesFS,
+		writesFS:  writesSharedFS,
 	}
 	m.agents[rs.name] = handle
 	m.mu.Unlock()
@@ -352,6 +356,16 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	if warnHolder != "" {
 		log.Printf("Manager: safety.parallel_subagent_writes=warn: starting write-capable subagent %q while %q is already running; both write to the same working directory",
 			rs.name, warnHolder)
+	}
+
+	if useWorktree {
+		wtDir, wtCleanup, err := provisionSubagentWorktree(ctx, m.worktreeBaseDir, rs.name)
+		if err != nil {
+			m.abortSpawn(rs.name, handle, cancel)
+			return nil, err
+		}
+		handle.setWorktree(wtDir, wtCleanup)
+		goCtx = permissions.WithIsolatedWorktree(goCtx, wtDir)
 	}
 
 	// Build a fresh LLM per subagent — see docs/background-subagents-design.md
@@ -396,64 +410,13 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	sched := rs.scheduler
 	budgets := rs.budgets
 	priceModelID, priceBackend := rs.priceModelID, rs.priceBackend
-	baseTools := rs.tools
-	toolsets := rs.toolsets
-	instrOpts := rs.instrOpts
-	subagentMode := rs.subagentMode
-	maxDepth := rs.maxDepth
 	// Resolved here rather than in the two callers so ModeAuto's rule
 	// has exactly one implementation (#730).
 	bounded := resolveMode(rs.mode, rs.scheduler) != ModeStanding
-
-	// Build phase: the autonomous driver hands us a done-tool we have
-	// to include alongside our subagent's tools + our own report
-	// tools. The Agent we build inside `build` runs in its own
-	// goroutine so the construction happens after the goroutine
-	// starts (autonomous.Run calls build).
-	build := func(extraTools []tool.Tool) (*agent.Agent, error) {
-		all := buildSpawnTools(subagentMode, baseTools, extraTools, newReportAlertTool(m, name, handle.noteAlert))
-		opts := make([]agent.Option, 0, len(instrOpts)+9)
-		opts = append(opts,
-			agent.WithAppName(parent.AppName()),
-			agent.WithName(name),
-			// name may be MODEL-CHOSEN (ad-hoc) — stamping it on the
-			// invocation histogram would accrete one series per invented
-			// name on a long-lived daemon. Metrics get the bounded
-			// class-level identity instead.
-			agent.WithMetricAgentName("background_subagent"),
-			agent.WithMode(agent.ModeAutonomous),
-			agent.WithStreaming(parent.Streaming()),
-			agent.WithSession(parent.UserID(), subSessionID),
-			agent.WithTools(all),
-			agent.WithSessionService(wrappedSvc),
-		)
-		// Inherit the parent's resolved MeterProvider so a spawned
-		// subagent's gen_ai.* instruments land in the SAME provider as
-		// the parent — otherwise agent.New falls back to the process
-		// global, and an embedder that passed a non-global provider to
-		// the parent would see subagent turns/tools vanish from their
-		// pipeline. In the daemon the parent's provider IS the global, so
-		// this is a no-op there. Nil-guarded for hand-constructed parents.
-		if mp := parent.MeterProvider(); mp != nil {
-			opts = append(opts, agent.WithMeterProvider(mp))
-		}
-		opts = append(opts, instrOpts...)
-		// AFTER instrOpts: WithExtraInstruction appends in call order,
-		// and a spec's persona may itself be installed via
-		// WithInstruction (which replaces layers 1-3). Appending last
-		// keeps the return contract present under either arrangement.
-		opts = append(opts, agent.WithExtraInstruction(spawnReturnContract(subagentMode)))
-		if len(toolsets) > 0 && subagentMode != agent.SubagentModeSingleTurn {
-			opts = append(opts, agent.WithToolsets(toolsets))
-		}
-		if maxDepth > 0 {
-			opts = append(opts, agent.WithSubagentMaxDepth(maxDepth))
-		}
-		return agent.New(subModel, opts...)
-	}
+	build := m.newSpawnAgentBuilder(parent, subModel, wrappedSvc, subSessionID, rs, handle)
 
 	go func() {
-		defer close(handle.done)
+		defer handle.finishDone()
 		defer cancel()
 
 		// A subagent's completion report is a deliverable handed to
@@ -863,6 +826,41 @@ func (m *Manager) shouldAlert(name string, handle *Handle) bool {
 // the window between the reservation and this rollback would block
 // on <-h.done forever, because the goroutine that normally closes it
 // never starts (#502).
+func (m *Manager) newSpawnAgentBuilder(parent *agent.Agent, subModel adkmodel.LLM, wrappedSvc session.Service, subSessionID string, rs resolvedSpawn, handle *Handle) func([]tool.Tool) (*agent.Agent, error) {
+	name := rs.name
+	baseTools := rs.tools
+	toolsets := rs.toolsets
+	instrOpts := rs.instrOpts
+	subagentMode := rs.subagentMode
+	maxDepth := rs.maxDepth
+	return func(extraTools []tool.Tool) (*agent.Agent, error) {
+		all := buildSpawnTools(subagentMode, baseTools, extraTools, newReportAlertTool(m, name, handle.noteAlert))
+		opts := make([]agent.Option, 0, len(instrOpts)+9)
+		opts = append(opts,
+			agent.WithAppName(parent.AppName()),
+			agent.WithName(name),
+			agent.WithMetricAgentName("background_subagent"),
+			agent.WithMode(agent.ModeAutonomous),
+			agent.WithStreaming(parent.Streaming()),
+			agent.WithSession(parent.UserID(), subSessionID),
+			agent.WithTools(all),
+			agent.WithSessionService(wrappedSvc),
+		)
+		if mp := parent.MeterProvider(); mp != nil {
+			opts = append(opts, agent.WithMeterProvider(mp))
+		}
+		opts = append(opts, instrOpts...)
+		opts = append(opts, agent.WithExtraInstruction(spawnReturnContract(subagentMode)))
+		if len(toolsets) > 0 && subagentMode != agent.SubagentModeSingleTurn {
+			opts = append(opts, agent.WithToolsets(toolsets))
+		}
+		if maxDepth > 0 {
+			opts = append(opts, agent.WithSubagentMaxDepth(maxDepth))
+		}
+		return agent.New(subModel, opts...)
+	}
+}
+
 func (m *Manager) abortSpawn(name string, handle *Handle, cancel context.CancelFunc) {
 	cancel()
 	m.unreserve(name, handle)
@@ -877,8 +875,9 @@ func (m *Manager) abortSpawn(name string, handle *Handle, cancel context.CancelF
 			handle.err = errors.New("background: spawn aborted before launch")
 		}
 	}
+	handle.cleanupOnDone = true
 	handle.mu.Unlock()
-	close(handle.done)
+	handle.finishDone()
 }
 
 // unreserve rolls back a Spawn reservation after a pre-launch

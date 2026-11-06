@@ -259,6 +259,40 @@ func (s *PathScope) AccessFor(path string) (Access, error) {
 	return best, nil
 }
 
+// matchesProjectRootOnly reports whether abs is inside one of s.rwRoots
+// and is not independently granted write access by an explicit allowlist
+// entry. Used by isolated-worktree gating (#653) so a subagent running
+// in its own git worktree cannot clobber the parent's working tree via
+// an absolute path.
+func (s *PathScope) matchesProjectRootOnly(abs string) bool {
+	if s == nil {
+		return false
+	}
+	inRWRoot := false
+	for _, root := range s.rwRoots {
+		if isInside(abs, root) {
+			inRWRoot = true
+			break
+		}
+	}
+	if !inRWRoot {
+		return false
+	}
+	best := AccessNone
+	bestLen := -1
+	for _, e := range s.allow {
+		if !matchesPattern(abs, e.Pattern) {
+			continue
+		}
+		l := matchSpecificity(e.Pattern)
+		if l > bestLen {
+			best = e.Access
+			bestLen = l
+		}
+	}
+	return !best.Allows(AccessWrite)
+}
+
 // Contains reports whether path is in scope at all (any access).
 // Preserved for snapshot / serializer callers that don't care about
 // per-op access. Equivalent to AccessFor(path) != AccessNone.

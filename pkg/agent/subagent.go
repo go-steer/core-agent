@@ -158,6 +158,10 @@ type SubagentOptions struct {
 	// message verbatim to every request sent to this subagent (#1499).
 	// When false, falls back to Inner.SubagentInheritInput().
 	InheritInput bool
+
+	// WorkDir, when non-empty, isolates the subagent's relative file-tool
+	// resolution, bash cwd, and file-write scope to WorkDir (#653).
+	WorkDir string
 }
 
 // SubagentBudgets caps one synchronous delegation along the same three
@@ -552,9 +556,12 @@ func runSubagentInvocation(
 	// a derived context, and its expiry surfaces as an error on the
 	// range, distinguished from a real failure below.
 	runCtx := childCtx
+	if opts.WorkDir != "" {
+		runCtx = permissions.WithIsolatedWorktree(runCtx, opts.WorkDir)
+	}
 	if opts.Budgets.MaxWallclock > 0 {
 		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(childCtx, opts.Budgets.MaxWallclock)
+		runCtx, cancel = context.WithTimeout(runCtx, opts.Budgets.MaxWallclock)
 		defer cancel()
 	}
 	if skipFinishTask {

@@ -1354,6 +1354,7 @@ func (g *Gate) BashSearchNotice(ctx context.Context, command string) string {
 // promptForPath.
 func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
 	g = g.resolveSessionGate(ctx)
+	path = resolveAgainstWorkDir(ctx, path)
 	// Scope is consulted BEFORE any per-tool session grant (#380): a
 	// session-tool grant may suppress the mode prompt for in-scope
 	// operations, but it must not silently drop the path boundary and
@@ -1362,6 +1363,11 @@ func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
 	// via promptForPath even when the tool is trusted for the session.
 	if err := g.credentialFileDenial(toolName, path); err != nil {
 		return err
+	}
+	if wt := IsolatedWorktreeFromContext(ctx); wt != "" {
+		if abs, err := ResolvePath(path); err == nil && isInsideWorktree(abs, wt) {
+			return nil
+		}
 	}
 	access, err := g.scope.AccessFor(path)
 	if err != nil {
@@ -1384,6 +1390,7 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 
 func (g *Gate) checkFileWrite(ctx context.Context, toolName, path string, args lazyArgs) error {
 	g = g.resolveSessionGate(ctx)
+	path = resolveAgainstWorkDir(ctx, path)
 	// A credential file is refused before anything else, the
 	// control-plane tier included: that tier can still be approved, and
 	// a model that could write the bearer table could add its own token.
@@ -1407,9 +1414,29 @@ func (g *Gate) checkFileWrite(ctx context.Context, toolName, path string, args l
 	// when the tool is trusted for the session — the grant suppresses
 	// the mode prompt for in-scope writes only, it does not widen the
 	// path boundary.
-	access, err := g.scope.AccessFor(path)
-	if err != nil {
-		return err
+	var (
+		access Access
+		err    error
+	)
+	if wt := IsolatedWorktreeFromContext(ctx); wt != "" {
+		if abs, rerr := ResolvePath(path); rerr == nil {
+			if isInsideWorktree(abs, wt) {
+				access = AccessReadWrite
+			} else if g.scope != nil && g.scope.matchesProjectRootOnly(abs) {
+				return fmt.Errorf("%s refused: subagent is isolated in worktree %q and cannot write to shared parent tree path %q; write to a relative path or inside %q", toolName, wt, path, wt)
+			}
+		} else if lexAbs, lerr := filepath.Abs(expandUser(strings.TrimSpace(path))); lerr == nil {
+			lexAbs = filepath.Clean(lexAbs)
+			if !isInsideWorktree(lexAbs, wt) && g.scope != nil && g.scope.matchesProjectRootOnly(lexAbs) {
+				return fmt.Errorf("%s refused: subagent is isolated in worktree %q and cannot write to shared parent tree path %q; write to a relative path or inside %q", toolName, wt, path, wt)
+			}
+		}
+	}
+	if access == AccessNone {
+		access, err = g.scope.AccessFor(path)
+		if err != nil {
+			return err
+		}
 	}
 	if !access.Allows(AccessWrite) {
 		return g.promptForPath(ctx, toolName, path, AccessWrite)

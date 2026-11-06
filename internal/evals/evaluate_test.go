@@ -20,8 +20,6 @@ import (
 	"testing"
 
 	"google.golang.org/genai"
-
-	"github.com/go-steer/core-agent/v3/internal/effects"
 )
 
 // callsTo builds a Trace of completed read-only calls, the shape almost
@@ -32,7 +30,7 @@ func callsTo(names ...string) Trace {
 		tr.Calls = append(tr.Calls, Call{
 			Name:          n,
 			ID:            n,
-			Class:         effects.ClassReadOnly,
+			Class:         ClassReadOnly,
 			EventIndex:    2 * i,
 			Completed:     true,
 			ResponseIndex: 2*i + 1,
@@ -46,7 +44,7 @@ func mutation(name, id string, args map[string]any, callIdx, respIdx int) Call {
 		Name:          name,
 		Args:          args,
 		ID:            id,
-		Class:         effects.ClassMutating,
+		Class:         ClassMutating,
 		EventIndex:    callIdx,
 		Completed:     respIdx >= 0,
 		ResponseIndex: respIdx,
@@ -508,7 +506,7 @@ func TestEffectOrdering(t *testing.T) {
 		{
 			name: "completion with no recorded intent",
 			calls: []Call{
-				{Name: "scale_deployment", ID: "ghost", Class: effects.ClassMutating,
+				{Name: "scale_deployment", ID: "ghost", Class: ClassMutating,
 					EventIndex: -1, Completed: true, ResponseIndex: 3},
 			},
 			want:      0,
@@ -525,7 +523,7 @@ func TestEffectOrdering(t *testing.T) {
 		{
 			name: "spawning calls are guarded like mutations",
 			calls: []Call{
-				{Name: "invoke_specialist", ID: "s1", Class: effects.ClassSpawning,
+				{Name: "invoke_specialist", ID: "s1", Class: ClassSpawning,
 					EventIndex: -1, Completed: true, ResponseIndex: 2},
 			},
 			want: 0,
@@ -533,7 +531,7 @@ func TestEffectOrdering(t *testing.T) {
 		{
 			name: "read-only calls are not scored",
 			calls: []Call{
-				{Name: "k8s_cluster_health", ID: "r1", Class: effects.ClassReadOnly,
+				{Name: "k8s_cluster_health", ID: "r1", Class: ClassReadOnly,
 					EventIndex: 3, Completed: true, ResponseIndex: 2},
 			},
 			want:    1,
@@ -543,7 +541,7 @@ func TestEffectOrdering(t *testing.T) {
 			name: "an orphaned read-only completion is reported but not scored",
 			calls: []Call{
 				mutation("scale_deployment", "c1", nil, 0, 1),
-				{Name: "k8s_cluster_health", ID: "r1", Class: effects.ClassReadOnly,
+				{Name: "k8s_cluster_health", ID: "r1", Class: ClassReadOnly,
 					EventIndex: -1, Completed: true, ResponseIndex: 2},
 			},
 			want:      1,

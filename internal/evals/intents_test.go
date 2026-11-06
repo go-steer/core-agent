@@ -245,7 +245,7 @@ func TestIntentTable_ValidationRejects(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.table.validate()
+			err := tc.table.Validate()
 			if err == nil {
 				t.Fatalf("validate accepted a bad table, want error containing %q", tc.want)
 			}

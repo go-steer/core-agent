@@ -17,8 +17,6 @@ package evals
 import (
 	"strings"
 	"testing"
-
-	"github.com/go-steer/core-agent/v3/internal/effects"
 )
 
 func reachByMetric(t *testing.T, reach []MetricReach) map[string]MetricReach {
@@ -214,7 +212,7 @@ func TestCorpusReach_IsTraceIndependent(t *testing.T) {
 	busy := Trace{
 		Calls: []Call{
 			{Name: "k8s_triage_workload", ID: "c1", EventIndex: 0, Completed: true, ResponseIndex: 1},
-			{Name: "scale_deployment", ID: "c2", Class: effects.ClassMutating, EventIndex: 2, Completed: true, ResponseIndex: 3},
+			{Name: "scale_deployment", ID: "c2", Class: ClassMutating, EventIndex: 2, Completed: true, ResponseIndex: 3},
 		},
 		FinalText: "CRITICAL: the deployment is wedged",
 	}

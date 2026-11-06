@@ -6,7 +6,7 @@ All notable changes to `core-agent` are recorded here. The format follows [Keep 
 
 The SemVer-governed public API of `core-agent` is the exported surface of the `promised` packages in [`dev/api-surface.txt`](dev/api-surface.txt) (see [`docs/compatibility-policy.md`](docs/compatibility-policy.md)):
 
-- `agent` (+ `agent/autonomous`, `agent/background`), `approver`, `attach/wire`, `eventlog`, `tools`, `permissions`, `config`, `memory`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`, `models/profiles`), `pricing`, `recording`, `runner`, `transcript`, `usage`, `watchdog`, `instruction`, `mcp`, `skills`, `telemetry`
+- `agent` (+ `agent/autonomous`, `agent/background`), `approver`, `attach/wire`, `evals` (+ `evals/judge`), `eventlog`, `tools`, `permissions`, `config`, `memory`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`, `models/profiles`), `pricing`, `recording`, `runner`, `transcript`, `usage`, `watchdog`, `instruction`, `mcp`, `skills`, `telemetry`
 
 Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapter`, `auth`, `childenv`, `compose`, `digest`, `hooks`, `memory/memtest`, `memory/memtools`, `modeltier`, `session`, `statestore`, `statestore/agentengine`, `statestore/conformance`, `statestore/memory`, `taskclass`, `tools/agentic`, `tools/alert`, `tools/peer`, `tools/vcs`) are marked `unsupported` in `dev/api-surface.txt`: they are exported for in-repo and sibling-tool composition (`cmd/`, `internal/`, `extras/`) and may change in minor releases (adapters under `extras/`, such as `extras/scion`, live in separate Go modules and are outside this module's stability promise). Incompatible changes to `promised` packages require a major version bump (`/vN`) and are gated on every PR by `dev/ci/presubmits/verify-apidiff` (and at release time by `dev/release/cut-ga-tag.sh`). Deprecated symbols carry a `Deprecated: ... Removed in v<N>.<M>.` marker enforced by `TestDeprecationMarkersNameTheirRemoval`.
 
@@ -18,6 +18,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 #### Feature
 
+- **Export `pkg/evals` and `pkg/evals/judge` for grading stored sessions.** Promotes `TraceFromEvents`, `EvaluateAll`, `ValidateCalls`, and `judge.Judge` into `promised` packages and adds `trajectory.FromEvents`. ([#1538](https://github.com/go-steer/core-agent/issues/1538))
 - **Per-project CLI session IDs and `--continue` / `--resume [id]`.** Mints `<project>-<hash>-<rand>` session IDs under `--session-db` and adds `--continue` and `--resume [id]` (with interactive TTY picker and spend restore). ([#1374](https://github.com/go-steer/core-agent/issues/1374))
 - **Add `--permission-mode <mode>`, grouped `--help`, and subcommands.** Adds `--permission-mode` (`ask|auto|acceptEdits|plan|allow|yolo`, `--yolo` alias), groups `--help` into 6 sections plus subcommands, and deprecates `--plan-first`. ([#1380](https://github.com/go-steer/core-agent/issues/1380))
 - **Graduate permission mode `auto` and `pkg/approver` out of experimental.** Places `permissions.Approver` / `ApproverRequest` / `ApproverContext` / `Verdict`, `PermissionsConfig.Auto`, and `pkg/approver` under the SemVer promise. ([#1213](https://github.com/go-steer/core-agent/issues/1213))

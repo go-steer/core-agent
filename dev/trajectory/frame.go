@@ -208,6 +208,59 @@ func LoadRun(dir string) (*Trajectory, error) {
 	return t, nil
 }
 
+// FramesFromEvents converts an ADK session.Events sequence (for example, loaded
+// from pkg/eventlog) into ordered trajectory Frames tagged with agent starting
+// at startSeq (#881, #994, #1538). If agent is empty, Parent is used; if
+// startSeq <= 0, 1 is used.
+func FramesFromEvents(agent string, startSeq int, events session.Events) []Frame {
+	if events == nil {
+		return nil
+	}
+	if agent == "" {
+		agent = Parent
+	}
+	if startSeq <= 0 {
+		startSeq = 1
+	}
+	var out []Frame
+	seq := startSeq
+	for ev := range events.All() {
+		if ev == nil {
+			continue
+		}
+		var rawParts []json.RawMessage
+		if raw, err := json.Marshal(ev); err == nil {
+			var shadow struct {
+				Content struct {
+					Parts []json.RawMessage `json:"parts"`
+				} `json:"content"`
+			}
+			_ = json.Unmarshal(raw, &shadow)
+			rawParts = shadow.Content.Parts
+		}
+		out = append(out, Frame{
+			Agent:    agent,
+			Seq:      seq,
+			Event:    ev,
+			rawParts: rawParts,
+		})
+		seq++
+	}
+	return out
+}
+
+// FromEvents constructs a Trajectory directly from a stored ADK session.Events
+// stream (such as a session read from pkg/eventlog) without requiring an SSE
+// transcript directory (#881, #994, #1538).
+func FromEvents(meta Meta, events session.Events) *Trajectory {
+	frames := FramesFromEvents(Parent, 1, events)
+	return &Trajectory{
+		Meta:   meta,
+		Frames: frames,
+		Steps:  buildSteps(frames),
+	}
+}
+
 // SkippedRun is a run directory that looked like a run but could not be
 // read. It is returned rather than logged so the caller decides what a
 // broken run means: the CLI prints it, a test asserting on the archive

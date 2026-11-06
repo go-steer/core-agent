@@ -24,12 +24,13 @@ This document defines which packages in `github.com/go-steer/core-agent/v3` carr
 
 ### `promised` packages (SemVer-governed)
 
-The 25 `promised` packages form the supported embedding API of `core-agent`:
+The 27 `promised` packages form the supported embedding API of `core-agent`:
 
 - `pkg/agent`, `pkg/agent/autonomous`, `pkg/agent/background`
 - `pkg/approver`
 - `pkg/attach/wire`
 - `pkg/config`
+- `pkg/evals`, `pkg/evals/judge`
 - `pkg/eventlog`
 - `pkg/instruction`
 - `pkg/mcp`

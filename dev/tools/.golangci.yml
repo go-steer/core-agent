@@ -82,12 +82,14 @@ linters:
         text: "(unparam|S1009)"
       # The one complexity-ratchet exemption, and the reason the
       # thresholds below can be as tight as they are: cmd/core-agent's
-      # `run` is a 1228-line / 642-statement / 374-cognitive-complexity
+      # `run` is a 1441-line / 760-statement / 445-cognitive-complexity
       # outlier — 5x worse than the next function in the tree on every
       # metric. Pinning the thresholds above IT would leave a fence at
-      # 1229 lines, which forbids nothing anyone would ever write by
+      # 1442 lines, which forbids nothing anyone would ever write by
       # accident. So `run` is named here, once, next to the numbers it
       # distorts, and everything else gets a fence that actually holds.
+      # `TestComplexityRatchet_CmdRunCap` in internal/testutil caps `run`
+      # at its current size so it cannot grow while exempted (#1371).
       #
       # Deliberately narrower than a per-file exclusion: this matches
       # the single function, so a *new* god-method elsewhere in
@@ -103,14 +105,10 @@ linters:
       # explicit provenance — both projects are go-steer org with the
       # same Apache-2 license; the lift is honest about its source
       # rather than relicensing on arrival. Covers:
-      #   internal/tui/                           — the TUI proper
       #   internal/testutil/fake_model.go         — test helper
       #   permissions/verb.go + verb_test.go      — verb extraction
       #   permissions/builtin_allow.go + test     — bundle catalog
-      # Remove this exclusion when path C (cogo flips to depend on
-      # core-agent's TUI) lands and the extracted package gets
-      # re-headered.
-      - path: (internal/tui|internal/testutil)/
+      - path: internal/testutil/
         linters:
           - goheader
       - path: permissions/(verb|builtin_allow)(_test)?\.go
@@ -137,22 +135,28 @@ linters:
     # fail is a function worse than anything we already have. Length is
     # not itself a defect; unbounded growth is.
     #
-    # Re-measured 2026-09-14 at commit 4abc8e7, excluding cmd/core-agent's
-    # `run` (see the exclusion rule above):
+    # Re-measured 2026-11-06 after #1370 decomposed `autonomous.Run` and
+    # `Resume`, excluding cmd/core-agent's `run` (see the exclusion rule
+    # above and `internal/testutil/complexity_test.go`):
     #
-    #   funlen lines       254   dev/uat/scheduled-monitor `run`
-    #   funlen statements  144   pkg/agent/autonomous/autonomous.go `Run`
-    #   gocognit           110   internal/coretuiremote `(*Adapter).Events`
+    #   funlen lines (tree) 254   dev/uat/scheduled-monitor `run`
+    #   funlen lines (pkg/) 229   pkg/agent/background/spawn.go `(*Manager).launch`
+    #   funlen statements   142   pkg/config/config.go `(*Config).Validate`
+    #   gocognit            110   pkg/models/retry.go `(*RetryPolicy).Wrap` &
+    #                             internal/coretuiremote `(*Adapter).events`
+    #
+    # Separate `pkg/` vs `dev/` line ceilings (229 vs 254), the count of
+    # `pkg/` functions over 150 lines (8), and the cap on `cmd/core-agent`'s
+    # exempted `run` are enforced by `internal/testutil/complexity_test.go`
+    # (#1371) so a 254-line UAT tool under `dev/` does not set the ceiling
+    # for library code under `pkg/`.
     #
     # Ratchet DOWN as hotspots get refactored — never up. #659 turned
-    # the statements notch (145 → 144) and took pkg/agent's Agent.Run
-    # from 129/57 to 102/40 by extracting its pre-turn pipeline, but
-    # Agent.Run was never the binding function on any of the three
-    # metrics, so that is all the movement it earns. The three named
-    # above are what hold each line now; each one refactored is the
-    # next notch. #685 removes the `run` exemption, which should take
-    # these to roughly 155 / 95 / 96.
+    # the statements notch (145 → 144) and #1370 turned it again
+    # (144 → 142) by extracting `turnLoop` across `autonomous.Run` and
+    # `Resume`.
     #
+    # Previously (measured 2026-09-14 at 4abc8e7): 254 / 144 / 110.
     # Previously (measured 2026-08-13 at 4ac5efb): 254 / 145 / 110,
     # with `Resume` holding both funlen metrics.
     #
@@ -168,7 +172,7 @@ linters:
     #     false while measuring.
     funlen:
       lines: 254
-      statements: 144
+      statements: 142
       # Comment lines don't count toward the limit: this is a fence
       # against logic accreting, and documenting a function should
       # never push it over.

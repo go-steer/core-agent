@@ -474,7 +474,7 @@ core-agent: prompt cache: enabled (5m ttl, system + rolling history breakpoints)
 
 `ttl` is `5m` (the API default) or `1h`; anything else is a config error at load. `--prompt-cache-ttl` overrides the config for one run — the same checkout wants `5m` under a human at the keyboard and `1h` under a cron that wakes every 20 minutes — and applies to declarative subagents too. The kill switch outranks it: `--no-prompt-cache` with a TTL set still means no caching.
 
-The choice is arithmetic, not preference. A 1-hour write bills at **2×** the input rate against the 5-minute one's 1.25×, and both read at ~10%. Paying the extra 0.75× is worth it only when an entry that would have expired at five minutes gets read at least once more inside the hour:
+The choice is arithmetic, not preference. A 1-hour write bills at **2×** the input rate against the 5-minute one's 1.25×, and both read at 5–10% of the input rate (for example, 5% on `claude-opus-5-5` at $0.20 against $4/MTok, and 10% on earlier Claude models). Paying the extra 0.75× is worth it only when an entry that would have expired at five minutes gets read at least once more inside the hour:
 
 | Gap between turns | Cheaper |
 |---|---|
@@ -486,7 +486,7 @@ Both rates are billed correctly: the response reports the write split per TTL, a
 
 Leaving the default in place keeps the request bytes identical to a pre-`ttl` build, so upgrading does not orphan the entries the previous build wrote.
 
-**Economics.** Cache reads bill at ~10% of the input rate; cache **writes** bill at 125% of it. Break-even is two requests carrying the same prefix — which the agentic loop clears within seconds of turn 1.
+**Economics.** Cache reads bill at 5–10% of the input rate (5% on `claude-opus-5-5`, 10% on earlier Claude models); cache **writes** bill at 125% of it. Break-even is two requests carrying the same prefix — which the agentic loop clears within seconds of turn 1.
 
 The shape that loses is a call whose prefix never recurs, so core-agent opts those out automatically: the compaction summarizer, the checkpointer, the `/btw` side question, and any subtask running on a budget of two turns or fewer (the `agentic_*` wrappers and the MCP LLM-digest fallback). Their prefixes diverge from the loop's at the first block, so nothing can read what they would write.
 
@@ -495,8 +495,6 @@ One shape stays on and pays a bounded tax: a turn that makes exactly **one** mod
 **From Go.** A library consumer gets the same defaults from `anthropic.New` / `anthropic.NewVertex`. Override with `anthropic.WithPromptCache(anthropic.CacheOptions{...})` at construction, or `Provider.SetPromptCache` before the first `Model()` call. Pass a zero `CacheOptions` to turn everything off. `models.WithoutPromptCache(ctx)` suppresses caching for one request. The older `WithCacheSystem` is deprecated; it keeps its original all-or-nothing meaning, so `WithCacheSystem(false)` still means no caching at all.
 
 **What invalidates it.** Anything that changes an earlier byte: a compaction or checkpoint (which rewrites the head of the history by design), a change to the system prompt or the agent's name/description, and — the one that can bite mid-session — an MCP server whose `tools/list` response changes. Tool schemas render before the system block, so a server that reorders its tools, reconnects with a different set, or edits a description invalidates every marker in the request.
-
-**TTL.** Markers use Anthropic's default 5-minute TTL. The 1-hour TTL is not exposed: it bills writes at 2× base input where the 5-minute one bills 1.25×, and the rate catalog carries a single write rate, so shipping it today would understate every cached turn by 37.5%. Tracked in [#770](https://github.com/go-steer/core-agent/issues/770).
 
 ### Built-in tools
 

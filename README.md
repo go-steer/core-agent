@@ -23,6 +23,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 **Providers**
 - Gemini API (`GEMINI_API_KEY` / `GOOGLE_API_KEY`) and Vertex AI (ADC + `GOOGLE_CLOUD_PROJECT`) with server-side `GoogleSearch` and `URLContext` wired up.
 - Anthropic Claude via `api.anthropic.com` (`ANTHROPIC_API_KEY`) and via Vertex AI (ADC + `ANTHROPIC_VERTEX_PROJECT_ID`) as a native `model.LLM` adapter.
+- Built-in provider profiles via [`go-steer/core-models`](https://github.com/go-steer/core-models) (`openai`, `xai`, `vertex-maas`, `sap-ai-core`, `vllm`, `sglang`, `ollama`, `openai-compatible`) plus custom profiles under `providers` in `.agents/config.json`.
 - Mock providers for credential-free testing: `--provider=echo` and `--provider=scripted --script=path.jsonl`; `--record-to=path.jsonl` captures any real session for later replay.
 - `model.builtin_tools` gates each provider's server-side built-ins (`web_search`, `url_context`, `code_execution`) under one provider-neutral, tri-state set of names — the defaults differ per provider, so this is what makes an internet-reachability posture survive a provider switch. Distinct from `--no-builtin-tools` below, which is core-agent's own catalog. The startup summary names the effective set.
 
@@ -39,7 +40,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 
 **Persistence + observability**
 - Durable sessions and audit log via `eventlog.Open(...)` — SQLite (pure-Go, CGO-free), Postgres, or MySQL — with monotonic `seq`, `Since(seq)` replay, `Watch(seq)` live-tail, and a session lock for crash-safe multi-process resume.
-- Opt-in OpenTelemetry export (console / OTLP); off by default so a fresh invocation makes zero outbound calls beyond the model.
+- Opt-in OpenTelemetry export (console / OTLP); off by default so a fresh invocation makes zero outbound telemetry calls (for total network silence beyond the model, pass `--no-pricing-refresh` or set `pricing.refresh: false` to skip the daily LiteLLM pricing refresh).
 - Per-model token + cost tracking with layered pricing (daily LiteLLM refresh, per-config overrides, longest-prefix fallback).
 
 **Remote attach + operator surface**

@@ -84,6 +84,11 @@ if [[ -x "dev/tools/verify-pricing-fresh" ]]; then
   echo "  pricing freshness: OK"
 fi
 
+# Guard 2: harness-to-product LOC ratio budget (#1383).
+if [[ -x "dev/tools/harness-ratio" ]]; then
+  dev/tools/harness-ratio --check
+fi
+
 # (Add new preflight guards above this line as they get added to
 # release.yml. Keep this section short — the tag-cut script is not the
 # place for expensive checks.)

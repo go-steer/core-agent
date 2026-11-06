@@ -31,6 +31,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 #### Other (Cleanup)
 
+- **Add `dev/tools/harness-ratio` LOC report and release budget.** Reports Harness vs Product non-test LOC in release notes and enforces `harness_added <= product_added` at release time. ([#1383](https://github.com/go-steer/core-agent/issues/1383))
 - **`pkg/agent/autonomous`: extract shared `turnLoop` across `Run` and `Resume`.** Unifies the multi-turn execution, retry, schedule, and checkpoint loop and brings `Resume` into parity on `RunResult.Calls` provenance rollup. ([#1370](https://github.com/go-steer/core-agent/issues/1370))
 
 ## [3.1.0] — 2026-11-06

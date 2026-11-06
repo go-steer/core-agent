@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# dev/tools/harness-ratio — Report non-test lines of code in Harness
+# (dev/, examples/internal/, internal/evals/, pkg/approver/, pkg/approval/)
+# versus Product (pkg/ + cmd/ Go, non-test) at END_REF and added since
+# START_REF, and enforce the release budget (#1383):
+#
+#   Budget: harness LOC added in a release may not exceed product LOC added
+#           (harness_added <= product_added), unless ALLOW_HARNESS_OVER_BUDGET=1.
+#
+# Usage:
+#   dev/tools/harness-ratio [--markdown] [--check] [START_REF [END_REF]]
+
+set -euo pipefail
+
+MARKDOWN=0
+CHECK=0
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --markdown)
+      MARKDOWN=1
+      shift
+      ;;
+    --check)
+      CHECK=1
+      shift
+      ;;
+    -h|--help)
+      sed -n '16,26p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        POSITIONAL+=("$1")
+        shift
+      done
+      ;;
+    -*)
+      echo "harness-ratio: unknown flag: $1" >&2
+      exit 2
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
+done
+
+last_stable_before() {
+  local ref="$1"
+  local base="${ref%%-*}"
+  if [[ ! "$base" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -v -- '-' | sort -u -V | tail -n 1 || true
+    return
+  fi
+  {
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -v -- '-' || true
+    printf '%s\n' "$base"
+  } | sort -u -V \
+    | awk -v base="$base" '
+        $0 == base { exit }
+        { last = $0 }
+        END { if (last != "") print last }
+      '
+}
+
+END_REF="${POSITIONAL[1]:-HEAD}"
+START_REF="${POSITIONAL[0]:-}"
+if [[ -z "$START_REF" ]]; then
+  START_REF="$(last_stable_before "$END_REF" || true)"
+fi
+
+# Verify END_REF resolves; fall back to HEAD if a tag hasn't been created yet
+# (e.g. compose-release-notes.sh running before git tag in a dry run).
+RESOLVED_END="$END_REF"
+if ! git rev-parse -q --verify "${RESOLVED_END}^{commit}" >/dev/null 2>&1; then
+  RESOLVED_END="HEAD"
+fi
+
+RESOLVED_START=""
+if [[ -n "$START_REF" ]] && git rev-parse -q --verify "${START_REF}^{commit}" >/dev/null 2>&1; then
+  RESOLVED_START="$START_REF"
+fi
+
+python3 - "$RESOLVED_START" "$RESOLVED_END" "$START_REF" "$END_REF" "$MARKDOWN" "$CHECK" "${ALLOW_HARNESS_OVER_BUDGET:-0}" <<'PY'
+import subprocess
+import sys
+
+resolved_start, resolved_end, display_start, display_end, markdown_flag, check_flag, allow_over = sys.argv[1:]
+markdown = markdown_flag == "1"
+check = check_flag == "1"
+allow_over_budget = allow_over == "1"
+
+
+def classify(path: str) -> str:
+    """Return 'harness', 'product', or '' for non-counted paths."""
+    if path.endswith("_test.go") or "/testdata/" in path or path.startswith("testdata/"):
+        return ""
+    if path.startswith("dev/"):
+        return "harness"
+    if (
+        path.startswith("examples/internal/")
+        or path.startswith("internal/evals/")
+        or path.startswith("pkg/approver/")
+        or path.startswith("pkg/approval/")
+    ) and path.endswith(".go"):
+        return "harness"
+    if (path.startswith("pkg/") or path.startswith("cmd/")) and path.endswith(".go"):
+        return "product"
+    return ""
+
+
+def snapshot_loc(ref: str):
+    """Count total non-test LOC for harness and product at git ref."""
+    proc = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "--name-only", ref],
+        check=True,
+        capture_output=True,
+    )
+    paths = [p.decode("utf-8", errors="replace") for p in proc.stdout.split(b"\0") if p]
+    harness_files = []
+    product_files = []
+    for p in paths:
+        c = classify(p)
+        if c == "harness":
+            harness_files.append(p)
+        elif c == "product":
+            product_files.append(p)
+
+    def count_lines(file_list):
+        if not file_list:
+            return 0
+        total = 0
+        batch_p = subprocess.Popen(
+            ["git", "cat-file", "--batch"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+        )
+        req = "".join(f"{ref}:{f}\n" for f in file_list).encode("utf-8")
+        out, _ = batch_p.communicate(req)
+        idx = 0
+        n = len(out)
+        while idx < n:
+            nl = out.find(b"\n", idx)
+            if nl < 0:
+                break
+            header = out[idx:nl].decode("utf-8", errors="replace").split()
+            idx = nl + 1
+            if len(header) < 3 or header[1] == "missing":
+                continue
+            size = int(header[2])
+            blob = out[idx : idx + size]
+            idx += size + 1  # trailing newline after blob
+            if b"\0" not in blob[:8000]:
+                total += blob.count(b"\n")
+        return total
+
+    return count_lines(harness_files), count_lines(product_files)
+
+
+def diff_loc(start_ref: str, end_ref: str):
+    """Count added/deleted non-test lines between start_ref and end_ref."""
+    if not start_ref:
+        return 0, 0, 0, 0
+    proc = subprocess.run(
+        ["git", "diff", "--numstat", "--no-renames", f"{start_ref}..{end_ref}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    h_add = h_del = p_add = p_del = 0
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        add_s, del_s, path = parts
+        if add_s == "-" or del_s == "-":
+            continue
+        c = classify(path)
+        if c == "harness":
+            h_add += int(add_s)
+            h_del += int(del_s)
+        elif c == "product":
+            p_add += int(add_s)
+            p_del += int(del_s)
+    return h_add, h_del, p_add, p_del
+
+
+h_loc, p_loc = snapshot_loc(resolved_end)
+total_loc = h_loc + p_loc
+h_share = (100.0 * h_loc / total_loc) if total_loc > 0 else 0.0
+p_share = (100.0 * p_loc / total_loc) if total_loc > 0 else 0.0
+
+h_add, h_del, p_add, p_del = diff_loc(resolved_start, resolved_end)
+h_net = h_add - h_del
+p_net = p_add - p_del
+
+over_budget = bool(resolved_start) and (h_add > p_add)
+if p_add > 0:
+    delta_ratio_str = f"{h_add / p_add:.2f}x"
+elif h_add == 0:
+    delta_ratio_str = "0.00x"
+else:
+    delta_ratio_str = "inf (0 product lines added)"
+
+budget_status = "FAIL (harness added > product added)" if over_budget else "OK (harness added <= product added)"
+range_label = f"{display_start}..{display_end}" if resolved_start else display_end
+
+if markdown:
+    print("### Harness vs Product LOC")
+    print()
+    if resolved_start:
+        print(
+            f"- **Since `{display_start}` (`{range_label}`):** "
+            f"Harness `+{h_add}` / `-{h_del}` (net `{h_net:+d}` LOC) vs "
+            f"Product `+{p_add}` / `-{p_del}` (net `{p_net:+d}` LOC) — "
+            f"growth ratio `{delta_ratio_str}` (budget `<= 1.00x`: **{budget_status.split()[0]}**)."
+        )
+    print(
+        f"- **Codebase total (non-test):** "
+        f"Harness `{h_loc:,}` LOC (`{h_share:.1f}%`) vs "
+        f"Product `{p_loc:,}` LOC (`{p_share:.1f}%`)."
+    )
+    print()
+else:
+    print(f"Harness vs Product LOC ({range_label})")
+    if resolved_start:
+        print(f"  Delta since {display_start}:")
+        print(f"    Harness (dev/, examples/internal/, internal/evals/, pkg/approver/, pkg/approval/):")
+        print(f"      +{h_add} / -{h_del} (net {h_net:+d} LOC)")
+        print(f"    Product (pkg/ + cmd/ Go, non-test):")
+        print(f"      +{p_add} / -{p_del} (net {p_net:+d} LOC)")
+        print(f"    Growth ratio (harness_added / product_added): {delta_ratio_str}")
+        print(f"    Budget (harness_added <= product_added):      {budget_status}")
+    print(f"  Snapshot at {display_end} (non-test):")
+    print(f"    Harness: {h_loc:,} LOC ({h_share:.1f}%)")
+    print(f"    Product: {p_loc:,} LOC ({p_share:.1f}%)")
+
+if check and over_budget and not allow_over_budget:
+    print(
+        f"\nerror: harness LOC grew faster than product LOC in {range_label}: "
+        f"harness added +{h_add} LOC vs product added +{p_add} LOC ({delta_ratio_str} > 1.00x).\n"
+        f"Set ALLOW_HARNESS_OVER_BUDGET=1 if this release intentionally invests in harness.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY

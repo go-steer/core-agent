@@ -33,6 +33,7 @@ COMPOSE="$(cd "$(dirname "$0")/../release" && pwd)/compose-release-notes.sh"
 FOOTER="$(cd "$(dirname "$0")/../release" && pwd)/install-verify-footer.md.tmpl"
 CUTGA="$(cd "$(dirname "$0")/../release" && pwd)/cut-ga-tag.sh"
 VERIFY_PROVENANCE="$(cd "$(dirname "$0")/../release" && pwd)/verify-provenance.sh"
+HARNESS_RATIO="$(cd "$(dirname "$0")" && pwd)/harness-ratio"
 
 FAILURES=0
 CASE=""
@@ -533,6 +534,37 @@ BAD_LINK_CL="$REPO/cl-missing-link.md"
 if check_unreleased_bullets "$BAD_LINK_CL" 2>/dev/null; then
   fail "expected check_unreleased_bullets to reject a bullet without a trailing ([#NNN](url)) link"
 fi
+
+# ── 14. harness-to-product LOC ratio report and budget (#1383) ───────
+start_case 'compose-release-notes.sh emits ### Harness vs Product LOC and harness-ratio enforces the budget (#1383)'
+assert_contains "$REPO/n1.md" '### Harness vs Product LOC'
+
+REPO4="$(mktemp -d)"
+init_repo "$REPO4"
+mkdir -p "$REPO4/pkg/foo" "$REPO4/dev/tools"
+printf 'package foo\nfunc A() {}\n' > "$REPO4/pkg/foo/a.go"
+git -C "$REPO4" add .
+git -C "$REPO4" commit -qm 'feat: initial product'
+git -C "$REPO4" tag v1.0.0
+
+printf 'package foo\nfunc A() {}\nfunc B() {}\nfunc C() {}\n' > "$REPO4/pkg/foo/a.go"
+printf '#!/usr/bin/env bash\necho ok\n' > "$REPO4/dev/tools/check"
+git -C "$REPO4" add .
+git -C "$REPO4" commit -qm 'feat: product grows faster than harness'
+if ! ( cd "$REPO4" && "$HARNESS_RATIO" --check v1.0.0 HEAD ) >/dev/null 2>&1; then
+  fail "expected harness-ratio --check to succeed when product added >= harness added"
+fi
+
+printf '#!/usr/bin/env bash\n# 1\n# 2\n# 3\n# 4\n# 5\necho more\n' > "$REPO4/dev/tools/check"
+git -C "$REPO4" add .
+git -C "$REPO4" commit -qm 'chore: harness grows faster than product'
+if ( cd "$REPO4" && "$HARNESS_RATIO" --check v1.0.0 HEAD ) >/dev/null 2>&1; then
+  fail "expected harness-ratio --check to fail when harness added > product added"
+fi
+if ! ( cd "$REPO4" && ALLOW_HARNESS_OVER_BUDGET=1 "$HARNESS_RATIO" --check v1.0.0 HEAD ) >/dev/null 2>&1; then
+  fail "expected ALLOW_HARNESS_OVER_BUDGET=1 to override harness-ratio --check failure"
+fi
+rm -rf "$REPO4"
 
 if [[ "$FAILURES" -ne 0 ]]; then
   echo "verify-release-notes: ${FAILURES} assertion(s) failed" >&2

@@ -144,6 +144,11 @@ if [[ "$IS_MAJOR" -eq 0 && -f "$BREAKS_FILE" ]]; then
   fi
 fi
 
+# Guard 4: harness-to-product LOC ratio budget (#1383).
+if [[ -x "dev/tools/harness-ratio" ]]; then
+  dev/tools/harness-ratio --check "${LATEST_GA:-}" HEAD
+fi
+
 echo "── Preflight OK ─────────────────────────────────────────"
 echo ""
 

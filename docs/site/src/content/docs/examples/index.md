@@ -60,6 +60,12 @@ Substrate-enforced plan-before-action. The agent must call `record_plan` before 
 
 **Highlights:** gate-level enforcement (not just AGENTS.md convention) · advisory mode for audit-without-blocking · plan artifacts on disk under `.agents/plans/` · `/replan` slash to revoke + redraft · composes with every existing mode
 
+### [`kode-gopher`](https://github.com/go-steer/core-agent/tree/main/examples/kode-gopher)
+
+Pairs `core-agent` with [`gke-demos/kode-gopher`](https://github.com/gke-demos/kode-gopher) for **Code Mode over MCP** ([#1391](https://github.com/go-steer/core-agent/issues/1391)). Mounts `kode-gopher serve` over `stdio` for local use (with the Streamable HTTP `/mcp` stanza documented for in-cluster deployments), pre-allows the read-only `lookup_package_docs` and `gcp_auth_status` tools via `tools` + `permissions.allow` while keeping `execute_go_code` gated in `ask` mode, and attaches the `func run(ctx context.Context) (any, error)` snippet contract via `tool_notes`. See the [kode-gopher reference page](/reference/kode-gopher/).
+
+**Highlights:** Code Mode over MCP (`stdio` + Streamable HTTP `/mcp`) · per-server `tools` allowlist + `mcp:<tool>*` policy allow · `execute_go_code` gated in `ask` mode · `tool_notes` snippet contract (`phase=build` diagnostics)
+
 ### [`gke-deploy`](https://github.com/go-steer/core-agent/tree/main/examples/gke-deploy)
 
 Deploy `core-agent` as a long-lived pod in a GKE cluster, reachable by operators over an **internal** HTTP LoadBalancer. Uses **Workload Identity Federation for GKE direct binding** (no Google Service Account in the middle — IAM roles bind directly to the KSA's `principal://...` identifier) for credential-free Vertex AI inference + GKE read-only MCP access. Publishes an A2A AgentCard at `/.well-known/agent-card.json` for [Google Cloud Agent Registry](https://docs.cloud.google.com/agent-registry/register-agents) discovery, and opts into [GKE Managed Workload Identity](https://docs.cloud.google.com/iam/docs/create-managed-workload-identities-gke) for auto-rotated SPIFFE certs (mTLS-ready; on-ramp to Google Cloud Agent Identity when GA). No Dockerfile in the recipe — uses the published `ghcr.io/go-steer/core-agent:2.9.0` image. Use when you want a managed-runtime deployment of core-agent for a platform team or a long-running fleet auditor.

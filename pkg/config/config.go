@@ -837,9 +837,6 @@ type PermissionsConfig struct {
 	// puts in front of a person (#1175, docs/auto-mode-design.md).
 	// nil, the default, wires no approver, and permissions.mode "auto"
 	// is then a config error.
-	//
-	// EXPERIMENTAL until the auto-mode evaluation (#1175 phase 5) has
-	// run against a real model.
 	Auto *AutoApproverConfig `json:"auto,omitempty"`
 }
 

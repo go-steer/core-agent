@@ -126,11 +126,6 @@ type ApproverRequest struct {
 // Approver judges eligible calls in ModeAuto. Implementations live
 // outside pkg/permissions, which must not import pkg/models.
 //
-// EXPERIMENTAL: Approver, ApproverRequest, ApproverContext and Verdict
-// are outside the v2 compatibility promise until the auto-mode
-// evaluation (#1175 phase 5) has run against a real model. Later
-// phases may add methods or change fields.
-//
 // An error escalates. Judge runs on the tool call's goroutine and may
 // run concurrently for calls the model issued together.
 type Approver interface {

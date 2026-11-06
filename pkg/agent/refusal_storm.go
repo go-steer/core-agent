@@ -79,11 +79,8 @@ package agent
 
 import (
 	"context"
-	"fmt"
 
 	"google.golang.org/adk/v2/session"
-
-	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // refusalStormThreshold is how many calls the gate may refuse without
@@ -144,51 +141,11 @@ func (a *Agent) enforceRefusalStormInTurn(ctx context.Context) {
 	if repeats < refusalStormThreshold {
 		return
 	}
-	// CompareAndSwap rather than Store: two observations from one event
-	// (a call and its result) both reach this line, and the loser must
-	// not overwrite the winner's count or re-Interrupt a turn that is
-	// already unwinding.
-	if !a.pendingRefusalStorm.CompareAndSwap(0, int64(repeats)) {
-		return
-	}
-	// Say so in the log before cutting (#1131). This arm emits no
-	// operator event by design (see the file docstring), so without this
-	// line the metric label below is the only record outside the
-	// eventlog and the operator's whole output is the `context canceled`
-	// the Interrupt produces. The reason text deliberately states that
-	// nothing needs resetting — the thing the event was withheld to
-	// avoid implying.
-	a.logGuardrailCut(wire.TurnErrorRefusalStorm, fmt.Sprintf(
-		"the approval gate refused %d tool calls in this turn and the model kept "+
-			"re-issuing them. The turn was stopped with its work unfinished; nothing "+
-			"is tripped, no operator reset is needed, and a further turn would start "+
-			"with an empty refusal map. "+turnCutNoNextTurn,
-		repeats))
-	// Label the metric point before cutting, for the reason
-	// guardrail_halt.go exists: the turn error is a bare
-	// context.Canceled and nothing downstream could otherwise tell this
-	// stop from an operator interrupt. This is NOT a guardrail trip —
-	// markGuardrailHalt only relabels, it does not trip anything.
-	a.markGuardrailHalt(wire.TurnErrorRefusalStorm)
-	// Take the repetition off the watchdog's books on the way out
-	// (#1086). The calls being cut here are the watchdog's evidence too —
-	// it is watching the same stream — and its run length is not
-	// turn-scoped, so without this the next turn's first identical call
-	// is counted as the fifth in a row and halts the SESSION. That is
-	// the defect #1081 set out to fix, relocated one turn later, and the
-	// approval-gate drill found it exactly there: leg 2 stopped halting
-	// and leg 3 started.
-	//
-	// Safe because this arm is strictly tighter than the one it is
-	// clearing. Three suppressed repeats cut the turn before
-	// repeated-tool-call's five can be reached, so a model that keeps
-	// looping through the gate is stopped sooner every time, not later.
-	// A loop on a tool the gate never sees never gets here, and nothing
-	// is reset. The tripped flag is untouched: this arm never sets it,
-	// and a watchdog that genuinely halted earlier in the turn stays
-	// halted and still needs the operator's reset.
-	a.resetWatchdogSignals()
-	a.Interrupt()
+	a.applyTurnSignal(turnSignal{
+		kind:    signalRefusalStorm,
+		inTurn:  true,
+		repeats: repeats,
+	})
 }
 
 // clearRefusalStorm resets the per-turn marker at turn start, matching

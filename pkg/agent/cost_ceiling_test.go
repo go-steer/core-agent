@@ -443,10 +443,12 @@ func TestMaybeEnforceCostCeiling_AlreadyTripped_IsIdempotent(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
 	a := &Agent{
-		tracker:             tr,
-		costCeiling:         CostCeiling{MaxTurnUSD: 0.01},
-		costCeilingExceeded: true,
-		costCeilingReason:   "already tripped previously",
+		tracker:     tr,
+		costCeiling: CostCeiling{MaxTurnUSD: 0.01},
+		guardrailState: guardrailState{
+			costCeilingExceeded: true,
+			costCeilingReason:   "already tripped previously",
+		},
 	}
 	a.snapshotTurnStartCost()
 	tr.Append("test", 10_000_000, 0, usage.Pricing{InputPerMTok: 0.10}) // $1.00
@@ -564,8 +566,10 @@ func TestRun_CostCeiling_SettlesAfterHarnessAppend(t *testing.T) {
 func TestResetCostCeiling_ClearsFlag(t *testing.T) {
 	t.Parallel()
 	a := &Agent{
-		costCeilingExceeded: true,
-		costCeilingReason:   "test",
+		guardrailState: guardrailState{
+			costCeilingExceeded: true,
+			costCeilingReason:   "test",
+		},
 	}
 	a.ResetCostCeiling()
 	tripped, reason := a.CostCeilingTripped()
@@ -594,8 +598,10 @@ func TestPreflightCostCeiling_NoFlagReturnsNil(t *testing.T) {
 func TestPreflightCostCeiling_FlagReturnsTypedError(t *testing.T) {
 	t.Parallel()
 	a := &Agent{
-		costCeilingExceeded: true,
-		costCeilingReason:   "session exceeded $5.00",
+		guardrailState: guardrailState{
+			costCeilingExceeded: true,
+			costCeilingReason:   "session exceeded $5.00",
+		},
 	}
 	err := a.preflightCostCeiling()
 	if err == nil {
@@ -744,12 +750,14 @@ func runCostCeilingToolThenDone(t *testing.T, llm *toolThenDoneCostLLM, ceiling 
 
 func TestSettlePreflightEstimates_PrefersNewestRequest(t *testing.T) {
 	a := &Agent{
-		turnPreflightEstimates: []costPreflightEstimate{
-			{model: pricedModel, usd: 0.01},
-			{model: pricedModel, usd: 0.02},
+		guardrailState: guardrailState{
+			turnPreflightEstimates: []costPreflightEstimate{
+				{model: pricedModel, usd: 0.01},
+				{model: pricedModel, usd: 0.02},
+			},
+			turnPreflightBaseTurns: map[string]int{pricedModel: 0},
+			turnPreflightSettled:   make(map[string]int),
 		},
-		turnPreflightBaseTurns: map[string]int{pricedModel: 0},
-		turnPreflightSettled:   make(map[string]int),
 	}
 
 	a.settlePreflightEstimates(map[string]int{pricedModel: 1})

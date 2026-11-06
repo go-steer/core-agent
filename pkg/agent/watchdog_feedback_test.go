@@ -202,7 +202,9 @@ func TestResetWatchdog_KeepsQueuedFeedback(t *testing.T) {
 		watchdog:         &fakeWatchdog{},
 		watchdogEnforce:  true,
 		watchdogFeedback: true,
-		watchdogPending:  []watchdog.Alert{{Signal: "repeated-tool-call", Guidance: "stop looping"}},
+		guardrailState: guardrailState{
+			watchdogPending: []watchdog.Alert{{Signal: "repeated-tool-call", Guidance: "stop looping"}},
+		},
 	}
 	a.ResetWatchdog()
 	if got := a.prependWatchdogFeedback("next"); !strings.Contains(got, "stop looping") {

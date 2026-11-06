@@ -312,7 +312,7 @@ func TestPreflightRefusal_IsNotReadAsAFreshTrip(t *testing.T) {
 	t.Parallel()
 	trip := "watchdog halted the agent (no-op-streak): three inert calls. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset)."
 
-	a := &Agent{watchdogTripped: true, watchdogReason: trip}
+	a := &Agent{guardrailState: guardrailState{watchdogTripped: true, watchdogReason: trip}}
 	err := a.preflightWatchdog()
 	if err == nil {
 		t.Fatalf("a tripped watchdog must refuse the next turn")
@@ -332,7 +332,7 @@ func TestPreflightRefusal_IsNotReadAsAFreshTrip(t *testing.T) {
 		t.Errorf("Kind = %q, want %q", got.Kind, wire.TurnErrorWatchdog)
 	}
 
-	c := &Agent{costCeilingExceeded: true, costCeilingReason: "per-turn cost ceiling exceeded: this turn cost $0.2000"}
+	c := &Agent{guardrailState: guardrailState{costCeilingExceeded: true, costCeilingReason: "per-turn cost ceiling exceeded: this turn cost $0.2000"}}
 	cerr := c.preflightCostCeiling()
 	if cerr == nil {
 		t.Fatalf("a tripped ceiling must refuse the next turn")
@@ -446,12 +446,12 @@ func TestGuardrailHalted_AnswersForBothGuardrails(t *testing.T) {
 	if halted, _ := (&Agent{}).GuardrailHalted(); halted {
 		t.Errorf("a healthy agent must report no halt")
 	}
-	w := &Agent{watchdogTripped: true, watchdogReason: "no-op-streak"}
+	w := &Agent{guardrailState: guardrailState{watchdogTripped: true, watchdogReason: "no-op-streak"}}
 	halted, reason := w.GuardrailHalted()
 	if !halted || reason != "no-op-streak" {
 		t.Errorf("watchdog halt: got (%v, %q), want (true, %q)", halted, reason, "no-op-streak")
 	}
-	c := &Agent{costCeilingExceeded: true, costCeilingReason: "turn cost $0.20"}
+	c := &Agent{guardrailState: guardrailState{costCeilingExceeded: true, costCeilingReason: "turn cost $0.20"}}
 	halted, reason = c.GuardrailHalted()
 	if !halted || reason != "turn cost $0.20" {
 		t.Errorf("ceiling halt: got (%v, %q), want (true, %q)", halted, reason, "turn cost $0.20")
@@ -463,10 +463,12 @@ func TestGuardrailHalted_AnswersForBothGuardrails(t *testing.T) {
 	// The stand-down itself is the same either way; only the prose an
 	// operator reads depends on this order.
 	both := &Agent{
-		watchdogTripped:     true,
-		watchdogReason:      "no-op-streak",
-		costCeilingExceeded: true,
-		costCeilingReason:   "turn cost $0.20",
+		guardrailState: guardrailState{
+			watchdogTripped:     true,
+			watchdogReason:      "no-op-streak",
+			costCeilingExceeded: true,
+			costCeilingReason:   "turn cost $0.20",
+		},
 	}
 	halted, reason = both.GuardrailHalted()
 	if !halted || reason != "no-op-streak" {

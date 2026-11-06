@@ -323,13 +323,6 @@ type Agent struct {
 	// racing the audit write (#565). Atomic: set from the /interrupt
 	// handler goroutine, read/cleared from the turn goroutine.
 	pendingInterruptAudit atomic.Bool
-	// pendingRefusalStorm carries the suppressed-repeat count that cut
-	// this turn (#1081); zero means no cut. Set by the in-turn arm and
-	// drained in the post-turn cleanup for the same reason the interrupt
-	// audit is — the write needs the window with no live runner handle.
-	// It doubles as the once-per-turn guard: the arm runs on every tool
-	// observation and a turn is only cut once.
-	pendingRefusalStorm atomic.Int64
 	// approverTask is the operator-sent text the auto-mode approver
 	// judges calls against (#1175 decision 6), oldest first. Only kept
 	// when the gate has an approver; see approver_context.go.
@@ -419,13 +412,8 @@ type Agent struct {
 	// Degraded-mode latches (#974). Each condition announces itself
 	// once per process: both describe a state rather than an attempt,
 	// and a state re-announced every turn is one operators filter out.
-	warnedUnknownWindow bool // the assumed-context-window notice has been emitted
-	warnedMechanical    bool // the mechanical-compaction notice has been emitted
-	// contextBudgetCut latches the in-turn context backstop (#975) for
-	// the duration of one turn. Per turn, not per process: a cut is an
-	// attempt, and a session cutting one every turn is a different
-	// report from a session that cut one once.
-	contextBudgetCut      bool
+	warnedUnknownWindow   bool   // the assumed-context-window notice has been emitted
+	warnedMechanical      bool   // the mechanical-compaction notice has been emitted
 	checkpointRequested   bool   // flipped by mark_task_done tool handler during a turn
 	checkpointPending     bool   // promoted from checkpointRequested by post-turn hook
 	pendingCheckpointNote string // detail from the mark_task_done call (or /done arg)
@@ -440,142 +428,16 @@ type Agent struct {
 	subtaskOutputTokens int
 	subtaskCostUSD      float64
 
-	// Cost-ceiling enforcement (#145). costCeiling is the configured
-	// caps (zero = disabled). turnStartCost snapshots the session's
-	// cumulative cost at each turn's start so the post-turn hook can
-	// compute the delta. costCeilingExceeded blocks new Run calls
-	// until the operator calls ResetCostCeiling. See cost_ceiling.go
-	// for the full enforcement contract.
-	costCeiling         CostCeiling
-	turnStartCost       float64
-	costCeilingExceeded bool
-	costCeilingReason   string
-
-	// turnStartCostSet records that at least one turn has run in THIS
-	// process, so turnStartCost is a real baseline rather than the
-	// zero value. It gates the per-turn check only (#643): on a resumed
-	// session the tracker is rebuilt with the whole session's spend
-	// before the first Run, so a zero baseline would make the first
-	// turn's "delta" the entire history and trip the per-turn ceiling
-	// for a turn that hasn't cost anything yet.
-	turnStartCostSet bool
-
-	// Per-turn ceiling bookkeeping (#1049). A per-turn trip ends its turn
-	// and nothing else, so it cannot use costCeilingExceeded as its
-	// once-per-trip latch the way a session trip does.
-	// turnCeilingTripped is that latch, cleared at each turn's start;
-	// turnCeilingStreak counts turns that ended in a per-turn trip, back
-	// to back, and is what escalates to a session halt. One turn that
-	// finishes inside its bound clears the streak.
-	turnCeilingTripped       bool
-	turnCeilingStreak        int
-	turnPreflightReservedUSD float64
-	turnPreflightEstimates   []costPreflightEstimate
-	turnPreflightBaseTurns   map[string]int
-	turnPreflightSettled     map[string]int
-	// turnPreflightGen names the turn whose cost check is live:
-	// turnPreflight bumps it when it binds a turn and again when that
-	// turn ends. A check or release carrying another generation belongs
-	// to a turn that is over and leaves the books above alone; it is
-	// read under mu with them, so the next turn's reset cannot slip in
-	// between the test and the write.
-	turnPreflightGen uint64
-	// testPreflightBeforeReserve runs between pricing a request and
-	// reserving its estimate, testPreflightBeforeTrip between refusing
-	// one and recording the trip. Nil outside tests.
-	testPreflightBeforeReserve func()
-	testPreflightBeforeTrip    func()
-	// preflightOwner marks this agent's own model calls to the cost
-	// preflight (preflightCall.owner); set by New, shared with the
-	// role-sanitizing wrapper. unpricedWarned is warnUnpricedOnce's
-	// once-per-model record, keyed "<backend>/<model>".
-	preflightOwner *preflightOwner
-	unpricedWarned map[string]bool
-
-	// Durable guardrail state (#643). pendingOutOfBandEvents queues
-	// trip/reset rows for a window with no turn in flight;
-	// guardrailRestored latches the eventlog fold so it applies at
-	// most once — on SUCCESS, deliberately not a sync.Once, so a
-	// transient read failure retries on the next turn instead of
-	// disarming the backstop for the rest of the process's life.
-	// See guardrail_persist.go.
-	pendingOutOfBandEvents []queuedOutOfBandEvent
-	guardrailRestored      bool
-	// guardrailRestoreMu serializes RestoreGuardrails end to end so
-	// concurrent callers (GET /guardrails, POST /guardrails/reset,
-	// RecordGuardrailReset, and Run) never race a legacy backfill or
-	// observe guardrailRestored == true before applyGuardrailState has
-	// applied the restored state (#1439). Never held with a.mu.
-	guardrailRestoreMu sync.Mutex
-	// outOfBandDrainMu serializes drainOutOfBandEvents end to end, so
-	// two drains racing (an operator's reset on an HTTP goroutine and
-	// a turn's cleanup) append in queue order. #1258's rows are read
-	// back in order — a replayed trip arms core-tui's absorb of the
-	// `canceled` that follows it — so a reversed pair is a wrong
-	// rendering, not just an untidy log. Never held with a.mu.
-	outOfBandDrainMu sync.Mutex
-
-	// guardrailHaltKind names the guardrail that cut the turn now in
-	// flight (a turn-error kind; empty = none), so Run's cleanup
-	// doesn't emit a second, contentless `canceled` terminal frame
-	// behind the guardrail's own, and labels the turn's metric point
-	// with the halt rather than the cancel (#818). Per-turn: cleared
-	// at turn start and consumed at the terminal emit. See
-	// guardrail_halt.go.
-	guardrailHaltKind string
-
-	// wakeFenced records that a wake was swallowed because a guardrail
-	// halt was standing when something tried to drive a turn (#1040).
-	// Released by whichever reset clears the last halt, so the input
-	// that was queued behind it drives the first post-reset turn
-	// instead of sitting in the inbox until drop-oldest eats it. See
-	// guardrail_fence.go.
-	wakeFenced bool
-
-	// fencedLogReason is the halt text the fence last wrote a log line
-	// for, so repeated fenced wakes under one halt stay quiet while a
-	// SECOND guardrail tripping — or one of two being cleared — still
-	// gets a line. Log de-duplication only; nothing reads it for
-	// control flow. Cleared when the last halt is, so a guardrail that
-	// trips again for the same reason after an operator reset is a new
-	// halt and gets its own line.
-	fencedLogReason string
-
-	// Watchdog (#123 PR 2). Optional behavioral observer; nil when
-	// not wired. onWatchdogAlert is called for each alert returned by
-	// watchdog.Check in the post-turn hook; default nil = collect-only
-	// (alerts accumulate but never surface — useful for tests).
-	//
-	// watchdogEnforce (#623) turns a Critical alert into a hard halt:
-	// watchdogTripped blocks new Run calls (via preflightWatchdog)
-	// until the operator calls ResetWatchdog, and watchdogReason holds
-	// the operator-facing explanation for /stats-style surfaces. This
-	// mirrors the cost-ceiling kill switch (see watchdog.go +
-	// cost_ceiling.go for the shared contract).
-	//
-	// watchdogFeedback (#159) routes the alert's model-facing Guidance
-	// into the next turn's prompt as a "[watchdog]" block; the queue
-	// holds alerts drained from the post-turn hook until a Run consumes
-	// them. Implied by enforce, which is why it is a separate bit from
-	// watchdogEnforce rather than a mode enum: the two compose.
+	// Guardrail configuration (WithCostCeiling, WithWatchdog,
+	// WithWatchdogEnforce, WithWatchdogFeedback). Runtime latches,
+	// streaks, preflight books, durability queue, and wake-fence state
+	// live on the embedded guardrailState (#1389; see turn_outcome.go).
+	costCeiling      CostCeiling
 	watchdog         watchdog.Watchdog
 	onWatchdogAlert  func(watchdog.Alert)
 	watchdogEnforce  bool
 	watchdogFeedback bool
-	watchdogTripped  bool
-	watchdogReason   string
-	watchdogPending  []watchdog.Alert
-
-	// Turn-scoped trip bookkeeping (#1090), the watchdog's copy of the
-	// per-turn cost ceiling's (#1049) and cleared on the same kind of
-	// boundary. A Critical alert that declares watchdog.ScopeTurn cuts
-	// its turn without setting watchdogTripped, so it needs its own
-	// once-per-turn latch: watchdogTurnCut, cleared at each turn's start
-	// by observeTurnStartForWatchdog. watchdogTurnCutStreak counts turns
-	// cut that way back to back and is what escalates to a session halt;
-	// one turn that ends without a cut clears it.
-	watchdogTurnCut       bool
-	watchdogTurnCutStreak int
+	guardrailState
 
 	// Event hook (WithEventHook). Optional callbacks that observe
 	// session events as they stream (onEvent) and once per turn from
@@ -1265,7 +1127,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 
 	a := &Agent{
 		inner:                inner,
-		preflightOwner:       owner,
+		guardrailState:       guardrailState{preflightOwner: owner},
 		runner:               r,
 		sessionService:       svc,
 		eventLog:             o.eventLog,
@@ -2014,126 +1876,18 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	}
 
 	return wrapWithCleanup(tapped, func() {
-		// Always release the per-turn context. Only Interrupt() used
-		// to call cancel(); an uninterrupted turn leaked a live
-		// cancellable child of the process-lifetime parent ctx every
-		// turn (classic lostcancel — thousands accrue in a long-lived
-		// daemon). Safe here: cleanup runs after the event stream has
-		// fully drained, so nothing still depends on runCtx (#359).
-		cancel()
-		// The turn is over: its cost check must not screen calls made
-		// under its context from here on (a background subagent's).
-		endPreflight()
-		// Close the turn span here, in the same window as the cancel:
-		// the event stream has fully drained, so every child span ADK
-		// and the tool layer opened is already closed. The post-turn
-		// hooks below (checkpoint/compaction marking, watchdog drain,
-		// audit writes) are bookkeeping about the turn rather than
-		// part of it, and several of them deliberately run on a
-		// detached context, so they stay outside the span.
-		endTurnSpan(turnErr)
-		// Post-turn hooks. Order matters: mark_task_done flag
-		// promotion first (it's the operator-visible signal); then
-		// the threshold check. Either can flag a pending cleanup
-		// that the next Run call drains before its own work.
-		a.maybeMarkCheckpointPending()
-		a.maybeMarkCompactionPending()
-		a.maybeEnforceCostCeiling(false)
-		a.drainWatchdogAlerts(false)
-		// Operator-interrupt audit (#565): if a /interrupt fired during
-		// this turn, append its audit row now — after the event stream
-		// drained and runCtx was cancelled above, so the write can't
-		// race the runner's in-flight session handle. No-op when nothing
-		// is pending.
-		a.drainInterruptAudit()
-		// Same window and the same #565 reasoning as the audit above:
-		// the row explaining a refusal-storm cut (#1081) is written
-		// once the runner's session handle is released.
-		a.drainRefusalStormAudit()
-		// The approver's verdicts (#1175 decision 10), same window and
-		// same reasoning.
-		approverTurn.drainAudits()
-		// The turn error's durable row (#1258), queued before the drain
-		// below so it lands in the log before the typed frame goes out:
-		// the terminal barrier then delivers the row to every attached
-		// client ahead of the frame that names it. The guardrail marker
-		// is consumed here, not beside the metric, because the row
-		// records which guardrail cut the turn (cut_by).
-		guardrailHalt := a.consumeGuardrailHalt(turnErr)
-		var turnError wire.TurnError
-		if turnErr != nil {
-			turnError = a.recordTurnError(wire.ClassifyTurnError(turnErr), promptID, guardrailHalt)
-		}
-		// Clear cancelInFlight right before the single out-of-band
-		// flush so all post-turn hooks above queue onto
-		// pendingOutOfBandEvents rather than triggering separate
-		// synchronous drains, and so Compact/Checkpoint continue
-		// refusing mid-turn writes until post-turn rows are ready to
-		// flush (#355, #1360).
-		a.clearCancelInFlight(cancelGen)
-		// Durable guardrail rows (#643, #1258) for anything the hooks
-		// above just tripped, and the turn-error row. Same window and
-		// same reasoning as the interrupt audit: the stream has drained
-		// and runCtx is cancelled, so this write can't race the runner.
-		a.drainOutOfBandEvents()
-		if a.onTurnEnd != nil {
-			a.onTurnEnd()
-		}
-
-		// Terminal event per spec: exactly one turn-complete OR
-		// turn-error fires per turn, unconditionally — including
-		// when a guardrail halted the turn in flight, where
-		// `canceled` is simply what happened to it. The trip that
-		// caused the cancellation is reported by its own
-		// non-terminal `guardrail-trip` event (#891), so there is
-		// exactly one terminal frame here without anyone having to
-		// suppress the other. The marker survives only to label the
-		// metric below; see guardrail_halt.go.
-		//
-		// usage-update fires separately
-		// from the tracker.Append callback wired in SetAttachEmitter,
-		// which lands AFTER turn-complete (matching the spec's
-		// "turn-complete → status-update idle → usage-update" order
-		// because the harness calls Append after this cleanup runs).
-		// gen_ai.agent.invocation.duration (#338): one point per
-		// turn, error.type only on failed turns (stable classifier
-		// kinds, not raw error text). Recorded against
-		// context.Background() because runCtx is already cancelled
-		// here — exemplar linkage is lost for this instrument;
-		// acceptable, the terminal SSE event carries prompt_id for
-		// correlation.
-		if guardrailHalt != "" {
-			// error.type says which guardrail, not `canceled`: the
-			// cancel is how the halt was carried out, not what
-			// happened to the turn (#818).
-			a.recordInvocationKind(time.Since(started).Seconds(), guardrailHalt)
-		} else {
-			a.recordInvocation(time.Since(started).Seconds(), turnErr)
-		}
-
-		switch {
-		case turnErr != nil:
-			a.emit(wire.EventTurnError, turnError)
-		default:
-			a.emit(wire.EventTurnComplete, wire.TurnComplete{
-				PromptID:  promptID,
-				Model:     a.modelName,
-				TokensIn:  promptTokens,
-				TokensOut: completionTokens,
-				// cost_usd intentionally omitted (nil *float64 +
-				// omitempty): the agent has no pricing reference
-				// (pricing lives in the harness's config). The
-				// "cost deferred" signal is explicit on the wire
-				// per spec v1.1.0 §2.5 — the immediately-following
-				// usage-update (fired from the tracker.Append
-				// callback where pricing has already been applied)
-				// carries authoritative cost.
-				LatencyMs: time.Since(started).Milliseconds(),
-			})
-		}
-		a.emit(wire.EventStatusUpdate, wire.StatusUpdate{
-			TurnState: wire.TurnStateIdle,
-		})
+		a.runPostTurn(&turnCleanup{
+			cancel:           cancel,
+			endPreflight:     endPreflight,
+			endTurnSpan:      endTurnSpan,
+			approverTurn:     approverTurn,
+			cancelGen:        cancelGen,
+			promptID:         promptID,
+			started:          started,
+			promptTokens:     promptTokens,
+			completionTokens: completionTokens,
+			turnErr:          turnErr,
+		}, postTurnSteps)
 	})
 }
 

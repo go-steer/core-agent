@@ -195,8 +195,10 @@ func TestMaybeTripWatchdog_Idempotent(t *testing.T) {
 	t.Parallel()
 	a := &Agent{
 		watchdogEnforce: true,
-		watchdogTripped: true,
-		watchdogReason:  "already tripped previously",
+		guardrailState: guardrailState{
+			watchdogTripped: true,
+			watchdogReason:  "already tripped previously",
+		},
 	}
 	var emits int
 	a.SetOperatorEventEmitter(func(string, any) { emits++ })
@@ -223,8 +225,10 @@ func TestPreflightWatchdog_NoFlagReturnsNil(t *testing.T) {
 func TestPreflightWatchdog_FlagReturnsTypedError(t *testing.T) {
 	t.Parallel()
 	a := &Agent{
-		watchdogTripped: true,
-		watchdogReason:  "watchdog halted the agent: loop",
+		guardrailState: guardrailState{
+			watchdogTripped: true,
+			watchdogReason:  "watchdog halted the agent: loop",
+		},
 	}
 	err := a.preflightWatchdog()
 	if err == nil {
@@ -242,9 +246,11 @@ func TestResetWatchdog_ClearsFlagAndResetsSignal(t *testing.T) {
 	t.Parallel()
 	w := &fakeWatchdog{}
 	a := &Agent{
-		watchdog:        w,
-		watchdogTripped: true,
-		watchdogReason:  "test",
+		watchdog: w,
+		guardrailState: guardrailState{
+			watchdogTripped: true,
+			watchdogReason:  "test",
+		},
 	}
 	a.ResetWatchdog()
 	if tripped, reason := a.WatchdogTripped(); tripped || reason != "" {

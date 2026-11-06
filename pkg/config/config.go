@@ -49,30 +49,32 @@ const SchemaVersion = 1
 // All sub-sections except Model have sensible zero-valued defaults, so a
 // minimal `config.json` only needs to set what the user wants to override.
 type Config struct {
-	Version     int               `json:"version"`
-	Model       ModelConfig       `json:"model"`
-	Permissions PermissionsConfig `json:"permissions,omitempty"`
-	PathScope   PathScopeConfig   `json:"path_scope,omitempty"`
-	Agent       AgentConfig       `json:"agent,omitempty"`
-	ToolOutput  ToolOutputConfig  `json:"tool_output,omitempty"`
-	Tools       ToolsConfig       `json:"tools,omitempty"`
-	Subagents   []SubagentSpec    `json:"subagents,omitempty"`
-	Hooks       hooks.Config      `json:"hooks,omitempty"`
-	Mock        MockConfig        `json:"mock,omitempty"`
-	OTEL        OTELConfig        `json:"otel,omitempty"`
-	URLScope    URLScopeConfig    `json:"url_scope,omitempty"`
-	Alerts      AlertsConfig      `json:"alerts,omitempty"`
-	Attach      AttachConfig      `json:"attach,omitempty"`
-	Pricing     PricingFileConfig `json:"pricing,omitempty"`
-	UI          UIConfig          `json:"ui,omitempty"`
-	Compaction  CompactionConfig  `json:"compaction,omitempty"`
-	Checkpoint  CheckpointConfig  `json:"checkpoint,omitempty"`
-	Session     SessionConfig     `json:"session,omitempty"`
-	Safety      SafetyConfig      `json:"safety,omitempty"`
-	Schedule    *ScheduleConfig   `json:"schedule,omitempty" yaml:"schedule,omitempty"`
-	Monitor     *MonitorConfig    `json:"monitor,omitempty" yaml:"monitor,omitempty"`
-	A2A         A2AConfig         `json:"a2a,omitempty" yaml:"a2a,omitempty"`
-	VCS         VCSConfig         `json:"vcs,omitempty" yaml:"vcs,omitempty"`
+	Version     int                `json:"version"`
+	Model       ModelConfig        `json:"model"`
+	Permissions PermissionsConfig  `json:"permissions,omitempty"`
+	PathScope   PathScopeConfig    `json:"path_scope,omitempty"`
+	Agent       AgentConfig        `json:"agent,omitempty"`
+	ToolOutput  ToolOutputConfig   `json:"tool_output,omitempty"`
+	Tools       ToolsConfig        `json:"tools,omitempty"`
+	Subagents   []SubagentSpec     `json:"subagents,omitempty"`
+	Hooks       hooks.Config       `json:"hooks,omitempty"`
+	Mock        MockConfig         `json:"mock,omitempty"`
+	OTEL        OTELConfig         `json:"otel,omitempty"`
+	URLScope    URLScopeConfig     `json:"url_scope,omitempty"`
+	Alerts      AlertsConfig       `json:"alerts,omitempty"`
+	Attach      AttachConfig       `json:"attach,omitempty"`
+	Pricing     PricingFileConfig  `json:"pricing,omitempty"`
+	UI          UIConfig           `json:"ui,omitempty"`
+	Compaction  CompactionConfig   `json:"compaction,omitempty"`
+	Checkpoint  CheckpointConfig   `json:"checkpoint,omitempty"`
+	Session     SessionConfig      `json:"session,omitempty"`
+	Safety      SafetyConfig       `json:"safety,omitempty"`
+	Schedule    *ScheduleConfig    `json:"schedule,omitempty" yaml:"schedule,omitempty"`
+	Monitor     *MonitorConfig     `json:"monitor,omitempty" yaml:"monitor,omitempty"`
+	A2A         A2AConfig          `json:"a2a,omitempty" yaml:"a2a,omitempty"`
+	AgentEngine *AgentEngineConfig `json:"agent_engine,omitempty" yaml:"agent_engine,omitempty"`
+	Memory      *MemoryConfig      `json:"memory,omitempty" yaml:"memory,omitempty"`
+	VCS         VCSConfig          `json:"vcs,omitempty" yaml:"vcs,omitempty"`
 
 	// Providers declares provider profiles: ways to reach models beyond
 	// the built-in gemini / vertex / anthropic / anthropic-vertex paths
@@ -1553,8 +1555,13 @@ type SubagentSpec struct {
 	// card advertises streaming, else message/send + tasks/get polling)
 	// instead of launching an in-process ADK agent. Mutually exclusive
 	// with in-process fields (root, instructions, model, tools, mcp,
-	// skills, scheduler, max_depth).
+	// skills, scheduler, max_depth, memory).
 	Remote *SubagentRemoteConfig `json:"remote,omitempty" yaml:"remote,omitempty"`
+
+	// Memory configures per-subagent private and shared memory mounts.
+	// Honored identically on both synchronous tool delegations and
+	// predefined spawn_agent calls (#948, #1192).
+	Memory *SubagentMemoryConfig `json:"memory,omitempty" yaml:"memory,omitempty"`
 
 	fromMarkdown bool   `json:"-" yaml:"-"`
 	baseDir      string `json:"-" yaml:"-"`
@@ -1681,6 +1688,13 @@ type SubagentRemoteConfig struct {
 	// a card pointing elsewhere is refused. An https→http downgrade is
 	// refused regardless.
 	AllowCardHostChange bool `json:"allow_card_host_change,omitempty" yaml:"allow_card_host_change,omitempty"`
+
+	// PropagateMemoryScope attaches non-secret memory scope metadata
+	// (namespace, user_id, and allowed shared pool names) in A2A
+	// Message.Metadata["core_agent.memory_scope"] for first-party A2A
+	// fleets sharing a Memory Bank under Workload Identity. Raw
+	// MemoryRef URIs are never sent across A2A boundaries.
+	PropagateMemoryScope bool `json:"propagate_memory_scope,omitempty" yaml:"propagate_memory_scope,omitempty"`
 }
 
 // SubagentRemoteAuthConfig configures authentication for a remote A2A
@@ -2407,6 +2421,19 @@ func (c *Config) Validate() error {
 	if err := c.validateVCS(); err != nil {
 		return err
 	}
+	return c.validateMemoryAndMultiSession()
+}
+
+// validateMemoryAndMultiSession runs the agent_engine / memory checks
+// (#948) and then the multi-session checks. Split out of Validate to
+// keep it under the funlen statement ratchet.
+func (c *Config) validateMemoryAndMultiSession() error {
+	if err := c.validateAgentEngine(); err != nil {
+		return err
+	}
+	if err := c.validateMemory(); err != nil {
+		return err
+	}
 	return c.validateMultiSession()
 }
 
@@ -2679,6 +2706,9 @@ func (c *Config) validateSubagentFields(i int, sa SubagentSpec) error {
 	if err := validateSubagentInherit(i, sa.Inherit); err != nil {
 		return err
 	}
+	if err := validateSubagentMemory(i, sa); err != nil {
+		return err
+	}
 	return validateSubagentMCPTools(i, sa.MCP, sa.MCPTools)
 }
 
@@ -2754,8 +2784,8 @@ func validateRemoteSubagent(i int, sa SubagentSpec) error {
 	if err := validateRemoteHTTPURL(r.Endpoint); err != nil {
 		return fmt.Errorf("config: subagents[%d].remote.endpoint: %w", i, err)
 	}
-	if sa.Root != "" || sa.Instructions != "" || sa.Model != nil || sa.Tools != nil || sa.MCP != nil || sa.Skills != nil || sa.Scheduler != "" || sa.MaxDepth != 0 || sa.Mode != "" || sa.OutputSchema != "" || sa.Tier != "" || sa.Capability != "" || sa.MCPTools != nil {
-		return fmt.Errorf("config: subagents[%d]: remote cannot be combined with in-process fields (root, instructions, mode, output_schema, tier, capability, model, tools, mcp, mcp_tools, skills, scheduler, max_depth)", i)
+	if sa.Root != "" || sa.Instructions != "" || sa.Model != nil || sa.Tools != nil || sa.MCP != nil || sa.Skills != nil || sa.Scheduler != "" || sa.MaxDepth != 0 || sa.Mode != "" || sa.OutputSchema != "" || sa.Tier != "" || sa.Capability != "" || sa.MCPTools != nil || sa.Memory != nil {
+		return fmt.Errorf("config: subagents[%d]: remote cannot be combined with in-process fields (root, instructions, mode, output_schema, tier, capability, model, tools, mcp, mcp_tools, skills, scheduler, max_depth, memory; use remote.propagate_memory_scope for A2A scope metadata)", i)
 	}
 	if r.Auth != nil {
 		if r.Auth.Type != SubagentRemoteAuthBearer {

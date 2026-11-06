@@ -92,6 +92,7 @@ type subagentFrontmatter struct {
 	Scheduler    string                `yaml:"scheduler"`
 	Inherit      []string              `yaml:"inherit"`
 	Remote       *SubagentRemoteConfig `yaml:"remote"`
+	Memory       *SubagentMemoryConfig `yaml:"memory"`
 }
 
 // frontmatterModel decodes either a bare model name string
@@ -165,6 +166,7 @@ func LoadSubagentMarkdownFile(path string) (SubagentSpec, error) {
 		Scheduler:    fm.Scheduler,
 		Inherit:      fm.Inherit,
 		Remote:       fm.Remote,
+		Memory:       fm.Memory,
 		fromMarkdown: true,
 		baseDir:      baseDir,
 	}

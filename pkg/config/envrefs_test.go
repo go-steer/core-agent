@@ -128,11 +128,20 @@ func TestEnvRefsDedupesAndSkipsBlanks(t *testing.T) {
 func TestEnvRefTagInventory(t *testing.T) {
 	t.Parallel()
 	want := []string{
+		"agent_engine.id_env",
+		"agent_engine.location_env",
+		"agent_engine.project_env",
+		"agent_engine.resource_env",
 		"alerts.targets[].auth.basic_env_pass",
 		"alerts.targets[].auth.basic_env_user",
 		"alerts.targets[].auth.bearer_env",
 		"alerts.targets[].url_env",
 		"attach.token_env",
+		"memory.memorybank.id_env",
+		"memory.memorybank.resource_env",
+		"memory.namespace_env",
+		"memory.ref_env",
+		"memory.sqlite.path_env",
 		"monitor.notify.token_env",
 		"providers[].auth.client_id_env",
 		"providers[].auth.client_secret_env",

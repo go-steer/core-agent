@@ -107,6 +107,8 @@ var builtinClasses = map[string]Class{
 	"vcs_publish":          ClassMutating,
 	"vcs_propose":          ClassMutating,
 	"vcs_proposal_comment": ClassMutating,
+	"persist_memory":       ClassMutating,
+	"forget_memory":        ClassMutating,
 
 	// Read-only tools.
 	"read_file":              ClassReadOnly,
@@ -144,6 +146,7 @@ var builtinClasses = map[string]Class{
 	"vcs_log":                ClassReadOnly,
 	"vcs_proposal_view":      ClassReadOnly,
 	"vcs_proposal_list":      ClassReadOnly,
+	"recall_memory":          ClassReadOnly,
 }
 
 // Predicate classifies a tool by name. See NewPredicate.

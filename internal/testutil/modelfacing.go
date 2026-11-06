@@ -52,10 +52,12 @@ import (
 // markTaskDoneRepeatStatus is already a constant asserted by a test
 // because the content IS the contract.
 //
-// It lives here rather than beside any one catalog because the five
-// packages that register model-facing tools — pkg/tools,
-// pkg/tools/agentic, pkg/agent/background, pkg/agent/autonomous and
-// pkg/agent — must not drift from each other. Two return tools
+// It lives here rather than beside any one catalog because the nine
+// shipped packages that register model-facing tools — pkg/tools,
+// pkg/tools/agentic, pkg/tools/alert, pkg/tools/peer, pkg/tools/vcs,
+// pkg/agent/background, pkg/agent/autonomous, pkg/agent and
+// pkg/memory/memtools (plus the internal/evals harness) — must not
+// drift from each other. Two return tools
 // disagreeing about whether a status line is acceptable is exactly the
 // defect the audit found.
 //

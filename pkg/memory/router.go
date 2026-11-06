@@ -56,6 +56,46 @@ func WithAuditRecorder(rec AuditRecorder) RouterOption {
 	}
 }
 
+// AppendAuditRecorder chains rec after any audit recorder already set,
+// so a host's own recorder keeps running when pkg/agent adds the
+// session-transcript recorder. Both run; their errors are joined. A nil
+// rec is ignored.
+func AppendAuditRecorder(rec AuditRecorder) RouterOption {
+	return func(r *Router) {
+		if rec == nil {
+			return
+		}
+		prev := r.audit
+		if prev == nil {
+			r.audit = rec
+			return
+		}
+		r.audit = func(ctx context.Context, author string, payload map[string]any) error {
+			return errors.Join(prev(ctx, author, payload), rec(ctx, author, payload))
+		}
+	}
+}
+
+// With returns a copy of r with opts applied on top of r's existing
+// configuration. r itself is unchanged, preserving Router's
+// immutability; the copy shares r's Backend.
+func (r *Router) With(opts ...RouterOption) *Router {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	cp.sharedCeilings = make(map[string]sharedCeiling, len(r.sharedCeilings))
+	for k, v := range r.sharedCeilings {
+		cp.sharedCeilings[k] = v
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cp)
+		}
+	}
+	return &cp
+}
+
 // WithUserResolver overrides how Router resolves the per-turn user_id for
 // mounts with PartitionByUser: true. Defaults to UserIDFromContext.
 func WithUserResolver(fn func(context.Context) string) RouterOption {
@@ -531,7 +571,7 @@ func ExtractConversationTurns(sess session.Session, since *time.Time) []Conversa
 			if p == nil || p.Thought {
 				continue
 			}
-			if txt := strings.TrimSpace(p.Text); txt != "" {
+			if txt := strings.TrimSpace(StripContextBlocks(p.Text)); txt != "" {
 				parts = append(parts, txt)
 			}
 		}
@@ -646,7 +686,10 @@ func (r *Router) recordAudit(ctx context.Context, author string, payload map[str
 	if r.audit == nil {
 		return nil
 	}
-	return r.audit(ctx, author, payload)
+	if err := r.audit(ctx, author, payload); err != nil {
+		return fmt.Errorf("%w: %w", ErrAuditFailed, err)
+	}
+	return nil
 }
 
 func matchesTopicsFilter(itemTopics, wanted []string) bool {

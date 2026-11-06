@@ -84,6 +84,8 @@ unsupported pkg/digest
 unsupported pkg/hooks
 # Backend conformance suite for pkg/memory implementations and extras/.
 unsupported pkg/memory/memtest
+# Model-facing recall_memory / persist_memory / forget_memory tools (#948).
+unsupported pkg/memory/memtools
 # Model-tier routing table used by watchdog escalation and task routing.
 unsupported pkg/modeltier
 # Deprecated forwarding alias for pkg/transcript (removed in v4.0).

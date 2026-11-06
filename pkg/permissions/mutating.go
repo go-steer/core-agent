@@ -171,6 +171,7 @@ var builtinToolClasses = map[string]ToolClass{
 	"vcs_log":                ClassReadOnly,
 	"vcs_proposal_view":      ClassReadOnly,
 	"vcs_proposal_list":      ClassReadOnly,
+	"recall_memory":          ClassReadOnly,
 
 	// Spawning tools (synchronous or background sub-runs whose inner
 	// mutating calls are governed by the sub-run's own gate/outbox).
@@ -199,6 +200,8 @@ var builtinToolClasses = map[string]ToolClass{
 	"vcs_publish":          ClassMutating,
 	"vcs_propose":          ClassMutating,
 	"vcs_proposal_comment": ClassMutating,
+	"persist_memory":       ClassMutating,
+	"forget_memory":        ClassMutating,
 }
 
 // DefaultToolClass returns the built-in ToolClass for name. Engine

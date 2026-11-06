@@ -865,3 +865,68 @@ func TestRouterEdgeCasesFromAdversarialReview(t *testing.T) {
 		t.Fatalf("Recall(topK=1) scrambled unscored backend relevance: got %+v (err=%v)", top1, err)
 	}
 }
+
+func TestRouterWithChainsAuditAndLeavesOriginalUnchanged(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	var mu sync.Mutex
+	var calls []string
+	rec := func(tag string) memory.AuditRecorder {
+		return func(_ context.Context, author string, _ map[string]any) error {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, tag+":"+author)
+			return nil
+		}
+	}
+	base, err := memory.NewRouter(memory.NewInMemory(),
+		[]memory.MountTemplate{memory.AgentMount("prod", "a", memory.AccessReadWrite)},
+		memory.WithAuditRecorder(rec("host")))
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	derived := base.With(memory.AppendAuditRecorder(rec("agent")), memory.AppendAuditRecorder(nil))
+	if _, err := derived.Remember(ctx, "agent", []memory.CandidateFact{{Fact: "x"}}); err != nil {
+		t.Fatalf("derived.Remember: %v", err)
+	}
+	if _, err := base.Remember(ctx, "agent", []memory.CandidateFact{{Fact: "y"}}); err != nil {
+		t.Fatalf("base.Remember: %v", err)
+	}
+	want := []string{"host:memory/remember", "agent:memory/remember", "host:memory/remember"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("audit calls = %v, want %v (host recorder kept, agent's chained only on the copy)", calls, want)
+	}
+	if (*memory.Router)(nil).With() != nil {
+		t.Fatal("nil Router With returned non-nil")
+	}
+}
+
+func TestStripContextBlocks(t *testing.T) {
+	t.Parallel()
+	block := memory.FormatContext([]memory.Item{{ID: "m1", Mount: "agent", Fact: "recalled"}})
+	for in, want := range map[string]string{
+		block + "\n\nhow do I restart?":                   "\n\nhow do I restart?",
+		"before " + block + " middle " + block + " after": "before  middle  after",
+		"no block here": "no block here",
+		"keep this " + memory.ContextOpenTag + " unterminated recalled text": "keep this ",
+	} {
+		if got := memory.StripContextBlocks(in); got != want {
+			t.Errorf("StripContextBlocks(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAuditRecorderErrorWrapsErrAuditFailed(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("audit store down")
+	r, err := memory.NewRouter(memory.NewInMemory(),
+		[]memory.MountTemplate{memory.AgentMount("prod", "a", memory.AccessReadWrite)},
+		memory.WithAuditRecorder(func(context.Context, string, map[string]any) error { return boom }))
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	deltas, err := r.Remember(context.Background(), "agent", []memory.CandidateFact{{Fact: "x"}})
+	if !errors.Is(err, memory.ErrAuditFailed) || !errors.Is(err, boom) || len(deltas) != 1 {
+		t.Fatalf("Remember with failing audit: deltas=%v err=%v, want the write's deltas and an ErrAuditFailed wrapping the cause", deltas, err)
+	}
+}

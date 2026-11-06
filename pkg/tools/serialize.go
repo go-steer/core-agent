@@ -85,6 +85,8 @@ var readOnlyBuiltins = map[string]bool{
 	"vcs_log":           true,
 	"vcs_proposal_view": true,
 	"vcs_proposal_list": true,
+	// recall_memory searches long-term memory and writes nothing (#948).
+	"recall_memory": true,
 }
 
 // ReadOnlyHinter is the optional interface a tool implements to

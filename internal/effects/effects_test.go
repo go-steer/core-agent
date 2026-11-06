@@ -1027,3 +1027,24 @@ func TestSyntheticTailRepairKindMetadataIgnored(t *testing.T) {
 		t.Fatalf("ScanDangling with kind=tool_tail_repair = %+v, want [fc-1] still mutating-dangling", scan.Mutating)
 	}
 }
+
+// The memory tools (#948): recall_memory is read-only and must not be
+// journaled as an effect; persist_memory and forget_memory are mutating
+// so a crash-replay never repeats a write. Mirrors the gate's table,
+// pinned in pkg/memory/memtools.
+func TestMemoryToolClasses(t *testing.T) {
+	t.Parallel()
+	pred := NewPredicate(nil)
+	for name, want := range map[string]Class{
+		"recall_memory":  ClassReadOnly,
+		"persist_memory": ClassMutating,
+		"forget_memory":  ClassMutating,
+	} {
+		if got := pred(name); got != want {
+			t.Errorf("effects class of %q = %v, want %v", name, got, want)
+		}
+		if !IsBuiltinOrControl(name) {
+			t.Errorf("%q is not a named builtin; it is only mutating by default", name)
+		}
+	}
+}

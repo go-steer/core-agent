@@ -69,7 +69,7 @@ func TestPlanFirst_DeniesBashBeforePlan(t *testing.T) {
 func TestPlanFirst_AllowsReadTools(t *testing.T) {
 	t.Parallel()
 	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
-	readTools := []string{"read_file", "read_many_files", "view_file_outline", "stat", "list_dir", "glob", "grep", "json_query", "todo"}
+	readTools := []string{"read_file", "read_many_files", "view_file_outline", "stat", "list_dir", "glob", "grep", "json_query", "todo", "recall_memory"}
 	for _, name := range readTools {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -283,5 +283,18 @@ func TestFromConfig_ArmsTheGateOnlyInRequiredMode(t *testing.T) {
 				t.Errorf("unarmed gate denied write_file: %v", err)
 			}
 		})
+	}
+}
+
+// persist_memory and forget_memory write long-term memory, so they are
+// plan-gated like any other mutating tool (#948); only recall_memory is
+// exempt (TestPlanFirst_AllowsReadTools).
+func TestPlanFirst_GatesMemoryWrites(t *testing.T) {
+	t.Parallel()
+	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
+	for _, name := range []string{"persist_memory", "forget_memory"} {
+		if err := g.CheckGenericWithArgs(context.Background(), name, "mount=agent x", nil); err == nil {
+			t.Errorf("%s ran before a plan was recorded", name)
+		}
 	}
 }

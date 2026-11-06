@@ -51,7 +51,7 @@ Models:  gemini-3.1-pro-preview-customtools  (5 turns, 30822 in / 558 out, $0.06
 - Pro: $0.0137/turn. Flash: $0.0028/turn. **~5x cheaper per turn.**
 - Flash absorbed the heavy file content (16k input tokens) at a fraction of what Pro would have charged for the same read.
 
-On a 50-turn session with 20 tool-heavy reads, the same workflow costs roughly $1.50 with the split vs $4.50 without. The savings compound on longer sessions because the parent's context stays smaller (lower input-token growth, higher cache-hit rate — see Lever 2 below).
+On a 50-turn session with 20 tool-heavy reads, the same workflow is projected at roughly $1.50 with the split vs $4.50 without. The savings compound on longer sessions because the parent's context stays smaller (lower input-token growth, higher cache-hit rate — see Lever 2 and [Measuring cost per passing task](#measuring-cost-per-passing-task) below).
 
 ### When NOT to split
 
@@ -301,6 +301,25 @@ Context-management activity:
 3. `--ask=auto` so the agent can refuse cleanly when it would otherwise block on a prompt
 4. Read-only tool surface where possible (`tools.disable` + permission allow patterns)
 5. Skip `--agentic-tools` — monitors do small reads, not bulk content digestion. The wrapper overhead doesn't pay off.
+
+---
+
+## Measuring cost per passing task
+
+Headline claims that combining model-tier splitting, structural/agentic digests, and prompt caching cuts multi-turn session spend by **5–10×** should be read with an explicit qualification: until you run the task suite against your own live workload, that range is a **projection from per-token list prices and modeled multi-turn prompt growth**, not a universal end-to-end guarantee.
+
+What matters in production is **cost per passing task** (`TotalCostUSD / TasksPassed`), not cost per token or cost per turn. A configuration that cuts per-turn token spend in half by aggressive summarization but causes 30% of tasks to fail or retry is more expensive per completed task than a conservative baseline.
+
+`core-agent` checks in a reproducible four-configuration benchmark harness in `internal/evals/costbench` (`go test -v ./internal/evals/costbench/...`) that prices a 5-task multi-turn engineering/operations suite through `pkg/pricing` (`usage.PriceOnCatalog` + `CostUSDForTurn`, including Anthropic's 1.25× 5-minute cache-write premium) and grades task completion:
+
+| Configuration | Description | Anthropic (`claude-opus-4-6` + `claude-haiku-4-5`) cost / passing task | Gemini (`gemini-2.5-pro` + `gemini-2.5-flash`) cost / passing task |
+|---|---|---:|---:|
+| `single_uncached` | Single frontier reasoning model, prompt caching off | $4.7480 (1.00×) | $1.2026 (1.00×) |
+| `single_cached` | Single frontier reasoning model, prompt caching on | $1.1195 (4.24×) | $0.2656 (4.53×) |
+| `split_uncached` | Frontier parent + small-tier subtask digestion, prompt caching off | $1.6504 (2.88×) | $0.4335 (2.77×) |
+| `split_cached` | Frontier parent + small-tier subtask digestion + prompt caching on | $0.5097 (9.31×) | $0.1387 (8.67×) |
+
+Use `costbench.RunSuite` with a live `TaskExecutor` to measure your own task set across all four configurations before quoting savings for a specific deployment.
 
 ---
 

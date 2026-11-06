@@ -48,7 +48,12 @@ software engineering and cluster operations every day.
 - **Context & cost efficiency:** post-turn compaction (~85% utilization +
   mechanical fallback), `agentic_*` subtask wrappers, `pkg/digest` structural
   JSON pruning with `retrieve_raw`, Vertex explicit context caching, Anthropic
-  prompt caching, and `go-steer/core-models` layered pricing.
+  prompt caching, `go-steer/core-models` layered pricing, and the
+  four-configuration cost-per-passing-task benchmark in `internal/evals/costbench`
+  (`single_uncached`, `single_cached`, `split_uncached`, `split_cached`; note
+  that headline `5–10×` multi-turn cost-reduction figures remain projections
+  from per-token list prices and modeled turn shapes until a live multi-turn
+  task-suite run is checked in, [#1378](https://github.com/go-steer/core-agent/issues/1378)).
 - **Distroless GitOps:** pure-Go `vcs_*` tools (`pkg/tools/vcs` over `core-vcs`)
   and `builtin:propose-change` for opening reviewable PRs/MRs from container
   images that ship neither `git` nor `gh`.
@@ -78,8 +83,8 @@ software engineering and cluster operations every day.
      [#1116](https://github.com/go-steer/core-agent/issues/1116)).
 
 4. **Daily-driver CLI ergonomics & editor integration.**
-   - Per-project default sessions with `--resume` / `--continue` ([#1372](https://github.com/go-steer/core-agent/issues/1372)),
-     `--output-format json` and clean piped stdout ([#1389](https://github.com/go-steer/core-agent/issues/1389)),
-     and `--permission-mode` + grouped `--help` ([#1378](https://github.com/go-steer/core-agent/issues/1378)).
+   - Per-project default sessions with `--resume` / `--continue` ([#1374](https://github.com/go-steer/core-agent/issues/1374)),
+     `--output-format json` and clean piped stdout ([#1379](https://github.com/go-steer/core-agent/issues/1379)),
+     and `--permission-mode` + grouped `--help` ([#1380](https://github.com/go-steer/core-agent/issues/1380)).
    - Editor / IDE sidecar integration over the attach HTTP/SSE or MCP
      bidirectional surface ([`bidirectional-mcp-design.md`](bidirectional-mcp-design.md)).

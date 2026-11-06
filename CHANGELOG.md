@@ -27,6 +27,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 #### Documentation
 
+- **Add `internal/evals/costbench` benchmark and qualify `5–10×` cost projections.** Benchmarks 4 configs via `pkg/pricing` and qualifies `5–10×` savings claims in docs. ([#1378](https://github.com/go-steer/core-agent/issues/1378))
 - **Archive shipped/abandoned design docs to `docs/archive/` and rewrite `docs/north-star.md`.** Moves 88 non-proposed design docs to `docs/archive/`, records Goal 2 on `core-agent` + `core-tui`, and enforces `Status:` in `docs-lint`. ([#1388](https://github.com/go-steer/core-agent/issues/1388))
 - **Clarify OTel/pricing outbound calls, prompt-cache read rates (`5–10%`), and CLI flag docs.** Updates `README.md`, `cmd/core-agent`, and `docs/site/` for `--no-pricing-refresh`, 5% cache reads, and `--config` / `--attach-register-*`. ([#1381](https://github.com/go-steer/core-agent/issues/1381))
 - **`.worktrees/` worktree convention in `AGENTS.md` and `.gitignore`.** Documents isolating feature branches in `.worktrees/<name>` git worktrees and ignores `/.worktrees/` so parallel worktrees do not dirty the root checkout. ([#1116](https://github.com/go-steer/core-agent/issues/1116))

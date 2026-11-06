@@ -235,7 +235,7 @@ $EDITOR examples/gke-deploy/deploy/overlays/my-prod/patch-deployment.yaml
 
 That's the required setup. The base's `config.json` omits the `model.vertex` block by design — core-agent's Gemini provider falls back to `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` env vars at runtime, so the Deployment is the single source of truth for project + region. No JSON to edit, no sync risk.
 
-The overlay's `kustomization.yaml` has commented-out blocks for the other common knobs — `namePrefix` (rename KSA + other resources), `namespace` override, image-tag pin, image pull secret for private GHCR, resource limit overrides. `patch-deployment.yaml` also has a commented-out `AGENTIC_SMALL_MODEL` env var if you want to override the cost-routing default (Flash; ~5-10× cheaper per turn for MCP-heavy work).
+The overlay's `kustomization.yaml` has commented-out blocks for the other common knobs — `namePrefix` (rename KSA + other resources), `namespace` override, image-tag pin, image pull secret for private GHCR, resource limit overrides. `patch-deployment.yaml` also has a commented-out `AGENTIC_SMALL_MODEL` env var if you want to override the cost-routing default (Flash; projected ~5-10× lower cost from per-token list-price ratios and prompt caching on MCP-heavy sessions — see `internal/evals/costbench`).
 
 See `overlays/example/README.md` for the full overlay workflow including the "advanced: customize the ConfigMap" path.
 

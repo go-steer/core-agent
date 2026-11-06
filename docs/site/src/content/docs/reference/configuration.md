@@ -360,9 +360,9 @@ This is the stdin prompter. The TUI (`--tui`, and `core-agent-tui` in attach mod
 
 The prompter is auto-wired when stdin is a TTY. Non-TTY callers (piped stdin, CI, `nohup`) get `ErrNoPrompter`-wrapped errors that point at the bypass options below — they don't hang waiting for a non-existent user.
 
-### `--yolo` (CLI flag)
+### `--permission-mode <mode>` and `--yolo` (CLI flags)
 
-`--yolo` forces the gate into `yolo` mode regardless of `config.permissions.mode`. Equivalent to setting `permissions.mode: "yolo"` in config; takes precedence at the call site so you don't have to edit config to unblock a one-off scripted run. Library callers achieve the same with `permissions.Options{Mode: permissions.ModeYolo}`.
+`--permission-mode <mode>` sets the permission gate mode for the session (`ask`, `auto`, `acceptEdits`, `plan`, `allow`, or `yolo`), overriding `config.permissions.mode` (`accept-edits` is accepted as a deprecated alias for `acceptEdits`). `--yolo` is a shorthand for `--permission-mode yolo`; passing both `--yolo` and a non-`yolo` `--permission-mode` fails at startup rather than silently picking one. Library callers achieve the same with `permissions.Options{Mode: ...}`.
 
 ### Approval timeout (v3.0+) — `approval_timeout`
 

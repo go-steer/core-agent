@@ -16,11 +16,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
 
 	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/taskclass"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
@@ -210,4 +212,51 @@ func resolvePlanMode(in planModeInputs) (mode string, source string) {
 	default:
 		return config.PlanModeOff, sourcePlanUnset
 	}
+}
+
+func applyPlanMode(cfg *config.Config, agentsDir string, noBuiltinTools bool, disableTools string, toolProfile toolProfileOpts, taskProfile taskclass.Profile, send func(string)) error {
+	if send == nil {
+		send = func(string) {}
+	}
+	if err := validatePlanModeFlag(toolProfile.planMode); err != nil {
+		return err
+	}
+	if toolProfile.planFirstSet {
+		send(planFirstDeprecationNotice)
+	}
+	planBlocker := ""
+	switch {
+	case agentsDir == "":
+		planBlocker = "no .agents/ directory resolved, so record_plan has nowhere to write plans"
+	case noBuiltinTools:
+		planBlocker = "--no-builtin-tools drops record_plan along with the rest of the suite"
+	case slices.Contains(cfg.Tools.Disable, "record_plan"):
+		planBlocker = "record_plan is in cfg.tools.disable"
+	case slices.Contains(splitList(disableTools), "record_plan"):
+		planBlocker = "record_plan is in --disable-tools"
+	}
+	planMode, planSource := resolvePlanMode(planModeInputs{
+		FlagMode:       toolProfile.planMode,
+		Flag:           toolProfile.planFirst,
+		FlagSet:        toolProfile.planFirstSet,
+		ConfigSet:      cfg.Permissions.PlanModeSet(),
+		ConfigResolved: cfg.Permissions.ResolvedPlanMode(),
+		ConfigSpelling: cfg.Permissions.PlanModeSpelling(),
+		Profile:        taskProfile.RequirePlanArtifact,
+		CanRecordPlan:  planBlocker == "",
+	})
+	cfg.Permissions.NormalizePlanMode(planMode)
+	switch {
+	case planSource == sourcePlanNoRecorder:
+		send(fmt.Sprintf("plan mode: off — the %s profile asks for plan-first, but %s", cfg.Session.TaskClass, planBlocker))
+	case planMode == config.PlanModeRequired && planBlocker != "":
+		fmt.Fprintf(os.Stderr, "core-agent: plan mode: required (%s) but %s — every mutating tool call will be denied with no way to clear the gate. Fix that, or pass --plan-mode=advisory.\n", planSource, planBlocker)
+	case planMode == config.PlanModeRequired:
+		send(fmt.Sprintf("plan mode: required (%s) — mutating tools are denied until the model calls record_plan", planSource))
+	case planMode == config.PlanModeAdvisory && planBlocker != "":
+		fmt.Fprintf(os.Stderr, "core-agent: plan mode: advisory (%s) but %s — no plan artifact will be written.\n", planSource, planBlocker)
+	case planMode == config.PlanModeAdvisory:
+		send(fmt.Sprintf("plan mode: advisory (%s) — record_plan is registered and its artifact persists to .agents/plans/, but no tool call is blocked on it", planSource))
+	}
+	return nil
 }

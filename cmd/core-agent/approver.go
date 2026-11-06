@@ -32,6 +32,9 @@ import (
 func wireApprover(ctx context.Context, provider models.Provider, cfg *config.Config, agentsDir string, template *permissions.Gate, stderr io.Writer) error {
 	auto := cfg.Permissions.Auto
 	if auto == nil {
+		if cfg.Permissions.Mode == string(permissions.ModeAuto) || (template != nil && template.Mode() == permissions.ModeAuto) {
+			return permissions.ErrAutoNeedsApprover
+		}
 		return nil
 	}
 	a, err := approver.FromConfig(ctx, provider, cfg, agentsDir)

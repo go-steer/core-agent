@@ -66,6 +66,17 @@ func TestWireApprover(t *testing.T) {
 		t.Errorf("no auto block: err %v, HasApprover %v, stderr %q; want nothing wired", err, g.HasApprover(), stderr.String())
 	}
 
+	// Mode "auto" (e.g. via --permission-mode=auto) without a
+	// permissions.auto block fails startup with ErrAutoNeedsApprover.
+	cfgAutoNoBlock := config.DefaultConfig()
+	cfgAutoNoBlock.Model.Provider = config.ProviderEcho
+	cfgAutoNoBlock.Permissions.Mode = string(permissions.ModeAuto)
+	cfgAutoNoBlock.Permissions.ApprovalTimeout = "5m"
+	gAuto := approverTemplate(t, cfgAutoNoBlock, root)
+	if err := wireApprover(context.Background(), provider, cfgAutoNoBlock, agentsDir, gAuto, &stderr); !errors.Is(err, permissions.ErrAutoNeedsApprover) {
+		t.Errorf("auto mode without auto block: err = %v, want ErrAutoNeedsApprover", err)
+	}
+
 	// Configured: the approver is wired, sub-gates inherit it, the
 	// instructions file is privilege-bearing, and an empty eligible
 	// list is reported.

@@ -79,6 +79,8 @@ type guardrailOpts struct {
 	// trust is --trust (#1353): trust the workspace .agents/ directory
 	// and persist its content hash in ~/.core-agent/trusted_workspaces.json.
 	trust bool
+	// permissionMode is --permission-mode (#1380); empty == unset.
+	permissionMode string
 }
 
 // flagWasSet reports whether name was present on the command line, as

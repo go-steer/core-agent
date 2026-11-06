@@ -367,6 +367,36 @@ a, _ := agent.New(m, agent.WithSessionService(svc))
 
 This is the least common extension point — `eventlog.Open` with a real database covers most needs and gives you the `Stream` (`Since(seq)` / `Watch(seq)`) machinery for free. Only reach for a custom `Service` when you have an existing persistence layer you must integrate with. See [Library API → Durable sessions and audit log](../library-api/#durable-sessions-and-audit-log) for what the Stream API gives you out of the box.
 
+## Long-term memory — `agent.WithMemory` (v3.2+, #948)
+
+Give an agent memory that outlives its session with a `memory.Router` over a backend. The Router mounts an optional private `agent` scope and any number of `shared:<pool>` scopes, each read-write (`rw`) or read-only (`ro`):
+
+```go
+r, err := memory.NewRouter(memory.NewInMemory(), []memory.MountTemplate{
+    memory.AgentMount("prod-sre", "gke-triage", memory.AccessReadWrite),
+    memory.SharedMount("prod-sre", "approved-runbooks", memory.AccessReadOnly),
+})
+a, err := agent.New(m,
+    agent.WithGate(gate),
+    agent.WithMemory(r, agent.MemorySettings{
+        Preload:     agent.MemoryPreloadTurnStart, // or MemoryPreloadSessionStart; default off
+        Consolidate: agent.MemoryConsolidateOff,   // or MemoryConsolidateTurnEnd / MemoryConsolidateSessionEnd
+    }),
+)
+```
+
+What the agent gets:
+
+- **Tools.** `recall_memory` is registered whenever a scope is mounted. `persist_memory` and `forget_memory` are registered only when at least one scope is `rw`. Each tool checks the permission gate with a key that names the scope, so a policy can allow private writes and still gate shared ones: `"allow": ["recall_memory", "persist_memory:mount=agent *"]`. A recall across all scopes, and preload, skip any scope a deny rule names (`"deny": ["recall_memory:mount=shared:secret *"]`). `MemorySettings.DisableTools` keeps preload and consolidation but registers no tools.
+- **Preload.** With `Preload` set, the agent recalls once per user turn and prepends a `<memory_context>` block to that turn's user message. The system instruction is never changed, so provider prompt caches stay warm.
+- **Consolidation.** `MemoryConsolidateTurnEnd` extracts memories from each successful turn's dialogue, in the background after the turn so the turn's result is not delayed. `MemoryConsolidateSessionEnd` extracts from the whole session when you call `a.EndSession(ctx)`. Call `EndSession` before your process exits or drops the agent in either mode: it waits for background consolidation to finish. Recalled `<memory_context>` blocks are stripped before extraction, so recalled memories are never stored again as if the user had said them.
+- **Audit trail.** Every completed write appends a `memory/remember`, `memory/forget` or `memory/consolidate` event to the session transcript, through whichever `session.Service` the agent uses. The events carry no message content, so the model never sees them as history.
+- **ADK bridge.** `runner.Config.MemoryService` is set to the same Router, so ADK tools that call `toolCtx.SearchMemory` read the same scopes.
+
+For scopes partitioned by user (`PartitionByUser`), the tools, preload and turn-end consolidation use the turn's user: `memory.WithUserID` on the context if the host set one, then the turn's verified caller, then the agent's session user. `EndSession` uses `memory.WithUserID` on its context, else the session user. ADK tools calling `toolCtx.SearchMemory` search as the runner's session user.
+
+`memory.NewInMemory()` is process-local and fits tests and single-process tools. Managed and persistent backends register a URI scheme with `memory.RegisterOpener` and open through `memory.OpenRouter`.
+
 ## Background workers and the inbox
 
 For agents that need to delegate fan-out work the parent's model decides on at runtime, use `background.Manager` + the `spawn_agent` tool family. Background subagents run in goroutines inside the same process; events flow back through a per-turn drain so the parent sees them on its next turn.

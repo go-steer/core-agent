@@ -185,6 +185,14 @@ var postTurnSteps = []postTurnStep{
 		run: func(a *Agent, _ *turnCleanup) { a.drainOutOfBandEvents() },
 	},
 	{
+		name: "finish-memory-turn",
+		enforces: "#948: flushes memory/* audit rows queued during the turn (when no eventlog is " +
+			"wired) after clear-cancel-in-flight and drain-out-of-band-events, and launches " +
+			"background turn_end consolidation on successful turns before run-turn-end-hook " +
+			"and emit-terminal-event.",
+		run: func(a *Agent, tc *turnCleanup) { a.finishMemoryTurn(tc.turnErr) },
+	},
+	{
 		name: "run-turn-end-hook",
 		enforces: "Runs the optional WithEventHook onTurnEnd callback after all session and " +
 			"eventlog writes for the turn have settled, and before the terminal SSE frame.",

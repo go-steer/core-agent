@@ -132,6 +132,9 @@ var (
 	ErrScopeMismatch          = errors.New("memory: memory item belongs to a different scope")
 	ErrInvalidRef             = errors.New("memory: invalid memory reference URI")
 	ErrUnknownScheme          = errors.New("memory: unsupported memory URI scheme")
+	// ErrAuditFailed wraps an AuditRecorder error. The backend write it
+	// records already succeeded, so callers should not retry the write.
+	ErrAuditFailed = errors.New("memory: write succeeded but its audit record failed")
 )
 
 // ScopeMap is the exact-match partition key-value dictionary sent to a Backend.

@@ -287,6 +287,16 @@ var preTurnSteps = []preTurnStep{
 		},
 	},
 	{
+		name: "memory-preload",
+		enforces: "#948: after capture-raw-prompt, so the recall query is the operator's own " +
+			"text and not alerts or inbox framing; after drain-inbox, so a daemon turn that " +
+			"arrives as Run(\"\") still has a query and an originator; after the preflights, so " +
+			"a refused turn never pays for a recall; before prepend-watchdog-feedback, which " +
+			"must stay last so it reads first. Records the turn start and user even on a " +
+			"RunContent resume, which turn_end consolidation reads.",
+		run: func(a *Agent, tp *turnPrep) error { return a.memoryPreloadStep(tp) },
+	},
+	{
 		name: "prepend-watchdog-feedback",
 		enforces: "#159: last, so it reads first. It is an observation about the model's own " +
 			"immediately-preceding turn, and a correction buried under a page of inbox " +

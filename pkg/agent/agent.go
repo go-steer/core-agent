@@ -53,6 +53,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/auth"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/pricing"
@@ -379,6 +380,8 @@ type Agent struct {
 	titleAttempted bool
 	titleModel     adkmodel.LLM
 	titleDisabled  bool
+	// memory is WithMemory's resolved state; nil when memory is off (#948).
+	memory *agentMemory
 
 	// operatorEmit is the typed operator-event callback set by the
 	// broadcaster on first subscribe (see the attach package's broadcaster Subscribe).
@@ -538,6 +541,10 @@ type options struct {
 	metricAgentName  string
 	titleModel       adkmodel.LLM
 	titleDisabled    bool
+	// memoryRouter / memorySettings are WithMemory's values, resolved
+	// in New by wireMemory once the gate is known (#948).
+	memoryRouter   *memory.Router
+	memorySettings MemorySettings
 }
 
 func defaultOptions() options {
@@ -1022,6 +1029,12 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	if o.checkpointer != nil && !o.noMarkTaskDone {
 		o.tools = append(o.tools, NewMarkTaskDoneTool(func() *Agent { return agentRef }))
 	}
+	// Memory tools join the list here for the same snapshot reason,
+	// ahead of the serializer and instrumenter below (#948).
+	mem, err := wireMemory(&o, func() *Agent { return agentRef })
+	if err != nil {
+		return nil, err
+	}
 
 	// Tools that call other tools (wait_and_verify, #648) need the
 	// assembled catalog, which isn't known until every registration
@@ -1119,6 +1132,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		Agent:             runnerRoot,
 		SessionService:    runnerSvc,
 		PluginConfig:      runner.PluginConfig{Plugins: o.plugins},
+		MemoryService:     memoryService(&o),
 		AutoCreateSession: true,
 	})
 	if err != nil {
@@ -1174,6 +1188,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		onTurnEnd:            o.onTurnEnd,
 		titleModel:           o.titleModel,
 		titleDisabled:        o.titleDisabled,
+		memory:               mem,
 	}
 	// Before anything can publish `a` (AttachParent, agentRef,
 	// postConstruct) and therefore before any push can race the read.

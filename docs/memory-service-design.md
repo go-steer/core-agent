@@ -853,10 +853,11 @@ declares its own `memory` backend. When the parent *does* have a
 
 ## Model-facing tools, preload, and governance
 
-### Registered tools (`pkg/memory/memtools` or `pkg/tools`)
+### Registered tools (`pkg/memory/memtools`)
 
-Tools are constructed from the agent's `*memory.Router` and wrapped
-through `tools.GateTools`:
+Tools are constructed from the agent's `*memory.Router`
+(`memtools.New`), and each handler calls the permission gate itself
+with a mount-qualified key, the way the built-in tools do:
 
 1. **`recall_memory`** (`ClassReadOnly`)
    - Registered whenever `Router != nil` and `len(Router.Mounts()) > 0`
@@ -912,7 +913,7 @@ codebase"`). The package registering these tools carries a
 
 ### Permission gate keys
 
-`tools.GateTools` extracts mount-qualified detail keys so operator
+The handlers build mount-qualified detail keys so operator
 policies (`permissions.allow`, `permissions.deny`) and the `auto` mode
 approver (`pkg/approver`) can distinguish private vs. shared memory
 operations:
@@ -921,7 +922,13 @@ operations:
 - `persist_memory`: detail `mount=<mount> fact=<truncated>`
 - `forget_memory`: detail `mount=<mount> id=<id>`
 
-An operator can therefore configure:
+A `recall_memory` call with `mount=all` (the default) and preload both
+skip any mount that a deny rule names for `recall_memory`
+(`recall_memory:mount=shared:secret *`), so "all" cannot reach a denied
+scope.
+
+Policy patterns use the gate's `tool:glob` grammar (`pkg/permissions/policy.go`); a
+trailing `*` matches any suffix. An operator can therefore configure:
 
 ```json
 {
@@ -929,7 +936,7 @@ An operator can therefore configure:
     "mode": "ask",
     "allow": [
       "recall_memory",
-      "persist_memory(mount=agent *)"
+      "persist_memory:mount=agent *"
     ]
   }
 }

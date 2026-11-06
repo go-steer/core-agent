@@ -388,6 +388,9 @@ var planExemptTools = map[string]bool{
 	"vcs_proposal_view": true,
 	"vcs_proposal_list": true,
 
+	// Read-only long-term memory search (#948, docs/memory-service-design.md).
+	"recall_memory": true,
+
 	// Read-only skill introspection, exempt at NAMESPACE level: skill
 	// tools are registered through GateToolset(ts, gate, "skill") in
 	// pkg/skills/load.go, so "skill" (the namespace) is the only

@@ -2193,10 +2193,7 @@ func (c *Config) Validate() error {
 	if c.Model.Name == "" {
 		return fmt.Errorf("config: model.name is required")
 	}
-	if err := c.validateProviders(); err != nil {
-		return err
-	}
-	if err := c.validateState(); err != nil {
+	if err := c.validateBackends(); err != nil {
 		return err
 	}
 	if !c.KnownProvider(c.Model.Provider) {

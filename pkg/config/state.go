@@ -93,6 +93,15 @@ func (c *Config) AgentEngineSessionTTL() time.Duration {
 	return d
 }
 
+// validateBackends checks the provider table and the state stores in
+// one call from Validate, which sits at the funlen statement ceiling.
+func (c *Config) validateBackends() error {
+	if err := c.validateProviders(); err != nil {
+		return err
+	}
+	return c.validateState()
+}
+
 func (c *Config) validateState() error {
 	switch b := c.State.Transcript.Backend; b {
 	case "", TranscriptBackendSQL:

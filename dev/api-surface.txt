@@ -37,6 +37,7 @@ promised pkg/config
 promised pkg/eventlog
 promised pkg/instruction
 promised pkg/mcp
+promised pkg/memory
 promised pkg/models
 promised pkg/models/anthropic
 promised pkg/models/gemini
@@ -75,6 +76,8 @@ unsupported pkg/compose
 unsupported pkg/digest
 # Lifecycle hook runner for CLI/daemon turns.
 unsupported pkg/hooks
+# Backend conformance suite for pkg/memory implementations and extras/.
+unsupported pkg/memory/memtest
 # Model-tier routing table used by watchdog escalation and task routing.
 unsupported pkg/modeltier
 # Deprecated forwarding alias for pkg/transcript (removed in v4.0).

@@ -377,6 +377,8 @@ var fatalPathPrefixes = []string{
 	"monitor.",
 	"schedule.",
 	"vcs.",
+	"memory.",
+	"agent_engine.",
 }
 
 var fatalPathSegments = []string{
@@ -384,6 +386,7 @@ var fatalPathSegments = []string{
 	".pricing.",
 	".builtin_tools.",
 	".remote.",
+	".memory.",
 	".mcp_tools.",
 	".mcp_tools[",
 	".policies.",
@@ -404,6 +407,9 @@ var fatalLeafTargets = []string{
 	"proxy_identities",
 	"monitor",
 	"schedule",
+	"memory",
+	"memories",
+	"agent_engine",
 	"allow_card_host_change",
 	"allow_metadata_endpoints",
 	"max_session_cost_usd",

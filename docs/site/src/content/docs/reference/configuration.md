@@ -1752,6 +1752,37 @@ Add `-i "seed prompt"` to seed the first turn of an interactive session and stay
 
 ---
 
+## `agent_engine` and `memory` (v3.2+, #948)
+
+Deployments targeting Gemini Enterprise Agent Platform / Vertex AI Agent Engine can declare a single top-level `agent_engine` resource inherited by both session storage and Memory Bank, alongside private (`agent`) and team-shared (`shared`) memory scopes in `memory`:
+
+```json
+{
+  "agent_engine": {
+    "resource_env": "CORE_AGENT_AGENT_ENGINE"
+  },
+  "memory": {
+    "backend": "memorybank",
+    "namespace": "prod-sre",
+    "agent": {
+      "id": "incident-coordinator",
+      "mode": "rw",
+      "write_mode": "consolidate"
+    },
+    "shared": [
+      { "pool": "fleet-learnings", "mode": "rw", "ttl": "2160h" },
+      { "pool": "approved-runbooks", "mode": "ro" }
+    ],
+    "preload": "off",
+    "consolidate": "off"
+  }
+}
+```
+
+Declarative subagents in `subagents[]` or `.agents/subagents/<name>.md` frontmatter accept a `memory` block (`agent`, `agent_id`, `inherit_shared`, `shared`, `preload`) to scope each specialist's private memory (`agent_id` defaults to the subagent name) while inheriting parent `shared` pools read-only (`"ro"`) by default. Remote A2A subagents (`subagents[].remote`) accept `propagate_memory_scope: true` to forward non-secret scope metadata without exposing backend URIs.
+
+---
+
 ## Atomic writes
 
 `config.Save(path, cfg)` writes via temp file + `rename` so a partial write can never leave a corrupt `config.json` on disk. Use it when you build tooling that mutates config (e.g. an `init`-style command, or a `/permissions` slash command in a downstream consumer).

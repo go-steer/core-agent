@@ -263,6 +263,25 @@ var GatedFeatures = []GatedFeature{
 			"triggering message that the recipe assumed would be appended automatically",
 	},
 	{
+		Path: "memory",
+		Min:  "3.2.0-dev.1",
+		Why: "multi-scope memory mounts, memory recall/persist/forget tools, and turn-start preload (#948). " +
+			"An older daemon drops the `memory` block, registers none of the memory tools, and never " +
+			"preloads or consolidates memory",
+	},
+	{
+		Path: "subagents[].memory",
+		Min:  "3.2.0-dev.1",
+		Why: "per-subagent private and shared memory scope posture (`off`, `ro`, `rw`) (#948). " +
+			"An older daemon drops `memory` on the subagent instead of enforcing its declared scope narrowing",
+	},
+	{
+		Path: "subagents[].remote.propagate_memory_scope",
+		Min:  "3.2.0-dev.1",
+		Why: "remote A2A narrow memory scope metadata propagation (#948). An older daemon drops the flag " +
+			"and never forwards memory scope bindings on outbound A2A calls",
+	},
+	{
 		Path: "model.builtin_tools",
 		Min:  "2.9.0-dev.4",
 		Why: "the provider's server-side built-ins — web search, URL fetching, code execution (#876). " +

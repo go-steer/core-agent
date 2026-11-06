@@ -24,7 +24,7 @@ This document defines which packages in `github.com/go-steer/core-agent/v3` carr
 
 ### `promised` packages (SemVer-governed)
 
-The 23 `promised` packages form the supported embedding API of `core-agent`:
+The 24 `promised` packages form the supported embedding API of `core-agent`:
 
 - `pkg/agent`, `pkg/agent/autonomous`, `pkg/agent/background`
 - `pkg/attach/wire`
@@ -32,6 +32,7 @@ The 23 `promised` packages form the supported embedding API of `core-agent`:
 - `pkg/eventlog`
 - `pkg/instruction`
 - `pkg/mcp`
+- `pkg/memory`
 - `pkg/models`, `pkg/models/anthropic`, `pkg/models/gemini`, `pkg/models/mock`, `pkg/models/profiles`
 - `pkg/permissions`
 - `pkg/pricing`
@@ -60,6 +61,7 @@ Packages marked `unsupported` in `dev/api-surface.txt` live under `pkg/` so `cmd
 - `pkg/compose` — CLI/daemon composition glue lifted out of `cmd/core-agent`
 - `pkg/digest` — local digesting primitives backing `pkg/tools/agentic`
 - `pkg/hooks` — lifecycle hook runner
+- `pkg/memory/memtest` — shared conformance suite for `pkg/memory.Backend` implementations
 - `pkg/modeltier` — model-tier routing table
 - `pkg/session` — deprecated forwarding alias for `pkg/transcript` (removed in v4.0)
 - `pkg/taskclass` — task-classification heuristics

@@ -95,6 +95,11 @@ type Config struct {
 	// (today's behavior exactly). CLI: --agents-content-dir (repeatable),
 	// merged with this field. See docs/external-content-root-design.md.
 	ContentRoots []string `json:"content_roots,omitempty"`
+
+	// workspaceUntrusted is set at runtime by ClampUntrustedWorkspace
+	// when the discovered .agents/ directory has not been trusted by the
+	// user (#1353). Never serialized to disk.
+	workspaceUntrusted bool
 }
 
 // SafetyConfig carries operator-facing safety guardrails — things

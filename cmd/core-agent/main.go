@@ -59,10 +59,8 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/instruction"
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
 	"github.com/go-steer/core-agent/v3/pkg/models"
-	"github.com/go-steer/core-agent/v3/pkg/models/anthropic"
 	_ "github.com/go-steer/core-agent/v3/pkg/models/mock"
 	"github.com/go-steer/core-agent/v3/pkg/models/profiles"
-	"github.com/go-steer/core-agent/v3/pkg/modeltier"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/pricing"
 	"github.com/go-steer/core-agent/v3/pkg/recording"
@@ -172,6 +170,7 @@ func main() {
 	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory. attach mode turns this on by itself)")
 	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set or implied by attach mode (default: ~/.<binary>/sessions.db)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
+	trustWorkspace := flag.Bool("trust", false, "trust the discovered .agents/ workspace configuration (stdio MCP servers, command hooks, elevated permission modes, rooted subagents, and content_roots) and remember its SHA-256 content hash in ~/.core-agent/trusted_workspaces.json (#1353).")
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	subagentSyncWait := flag.String("subagent-sync-wait", "", "how long spawn_agent {wait: true} holds the parent's turn open, as a duration (\"10m\"). Default 5m. The cap is on the wait, not the subagent: past it the tool returns and the subagent's result arrives later as a pushed report. Raise it for deep diagnostics, where a parent that gets a timeout tends to redo the work itself. \"0s\" removes the cap and leaves the subagent's own turn/wallclock budgets as the only bound. Config-file equivalent: tools.spawn_agent.sync_wait_timeout.")
 	allowURLHost := flag.String("allow-url-host", "", "comma-separated host patterns appended to url_scope.allow for the fetch_url tool (e.g. \"github.com,*.googleapis.com\"). HTTPS only unless the pattern carries an http:// prefix. Disable the tool entirely with --disable-tools=fetch_url.")
@@ -282,6 +281,7 @@ func main() {
 			maxSessionCostSet: flagWasSet(flag.CommandLine, "max-session-cost-usd"),
 			bashSearchGate:    *bashSearchGate,
 			approvalTimeout:   *approvalTimeout,
+			trust:             *trustWorkspace,
 		},
 		toolProfileOpts{
 			enableTools: *enableTools,
@@ -558,6 +558,12 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	}
 	if w := splitTreeWarning(agentsDirFrom, cfgPath, agentsDir, discoveredAgentsDir); w != "" {
 		fmt.Fprintln(os.Stderr, w)
+	}
+	unattended := prompt != "" || noREPL || !term.IsTerminal(int(os.Stdin.Fd()))
+	ctx, err = applyWorkspaceTrust(ctx, cfg, agentsDir, discoveredAgentsDir, agentsDirFrom, guardrails.trust, unattended, send)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
 	}
 
 	// #322: load the optional env manifest (.agents/env.yaml or
@@ -932,7 +938,6 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// Resolved here, ahead of permissions.FromConfig, so the resolved
 	// ApprovalTimeout feeds the permission gate template that both the
 	// primary session and every multi-session tenant inherit.
-	unattended := prompt != "" || noREPL || !term.IsTerminal(int(os.Stdin.Fd()))
 	hasPromptSurface := prompter != nil || attachCfg.Listen != "" || attachCfg.UnixSocket != ""
 	guard, err := resolveGuardrails(guardrailInputs{
 		WatchdogFlag:          guardrails.watchdogMode,
@@ -1055,45 +1060,8 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// safety.small_tier_parent > default "warn". Place this BEFORE
 	// the rest of agent construction so "refuse" can short-circuit
 	// without leaking listeners / tracker / etc.
-	if smallTierParent != "" {
-		cfg.Safety.SmallTierParent = smallTierParent
-	}
-	stpMode := cfg.Safety.SmallTierParent
-	if stpMode == "" {
-		stpMode = config.SmallTierParentWarn
-	}
-	if prompt == "" && !yolo && modeltier.IsSmall(cfg.Model.Name) {
-		// Use the task-class per-provider tier→model table to
-		// suggest a same-provider frontier model. Falls back to a
-		// generic Opus suggestion when the provider isn't in the
-		// table (e.g. echo / scripted in tests).
-		suggested := taskclass.ModelForTier(provider.Name(), taskclass.TierFrontier)
-		// A provider profile is not in that table; suggest its own
-		// frontier or mid tier rather than a model it cannot serve.
-		if suggested == "" && cfg.IsProfileProvider(cfg.Model.Provider) {
-			for _, tier := range []string{taskclass.TierFrontier, taskclass.TierMid} {
-				if id, err := profiles.DefaultModel(cfg, cfg.Model.Provider, tier); err == nil && id != cfg.Model.Name {
-					suggested = id
-					break
-				}
-			}
-		}
-		if suggested == "" {
-			suggested = anthropic.DefaultModel
-		}
-		notice := fmt.Sprintf(
-			"%s is a small-tier model. Small-tier models work well as subtask workers (--agentic-small-model) but loop and stall as the parent for long interactive sessions. Consider a frontier or mid-tier model for the parent — e.g. --model %s --agentic-small-model %s.",
-			cfg.Model.Name, suggested, cfg.Model.Name,
-		)
-		switch stpMode {
-		case config.SmallTierParentRefuse:
-			fmt.Fprintf(os.Stderr, "core-agent: refuse-on-small-tier-parent: %s Pass --small-tier-parent=warn or --small-tier-parent=allow to proceed anyway.\n", notice)
-			return runner.ExitConfigError
-		case config.SmallTierParentWarn:
-			send("small-tier parent: " + notice + " Pass --small-tier-parent=allow to suppress this notice.")
-		case config.SmallTierParentAllow:
-			// no-op
-		}
+	if checkSmallTierParent(cfg, provider, prompt, yolo, smallTierParent, send) != nil {
+		return runner.ExitConfigError
 	}
 
 	// makeMCPElicitor is build-tagged: in the default build it
@@ -1174,9 +1142,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// just default to "no config-side opt-in" so a misconfigured
 		// mcp.json doesn't accidentally light up the LLM subagent.
 		mcpCfg, _ := mcp.LoadAll(agentsDir, homeAgentsDir)
-		llmEnabled := mcpAgenticWrapLLM || mcpCfg.AgenticWrapLLMEnabled()
+		llmEnabled := mcpAgenticWrapLLM || (!cfg.WorkspaceUntrusted() && mcpCfg.AgenticWrapLLMEnabled())
 		llmModelOverride := mcpAgenticWrapModel
-		if llmModelOverride == "" {
+		if llmModelOverride == "" && !cfg.WorkspaceUntrusted() {
 			llmModelOverride = mcpCfg.AgenticWrapModel
 		}
 		if llmEnabled {

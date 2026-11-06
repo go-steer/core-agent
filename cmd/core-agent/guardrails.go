@@ -76,6 +76,9 @@ type guardrailOpts struct {
 	// approvalTimeout is --approval-timeout; empty == unset ("0s" is
 	// the explicit opt-out from the unattended default).
 	approvalTimeout string
+	// trust is --trust (#1353): trust the workspace .agents/ directory
+	// and persist its content hash in ~/.core-agent/trusted_workspaces.json.
+	trust bool
 }
 
 // flagWasSet reports whether name was present on the command line, as

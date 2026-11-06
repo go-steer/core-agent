@@ -754,7 +754,7 @@ func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subage
 
 	// Own MCP servers from <root>/mcp.json (no home-agents overlay — the
 	// root is self-contained, which is the point of an independent scope).
-	servers, _, mcpErr := mcp.Build(ctx, rootAbs, "", deps.send, deps.gate, deps.elicitor, deps.digestOpts)
+	servers, _, mcpErr := mcp.Build(mcp.WithTrustedAgentsDir(ctx, rootAbs), rootAbs, "", deps.send, deps.gate, deps.elicitor, deps.digestOpts)
 	if mcpErr != nil {
 		deps.send(fmt.Sprintf("subagent %q: mcp: %v", spec.Name, mcpErr))
 	}

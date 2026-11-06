@@ -45,8 +45,12 @@ const FinishReasonMetadataKey = "finish_reason"
 // falls back to the parent session's default model.
 const ModelVersionMetadataKey = "model_version"
 
-// service is the session.Service eventlog.Open returns. It wraps
-// ADK's database.SessionService unchanged for Get/List and
+// service is the session.Service a Handle returns. On a Handle from
+// Open it wraps ADK's database.SessionService; on one from
+// OpenTranscript it wraps the Transcript's Service, which assigns seq
+// itself, so the overlay mirror described below does not apply (stream
+// is nil) and only the stamps and the local guardrail write remain. It
+// leaves Get/List unchanged and
 // serializes all writes (Create / Delete / AppendEvent) behind a
 // single write mutex so concurrent writers — typically a parent
 // agent and its background subagents sharing the same eventlog —
@@ -64,18 +68,24 @@ const ModelVersionMetadataKey = "model_version"
 // handles concurrent readers natively and serializing reads would
 // defeat the purpose of having an eventlog for live-tail observers.
 //
-// Consistency model for AppendEvent: writes ADK's events table
-// first (so the event has its assigned ID and storage row), then
-// mirrors into the overlay so it picks up a monotonic seq. The
-// overlay table has a unique index on event_id so a retry of the
-// same event is a no-op rather than a duplicate. Eventual-consistency
-// reconciliation across the two tables is out of scope for v1.
+// Consistency model for AppendEvent on the SQL path: ADK's events row
+// and the overlay row (which carries the seq) commit in one
+// transaction where the #976 callback is registered, and otherwise
+// ADK first then the overlay. The overlay table has a unique index on
+// event_id so a retry of the same event is a no-op rather than a
+// duplicate.
 type service struct {
 	inner     session.Service
 	stream    *gormStream
 	guardrail *GuardrailStore
 	spend     *SpendStore
 	decisions *DecisionStore
+
+	// metadataExtractor is set only on a Handle built by OpenTranscript,
+	// where there is no gormStream to run it: the sidecar is extracted
+	// here and handed to the Transcript backend through the context
+	// (EntryMetadataFrom). On the SQL path the gormStream owns it.
+	metadataExtractor MetadataExtractor
 
 	writeMu sync.Mutex
 }
@@ -120,8 +130,10 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 	if err := s.deleteChildSessionsInADK(ctx, req); err != nil {
 		return err
 	}
-	if err := s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
-		return err
+	if s.stream != nil {
+		if err := s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
+			return err
+		}
 	}
 	if err := s.guardrail.deleteSession(ctx, req.AppName, req.UserID, req.SessionID); err != nil {
 		return err
@@ -180,6 +192,10 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 		pending = &overlayPending{sess: sess, ev: ev}
 		ctx = withOverlayPending(ctx, pending)
 	}
+	if s.stream == nil && s.metadataExtractor != nil {
+		// Transcript backend: it persists the sidecar itself.
+		ctx = ContextWithEntryMetadata(ctx, s.metadataExtractor(ctx))
+	}
 	recoveredFallback := false
 	if err := s.inner.AppendEvent(ctx, sess, ev); err != nil {
 		incomplete, probeErr := s.checkIncompleteFallbackEvent(ctx, sess, ev, err)
@@ -191,6 +207,7 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 		}
 		recoveredFallback = true
 	} else if pending != nil && pending.done {
+		s.stream.notify(sess)
 		return nil
 	}
 	// ADK drops partial events without writing a row (runner.go filters
@@ -209,6 +226,10 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 		if _, err := appendFn(ctx, sess, ev); err != nil {
 			return fmt.Errorf("eventlog: overlay write after ADK AppendEvent: %w", err)
 		}
+		// Wake in-process subscribers only now, after the row is
+		// committed: a wake-up answered with a Since that cannot yet see
+		// the row would be a wake-up lost.
+		s.stream.notify(sess)
 	}
 	if err := s.guardrail.applyEvent(ctx, sess, ev); err != nil {
 		return fmt.Errorf("eventlog: guardrail state write after ADK AppendEvent: %w", err)

@@ -1,7 +1,37 @@
 # External state: pluggable session, control and memory stores for failover
 
-**Status:** proposed. No code yet. Open questions 1–4 of the first
-draft were settled by the maintainer on 2026-10-01 (decisions 13–16).
+**Status:** in progress. Phase 1 is shipping as the transcript seam
+only — `eventlog.Transcript`, `eventlog.OpenTranscript`,
+`pkg/statestore/{memory,conformance}` — with control, index and the
+per-session state stores still on the local SQL database (see
+Amendments). Phase 3, the Agent Engine transcript backend, follows.
+Open questions 1–4 of the first draft were settled by the maintainer
+on 2026-10-01 (decisions 13–16).
+
+## Amendments
+
+Recorded as the phases land; each names the decision it narrows.
+
+- **2026-11-06 — Phase 1 introduces the Transcript seam only.** Control
+  (lock, claims, boot log, acks, pauses, schedule) and index (session
+  ACL) keep today's SQL code behind the unchanged `Handle` methods and
+  `Handle.DB`, which therefore stays set on every Handle, until phase 4
+  brings a second implementation. A Handle over a non-SQL transcript
+  (`eventlog.OpenTranscript`) still needs a local SQL database for
+  them. Additive; consistent with the #1192 compatibility table.
+- **2026-11-06 — Interface placement and shape.** `Transcript` is
+  declared in `pkg/eventlog`, which owns `Entry` and `QueryOption`, and
+  aliased as `statestore.Transcript`; declaring it in `statestore`
+  would make `eventlog` import `statestore` and `statestore` import
+  `eventlog`. `Since` keeps the `Stream.Since` signature (the scope is
+  in the options; `eventlog.ResolveQuery(...).Scope()` extracts the
+  root) rather than a separate `root` argument, and the interface adds
+  `Subscribe` for decision 4's in-process wake-ups.
+- **2026-11-06 — Decision 4, as #1192 already noted:** the SQL Handle
+  from `eventlog.Open` keeps polling, because a second process may be
+  appending to the same SQLite file. Only a Handle from
+  `OpenTranscript` is wake-up driven. The SQL transcript still fires
+  in-process wake-ups so it passes the same conformance suite.
 
 ## Motivation
 

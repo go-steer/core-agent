@@ -72,6 +72,12 @@ unsupported pkg/auth
 unsupported pkg/childenv
 # Reusable CLI/daemon composition glue lifted out of cmd/core-agent.
 unsupported pkg/compose
+# Pluggable session-state backends (docs/external-state-design.md, #1192):
+# the Transcript seam is in pkg/eventlog (promised); the backends and the
+# conformance suite stay unsupported until the design's phases are done.
+unsupported pkg/statestore
+unsupported pkg/statestore/conformance
+unsupported pkg/statestore/memory
 # Local digesting primitives backing pkg/tools/agentic.
 unsupported pkg/digest
 # Lifecycle hook runner for CLI/daemon turns.

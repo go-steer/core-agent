@@ -362,7 +362,7 @@ func (t *Transcript) loadTree(ctx context.Context, k treeKey, tr *tree) error {
 // loadResident builds a resident from a Session resource and its
 // events. Events this backend did not write are skipped.
 func (t *Transcript) loadResident(ctx context.Context, k treeKey, id string, s *aiplatformpb.Session) (*resident, error) {
-	r := &resident{appName: k.app, userID: k.user, id: id, state: appState(s.GetSessionState())}
+	r := &resident{parent: t.parent, appName: k.app, userID: k.user, id: id, state: appState(s.GetSessionState())}
 	if et := s.GetExpireTime(); et != nil {
 		r.expireAt = et.AsTime()
 	}

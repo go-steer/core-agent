@@ -78,6 +78,12 @@ Recorded as the phases land; each names the decision it narrows.
   unchanged; merging the two is phase 2 proper. The `409` owner hint
   (decision 12) and plan/todo/gate state in the transcript are not
   here.
+- **2026-11-06 — The engine is named once, with memory.** Following
+  `docs/memory-service-design.md` decision 4 (merged meanwhile),
+  `state.transcript.agentengine.reasoning_engine` is optional and falls
+  back to the top-level `agent_engine` block that Memory Bank reads, via
+  `Config.ResolveAgentEngineResource`. This replaces the sketch's
+  `state.transcript.agentengine.reasoning_engine` as the only source.
 - **2026-11-06 — Agent Engine 429s follow #935's policy, narrowed to
   quota rejections.** A `ResourceExhausted` append is retried once after
   2s from a shared budget of three refilling one per 30s, the model

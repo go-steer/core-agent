@@ -708,3 +708,53 @@ func TestAgentEngine_HandoffDoesNotServeAStaleTree(t *testing.T) {
 		t.Fatalf("after handoff and back: %q, want %q", strings.Join(got, " "), want)
 	}
 }
+
+func TestAgentEngine_VertexSessionResource(t *testing.T) {
+	t.Parallel()
+	type vertexSessionOrigin interface {
+		VertexSessionResource() (reasoningEngineParent, sessionResource string, ok bool)
+	}
+	ctx := context.Background()
+	tr, f := openFake(t)
+	svc := tr.Service()
+
+	const rawID = "019a0000-0000-7000-8000-000000000001:sub:worker"
+
+	check := func(t *testing.T, label string, sess session.Session) {
+		t.Helper()
+		vo, ok := sess.(vertexSessionOrigin)
+		if !ok {
+			t.Fatalf("%s: session %T does not implement VertexSessionOrigin", label, sess)
+		}
+		parent, res, ok := vo.VertexSessionResource()
+		if !ok || parent != testEngine || !strings.HasPrefix(res, testEngine+"/sessions/") {
+			t.Fatalf("%s: VertexSessionResource() = (%q, %q, %v), want (%q, %s/sessions/..., true)",
+				label, parent, res, ok, testEngine, testEngine)
+		}
+		f.mu.Lock()
+		_, stored := f.sessions[res]
+		f.mu.Unlock()
+		if !stored {
+			t.Fatalf("%s: resource %q not found in server sessions", label, res)
+		}
+	}
+
+	cresp, err := svc.Create(ctx, &session.CreateRequest{AppName: "app", UserID: "u", SessionID: rawID})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	check(t, "Create", cresp.Session)
+
+	tr.Invalidate("app", "u", "019a0000-0000-7000-8000-000000000001")
+	gresp, err := svc.Get(ctx, &session.GetRequest{AppName: "app", UserID: "u", SessionID: rawID})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	check(t, "Get (reloaded)", gresp.Session)
+
+	lresp, err := svc.List(ctx, &session.ListRequest{AppName: "app", UserID: "u"})
+	if err != nil || len(lresp.Sessions) != 1 {
+		t.Fatalf("List: %v, len=%d", err, len(lresp.Sessions))
+	}
+	check(t, "List", lresp.Sessions[0])
+}

@@ -108,7 +108,7 @@ A session whose only copy is a SQLite file lives and dies with the machine (or p
 }
 ```
 
-**What you need.** One Agent Engine instance (a *reasoning engine*) per deployment, created without deploying any code; its full resource name goes in `reasoning_engine`. The principal running core-agent needs `roles/aiplatform.user` on the project (or a narrower role that grants `aiplatform.sessions.*` and `aiplatform.sessionEvents.*`), and egress to `{location}-aiplatform.googleapis.com`.
+**What you need.** One Agent Engine instance (a *reasoning engine*) per deployment, created without deploying any code; its full resource name goes in `reasoning_engine` — or leave that out and set the top-level `agent_engine` block, which Memory Bank shares, so sessions and memory live in one engine named once. The principal running core-agent needs `roles/aiplatform.user` on the project (or a narrower role that grants `aiplatform.sessions.*` and `aiplatform.sessionEvents.*`), and egress to `{location}-aiplatform.googleapis.com`.
 
 **The local database stays.** `state.transcript.backend` other than `sql` *implies* `--session-db` exactly as attach mode does: the run lock, continuation claims, boot log, guardrail state, spend ledger, approval decisions, pause tokens, session ACLs and residency leases still live in the SQLite file. Pass `--session-db-path` to say where. The startup log names both:
 

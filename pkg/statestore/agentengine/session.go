@@ -31,6 +31,7 @@ import (
 // first settled decision) this view is authoritative once loaded, so
 // Get and Since cost no RPC after the first load.
 type resident struct {
+	parent              string
 	appName, userID, id string
 	mu                  sync.RWMutex
 	state               map[string]any
@@ -85,6 +86,7 @@ func (r *resident) snapshot() *localSession {
 		evs = append(evs, e.Event)
 	}
 	return &localSession{
+		parent:    r.parent,
 		appName:   r.appName,
 		userID:    r.userID,
 		id:        r.id,
@@ -100,6 +102,7 @@ func (r *resident) snapshot() *localSession {
 // also appends to the object, because the runner reads its Events()
 // again for the next model call of the same invocation.
 type localSession struct {
+	parent              string
 	appName, userID, id string
 	state               *localState
 	mu                  sync.RWMutex
@@ -111,6 +114,17 @@ func (s *localSession) ID() string           { return s.id }
 func (s *localSession) AppName() string      { return s.appName }
 func (s *localSession) UserID() string       { return s.userID }
 func (s *localSession) State() session.State { return s.state }
+
+// VertexSessionResource implements memory.VertexSessionOrigin (by
+// structural typing) so Memory Bank's ConsolidateConversation can pass
+// a zero-copy VertexSessionSource when the memory bank and transcript
+// share a ReasoningEngine parent.
+func (s *localSession) VertexSessionResource() (reasoningEngineParent, sessionResource string, ok bool) {
+	if s.parent == "" || s.id == "" {
+		return "", "", false
+	}
+	return s.parent, s.parent + "/sessions/" + mapID(s.id), true
+}
 func (s *localSession) Events() session.Events {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

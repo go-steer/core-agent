@@ -31,7 +31,7 @@ func TestValidateState(t *testing.T) {
 		{name: "absent is sql"},
 		{name: "explicit sql", state: StateConfig{Transcript: StateTranscriptConfig{Backend: "sql"}}},
 		{name: "unknown backend", state: StateConfig{Transcript: StateTranscriptConfig{Backend: "redis"}}, wantErr: `"redis" is not one of`},
-		{name: "agentengine without engine", state: StateConfig{Transcript: StateTranscriptConfig{Backend: "agentengine"}}, wantErr: "reasoning_engine is required"},
+		{name: "agentengine without engine or agent_engine", state: StateConfig{Transcript: StateTranscriptConfig{Backend: "agentengine"}}, wantErr: "or a top-level agent_engine block"},
 		{name: "agentengine bare id", state: StateConfig{Transcript: StateTranscriptConfig{Backend: "agentengine", AgentEngine: StateAgentEngineConfig{ReasoningEngine: "123"}}}, wantErr: "is not projects/P"},
 		{name: "agentengine ok", state: StateConfig{Transcript: StateTranscriptConfig{Backend: "agentengine", AgentEngine: StateAgentEngineConfig{ReasoningEngine: engine}}}},
 		{name: "agentengine ttl ok", state: StateConfig{Transcript: StateTranscriptConfig{Backend: "agentengine", AgentEngine: StateAgentEngineConfig{ReasoningEngine: engine, SessionTTL: "48h"}}}},
@@ -81,5 +81,31 @@ func TestValidate_RunsStateCheck(t *testing.T) {
 	c.State.Transcript.Backend = "redis"
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "state.transcript.backend") {
 		t.Fatalf("Validate = %v, want the state error", err)
+	}
+}
+
+// The shared top-level agent_engine block (docs/memory-service-design.md
+// decision 4) configures the transcript when its own field is empty; an
+// explicit reasoning_engine wins.
+func TestTranscriptReasoningEngine_FallsBackToSharedAgentEngine(t *testing.T) {
+	t.Parallel()
+	const shared = "projects/p/locations/us-central1/reasoningEngines/77"
+	c := &Config{
+		State:       StateConfig{Transcript: StateTranscriptConfig{Backend: "agentengine"}},
+		AgentEngine: &AgentEngineConfig{Resource: shared},
+	}
+	if err := c.validateState(); err != nil {
+		t.Fatalf("validateState with only agent_engine: %v", err)
+	}
+	got, err := c.TranscriptReasoningEngine(func(string) string { return "" })
+	if err != nil || got != shared {
+		t.Fatalf("TranscriptReasoningEngine = %q, %v; want %q", got, err, shared)
+	}
+	c.State.Transcript.AgentEngine.ReasoningEngine = "projects/p/locations/europe-west4/reasoningEngines/9"
+	if got, _ := c.TranscriptReasoningEngine(nil); got != c.State.Transcript.AgentEngine.ReasoningEngine {
+		t.Fatalf("explicit reasoning_engine did not win: %q", got)
+	}
+	if _, err := (&Config{}).TranscriptReasoningEngine(nil); err == nil {
+		t.Fatal("no engine anywhere resolved without error")
 	}
 }

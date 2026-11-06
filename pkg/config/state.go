@@ -15,6 +15,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -59,7 +60,10 @@ type StateAgentEngineConfig struct {
 	// instance that holds the sessions:
 	// projects/P/locations/L/reasoningEngines/N. One per deployment;
 	// it can be created without deploying any code. The API endpoint is
-	// derived from its location.
+	// derived from its location. Optional: when empty, the top-level
+	// agent_engine block is used, the one Memory Bank shares
+	// (docs/memory-service-design.md decision 4), so a deployment that
+	// hosts sessions and memory in one engine names it once.
 	ReasoningEngine string `json:"reasoning_engine,omitempty" yaml:"reasoning_engine,omitempty"`
 	// SessionTTL is the expiry set on every session and refreshed on
 	// append, as a Go duration string. Default "720h" (30 days); the
@@ -81,6 +85,28 @@ func (c *Config) TranscriptBackend() string {
 // still hosts control and state).
 func (c *Config) TranscriptIsExternal() bool {
 	return c.TranscriptBackend() != TranscriptBackendSQL
+}
+
+// TranscriptReasoningEngine resolves the Agent Engine resource the
+// agentengine transcript uses: state.transcript.agentengine.
+// reasoning_engine when set, else the shared top-level agent_engine
+// block (ResolveAgentEngineResource, which reads its *_env fields via
+// getenv; nil means os.Getenv).
+func (c *Config) TranscriptReasoningEngine(getenv func(string) string) (string, error) {
+	if c == nil {
+		return "", errors.New("config: no config")
+	}
+	if re := c.State.Transcript.AgentEngine.ReasoningEngine; re != "" {
+		return re, nil
+	}
+	re, err := c.ResolveAgentEngineResource(getenv)
+	if err != nil {
+		return "", err
+	}
+	if re == "" {
+		return "", errors.New("config: state.transcript.backend=\"agentengine\" needs state.transcript.agentengine.reasoning_engine or a top-level agent_engine block")
+	}
+	return re, nil
 }
 
 // AgentEngineSessionTTL returns the parsed TTL, zero when unset (the
@@ -111,13 +137,17 @@ func (c *Config) validateState() error {
 		return fmt.Errorf("config: state.transcript.backend %q is not one of %q, %q", b, TranscriptBackendSQL, TranscriptBackendAgentEngine)
 	}
 	ae := c.State.Transcript.AgentEngine
-	if ae.ReasoningEngine == "" {
-		return fmt.Errorf("config: state.transcript.agentengine.reasoning_engine is required when state.transcript.backend is %q (projects/P/locations/L/reasoningEngines/N)", TranscriptBackendAgentEngine)
+	if ae.ReasoningEngine == "" && c.AgentEngine == nil {
+		return fmt.Errorf("config: state.transcript.backend %q needs state.transcript.agentengine.reasoning_engine (projects/P/locations/L/reasoningEngines/N) or a top-level agent_engine block", TranscriptBackendAgentEngine)
 	}
-	parts := strings.Split(ae.ReasoningEngine, "/")
-	if len(parts) != 6 || parts[0] != "projects" || parts[2] != "locations" || parts[4] != "reasoningEngines" ||
-		parts[1] == "" || parts[3] == "" || parts[5] == "" {
-		return fmt.Errorf("config: state.transcript.agentengine.reasoning_engine %q is not projects/P/locations/L/reasoningEngines/N", ae.ReasoningEngine)
+	// The top-level block may resolve from env only at startup, so it is
+	// validated there (validateAgentEngine checks its shape here).
+	if ae.ReasoningEngine != "" {
+		parts := strings.Split(ae.ReasoningEngine, "/")
+		if len(parts) != 6 || parts[0] != "projects" || parts[2] != "locations" || parts[4] != "reasoningEngines" ||
+			parts[1] == "" || parts[3] == "" || parts[5] == "" {
+			return fmt.Errorf("config: state.transcript.agentengine.reasoning_engine %q is not projects/P/locations/L/reasoningEngines/N", ae.ReasoningEngine)
+		}
 	}
 	if ae.SessionTTL != "" {
 		d, err := time.ParseDuration(ae.SessionTTL)

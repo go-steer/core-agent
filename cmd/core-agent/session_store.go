@@ -55,9 +55,12 @@ func openSessionStore(ctx context.Context, cfg *config.Config, path string, stop
 		}
 		return h, "", nil
 	case config.TranscriptBackendAgentEngine:
-		ae := cfg.State.Transcript.AgentEngine
+		engine, err := cfg.TranscriptReasoningEngine(nil)
+		if err != nil {
+			return nil, "", fmt.Errorf("session store: %w", err)
+		}
 		transcript, err := agentengine.Open(ctx, agentengine.Config{
-			ReasoningEngine: ae.ReasoningEngine,
+			ReasoningEngine: engine,
 			SessionTTL:      cfg.AgentEngineSessionTTL(),
 		})
 		if err != nil {
@@ -70,7 +73,7 @@ func openSessionStore(ctx context.Context, cfg *config.Config, path string, stop
 			_ = transcript.Close()
 			return nil, "", fmt.Errorf("open session db %s for the local stores: %w", path, err)
 		}
-		return h, "session store: agentengine " + ae.ReasoningEngine + " (transcript); local db holds control, state and residency leases", nil
+		return h, "session store: agentengine " + engine + " (transcript); local db holds control, state and residency leases", nil
 	default:
 		// config.Validate refuses anything else before we get here.
 		return nil, "", fmt.Errorf("state.transcript.backend %q is not supported", cfg.TranscriptBackend())

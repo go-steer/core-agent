@@ -200,7 +200,7 @@ The `/switch` + `/attach` + peer-hub trio ([issue #246](https://github.com/go-st
 
 Three pieces make it work:
 
-1. **Peer-hub registration** (daemon-side) — each daemon can register itself with a hub daemon at startup via `--attach-peer-hub` + `--attach-register-to=<hub-url>`. The hub keeps a live view of registered peers via heartbeats (see [Attach HTTP → peer endpoints](/reference/attach-http/#peer-endpoints)). Every daemon that participates knows about every other; there's no central controller.
+1. **Peer-hub registration** (daemon-side) — each daemon can register itself with a hub daemon at startup via `--attach-peer-hub` (on the hub) and `--attach-register-to=<hub-url>` + `--attach-register-endpoint=<self-url>` (plus optional `--attach-register-name=<name>`, defaulting to hostname, on each peer). The hub keeps a live view of registered peers via heartbeats (see [Attach HTTP → peer endpoints](/reference/attach-http/#peer-endpoints)). Every daemon that participates knows about every other; there's no central controller.
 
 2. **`/switch`** (TUI, in-process) — inside a running TUI, `/switch` opens an in-chat picker that fans `GET /sessions` in parallel across the current daemon's hub PLUS every registered peer (5 s per-peer timeout so a slow peer doesn't block the list). Pick a row, the TUI detaches from the current session and reattaches to the picked one in place — chat wipes, but the outgoing session keeps running on its daemon for later re-attach. Peer rows tag as `[peer:<name>]`; local rows are unadorned. Bare `/switch` opens the picker; `/switch <sid>` direct-jumps to a local session.
 

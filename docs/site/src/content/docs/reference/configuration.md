@@ -31,7 +31,7 @@ Per-loader precedence (higher-scope entries win on collision):
 - **Skills**: `<project>/.agents/skills/` > `~/.agents/skills/` > `~/.core-agent/skills/` — merged via overlay; project wins on skill-name collision.
 - **AGENTS.md**: user (`~/.core-agent/`) → user-home (`~/.agents/`) → project — concatenated in order; canonical-path visited-set dedupes cross-scope duplicates.
 - **MCP servers**: `<project>/.agents/mcp.json` > `~/.agents/mcp.json` — merged by server-name key; project wins on collision. Non-server fields (`agentic_wrap*`) take the first explicitly-set value.
-- **Config**: `<project>/.agents/config.json` only — no user-scope layering today. If you want personal defaults, use the CLI `-c ~/.agents/config.json` to point at a HOME file explicitly.
+- **Config**: `<project>/.agents/config.json` only — no user-scope layering today. If you want personal defaults, use the CLI `-c ~/.agents/config.json` (or `--config ~/.agents/config.json`) to point at a HOME file explicitly.
 
 ---
 
@@ -1421,7 +1421,7 @@ CLI convenience:
 
 ## `attach`
 
-Default values for the attach-mode listener and the peer-registration client. Every field below is also exposed as a `--attach-*` CLI flag: names follow the `--attach-<kebab-case-field>` convention (`unix_socket` → `--attach-unix-socket`, `peer_hub` → `--attach-peer-hub`, `register_to` → `--attach-register-to`, and so on). The flag wins when explicitly set, otherwise the config value applies, otherwise the zero value. This section exists for K8s-style deployments where the same settings would otherwise be repeated on every invocation.
+Default values for the attach-mode listener and the peer-registration client. Every field below is also exposed as a `--attach-*` CLI flag: names follow the `--attach-<kebab-case-field>` convention (`unix_socket` → `--attach-unix-socket`, `peer_hub` → `--attach-peer-hub`, `register_to` → `--attach-register-to`, `register_endpoint` → `--attach-register-endpoint`, `register_name` → `--attach-register-name`, and so on). The flag wins when explicitly set, otherwise the config value applies, otherwise the zero value. This section exists for K8s-style deployments where the same settings would otherwise be repeated on every invocation.
 
 String fields are passed through `os.ExpandEnv` so per-pod values like `"https://${POD_IP}:7777"` can live in a shared ConfigMap and resolve to the right address at startup.
 
@@ -1438,9 +1438,9 @@ String fields are passed through `os.ExpandEnv` so per-pod values like `"https:/
 | `allowed_hosts` | string[] | `[]` | Additional hostnames (without port) accepted in the `Host` header and trusted as same-origin by the browser write guard on a loopback listener (`127.0.0.1`, `::1`, `localhost`). By default, a loopback listener rejects non-loopback `Host` headers with `421 Misdirected Request` to block DNS-rebinding attacks ([#1358](https://github.com/go-steer/core-agent/issues/1358)). When a local reverse proxy forwards requests to a loopback listener without rewriting `Host` — for example, AX's `ax-task-runner` `spec.http.port` pass-through behind Agent Substrate's router (`atenet-router.ate-system.svc.cluster.local`, `atenet-router.ate-system.svc`, `atenet-router.ate-system`) — list the router or ingress hostnames here ([#1497](https://github.com/go-steer/core-agent/issues/1497)). |
 | `peer_hub` | bool | `false` | Enable peer-registration endpoints (`POST /peers`, `GET /peers`, `POST /peers/<id>/heartbeat`, `DELETE /peers/<id>`) on the listener — this agent becomes a discovery hub. |
 | `peer_state_file` | string | `""` | Path to a JSONL file that makes the hub's registry durable across restarts ([#595](https://github.com/go-steer/core-agent/issues/595)). Snapshotted on every register/heartbeat/deregister/prune and reloaded at startup, so a hub restart doesn't blank the fleet until every peer's next heartbeat fails (a 20–60s blackout otherwise). Requires `peer_hub`; setting it without one is a startup error. Leases that expired while the hub was down are dropped rather than resurrected. The file holds registration IDs — the deregistration capability — so it is written `0600` and its directory should match. Put it on a volume that outlives the pod; a path that exists but can't be read, or a directory that can't be written, fails the boot rather than silently falling back to in-memory. |
-| `register_to` | string | `""` | Hub URL this agent registers with on startup (e.g. `"https://hub.default.svc:7777"`). Empty → no registration. Heartbeats automatically until shutdown. |
-| `register_endpoint` | string | `""` | Reachable URL the hub records for this agent. Required when `register_to` is set, since the agent's own `listen` value is commonly `0.0.0.0` and not directly reachable. Typically `"https://${POD_IP}:7777"`. |
-| `register_name` | string | hostname | Name to register under. Defaults to `os.Hostname()` when empty. Name-based upsert: a restart re-uses the slot rather than orphaning the old entry. |
+| `register_to` | string | `""` | Hub URL this agent registers with on startup (flag: `--attach-register-to`, e.g. `"https://hub.default.svc:7777"`). Empty → no registration. Heartbeats automatically until shutdown. |
+| `register_endpoint` | string | `""` | Reachable URL the hub records for this agent (flag: `--attach-register-endpoint`). Required when `register_to` is set, since the agent's own `listen` value is commonly `0.0.0.0` and not directly reachable. Typically `"https://${POD_IP}:7777"`. |
+| `register_name` | string | hostname | Name to register under (flag: `--attach-register-name`). Defaults to `os.Hostname()` when empty. Name-based upsert: a restart re-uses the slot rather than orphaning the old entry. |
 
 Worked example for a K8s deployment ConfigMap:
 
@@ -1689,7 +1689,7 @@ Configures the forge-neutral `vcs_*` tool suite (backed by [`go-steer/core-vcs`]
 3. **Merge** the loaded JSON over `config.DefaultConfig()` — unspecified fields keep their defaults. Unknown fields are tolerated for forward compatibility.
 4. **Validate** the merged result. Bad provider name, missing required field, or wrong schema version → fail fast at startup.
 
-Override discovery with the CLI's `-c <path>` flag, which reads the file directly and treats its parent directory as the agentsDir for MCP / skills resolution.
+Override discovery with the CLI's `-c <path>` (or `--config <path>`) flag, which reads the file directly and treats its parent directory as the agentsDir for MCP / skills resolution.
 
 ### The walk-up inherits silently
 
@@ -1783,6 +1783,7 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 
 | Flag | Documented at |
 |---|---|
+| `-c` / `--config=PATH` | [Discovery and merge](#discovery-and-merge) — load `config.json` from `PATH` instead of `.agents/` walk-up discovery. |
 | `-i` / `--interactive-prompt=TEXT` | [Interactive quickstart → Seed the first turn](/run/interactive/quickstart/) — submit an initial turn on startup and stay in the REPL/TUI. Mutually exclusive with `-p`; incompatible with `--no-repl`. |
 | `--allow-path=PATH:MODE` | [Permissions → Path scope](/concepts/permissions/) — grant `r` / `w` / `rw` access to a tree outside project + user-home roots (repeatable). |
 | `--agents-dir=DIR` | [Where `agentsDir` comes from](#where-agentsdir-comes-from-v290-dev-945) — point MCP / skills / plans / content roots at a tree the config does not live in. Deliberately not config-backed. |
@@ -1796,5 +1797,3 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 | `--no-checkpoint` | Deprecated alias for `--checkpoint=off` (which **is** config-backed — see [`checkpoint`](#checkpoint-v29) above). Removes `/done` and the heuristic as well as `mark_task_done`, broader than its original description implied |
 | `--agentic-tools` | [Context management → Agentic tool wrappers](/concepts/context-management/) — register the `agentic_*` tool family |
 | `--agentic-small-model=ID` | [Context management → Agentic tool wrappers](/concepts/context-management/) — route agentic subtasks to a cheaper model |
-
-The `CORE_AGENT_TUI=internal` environment variable picks the legacy `internal/tui` code path in place of the v2 default (core-tui). One-release escape hatch for operators who hit a regression; scheduled for removal in v2.1.

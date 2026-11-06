@@ -17,6 +17,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/go-steer/core-agent/v3/pkg/runner"
 )
 
 // describePromptLayers renders the active system-prompt layer stack
@@ -43,9 +45,24 @@ func describePromptLayers(modelName string, replaced, appended bool, memorySourc
 	return strings.Join(parts, " + ")
 }
 
-// promptOpts carries the #459 system-prompt flags from main's flag
-// block into run (same pattern as attachOpts).
+// promptOpts carries the #459 system-prompt flags and #1379 output-format /
+// quiet flags from main's flag block into run (same pattern as attachOpts).
 type promptOpts struct {
 	appendSystemPrompt string
 	systemPromptFile   string
+	outputFormat       string
+	quiet              bool
+}
+
+// resolveOutputFormat validates the --output-format flag value and enforces
+// that non-text output formats are only used with -p (headless one-shot mode).
+func resolveOutputFormat(raw, prompt string) (runner.OutputFormat, error) {
+	f, err := runner.ParseOutputFormat(raw)
+	if err != nil {
+		return "", err
+	}
+	if f != runner.OutputFormatText && prompt == "" {
+		return "", fmt.Errorf("--output-format=%s requires -p (headless single-turn mode)", f)
+	}
+	return f, nil
 }

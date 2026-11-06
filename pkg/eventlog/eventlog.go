@@ -190,20 +190,15 @@ type Handle struct {
 	// db is the same value as DB, kept as an unexported alias for
 	// the original lifecycle code in Close (so the cleanup nil-out
 	// stays correct).
-	db *gorm.DB
-	// adkDB is ADK's own gorm.DB — a second connection pool opened
-	// inside adkdatabase.NewSessionService against the same DSN. We
-	// retain it so Close can shut it down too; otherwise every
-	// Open/Close cycle leaks the ADK pool's connections and file
-	// handles. Nil if it couldn't be retrieved (Close then skips it).
-	adkDB                 *gorm.DB
+	db                    *gorm.DB
 	lockHeartbeatInterval time.Duration
 	lockStaleAfter        time.Duration
 	pauseMu               sync.Mutex
 }
 
-// Close releases all resources held by the Handle (Stream + the
-// underlying database connection). Safe to call multiple times.
+// Close releases all resources held by the Handle: the Stream and the
+// one connection pool ADK's session service and the overlay share.
+// Safe to call multiple times.
 func (h *Handle) Close() error {
 	if h == nil {
 		return nil
@@ -220,19 +215,11 @@ func (h *Handle) Close() error {
 		}
 		h.db = nil
 	}
-	// Close ADK's separate connection pool too. Skipping it leaked a
-	// pool per Open/Close cycle (tests, multi-daemon session churn).
-	if h.adkDB != nil {
-		if err := closeGormDB(h.adkDB); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		h.adkDB = nil
-	}
 	return firstErr
 }
 
 // closeGormDB closes the underlying *sql.DB connection pool behind a
-// gorm.DB. Shared by Handle.Close for both the overlay and ADK pools.
+// gorm.DB. ADK's session service and the overlay share that one pool.
 func closeGormDB(db *gorm.DB) error {
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -270,8 +257,10 @@ func WithWatchInterval(d time.Duration) Option {
 	}
 }
 
-// WithGORMConfig overrides the gorm.Config used for the overlay
-// connection. Useful for silencing the default logger in tests
+// WithGORMConfig overrides the gorm.Config for the one connection pool
+// Open creates. ADK's session service and the overlay share that pool,
+// so the whole config (not just its Logger) governs ADK's queries too.
+// Useful for silencing the default logger in tests
 // (gorm.Config{Logger: logger.Default.LogMode(logger.Silent)}).
 func WithGORMConfig(c *gorm.Config) Option {
 	return func(o *openOpts) { o.gormConfig = c }
@@ -445,10 +434,18 @@ var ErrUnscopedQuery = errors.New("eventlog: query must be scoped to a session o
 // scary line on a healthy cold boot; this is the check that tells the
 // two apart without matching on message text.
 //
+// It matches two sentinels. GORM's ErrRecordNotFound is what ADK's
+// database service has always wrapped, and session.ErrNotFound is the
+// backend-neutral sentinel ADK added later (its in-memory and Vertex
+// services return it, and the database service now wraps it as well).
+// Matching both keeps the classification true for any session.Service
+// behind a Handle, which is the precondition for the non-SQL backends
+// docs/external-state-design.md plans (#1192).
+//
 // It lives here rather than in the callers because the GORM coupling
 // is this package's to own.
 func IsSessionNotFound(err error) bool {
-	return err != nil && errors.Is(err, gorm.ErrRecordNotFound)
+	return err != nil && (errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, session.ErrNotFound))
 }
 
 // Ping reports whether the event log is still readable, for use by a

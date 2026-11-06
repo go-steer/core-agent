@@ -46,6 +46,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 #### Other (Cleanup)
 
+- **`cmd/core-agent`: decompose `run()` into `runOptions` and ordered `startupSteps`.** Replaces `run()`'s 43 positional args with option structs, extracts 14 order-checked startup steps, and removes the `.golangci.yml` `run` exemption. ([#685](https://github.com/go-steer/core-agent/issues/685))
 - **`pkg/compose`: move unattended guardrail, `auto_continue`, and unpriced-model policy out of `main`.** Exports `ResolveGuardrailsFromConfig`, `AppendWatchdogOpts`, `CeilingPricing`, and `ResolveAutoContinue` for library hosts. ([#1369](https://github.com/go-steer/core-agent/issues/1369))
 - **`pkg/agent`: fold guardrail latches into `guardrailState` reducer and `postTurnSteps`.** Unifies cost, watchdog, refusal, and context-budget signals via `applyTurnSignal` and replaces the post-turn `defer` stack. ([#1389](https://github.com/go-steer/core-agent/issues/1389))
 - **Extract attach protocol vocabulary into leaf package `pkg/attach/wire`.** Moves `pkg/agent` and `pkg/agent/background` wire types into `pkg/attach/wire` (re-exported in `pkg/attach` by alias) so `pkg/agent` drops `pkg/attach`. ([#1372](https://github.com/go-steer/core-agent/issues/1372))

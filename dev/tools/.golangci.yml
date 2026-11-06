@@ -80,26 +80,6 @@ linters:
       # silence "always returns nil" style noise inside our wrapper.
       - path: mcp/
         text: "(unparam|S1009)"
-      # The one complexity-ratchet exemption, and the reason the
-      # thresholds below can be as tight as they are: cmd/core-agent's
-      # `run` is a 1441-line / 760-statement / 445-cognitive-complexity
-      # outlier — 5x worse than the next function in the tree on every
-      # metric. Pinning the thresholds above IT would leave a fence at
-      # 1442 lines, which forbids nothing anyone would ever write by
-      # accident. So `run` is named here, once, next to the numbers it
-      # distorts, and everything else gets a fence that actually holds.
-      # `TestComplexityRatchet_CmdRunCap` in internal/testutil caps `run`
-      # at its current size so it cannot grow while exempted (#1371).
-      #
-      # Deliberately narrower than a per-file exclusion: this matches
-      # the single function, so a *new* god-method elsewhere in
-      # main.go still fails. Delete this rule when #685 decomposes
-      # `run`; the thresholds below drop with it.
-      - path: cmd/core-agent/main\.go
-        text: "(Function 'run'|of func `run`)"
-        linters:
-          - funlen
-          - gocognit
       # Lifted from go-steer/cogo per docs/embedded-tui-design-v2.md
       # (PR 1 + parity amend). The cogo attribution is preserved as
       # explicit provenance — both projects are go-steer org with the
@@ -136,8 +116,8 @@ linters:
     # not itself a defect; unbounded growth is.
     #
     # Re-measured 2026-11-06 after #1370 decomposed `autonomous.Run` and
-    # `Resume`, excluding cmd/core-agent's `run` (see the exclusion rule
-    # above and `internal/testutil/complexity_test.go`):
+    # `Resume` and #685 decomposed `cmd/core-agent`'s `run` (removing the
+    # last `funlen` / `gocognit` function exclusion in the tree):
     #
     #   funlen lines (tree) 254   dev/uat/scheduled-monitor `run`
     #   funlen lines (pkg/) 229   pkg/agent/background/spawn.go `(*Manager).launch`
@@ -147,8 +127,8 @@ linters:
     #
     # Separate `pkg/` vs `dev/` line ceilings (229 vs 254), the count of
     # `pkg/` functions over 150 lines (8), and the cap on `cmd/core-agent`'s
-    # exempted `run` are enforced by `internal/testutil/complexity_test.go`
-    # (#1371) so a 254-line UAT tool under `dev/` does not set the ceiling
+    # `run` are enforced by `internal/testutil/complexity_test.go` (#1371,
+    # #685) so a 254-line UAT tool under `dev/` does not set the ceiling
     # for library code under `pkg/`.
     #
     # Ratchet DOWN as hotspots get refactored — never up. #659 turned

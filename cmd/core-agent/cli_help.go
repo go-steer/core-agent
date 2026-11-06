@@ -75,6 +75,75 @@ func resolvePermissionModeFlag(cfgMode *string, yolo *bool, flagMode string, sen
 	return nil
 }
 
+// resolveSandboxFlags validates and applies --sandbox and --no-sandbox to
+// sandboxCfg (#651).
+func resolveSandboxFlags(sandboxCfg *config.SandboxConfig, sandboxFlag string, noSandbox bool) error {
+	val := strings.ToLower(strings.TrimSpace(sandboxFlag))
+	if noSandbox && val != "" && val != config.SandboxModeOff {
+		return fmt.Errorf("--no-sandbox contradicts --sandbox=%s; pass one or the other", val)
+	}
+	if noSandbox {
+		if sandboxCfg != nil {
+			sandboxCfg.Mode = config.SandboxModeOff
+		}
+		return nil
+	}
+	if val == "" {
+		return nil
+	}
+	switch val {
+	case config.SandboxModeAuto:
+		if sandboxCfg != nil {
+			sandboxCfg.Mode = config.SandboxModeAuto
+			sandboxCfg.Driver = config.SandboxDriverAuto
+		}
+	case config.SandboxModeEnforce:
+		if sandboxCfg != nil {
+			sandboxCfg.Mode = config.SandboxModeEnforce
+			if sandboxCfg.Driver == "" || sandboxCfg.Driver == config.SandboxDriverPolicy {
+				sandboxCfg.Driver = config.SandboxDriverAuto
+			}
+		}
+	case config.SandboxModeOff:
+		if sandboxCfg != nil {
+			sandboxCfg.Mode = config.SandboxModeOff
+		}
+	case config.SandboxDriverPolicy:
+		if sandboxCfg != nil {
+			sandboxCfg.Mode = config.SandboxModeAuto
+			sandboxCfg.Driver = config.SandboxDriverPolicy
+		}
+	case config.SandboxDriverBwrap, config.SandboxDriverSeatbelt, config.SandboxDriverContainer:
+		if sandboxCfg != nil {
+			if val == config.SandboxDriverContainer && strings.TrimSpace(sandboxCfg.ContainerImage) == "" {
+				return fmt.Errorf("--sandbox=container requires safety.sandbox.container_image in config")
+			}
+			sandboxCfg.Mode = config.SandboxModeEnforce
+			sandboxCfg.Driver = val
+		}
+	default:
+		return fmt.Errorf("invalid --sandbox %q (want auto|enforce|off|policy|bwrap|seatbelt|container)", sandboxFlag)
+	}
+	return nil
+}
+
+// applyPermissionAndSandboxFlags resolves both --permission-mode / --yolo and
+// --sandbox / --no-sandbox onto cfg (#1380, #651).
+func applyPermissionAndSandboxFlags(cfg *config.Config, yolo *bool, guardrails guardrailOpts, send func(string)) error {
+	if err := resolvePermissionModeFlag(&cfg.Permissions.Mode, yolo, guardrails.permissionMode, send); err != nil {
+		return err
+	}
+	if strings.TrimSpace(guardrails.sandbox) != "" || guardrails.noSandbox {
+		if err := resolveSandboxFlags(cfg.Safety.EnsureSandbox(), guardrails.sandbox, guardrails.noSandbox); err != nil {
+			return err
+		}
+	}
+	if cfg.Safety.SandboxConfig().Mode == config.SandboxModeOff && send != nil {
+		send("warning: sandbox disabled (--no-sandbox / safety.sandbox.mode=off)")
+	}
+	return nil
+}
+
 // cliFlagDoc describes one row in the grouped --help output (#1380).
 type cliFlagDoc struct {
 	// Names lists the flag names on flag.CommandLine covered by this row
@@ -137,6 +206,8 @@ var cliFlagGroups = []cliFlagGroup{
 		Flags: []cliFlagDoc{
 			{Names: []string{"permission-mode"}, Spec: "--permission-mode <mode>", Summary: "Permission gate mode: ask|auto|acceptEdits|plan|allow|yolo"},
 			{Names: []string{"yolo"}, Spec: "--yolo", Summary: "Shorthand for --permission-mode=yolo (bypass permission prompts)"},
+			{Names: []string{"sandbox"}, Spec: "--sandbox <mode|driver>", Summary: "Execution sandbox mode or driver: auto|enforce|off|bwrap|seatbelt|container"},
+			{Names: []string{"no-sandbox"}, Spec: "--no-sandbox", Summary: "Disable execution sandboxing and workspace write containment"},
 			{Names: []string{"trust"}, Spec: "--trust", Summary: "Trust the workspace .agents/ directory and persist its hash"},
 			{Names: []string{"plan-mode"}, Spec: "--plan-mode <mode>", Summary: "Plan-first gate mode: off|advisory|required"},
 			{Names: []string{"approval-timeout"}, Spec: "--approval-timeout <dur>", Summary: "How long a permission prompt waits before denying (e.g. 15m, 0s)"},

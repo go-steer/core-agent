@@ -31,6 +31,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 #### Security
 
+- **Built-in execution sandboxing (`safety.sandbox`, `--sandbox` / `--no-sandbox`).** Enforces workspace write scope in `yolo`/`acceptEdits`, blocks protected host paths, and wraps `bash` in `bwrap`, `sandbox-exec`, or `docker`/`podman`. ([#651](https://github.com/go-steer/core-agent/issues/651))
 - **Workspace trust gate for `.agents/` (`--trust`, `trusted_workspaces.json`).** Prompts or clamps untrusted `.agents/` (`stdio` MCP, `hooks`, mode above `ask`, external roots), persisting SHA-256 hashes that revoke on edit. ([#1353](https://github.com/go-steer/core-agent/issues/1353))
 - **SHA-pin third-party GitHub Actions and digest-pin Dockerfile base images.** Pins all workflow `uses:` refs to 40-hex commit SHAs, digest-pins `Dockerfile` base images, adds `.github/dependabot.yml`, and enforces pins in CI. ([#1357](https://github.com/go-steer/core-agent/issues/1357))
 

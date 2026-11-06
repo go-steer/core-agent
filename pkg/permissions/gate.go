@@ -314,6 +314,10 @@ type Gate struct {
 	toolClasses         map[string]ToolClass
 	mutatingMode        MutatingMode
 	authorizedMutations map[string]bool
+
+	// sandbox enforces execution sandboxing and workspace write
+	// containment (#651). Inherited by DeriveForSession.
+	sandbox *Sandbox
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
@@ -488,6 +492,11 @@ type Options struct {
 	// a deployment where nobody answers prompts
 	// (permissions.auto.escalation "refuse").
 	AutoRefuseEscalation bool
+
+	// Sandbox configures execution sandboxing and workspace write
+	// containment (#651). Zero value defaults to mode="auto" (workspace
+	// write containment in yolo/acceptEdits and host credential protection).
+	Sandbox config.SandboxConfig
 }
 
 // New builds a Gate from the supplied options. The Mode defaults to
@@ -533,6 +542,7 @@ func New(opts Options) *Gate {
 		approverInstructions: resolvedInstructionsPath(opts.ApproverInstructionsFile),
 		autoTaskFrom:         identitySet(opts.ApproverTaskFrom),
 		autoRefuseEscalation: opts.AutoRefuseEscalation,
+		sandbox:              newSandbox(opts.Sandbox),
 	}
 }
 
@@ -635,6 +645,7 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		RequirePlanArtifact: cfg.Permissions.PlanGateArmed(),
 		BashSearchGate:      cfg.Safety.BashSearchGate,
 		ApprovalTimeout:     approvalTimeout,
+		Sandbox:             cfg.Safety.SandboxConfig(),
 	})
 	// Derived from config here, not wired by the host, so every gate a
 	// config builds protects the files that config makes the daemon
@@ -784,6 +795,7 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 	mode := template.mode
 	toolClasses := template.toolClasses
 	mutatingMode := template.mutatingMode
+	sandbox := template.sandbox
 	template.mu.Unlock()
 	return &Gate{
 		sessionID:     sessionID,
@@ -842,6 +854,7 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		// daemon's sessions, the wait for a person the operator said
 		// is not there.
 		autoRefuseEscalation: template.autoRefuseEscalation,
+		sandbox:              sandbox,
 	}
 }
 
@@ -1227,6 +1240,9 @@ func (g *Gate) checkBash(ctx context.Context, command string, args lazyArgs) err
 	if denied, reason := IsBashDenied(command); denied {
 		return fmt.Errorf("bash refused: %s", reason)
 	}
+	if err := g.checkSandboxBash(ctx, command); err != nil {
+		return err
+	}
 	if g.bashSearchGate == config.BashSearchGateEnforce {
 		if binary, native, hit := SearchShapedCommand(command); hit && g.nativeRegistered(native) {
 			return fmt.Errorf("bash refused: %s", SearchGateMessage(binary, native))
@@ -1398,6 +1414,9 @@ func (g *Gate) checkFileWrite(ctx context.Context, toolName, path string, args l
 	// control-plane tier included: that tier can still be approved, and
 	// a model that could write the bearer table could add its own token.
 	if err := g.credentialFileDenial(toolName, path); err != nil {
+		return err
+	}
+	if err := g.checkSandboxProtectedWrite(toolName, path); err != nil {
 		return err
 	}
 	// Control-plane classification runs next, on the symlink-
@@ -1612,6 +1631,9 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Acce
 	}
 	mode := g.Mode()
 	if mode == ModeYolo {
+		if op == AccessWrite {
+			return g.checkSandboxWorkspaceWrite(ctx, toolName, path)
+		}
 		return nil
 	}
 	if mode == ModeAllow {
@@ -1620,30 +1642,13 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Acce
 	if mode == ModePlan {
 		return fmt.Errorf("%s denied: tool execution disabled in 'plan' mode (path %q)", toolName, path)
 	}
-	// AcceptEdits auto-allows out-of-scope writes so a refactor can
-	// touch sibling repos without re-prompting every file. Reads
-	// still ask — the operator explicitly opted into "accept edits"
-	// not "expose new paths."
-	//
-	// SECURITY: "out-of-scope writes" means writes to ANY path the
-	// process can reach — ~/.bashrc, ~/.ssh/authorized_keys, cron
-	// files, systemd units — not just sibling repos. The path scope
-	// is NOT a boundary in this mode; acceptEdits is "trust this
-	// agent with your filesystem" and is recommended only inside a
-	// sandbox/container (or an equally disposable environment).
-	// Operators who want auto-approved writes ONLY within declared
-	// paths should stay in ask mode and grant path_scope entries
-	// (path_scope.allow / allow_paths / --allow-path) instead.
-	// (Control-plane files remain the one exception: CheckFileWrite
-	// routes them through the elevated prompt before mode is ever
-	// consulted, so acceptEdits cannot self-escalate the gate's own
-	// config.) Documented loudly in
-	// docs/site/src/content/docs/concepts/permissions.md; keep the
-	// two in sync. Deliberately NOT changed for #385 — this is the
-	// mode's contract, the fix is making sure nobody mistakes it
-	// for a scoped-writes mode.
+	// AcceptEdits auto-allows in-workspace (and sandbox-permitted) writes
+	// without prompting. Out-of-workspace writes are confined by the execution
+	// sandbox (#651) unless sandboxing is disabled (--no-sandbox /
+	// safety.sandbox.mode="off") or the path is granted via path_scope /
+	// safety.sandbox.writable_paths. Reads outside scope still prompt.
 	if mode == ModeAcceptEdits && op == AccessWrite {
-		return nil
+		return g.checkSandboxWorkspaceWrite(ctx, toolName, path)
 	}
 	// ModeAsk and ModeAuto both reach the prompt. In auto the approver
 	// never decides a path-scope request (#1175 decision 4), so the

@@ -45,6 +45,8 @@ type guardrailOpts struct {
 	approvalTimeout   string
 	trust             bool
 	permissionMode    string
+	sandbox           string
+	noSandbox         bool
 }
 
 // flagWasSet reports whether name was present on the command line, as

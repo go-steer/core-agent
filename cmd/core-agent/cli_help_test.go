@@ -283,3 +283,55 @@ func TestApplyPlanMode_EmitsDeprecationNoticeWhenPlanFirstSet(t *testing.T) {
 		t.Fatalf("applyPlanMode with nil send: %v", err)
 	}
 }
+
+func TestResolveSandboxFlags(t *testing.T) {
+	t.Parallel()
+	var sb config.SandboxConfig
+	if err := resolveSandboxFlags(&sb, "bwrap", false); err != nil {
+		t.Fatalf("resolveSandboxFlags(bwrap): %v", err)
+	}
+	if sb.Mode != config.SandboxModeEnforce || sb.Driver != config.SandboxDriverBwrap {
+		t.Errorf("bwrap got (%q, %q), want (enforce, bwrap)", sb.Mode, sb.Driver)
+	}
+
+	if err := resolveSandboxFlags(&sb, "", true); err != nil {
+		t.Fatalf("resolveSandboxFlags(noSandbox): %v", err)
+	}
+	if sb.Mode != config.SandboxModeOff {
+		t.Errorf("noSandbox got mode %q, want off", sb.Mode)
+	}
+
+	if err := resolveSandboxFlags(&sb, "enforce", true); err == nil {
+		t.Error("expected error when combining --no-sandbox and --sandbox=enforce")
+	}
+
+	if err := resolveSandboxFlags(&sb, "bogus", false); err == nil {
+		t.Error("expected error for unknown --sandbox value")
+	}
+
+	// Case-insensitive flag and driver reset on --sandbox=auto / --sandbox=enforce from policy.
+	sb = config.SandboxConfig{Driver: config.SandboxDriverPolicy}
+	if err := resolveSandboxFlags(&sb, "ENFORCE", false); err != nil {
+		t.Fatalf("resolveSandboxFlags(ENFORCE): %v", err)
+	}
+	if sb.Mode != config.SandboxModeEnforce || sb.Driver != config.SandboxDriverAuto {
+		t.Errorf("ENFORCE got (%q, %q), want (enforce, auto)", sb.Mode, sb.Driver)
+	}
+	sb = config.SandboxConfig{Driver: config.SandboxDriverSeatbelt}
+	if err := resolveSandboxFlags(&sb, "AUTO", false); err != nil {
+		t.Fatalf("resolveSandboxFlags(AUTO): %v", err)
+	}
+	if sb.Mode != config.SandboxModeAuto || sb.Driver != config.SandboxDriverAuto {
+		t.Errorf("AUTO got (%q, %q), want (auto, auto)", sb.Mode, sb.Driver)
+	}
+
+	// --sandbox=container without container_image fails at flag validation.
+	sbNoImg := config.SandboxConfig{}
+	if err := resolveSandboxFlags(&sbNoImg, "container", false); err == nil {
+		t.Error("expected error for --sandbox=container when container_image is empty")
+	}
+	sbWithImg := config.SandboxConfig{ContainerImage: "alpine:3.20"}
+	if err := resolveSandboxFlags(&sbWithImg, "container", false); err != nil {
+		t.Errorf("unexpected error for --sandbox=container with image: %v", err)
+	}
+}

@@ -368,6 +368,13 @@ var GatedFeatures = []GatedFeature{
 			"turned off, which at least fails in the safe direction",
 	},
 	{
+		Path: "safety.sandbox",
+		Min:  "3.2.0-dev",
+		Why: "built-in execution sandboxing for bash and mutating file tools (#651). " +
+			"An older daemon drops the block and runs bash and file writes without the " +
+			"configured sandbox mode, driver, network isolation, or writable-path boundary",
+	},
+	{
 		Path: "attach.token_file",
 		Min:  "3.0.0-dev.1",
 		Why: "the file the attach bearer token is read from (#1201). An older daemon drops it and " +

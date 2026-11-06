@@ -18,9 +18,9 @@ The permission gate is the central chokepoint consulted before every tool call. 
 | `ask` (default) | Allowlisted calls pass automatically; everything else prompts the user via the configured `Prompter`. With no `Prompter`, prompts fail closed with a clear error. |
 | `auto` | `ask` with an approver model in front of the person. Outward-facing calls such as `git push` or `gh pr create` are allowed only when your own message asks for or permits them ("commit and push the branch", "you have my permission to create the PR"). A destructive call such as a force-push is never allowed outright: it comes back to you if you explicitly asked for it, and is denied otherwise ([#1175](https://github.com/go-steer/core-agent/issues/1175)). For calls on its `permissions.auto.eligible` list (or `eligible_bundles`), the approver may allow the call once, deny it, or pass it to the person's ordinary prompt with its reason quoted. Everything else, and anything the approver passes on, prompts as in `ask`, unless `permissions.auto.escalation` is `refuse`: then it is refused at once, and the agent is told why, for example that a piped or chained command never matches an eligible pattern. Needs `permissions.auto` and `permissions.approval_timeout`. See [Configuration → permissions.auto](/reference/configuration/). |
 | `allow` | Only allowlisted calls pass. Everything else is rejected without prompting — useful for headless / automated runs. |
-| `yolo` | All calls pass except those caught by the bash denylist or a deny-pattern. Use with care; intended for trusted local dev. |
+| `yolo` | All in-scope calls pass except those caught by the bash denylist, a deny-pattern, or the default-on workspace write sandbox (`safety.sandbox`, see [below](#execution-sandboxing---sandbox-safetysandbox)). Use with care; intended for trusted local dev. |
 | `plan` | All tool execution is disabled — read-and-think sessions. The TUI's permission chip cycles out of it (Shift+Tab). |
-| `acceptEdits` | File **writes** auto-allow without prompting — **including out-of-scope writes to any path** (see the caution below). Bash and every other tool kind still prompt as in `ask`. Used by the TUI's "acceptEdits" chip to stream a refactor without a diff modal per file. |
+| `acceptEdits` | File **writes** inside the workspace scope (or `path_scope` / `safety.sandbox.writable_paths`) auto-allow without prompting; out-of-scope and protected host credential/startup paths are refused by default unless `--no-sandbox` (`safety.sandbox.mode: "off"`) is set. Bash and every other tool kind still prompt as in `ask`. Used by the TUI's "acceptEdits" chip to stream a refactor without a diff modal per file. |
 
 ### Auto-mode eligibility bundles
 
@@ -39,8 +39,8 @@ What a bundle does and doesn't do:
 - **`k8s_read` can read Secret data** (`kubectl get secret -o yaml`, `kubectl get --raw …`); the approver judges whether your request needs it.
 - **`github` reaches outside the workspace.** The approver allows a call only when your own words ask for or permit it, and never a force-push or a branch deletion, which `git push *` also matches. Merging is in no bundle.
 
-:::caution[acceptEdits is not a scoped-writes mode]
-`acceptEdits` auto-allows **every** file write, in scope or not — the path scope is **not** a boundary in this mode. That includes `~/.bashrc`, `~/.ssh/authorized_keys`, cron files, systemd units: any path the process can reach. Treat it as **"trust this agent with your filesystem"** and use it only inside a sandbox/container or an equally disposable environment. If what you want is "auto-approve writes, but only under paths I declared", stay in `ask` mode and grant those paths via [`path_scope`](#path-scope) entries (`path_scope.allow`, typed `allow_paths`, or `--allow-path`) instead. Reads are unaffected — an out-of-scope read still prompts. Control-plane files remain the one exception: their elevated prompt fires before the mode is consulted.
+:::caution[Workspace write containment in `acceptEdits` and `yolo`]
+By default (`safety.sandbox.mode: "auto"`), `acceptEdits` and `yolo` enforce workspace write containment ([#651](https://github.com/go-steer/core-agent/issues/651)): file writes outside the project root, `path_scope.allow` / `allow_paths`, `safety.sandbox.writable_paths`, and `/tmp`, as well as writes or shell redirections/mutations targeting protected host credential and startup paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.bashrc`, `~/.zshrc`, `~/.profile`, `/etc/cron*`, `/etc/systemd`, `/etc/sudoers`, `/etc/passwd`, `/etc/shadow`), are refused with `ErrSandboxDenied`. Passing `--no-sandbox` (`safety.sandbox.mode: "off"`) disables this containment so `acceptEdits` and `yolo` can write to any non-control-plane path the OS user can reach; do that only inside a disposable container or VM. Control-plane files remain the one exception in all modes: their elevated prompt fires before the mode or sandbox is consulted.
 :::
 
 No mode — not even `yolo` or `acceptEdits` — auto-approves a write to a **control-plane file** (see below).
@@ -210,6 +210,23 @@ It is also the **only** bash protection left once a command reaches `yolo` mode 
 ### Hardened posture: allowlist-based execution
 
 For a real bash boundary, don't lean on the denylist — **allowlist** the commands you intend. Run in `allow` mode (or `ask` with a Prompter) and grant only specific commands via `permissions.allow`. Prefix allow rules (`bash:git *`) are guarded so they only auto-allow single literal simple commands — chaining, pipes, redirections, and command substitution fall through to prompting (see [Safe-command guard](#safe-command-guard-on-bash-prefix-rules)). An allowlist is an enumerated set of permitted actions; a denylist is a guess at the set of dangerous ones. The former is a boundary, the latter is a seatbelt.
+
+---
+
+## Execution sandboxing (`--sandbox`, `safety.sandbox`)
+
+`safety.sandbox` ([#651](https://github.com/go-steer/core-agent/issues/651)) layers workspace write containment and optional OS/container command sandboxing on top of the permission gate:
+
+- **Default-on policy boundary (`mode: "auto"`, default):**
+  - Blocks `write_file` / `edit_file` / `delete_file` and `bash` output redirections or mutating shell commands (`rm`, `mv`, `cp`, `chmod`, `chown`, `ln`, `touch`, `mkdir`, `rmdir`, `truncate`, `install`, `tee`, `sed -i`, `dd`) targeting protected host credential and startup paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.config/gcloud`, `~/.config/systemd`, `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, `~/.bashrc`, `~/.bash_profile`, `~/.bash_login`, `~/.zshrc`, `~/.zprofile`, `~/.zshenv`, `~/.zlogin`, `~/.profile`, `/etc/cron*`, `/etc/crontab`, `/var/spool/cron`, `/etc/systemd`, `/etc/sudoers`, `/etc/passwd`, `/etc/shadow`) in `yolo`, `acceptEdits`, headless runs, or `mode: "enforce"`.
+  - Enforces the workspace write boundary (`PathScope` project root + `path_scope.allow` / `allow_paths` + `safety.sandbox.writable_paths` + `/tmp`) even in `yolo` and `acceptEdits` modes so unprompted modes cannot silently overwrite files outside the workspace.
+- **OS and container command sandboxing (`mode: "enforce"` or `--sandbox`):**
+  - Wraps every `bash` command execution in an OS-level or container sandbox according to `safety.sandbox.driver`:
+    - `bwrap` (Linux `bubblewrap`): mounts `/` read-only (`--ro-bind / /`), bind-mounts the workspace and `writable_paths` read-write, mounts `/dev` and `/proc`, masks protected credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.config/gcloud`) with empty `tmpfs`, and passes `--unshare-net` when `safety.sandbox.network` is `"none"`.
+    - `seatbelt` (macOS `sandbox-exec`): applies a Seatbelt profile that denies `file-write*` outside the workspace, `/tmp`, `/private/tmp`, `/dev`, and `writable_paths`, denies `file-read*` on `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, and `~/.config/gcloud`, and denies `network*` when `safety.sandbox.network` is `"none"`.
+    - `container` (`docker` / `podman`): runs commands inside `docker run --rm -i --read-only` (or `podman`) with writable directories mounted via `--mount type=bind,src=...,dst=...,rw`, `--tmpfs /tmp:rw,noexec,nosuid`, and `--network=none` when `safety.sandbox.network` is `"none"`.
+    - `auto` (default): selects `container` when `container_image` is set, `bwrap` on Linux when `bwrap` is usable, `seatbelt` on macOS when `sandbox-exec` is on `PATH`, and in `mode: "auto"` falls back to `policy` otherwise (or fails closed with `ErrSandboxUnavailable` in `mode: "enforce"`).
+- **Escape hatch (`--no-sandbox` or `mode: "off"`):** Disables sandbox containment and emits a visible `core-agent: warning: sandbox disabled` line to `stderr`.
 
 ---
 

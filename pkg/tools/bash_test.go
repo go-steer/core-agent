@@ -16,6 +16,8 @@ package tools
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -317,5 +319,41 @@ func TestBash_TimeoutKillsOrphans(t *testing.T) {
 	if elapsed > time.Second+bashWaitDelay+2*time.Second {
 		t.Errorf("elapsed = %v, expected ≤ %v (timeout + WaitDelay grace)",
 			elapsed, time.Second+bashWaitDelay+2*time.Second)
+	}
+}
+
+func TestBash_SandboxConfinesWorkspaceWrites(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	scope, err := permissions.NewPathScope(workspace, "", nil)
+	if err != nil {
+		t.Fatalf("NewPathScope: %v", err)
+	}
+	gate := permissions.New(permissions.Options{
+		Mode:  permissions.ModeYolo,
+		Scope: scope,
+		Sandbox: config.SandboxConfig{
+			Mode: config.SandboxModeAuto,
+		},
+	})
+	fn := bashFunc(gate, cfg)
+
+	// Out-of-workspace write redirection is refused at the gate.
+	outTarget := filepath.Join(outside, "escaped.txt")
+	if _, err := fn(adkagent.Context(nil), bashArgs{Command: "echo pwned > " + outTarget}); err == nil {
+		t.Fatalf("expected sandbox refusal for out-of-workspace write %q", outTarget)
+	}
+
+	// In-workspace write succeeds.
+	inTarget := filepath.Join(workspace, "allowed.txt")
+	res, err := fn(adkagent.Context(nil), bashArgs{Command: "printf ok > " + inTarget})
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("in-workspace write failed: res=%+v err=%v", res, err)
+	}
+	got, err := os.ReadFile(inTarget)
+	if err != nil || string(got) != "ok" {
+		t.Errorf("in-workspace file = %q (err=%v), want \"ok\"", string(got), err)
 	}
 }

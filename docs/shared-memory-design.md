@@ -1,5 +1,14 @@
 # Shared memory: a Memory interface + audit-derived recall + Redis AMS extras
 
+> **Status: superseded by [`memory-service-design.md`](memory-service-design.md) (2026-11-06).**
+> Kept for historical context. `memory-service-design.md` replaces this
+> draft's single-scope, daemon-coupled `FromEventlog` interface with
+> stateless `--memory-ref` / `agent_engine` addressing, multi-scope
+> (`agent` + `shared:<pool>`) concurrent fan-out, subagent scoping across
+> all six subagent execution paths, and first-class Gemini Enterprise
+> Agent Platform Memory Bank support, while preserving this doc's
+> permission-gate and transcript-audit invariants.
+
 Design doc for the cross-session + cross-agent memory layer.
 Untracked sibling to [`attach-mode-design.md`](attach-mode-design.md),
 [`peer-registration-design.md`](peer-registration-design.md),

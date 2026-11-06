@@ -35,6 +35,8 @@ promised pkg/agent/background
 promised pkg/approver
 promised pkg/attach/wire
 promised pkg/config
+promised pkg/evals
+promised pkg/evals/judge
 promised pkg/eventlog
 promised pkg/instruction
 promised pkg/mcp

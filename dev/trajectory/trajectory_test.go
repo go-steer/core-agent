@@ -15,6 +15,7 @@
 package trajectory
 
 import (
+	"iter"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/genai"
 )
 
 const basicRun = "testdata/run-basic"
@@ -493,5 +497,79 @@ func copyFile(t *testing.T, src, dst string) {
 	}
 	if err := os.WriteFile(dst, b, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type sliceEvents []*session.Event
+
+func (s sliceEvents) All() iter.Seq[*session.Event] {
+	return func(yield func(*session.Event) bool) {
+		for _, ev := range s {
+			if !yield(ev) {
+				return
+			}
+		}
+	}
+}
+
+func (s sliceEvents) Len() int                { return len(s) }
+func (s sliceEvents) At(i int) *session.Event { return s[i] }
+
+func TestFromEvents_BuildsStepsAndFrames(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	ev1 := &session.Event{
+		InvocationID: "inv-1",
+		Timestamp:    t0,
+	}
+	ev1.Content = &genai.Content{
+		Role: genai.RoleModel,
+		Parts: []*genai.Part{
+			{
+				FunctionCall: &genai.FunctionCall{
+					ID:   "fc-1",
+					Name: "k8s_triage_workload",
+					Args: map[string]any{"namespace": "payments"},
+				},
+			},
+		},
+	}
+	ev2 := &session.Event{
+		InvocationID: "inv-1",
+		Timestamp:    t0.Add(250 * time.Millisecond),
+	}
+	ev2.Content = &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{
+			{
+				FunctionResponse: &genai.FunctionResponse{
+					ID:       "fc-1",
+					Name:     "k8s_triage_workload",
+					Response: map[string]any{"output": "healthy"},
+				},
+			},
+		},
+	}
+	events := sliceEvents{ev1, ev2}
+
+	tr := FromEvents(Meta{RunID: "run-ev-1"}, events)
+	if tr.Meta.RunID != "run-ev-1" {
+		t.Errorf("Meta.RunID = %q", tr.Meta.RunID)
+	}
+	if len(tr.Frames) != 2 {
+		t.Fatalf("len(Frames) = %d, want 2", len(tr.Frames))
+	}
+	if len(tr.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(tr.Steps))
+	}
+	if tr.Steps[0].Tool != "k8s_triage_workload" || tr.Steps[0].Status != StatusOK || tr.Steps[0].Elapsed() != 250*time.Millisecond {
+		t.Errorf("Steps[0] = %+v", tr.Steps[0])
+	}
+	if tr.Frames[0].Seq != 1 || tr.Frames[1].Seq != 2 {
+		t.Errorf("Frames Seq = [%d, %d], want [1, 2]", tr.Frames[0].Seq, tr.Frames[1].Seq)
+	}
+	if empty := FromEvents(Meta{RunID: "nil"}, nil); len(empty.Frames) != 0 || len(empty.Steps) != 0 {
+		t.Errorf("FromEvents(nil) = %+v, want empty", empty)
 	}
 }

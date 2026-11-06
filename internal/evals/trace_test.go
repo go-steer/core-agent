@@ -343,6 +343,7 @@ func TestControlCallsMatchEffects(t *testing.T) {
 		"adk_request_credential",
 		"adk_request_confirmation",
 		"finish_task",
+		"mark_task_done",
 		"transfer_to_agent",
 		"task_completed",
 		"exit_loop",
@@ -373,13 +374,13 @@ func TestCallIdentity_ArgOrderIndependent(t *testing.T) {
 	b := Call{Name: "scale", Args: map[string]any{"replicas": 3.0, "ns": "prod"}}
 	c := Call{Name: "scale", Args: map[string]any{"ns": "staging", "replicas": 3.0}}
 
-	if a.identity() != b.identity() {
-		t.Fatalf("key order changed identity:\n %s\n %s", a.identity(), b.identity())
+	if a.Identity() != b.Identity() {
+		t.Fatalf("key order changed identity:\n %s\n %s", a.Identity(), b.Identity())
 	}
-	if a.identity() == c.identity() {
+	if a.Identity() == c.Identity() {
 		t.Fatal("different arguments collapsed to one identity")
 	}
-	if (Call{Name: "scale"}).identity() == (Call{Name: "restart"}).identity() {
+	if (Call{Name: "scale"}).Identity() == (Call{Name: "restart"}).Identity() {
 		t.Fatal("different tools collapsed to one identity")
 	}
 }

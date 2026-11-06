@@ -1614,6 +1614,72 @@ Configures inbound A2A v0.3 JSON-RPC 2.0 server exposure (`POST /a2a`) on the at
 
 ---
 
+## `vcs` (v3.2+, #1490)
+
+Configures the forge-neutral `vcs_*` tool suite (backed by [`go-steer/core-vcs`](https://github.com/go-steer/core-vcs)) for GitOps workflows from distroless containers without `bash`, `git`, `gh`, or `glab`. When `vcs.forges` and `vcs.repositories` are non-empty, `core-agent` registers the [`vcs_*` built-in tools](/concepts/tools/#version-control-vcs_-v32-1490), withholds every `vcs.forges[].token_env` variable from child processes via `pkg/childenv`, and adds every `vcs.forges[].token_file` path to the permission gate's credential-file refusal list.
+
+```json
+{
+  "vcs": {
+    "forges": [
+      {
+        "name": "gh",
+        "provider": "github",
+        "token_file": "/var/run/secrets/vcs/github-token",
+        "commit_identity": {
+          "name": "platform-agent[bot]",
+          "email": "platform-agent@acme.example"
+        }
+      },
+      {
+        "name": "gl-self",
+        "provider": "gitlab",
+        "host": "gitlab.internal",
+        "ca_file": "/etc/ssl/corp/ca.pem",
+        "token_env": "GITLAB_TOKEN"
+      }
+    ],
+    "repositories": [
+      {
+        "forge": "gh",
+        "repository": "acme/infra",
+        "role": "gitops",
+        "base_branch": "main"
+      },
+      {
+        "forge": "gh",
+        "repository": "acme/platform-modules",
+        "role": "context"
+      }
+    ],
+    "workspace_dir": "/workspace/repos",
+    "max_clone_bytes": 268435456,
+    "branch_prefix": "agent/"
+  }
+}
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `forges[].name` | string | — | Unique handle referenced by `repositories[].forge`. |
+| `forges[].provider` | string | — | `"github"` (github.com or GHES), `"gitlab"` (gitlab.com or self-managed), or `"git"` (bare smart-HTTP remote). |
+| `forges[].host` | string | provider default | Custom hostname (required for `"git"`, optional for GHES or self-managed GitLab). |
+| `forges[].ca_file` | string | `""` | Optional PEM CA bundle for self-managed GitLab or bare-git hosts (rejected on `provider: "github"` when `host` is unset or `github.com`). |
+| `forges[].token_file` | string | `""` | Path to a file containing the forge credential token. Mutually exclusive with `token_env`; automatically refused by the permission gate if any tool call attempts to read or mention it. |
+| `forges[].token_env` | string | `""` | Environment variable name holding the forge credential token. Mutually exclusive with `token_file`; automatically withheld from child processes. |
+| `forges[].username` | string | provider default | Basic-auth username for smart-HTTP git operations on `provider: "git"`. |
+| `forges[].proposal_url_template` | string | `""` | Optional compare URL template (`https://git.internal/{path}/compare/{target}...{source}`) for `provider: "git"` remotes. |
+| `forges[].commit_identity` | object | `{name: "core-agent[bot]", email: "core-agent@invalid.local"}` | Commit author `{name, email}` applied by `vcs_commit`. |
+| `repositories[].forge` | string | — | Must reference a declared `forges[].name`. |
+| `repositories[].repository` | string | — | Repository path on the forge (`owner/repo`, `group/subgroup/repo`, or URL matching the forge's host). |
+| `repositories[].role` | string | — | `"gitops"` (at most one across `repositories`; default target when a `vcs_*` call omits `repository`), `"managed"` (read-write), or `"context"` (read-only: `vcs_commit`, `vcs_publish`, `vcs_propose`, and `vcs_proposal_comment` refuse with `ROLE_VCS_VERBS`). |
+| `repositories[].base_branch` | string | forge default / `"main"` | Target branch for clones and proposals. Forbidden on `role: "context"`. |
+| `workspace_dir` | string | `"<cwd>/.vcs"` | Directory under which `vcs_clone` materialises working trees. Must stay within `path_scope`. |
+| `max_clone_bytes` | int64 | `268435456` (256 MiB) | Maximum working-tree size allowed by `vcs_clone` (`CLONE_TOO_LARGE` when exceeded). |
+| `branch_prefix` | string | `"agent/"` | Required prefix for every branch created or published by the agent (`BRANCH_NOT_OURS` when violated). Must not be empty or contain `".."`. |
+
+---
+
 ## Discovery and merge
 
 `core-agent` finds your config like this:

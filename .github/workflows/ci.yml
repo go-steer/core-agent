@@ -105,6 +105,8 @@ jobs:
       # full pipeline.
       - name: Capability guards
         run: dev/ci/presubmits/verify-coretui-guards
+      - name: core-vcs pin guards
+        run: dev/ci/presubmits/verify-core-vcs-pin
       # The slim-embed reference consumer (examples/embed/slim) imports
       # no TUI, MCP SDK, Prometheus, OTel SDK/exporters, SQLite drivers,
       # or daemon composition packages (#1397).

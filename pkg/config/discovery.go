@@ -376,6 +376,7 @@ var fatalPathPrefixes = []string{
 	"a2a.auth.",
 	"monitor.",
 	"schedule.",
+	"vcs.",
 }
 
 var fatalPathSegments = []string{
@@ -457,7 +458,7 @@ func hasFatalContainer(lowerPath string) bool {
 
 func isFatalScopedTypo(lowerPath, lowerLeaf string) bool {
 	if !strings.Contains(lowerPath, ".") {
-		if editDistance(lowerLeaf, "attach") <= 2 || editDistance(lowerLeaf, "providers") <= 2 || editDistance(lowerLeaf, "tools") <= 1 || editDistance(lowerLeaf, "a2a") <= 1 {
+		if editDistance(lowerLeaf, "attach") <= 2 || editDistance(lowerLeaf, "providers") <= 2 || editDistance(lowerLeaf, "tools") <= 1 || editDistance(lowerLeaf, "a2a") <= 1 || editDistance(lowerLeaf, "vcs") <= 1 {
 			return true
 		}
 	}

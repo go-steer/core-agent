@@ -164,6 +164,13 @@ var builtinToolClasses = map[string]ToolClass{
 	"read_agent_logs":        ClassReadOnly,
 	"request_operator_input": ClassReadOnly,
 	"sciontool_status":       ClassReadOnly,
+	"vcs_capabilities":       ClassReadOnly,
+	"vcs_clone":              ClassReadOnly,
+	"vcs_status":             ClassReadOnly,
+	"vcs_diff":               ClassReadOnly,
+	"vcs_log":                ClassReadOnly,
+	"vcs_proposal_view":      ClassReadOnly,
+	"vcs_proposal_list":      ClassReadOnly,
 
 	// Spawning tools (synchronous or background sub-runs whose inner
 	// mutating calls are governed by the sub-run's own gate/outbox).
@@ -176,18 +183,22 @@ var builtinToolClasses = map[string]ToolClass{
 	"run_shape_fan_out_fan_in": ClassSpawning,
 
 	// Mutating built-in and remote tools.
-	"write_file":          ClassMutating,
-	"edit_file":           ClassMutating,
-	"delete_file":         ClassMutating,
-	"bash":                ClassMutating,
-	"fetch_url":           ClassMutating,
-	"alert":               ClassMutating,
-	"spawn_remote_agent":  ClassMutating,
-	"invoke_remote_agent": ClassMutating,
-	"call_peer":           ClassMutating,
-	"stop_subagent":       ClassMutating,
-	"stop_agent":          ClassMutating,
-	"send_message":        ClassMutating,
+	"write_file":           ClassMutating,
+	"edit_file":            ClassMutating,
+	"delete_file":          ClassMutating,
+	"bash":                 ClassMutating,
+	"fetch_url":            ClassMutating,
+	"alert":                ClassMutating,
+	"spawn_remote_agent":   ClassMutating,
+	"invoke_remote_agent":  ClassMutating,
+	"call_peer":            ClassMutating,
+	"stop_subagent":        ClassMutating,
+	"stop_agent":           ClassMutating,
+	"send_message":         ClassMutating,
+	"vcs_commit":           ClassMutating,
+	"vcs_publish":          ClassMutating,
+	"vcs_propose":          ClassMutating,
+	"vcs_proposal_comment": ClassMutating,
 }
 
 // DefaultToolClass returns the built-in ToolClass for name. Engine

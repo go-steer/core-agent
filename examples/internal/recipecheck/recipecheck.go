@@ -148,6 +148,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/tools/vcs"
 )
 
 // Recipe is one resolved config root: the directory holding config.json,
@@ -615,6 +616,17 @@ func registeredBuiltins(cfg *config.Config, agentsDir string) (map[string]bool, 
 	// off, but that is a runtime choice this check cannot read, and the
 	// same is true of the digest layer the tool exists to escape.
 	out[retrieveRawToolName] = true
+	if cfg.VCS.Enabled() {
+		disabled := make(map[string]bool, len(cfg.Tools.Disable))
+		for _, d := range cfg.Tools.Disable {
+			disabled[strings.TrimSpace(d)] = true
+		}
+		for _, name := range vcs.ToolNames() {
+			if !disabled[name] {
+				out[name] = true
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -662,6 +674,9 @@ func onReadOnlyServer(name string, servers mcp.Servers) bool {
 }
 
 func isBuiltinName(name string) bool {
+	if vcs.IsToolName(name) {
+		return true
+	}
 	for _, n := range tools.BuiltinToolNames() {
 		if n == name {
 			return true
@@ -695,6 +710,9 @@ func notRegisteredReason(name string, cfg *config.Config) string {
 		return "record_plan also needs a resolved agents dir to persist plans into"
 	case "sciontool_status":
 		return "sciontool_status only registers inside a Scion container (sciontool on PATH)"
+	}
+	if vcs.IsToolName(name) {
+		return name + " only registers when vcs.repositories is non-empty; this recipe configures no VCS repositories"
 	}
 	return "it is not in the registry this recipe's config produces"
 }

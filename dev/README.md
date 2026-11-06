@@ -37,6 +37,7 @@ dev/
 │   ├── verify-go-toolchain # every named Go version agrees with go.mod
 │   ├── verify-version-fallback # internal/version.Version matches next release target
 │   ├── verify-coretui-guards # capability guards vs the pinned core-tui
+│   ├── verify-core-vcs-pin # provider + interface guards vs the pinned core-vcs
 │   ├── verify-slim-deps   # slim-embed dependency denylist
 │   ├── verify-apidiff     # promised pkg/ API compatibility vs latest GA tag
 │   ├── verify-harness-config-pinned # harness scripts pin config with -c
@@ -61,6 +62,7 @@ dev/
         ├── verify-go-toolchain
         ├── verify-version-fallback
         ├── verify-coretui-guards
+        ├── verify-core-vcs-pin
         ├── verify-slim-deps
         ├── verify-apidiff
         ├── verify-harness-config-pinned

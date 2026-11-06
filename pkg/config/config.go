@@ -72,6 +72,7 @@ type Config struct {
 	Schedule    *ScheduleConfig   `json:"schedule,omitempty" yaml:"schedule,omitempty"`
 	Monitor     *MonitorConfig    `json:"monitor,omitempty" yaml:"monitor,omitempty"`
 	A2A         A2AConfig         `json:"a2a,omitempty" yaml:"a2a,omitempty"`
+	VCS         VCSConfig         `json:"vcs,omitempty" yaml:"vcs,omitempty"`
 
 	// Providers declares provider profiles: ways to reach models beyond
 	// the built-in gemini / vertex / anthropic / anthropic-vertex paths
@@ -2379,6 +2380,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: %w", err)
 	}
 	if err := c.validateMonitor(); err != nil {
+		return err
+	}
+	if err := c.validateVCS(); err != nil {
 		return err
 	}
 	return c.validateMultiSession()

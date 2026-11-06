@@ -308,6 +308,20 @@ func TestBuiltinTools_Disable_Idempotent(t *testing.T) {
 	}
 }
 
+func TestBuiltinTools_Disable_VCSToolNamesAccepted(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{
+		"vcs_capabilities", "vcs_clone", "vcs_status", "vcs_diff", "vcs_log",
+		"vcs_commit", "vcs_publish", "vcs_propose", "vcs_proposal_view",
+		"vcs_proposal_list", "vcs_proposal_comment",
+	} {
+		b := Default()
+		if err := b.Disable(name); err != nil {
+			t.Errorf("Disable(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
 // wait_and_verify registers unconditionally (unlike fetch_url and
 // alert, which need an operator-supplied registry to be useful) and
 // disables like any other builtin.

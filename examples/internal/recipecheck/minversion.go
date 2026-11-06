@@ -183,6 +183,14 @@ var GatedFeatures = []GatedFeature{
 		Why:  "the `call_peer` tool registers off this block; an older daemon drops it and never registers the tool",
 	},
 	{
+		Path: "vcs.repositories",
+		Min:  "3.2.0-dev.1",
+		Why: "the `vcs_*` GitOps tools register only when `vcs.repositories` is non-empty (#1490). " +
+			"An older daemon drops the `vcs` block, never registers any `vcs_*` tools, " +
+			"and skill content that calls `vcs_clone` / `vcs_commit` / `vcs_publish` / `vcs_propose` " +
+			"is naming tools that are not in the catalog",
+	},
+	{
 		Path: "subagents",
 		Min:  "2.9.0-dev.1",
 		Why: "declarative subagents and the `spawn_agent` tool they register (#602). " +

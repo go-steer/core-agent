@@ -72,6 +72,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/telemetry"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
 	"github.com/go-steer/core-agent/v3/pkg/tools/alert"
+	"github.com/go-steer/core-agent/v3/pkg/tools/vcs"
 	"github.com/go-steer/core-agent/v3/pkg/transcript"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
@@ -1302,6 +1303,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	}) {
 		send(line)
 	}
+	if vcsLine := compose.FormatVCSStartupLine(cfg); vcsLine != "" {
+		send(vcsLine)
+	}
 
 	allToolsets := append([]adktool.Toolset{}, excludeSelfRunMCPToolsets(cfg, mcpToolsets)...)
 	if !loadedSkills.Empty() {
@@ -1312,6 +1316,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// bash, todo) ship on by default. --no-builtin-tools disables
 	// the whole suite; --disable-tools / cfg.tools.disable turn off
 	// specific entries (composed by union).
+	var eventlogHandle *eventlog.Handle
 	var builtinTools []adktool.Tool
 	if !noBuiltinTools {
 		// b was composed above, before skills.LoadAll, because the skill
@@ -1339,6 +1344,21 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			return runner.ExitConfigError
 		}
 		builtinTools = reg.Tools
+		if cfg.VCS.Enabled() {
+			extraDisables := append(splitList(disableTools), profileDisables...)
+			vcsTools, vcsErr := compose.BuildVCSTools(
+				cfg,
+				gate,
+				projectRoot,
+				extraDisables,
+				vcs.WithEventSink(compose.VCSEventSink(func() *eventlog.Handle { return eventlogHandle })),
+			)
+			if vcsErr != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: vcs tools: %v\n", vcsErr)
+				return runner.ExitConfigError
+			}
+			builtinTools = append(builtinTools, vcsTools...)
+		}
 		// Build taught the *derived* gate which native search tools
 		// exist (#158). Sessions created later through POST /sessions
 		// derive from the template, not from this gate, and a session
@@ -2113,12 +2133,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// --session-db-path enables and overrides the path. Off by default
 	// to preserve historical CLI behavior (in-memory, ephemeral).
 	//
-	// handle is hoisted to the outer scope so the multi-session
-	// SessionFactory closure below (which constructs on-demand
-	// agents from POST /sessions) can reference the same eventlog
-	// without re-opening it. Declared here so the PostConstruct
-	// closure below can capture it before the eventlog block runs.
-	var eventlogHandle *eventlog.Handle
+	// eventlogHandle is hoisted above tools.Build so late-bound closures
+	// (such as compose.VCSEventSink and the PostConstruct hook below)
+	// can capture it before the eventlog block runs.
 
 	opts = append(opts, agent.WithPostConstruct(func(a *agent.Agent) {
 		agentRef = a

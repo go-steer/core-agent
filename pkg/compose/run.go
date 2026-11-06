@@ -29,11 +29,13 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/instruction"
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/skills"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
+	"github.com/go-steer/core-agent/v3/pkg/tools/vcs"
 )
 
 // RunConfig configures a single-call agent execution via compose.Run,
@@ -101,6 +103,20 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 			return nil, fmt.Errorf("compose: skills: %w", err)
 		}
 
+		if effectiveCfg.VCS.Enabled() && resolveComposeVCSRegistered(cfg, effectiveCfg) {
+			vcsTools, vcsErr := BuildVCSTools(
+				effectiveCfg,
+				gate,
+				projectRoot,
+				nil,
+				vcs.WithEventSink(VCSEventSink(func() *eventlog.Handle { return cfg.EventLog })),
+			)
+			if vcsErr != nil {
+				return nil, fmt.Errorf("compose: vcs: %w", vcsErr)
+			}
+			cfg.Tools = append(slices.Clone(cfg.Tools), vcsTools...)
+		}
+
 		if len(effectiveCfg.Subagents) > 0 {
 			parentMCP := buildComposeNamedMCP(servers, cfg.Toolsets, gate)
 			subagents, subToolsets, rootedServers, subErr := prepareComposeSubagents(
@@ -163,6 +179,31 @@ func Run(ctx context.Context, cfg RunConfig, prompt string) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	if strings.TrimSpace(cfg.Dir) == "" && cfg.Config != nil && cfg.Config.VCS.Enabled() && resolveComposeVCSRegistered(cfg, cfg.Config) {
+		cwd, _ := os.Getwd()
+		gate := cfg.Gate
+		if gate == nil {
+			var err error
+			gate, err = permissions.FromConfig(cfg.Config, cwd, "", cfg.Prompter)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Gate = gate
+		} else if cfg.Prompter != nil {
+			gate.SetPrompter(cfg.Prompter)
+		}
+		vcsTools, err := BuildVCSTools(
+			cfg.Config,
+			gate,
+			cwd,
+			nil,
+			vcs.WithEventSink(VCSEventSink(func() *eventlog.Handle { return cfg.EventLog })),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("compose: vcs: %w", err)
+		}
+		cfg.Tools = append(slices.Clone(cfg.Tools), vcsTools...)
 	}
 	return agent.RunOneShot(ctx, cfg, prompt)
 }
@@ -278,6 +319,7 @@ func mergeComposeConfig(base, override *config.Config) *config.Config {
 	if override.Monitor != nil {
 		cp.Monitor = override.Monitor
 	}
+	cp.VCS.MergeFrom(override.VCS)
 	return &cp
 }
 
@@ -346,6 +388,20 @@ func resolveComposeShellRegistered(cfg RunConfig, effectiveCfg *config.Config) b
 	for _, sub := range effectiveCfg.Subagents {
 		if slices.Contains(sub.Tools, "bash") {
 			return true
+		}
+	}
+	return false
+}
+
+func resolveComposeVCSRegistered(cfg RunConfig, effectiveCfg *config.Config) bool {
+	if cfg.EnableBuiltinTools {
+		return true
+	}
+	for _, sub := range effectiveCfg.Subagents {
+		for _, t := range sub.Tools {
+			if vcs.IsToolName(t) {
+				return true
+			}
 		}
 	}
 	return false

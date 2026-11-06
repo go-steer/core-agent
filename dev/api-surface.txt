@@ -85,3 +85,5 @@ unsupported pkg/tools/agentic
 unsupported pkg/tools/alert
 # Peer-session messaging tools wired by pkg/compose.
 unsupported pkg/tools/peer
+# Built-in vcs_* GitOps tool suite over go-steer/core-vcs wired by pkg/compose (#1490).
+unsupported pkg/tools/vcs

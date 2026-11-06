@@ -1,11 +1,11 @@
 # GitOps for the distroless image: a forge-neutral `vcs` tool suite
 
-> **Status — proposed, 2026-11-03.** Supersedes the W3 shape in
+> **Status — shipped (P1+P2), 2026-11-06.** Supersedes the W3 shape in
 > [`hermes-replacement-design.md`](hermes-replacement-design.md) §5 and the
 > scope of [#592](https://github.com/go-steer/core-agent/issues/592), which
-> were GitHub-only and MCP-first. Nothing here is implemented. Tracking:
+> were GitHub-only and MCP-first. Tracking:
 > [#1490](https://github.com/go-steer/core-agent/issues/1490) (this repo) and
-> [core-vcs#1](https://github.com/go-steer/core-vcs/issues/1) (the library).
+> [core-vcs#1](https://github.com/go-steer/core-vcs/issues/1) (`go-steer/core-vcs@v1.1.0`).
 
 ## Why
 
@@ -142,7 +142,7 @@ process topology this image does not have.
 
 15. **A forge-less remote can still yield a proposal link.** A
     `provider: git` forge may set `proposal_url_template`
-    (`https://{host}/{path}/compare/{base}...{branch}`). When set,
+    (`https://{host}/{path}/compare/{target}...{source}`). When set,
     `vcs_propose` returns that URL with `proposalNoun: link`; when unset,
     `capabilities` reports `proposal` as `missing` and the branch is the
     deliverable.
@@ -306,7 +306,7 @@ attaches to its request.
         "token_file": "/var/run/secrets/vcs/gitlab-token" },
       { "name": "mirror",    "provider": "git",    "host": "git.internal", "username": "agent",
         "token_file": "/var/run/secrets/vcs/mirror-token",
-        "proposal_url_template": "https://git.internal/{path}/compare/{base}...{branch}" }
+        "proposal_url_template": "https://git.internal/{path}/compare/{target}...{source}" }
     ],
     "repositories": [
       { "forge": "gh",      "repository": "acme/infra",                 "role": "gitops",  "base_branch": "main" },

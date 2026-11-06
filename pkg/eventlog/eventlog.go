@@ -28,6 +28,12 @@
 // together. event_id is unique-indexed so the fallback two-write path
 // stays idempotent on retry.
 //
+// The transcript — ADK's service plus the seq-ordered read-back — is
+// also available behind the Transcript interface, and OpenTranscript
+// builds the same Handle over any other backend (pkg/statestore) while
+// keeping the control and per-session state tables on a local SQL
+// database. docs/external-state-design.md is the design.
+//
 // See docs/eventlog-plan.md and docs/eventlog-decisions.md for the
 // design rationale and milestone breakdown.
 package eventlog
@@ -164,28 +170,28 @@ type Handle struct {
 	// agent.WithEventLog convenience that does both at once).
 	Service session.Service
 	// Guardrail is the durable O(1) guardrail state store backed by
-	// agent_guardrail_state on the same database (#1360). Nil on a
-	// non-SQL Handle.
+	// agent_guardrail_state on the local database (#1360). Nil only on
+	// a Handle with no local SQL database.
 	Guardrail *GuardrailStore
 	// Spend is the durable append-only spend ledger backed by
-	// agent_budget_spend on the same database (#1359). Nil on a
-	// non-SQL Handle.
+	// agent_budget_spend on the local database (#1359). Nil only on a
+	// Handle with no local SQL database.
 	Spend *SpendStore
 	// Decisions is the durable write-gate decision store backed by
-	// agent_approval_decisions on the same database (#1400). Nil on a
-	// non-SQL Handle.
+	// agent_approval_decisions on the local database (#1400). Nil only
+	// on a Handle with no local SQL database.
 	Decisions *DecisionStore
-	// DB exposes the overlay-table connection so adjacent
-	// substrates (e.g., pkg/attach.SessionACLStore) can share the
-	// same database without re-opening it. Read-only access from
-	// outside pkg/eventlog — mutations happen via the typed
-	// stores. Nil before Open returns. Close closes the pool but
-	// leaves the field set.
+	// DB exposes the local database connection so adjacent substrates
+	// (e.g., pkg/attach.SessionACLStore) can share it without
+	// re-opening it. Read-only access from outside pkg/eventlog —
+	// mutations happen via the typed stores. Nil before Open returns.
+	// Close closes the pool but leaves the field set.
 	//
-	// DB is only ever set by a SQL-backed Handle; a Handle built on a
-	// non-SQL store leaves it nil. Read a nil DB as "this Handle has
-	// no SQL connection to share", never as "closed" or "unhealthy":
-	// use Ping for that.
+	// On a Handle from Open this is also where the transcript lives;
+	// on a Handle from OpenTranscript it holds only the control and
+	// state tables (the overlay table there is empty). Read a nil DB
+	// as "this Handle has no SQL connection to share", never as
+	// "closed" or "unhealthy": use Ping for that.
 	DB *gorm.DB
 	// db is the same value as DB, kept as an unexported alias for
 	// the original lifecycle code in Close (so the cleanup nil-out

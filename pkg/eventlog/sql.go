@@ -82,14 +82,91 @@ func (agentEventRow) TableName() string { return "agent_eventlog" }
 //     journal mode so concurrent readers can run alongside the
 //     writer. Disable with WithSkipWAL.
 //   - Wraps the ADK service so AppendEvent writes to both layers.
+//
+// The transcript this Handle reads is the SQL one; OpenTranscript
+// builds the same Handle over any other Transcript backend.
 func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handle, error) {
 	o := defaultOpenOpts()
 	for _, opt := range opts {
 		opt(&o)
 	}
+	core, err := openSQLCore(ctx, dialector, o)
+	if err != nil {
+		return nil, err
+	}
+	stores, err := openStateStores(ctx, core.db)
+	if err != nil {
+		_ = closeGormDB(core.db)
+		return nil, err
+	}
+	svc := &service{inner: core.adkSvc, stream: core.stream, guardrail: stores.guardrail, spend: stores.spend, decisions: stores.decisions}
+	return &Handle{
+		Stream:                core.stream,
+		Service:               svc,
+		Guardrail:             stores.guardrail,
+		Spend:                 stores.spend,
+		Decisions:             stores.decisions,
+		db:                    core.db,
+		DB:                    core.db,
+		lockHeartbeatInterval: o.lockHeartbeatInterval,
+		lockStaleAfter:        o.lockStaleAfter,
+	}, nil
+}
 
-	// 0) For SQLite, tune the DSN before the connection is opened.
-	// Both settings apply to every connection in the shared pool.
+// sqlCore is what the SQL transcript is made of: the shared pool, ADK's
+// session service on it, and the overlay stream. Open adds the state
+// stores on top; OpenSQLTranscript exposes it bare.
+type sqlCore struct {
+	db     *gorm.DB
+	adkSvc session.Service
+	stream *gormStream
+}
+
+// openSQLCore opens the pool (openLocalDB), ADK's service and the
+// overlay, and registers the #976 callback.
+func openSQLCore(ctx context.Context, dialector gorm.Dialector, o openOpts) (*sqlCore, error) {
+	db, err := openLocalDB(ctx, dialector, o)
+	if err != nil {
+		return nil, err
+	}
+	// ADK's session service does the heavy schema lifting (events,
+	// sessions, app/user state).
+	adkSvc, err := adkdatabase.NewSessionServiceFromDB(db)
+	if err != nil {
+		_ = closeGormDB(db)
+		return nil, fmt.Errorf("eventlog: open ADK session service: %w", err)
+	}
+	if err := adkdatabase.AutoMigrate(adkSvc); err != nil {
+		_ = closeGormDB(db)
+		return nil, fmt.Errorf("eventlog: ADK AutoMigrate: %w", err)
+	}
+	if err := db.WithContext(ctx).AutoMigrate(&agentEventRow{}); err != nil {
+		_ = closeGormDB(db)
+		return nil, fmt.Errorf("eventlog: AutoMigrate overlay: %w", err)
+	}
+	stream := &gormStream{
+		db:                db,
+		adkSvc:            adkSvc,
+		watchInterval:     o.watchInterval,
+		metadataExtractor: o.metadataExtractor,
+	}
+	// Make the event row and its overlay row one transaction (#976).
+	// Registered on the shared *gorm.DB, which is the handle ADK's
+	// AppendEvent transaction runs on; see atomic.go. Registration can
+	// only fail if GORM rejects the callback name, in which case
+	// AppendEvent keeps the two-write path rather than Open failing over
+	// a durability improvement.
+	stream.overlayInTx = stream.registerOverlayCallback(db)
+	return &sqlCore{db: db, adkSvc: adkSvc, stream: stream}, nil
+}
+
+// openLocalDB opens the one GORM pool a Handle uses for everything it
+// keeps in SQL, with the SQLite tuning every connection in that pool
+// needs. Shared by the SQL transcript (where the pool also holds ADK's
+// tables) and by OpenTranscript (where it holds only control and state).
+func openLocalDB(ctx context.Context, dialector gorm.Dialector, o openOpts) (*gorm.DB, error) {
+	// For SQLite, tune the DSN before the connection is opened. Both
+	// settings apply to every connection in the pool.
 	//
 	//   - busy_timeout(N): a writer that finds the write lock held
 	//     waits up to N ms instead of failing immediately with
@@ -118,13 +195,9 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		injectSQLitePragma(dialector, fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMs))
 		injectSQLiteDSNParam(dialector, "_txlock", "immediate")
 	}
-
-	// 1) The one connection pool. ADK's session service and every
-	// overlay/state table share it: ADK's AppendEvent transaction and
-	// the overlay callback that joins it (atomic.go) run on the same
-	// *gorm.DB, and Close has one pool to shut down. Before ADK exposed
-	// NewSessionServiceFromDB this needed a second pool and reflection
-	// into ADK's unexported handle; neither is needed now.
+	// Before ADK exposed NewSessionServiceFromDB this needed a second
+	// pool and reflection into ADK's unexported handle; neither is
+	// needed now.
 	gormCfg := o.gormConfig
 	if gormCfg == nil {
 		gormCfg = &gorm.Config{
@@ -135,73 +208,38 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	if err != nil {
 		return nil, fmt.Errorf("eventlog: open db: %w", err)
 	}
-
-	// 2) ADK's session service does the heavy schema lifting (events,
-	// sessions, app/user state).
-	adkSvc, err := adkdatabase.NewSessionServiceFromDB(db)
-	if err != nil {
-		return nil, fmt.Errorf("eventlog: open ADK session service: %w", err)
-	}
-	if err := adkdatabase.AutoMigrate(adkSvc); err != nil {
-		return nil, fmt.Errorf("eventlog: ADK AutoMigrate: %w", err)
-	}
-
-	// 3) WAL for SQLite. Best-effort: a failure here is logged via
-	// the gorm logger but doesn't abort Open — the database is still
-	// usable, just with the default journal mode (slower concurrent
-	// reads).
+	// WAL for SQLite. Best-effort: a failure here doesn't abort Open —
+	// the database is still usable, just with the default journal mode
+	// (slower concurrent reads). Some SQLite distributions (notably
+	// :memory:) reject WAL.
 	if !o.skipWAL && isSQLite(dialector) {
-		if err := db.WithContext(ctx).Exec("PRAGMA journal_mode=WAL").Error; err != nil {
-			// Don't fail Open; some SQLite distributions (notably
-			// :memory:) reject WAL.
-			_ = err
-		}
+		_ = db.WithContext(ctx).Exec("PRAGMA journal_mode=WAL").Error
 	}
+	return db, nil
+}
 
-	// 4) AutoMigrate the overlay table, guardrail state table, and spend ledger.
-	if err := db.WithContext(ctx).AutoMigrate(&agentEventRow{}); err != nil {
-		return nil, fmt.Errorf("eventlog: AutoMigrate overlay: %w", err)
-	}
+// stateStores are the per-session state tables a Handle keeps on its
+// local database whichever Transcript it reads.
+type stateStores struct {
+	guardrail *GuardrailStore
+	spend     *SpendStore
+	decisions *DecisionStore
+}
+
+func openStateStores(ctx context.Context, db *gorm.DB) (stateStores, error) {
 	guardrailStore, err := NewGuardrailStore(ctx, db)
 	if err != nil {
-		return nil, err
+		return stateStores{}, err
 	}
 	spendStore, err := NewSpendStore(ctx, db)
 	if err != nil {
-		return nil, err
+		return stateStores{}, err
 	}
 	decisionStore, err := NewDecisionStore(ctx, db)
 	if err != nil {
-		return nil, err
+		return stateStores{}, err
 	}
-
-	stream := &gormStream{
-		db:                db,
-		adkSvc:            adkSvc,
-		watchInterval:     o.watchInterval,
-		metadataExtractor: o.metadataExtractor,
-	}
-
-	// 5) Make the event row and its overlay row one transaction (#976).
-	// Registered on the shared *gorm.DB, which is the handle ADK's
-	// AppendEvent transaction runs on; see atomic.go. Registration can
-	// only fail if GORM rejects the callback name, in which case
-	// AppendEvent keeps the two-write path rather than Open failing over
-	// a durability improvement.
-	stream.overlayInTx = stream.registerOverlayCallback(db)
-
-	svc := &service{inner: adkSvc, stream: stream, guardrail: guardrailStore, spend: spendStore, decisions: decisionStore}
-	return &Handle{
-		Stream:                stream,
-		Service:               svc,
-		Guardrail:             guardrailStore,
-		Spend:                 spendStore,
-		Decisions:             decisionStore,
-		db:                    db,
-		DB:                    db,
-		lockHeartbeatInterval: o.lockHeartbeatInterval,
-		lockStaleAfter:        o.lockStaleAfter,
-	}, nil
+	return stateStores{guardrail: guardrailStore, spend: spendStore, decisions: decisionStore}, nil
 }
 
 // isSQLite recognizes glebarez/sqlite (dialector.Name() == "sqlite")
@@ -296,6 +334,12 @@ type gormStream struct {
 	watchInterval     time.Duration
 	metadataExtractor MetadataExtractor
 
+	// subs carries in-process wake-ups for Transcript.Subscribe. The
+	// SQL Handle's own Watch still polls, because another process may
+	// be appending to the same file; the wake-ups serve a Handle built
+	// over this transcript by OpenTranscript, and the conformance suite.
+	subs Subscribers
+
 	// overlayInTx reports that the after-create callback is registered
 	// on ADK's connection, so AppendEvent's overlay row is written
 	// inside ADK's own transaction rather than after it (#976). Set once
@@ -329,6 +373,15 @@ func (s *gormStream) Append(ctx context.Context, sess session.Session, ev *sessi
 		return 0, fmt.Errorf("eventlog: insert overlay row: %w", err)
 	}
 	return row.Seq, nil
+}
+
+// notify wakes the in-process subscribers of sess's root tree. Called
+// by service.AppendEvent after the overlay row is committed.
+func (s *gormStream) notify(sess session.Session) {
+	if sess == nil {
+		return
+	}
+	s.subs.Notify(sess.AppName(), sess.UserID(), RootOf(sess.ID()))
 }
 
 // appendIdempotent inserts the overlay row for ev on fallback-path recovery,
@@ -386,14 +439,20 @@ func (s *gormStream) buildOverlayRow(ctx context.Context, sess session.Session, 
 	if row.Timestamp.IsZero() {
 		row.Timestamp = time.Now()
 	}
-	if s.metadataExtractor != nil {
-		if md := s.metadataExtractor(ctx); len(md) > 0 {
-			encoded, mdErr := encodeMetadata(md)
-			if mdErr != nil {
-				return nil, fmt.Errorf("eventlog: encode metadata: %w", mdErr)
-			}
-			row.Metadata = encoded
+	// A sidecar already on the context (ContextWithEntryMetadata — the
+	// Transcript contract's channel) wins; otherwise run the extractor
+	// the SQL Handle was opened with. Open never puts one on the
+	// context, so its behaviour is unchanged.
+	md := EntryMetadataFrom(ctx)
+	if len(md) == 0 && s.metadataExtractor != nil {
+		md = s.metadataExtractor(ctx)
+	}
+	if len(md) > 0 {
+		encoded, mdErr := encodeMetadata(md)
+		if mdErr != nil {
+			return nil, fmt.Errorf("eventlog: encode metadata: %w", mdErr)
 		}
+		row.Metadata = encoded
 	}
 	return row, nil
 }

@@ -143,6 +143,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 	if err != nil {
 		return RunResult{}, err
 	}
+	defer func() { _ = a.EndSession(context.Background()) }()
 
 	if res, exited, err := awaitResumeWake(ctx, lock, latest, found, resumeStart); exited {
 		return res, err

@@ -35,6 +35,7 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/modeltier"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
@@ -107,6 +108,13 @@ type OneShotConfig struct {
 	EventLog       *eventlog.Handle
 	SessionID      string
 
+	// MemoryRouter and MemorySettings configure optional long-term memory
+	// (#948). When MemoryRouter is nil and the effective Config declares a
+	// memory block, RunOneShot opens a Router from the config and closes its
+	// backend when the turn completes.
+	MemoryRouter   *memory.Router
+	MemorySettings MemorySettings
+
 	// AgentOptions are additional Option values passed to New for the root agent.
 	AgentOptions []Option
 }
@@ -171,11 +179,19 @@ func RunOneShot(ctx context.Context, cfg OneShotConfig, prompt string) (*OneShot
 		return nil, err
 	}
 
+	memRouter, memSettings, closeMem, err := resolveFacadeMemory(ctx, cfg, loadedCfg, projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer closeMem()
+
 	tracker := usage.NewTracker()
-	subagents, err := buildFacadeSubagents(
+	subagents, closeSubMem, err := buildFacadeSubagents(
 		ctx, cfg, loadedCfg, llm, provider, backend, gate, tracker, pricingCatalog,
 		rootTools, builtinTools, rootToolsets, appendPrompt, projectRoot, agentsDir,
+		memRouter, memSettings,
 	)
+	defer closeSubMem()
 	if err != nil {
 		return nil, err
 	}
@@ -191,11 +207,13 @@ func RunOneShot(ctx context.Context, cfg OneShotConfig, prompt string) (*OneShot
 	opts := buildFacadeAgentOptions(
 		cfg, loadedCfg, backend, gate, tracker, pricingCatalog,
 		rootTools, rootToolsets, subagents, userInst, replacePrompt, appendPrompt,
+		memRouter, memSettings,
 	)
 	a, err := New(llm, opts...)
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = a.EndSession(context.Background()) }()
 
 	return collectFacadeTurn(ctx, a, prompt, tracker, llm.Name())
 }
@@ -569,7 +587,56 @@ func mergeFacadeScopesAndRuntime(dst, src *config.Config) {
 	if src.Monitor != nil {
 		dst.Monitor = src.Monitor
 	}
+	if src.AgentEngine != nil {
+		dst.AgentEngine = src.AgentEngine
+	}
+	if src.Memory != nil {
+		dst.Memory = src.Memory
+	}
 	dst.VCS.MergeFrom(src.VCS)
+}
+
+func resolveFacadeMemory(
+	ctx context.Context,
+	cfg OneShotConfig,
+	loadedCfg *config.Config,
+	projectRoot string,
+) (*memory.Router, MemorySettings, func(), error) {
+	noop := func() {}
+	if cfg.MemoryRouter != nil {
+		s := cfg.MemorySettings
+		if s.Preload == "" && s.Consolidate == "" && s.PreloadTopK == 0 && loadedCfg.Memory != nil {
+			s = MemorySettings{
+				Preload:          loadedCfg.Memory.Preload,
+				PreloadTopK:      loadedCfg.Memory.TopK,
+				Consolidate:      loadedCfg.Memory.Consolidate,
+				ConsolidateMount: loadedCfg.Memory.ConsolidateMount,
+				DisabledTools:    loadedCfg.Tools.Disable,
+			}
+		}
+		if !CanConsolidateMount(cfg.MemoryRouter, s.ConsolidateMount) {
+			s.Consolidate = MemoryConsolidateOff
+		}
+		return cfg.MemoryRouter, s, noop, nil
+	}
+	return OpenConfigMemoryRouter(ctx, loadedCfg, defaultFacadeAgentID(cfg, loadedCfg, projectRoot), os.Getenv)
+}
+
+func defaultFacadeAgentID(cfg OneShotConfig, loadedCfg *config.Config, projectRoot string) string {
+	if name := strings.TrimSpace(cfg.Name); name != "" {
+		return name
+	}
+	if loadedCfg != nil {
+		if name := strings.TrimSpace(loadedCfg.Agent.DisplayName); name != "" {
+			return name
+		}
+	}
+	if projectRoot != "" {
+		if base := filepath.Base(projectRoot); base != "" && base != "." && base != string(filepath.Separator) {
+			return base
+		}
+	}
+	return "default"
 }
 
 func resolveFacadeModel(ctx context.Context, cfg OneShotConfig, loadedCfg *config.Config) (adkmodel.LLM, models.Provider, string, error) {
@@ -686,9 +753,12 @@ func buildFacadeSubagents(
 	rootToolsets []adktool.Toolset,
 	appendPrompt string,
 	projectRoot, agentsDir string,
-) ([]*Agent, error) {
+	memRouter *memory.Router,
+	memSettings MemorySettings,
+) ([]*Agent, func(), error) {
+	noop := func() {}
 	if len(loadedCfg.Subagents) == 0 {
-		return nil, nil
+		return nil, noop, nil
 	}
 
 	candidateTools := mergeUniqueTools(builtinTools, rootTools)
@@ -696,24 +766,32 @@ func buildFacadeSubagents(
 		candidateTools = mergeUniqueTools(candidateTools, tools.GateTools(cfg.Tools, gate, ""))
 	}
 	out := make([]*Agent, 0, len(loadedCfg.Subagents))
+	var closers []func()
+	closeAll := func() {
+		for _, fn := range closers {
+			fn()
+		}
+	}
 	for _, spec := range loadedCfg.Subagents {
 		if spec.Remote != nil {
-			return nil, fmt.Errorf("agent: subagent %q: remote subagents are not supported in RunOneShot", spec.Name)
+			return nil, closeAll, fmt.Errorf("agent: subagent %q: remote subagents are not supported in RunOneShot", spec.Name)
 		}
 		subLLM, subBackend, err := resolveFacadeSubagentModel(ctx, spec, loadedCfg, rootLLM, provider, backend)
 		if err != nil {
-			return nil, err
+			return nil, closeAll, err
 		}
-		sub, err := buildSingleFacadeSubagent(
+		sub, closeSub, err := buildSingleFacadeSubagent(
 			ctx, cfg, spec, loadedCfg, subLLM, subBackend, gate, tracker, pricingCatalog,
 			rootTools, candidateTools, rootToolsets, appendPrompt, projectRoot, agentsDir,
+			memRouter, memSettings,
 		)
+		closers = append(closers, closeSub)
 		if err != nil {
-			return nil, err
+			return nil, closeAll, err
 		}
 		out = append(out, sub)
 	}
-	return out, nil
+	return out, closeAll, nil
 }
 
 func resolveFacadeSubagentModel(
@@ -798,10 +876,18 @@ func buildSingleFacadeSubagent(
 	rootToolsets []adktool.Toolset,
 	appendPrompt string,
 	projectRoot, agentsDir string,
-) (*Agent, error) {
+	memRouter *memory.Router,
+	memSettings MemorySettings,
+) (*Agent, func(), error) {
+	noop := func() {}
 	preResolvedToolsets, hasPreResolved := cfg.SubagentToolsets[spec.Name]
 	if spec.Root != "" && !hasPreResolved {
-		return nil, fmt.Errorf("agent: subagent %q declares root %q; rooted subagents require compose.Run (or OneShotConfig.SubagentToolsets)", spec.Name, spec.Root)
+		return nil, noop, fmt.Errorf("agent: subagent %q declares root %q; rooted subagents require compose.Run (or OneShotConfig.SubagentToolsets)", spec.Name, spec.Root)
+	}
+	rootDir := subagentRootIfSet(spec.Root, agentsDir, projectRoot)
+	subMemRouter, subMemSettings, closeSubMem, err := ResolveSubagentMemory(ctx, memRouter, memSettings, spec, rootDir, os.Getenv)
+	if err != nil {
+		return nil, closeSubMem, fmt.Errorf("agent: subagent %q memory: %w", spec.Name, err)
 	}
 
 	mode := SubagentMode(spec.EffectiveMode())
@@ -852,17 +938,17 @@ func buildSingleFacadeSubagent(
 			spec.BaseDir(),
 			subagentsDirIfSet(agentsDir),
 			agentsDir,
-			subagentRootIfSet(spec.Root, agentsDir, projectRoot),
+			rootDir,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("agent: subagent %q: %w", spec.Name, err)
+			return nil, closeSubMem, fmt.Errorf("agent: subagent %q: %w", spec.Name, err)
 		}
 		subOpts = append(subOpts, WithOutputSchema(schema))
 	}
 	if mode != SubagentModeSingleTurn {
-		selectedTools, err := selectFacadeSubagentTools(spec, rootTools, candidateTools)
+		selectedTools, err := selectFacadeSubagentTools(spec, rootTools, candidateTools, subMemRouter != nil)
 		if err != nil {
-			return nil, err
+			return nil, closeSubMem, err
 		}
 		var selectedToolsets []adktool.Toolset
 		if hasPreResolved {
@@ -875,11 +961,11 @@ func buildSingleFacadeSubagent(
 		} else {
 			selectedToolsets, err = selectFacadeSubagentToolsets(ctx, spec, rootToolsets)
 			if err != nil {
-				return nil, err
+				return nil, closeSubMem, err
 			}
 		}
 		if err := checkFacadeSubagentCapability(ctx, spec, loadedCfg.Tools.Policies, selectedTools, selectedToolsets); err != nil {
-			return nil, err
+			return nil, closeSubMem, err
 		}
 		if len(selectedTools) > 0 {
 			subOpts = append(subOpts, WithTools(selectedTools))
@@ -888,7 +974,11 @@ func buildSingleFacadeSubagent(
 			subOpts = append(subOpts, WithToolsets(selectedToolsets))
 		}
 	}
-	return New(subLLM, subOpts...)
+	if subMemRouter != nil {
+		subOpts = append(subOpts, WithMemory(subMemRouter, subMemSettings))
+	}
+	sub, err := New(subLLM, subOpts...)
+	return sub, closeSubMem, err
 }
 
 func subagentsDirIfSet(agentsDir string) string {
@@ -951,7 +1041,7 @@ var facadeSpawnToolCarveOut = map[string]bool{
 	"spawn_remote_agent": true,
 }
 
-func selectFacadeSubagentTools(spec config.SubagentSpec, rootTools, candidateTools []adktool.Tool) ([]adktool.Tool, error) {
+func selectFacadeSubagentTools(spec config.SubagentSpec, rootTools, candidateTools []adktool.Tool, hasMemory bool) ([]adktool.Tool, error) {
 	if spec.Tools == nil {
 		out := make([]adktool.Tool, 0, len(rootTools))
 		for _, t := range rootTools {
@@ -975,6 +1065,9 @@ func selectFacadeSubagentTools(spec config.SubagentSpec, rootTools, candidateToo
 	for _, name := range spec.Tools {
 		t, ok := byName[name]
 		if !ok {
+			if hasMemory && IsMemoryToolName(name) {
+				continue
+			}
 			return nil, fmt.Errorf("agent: subagent %q: unknown tool %q (not among the %d available tools)", spec.Name, name, len(candidateTools))
 		}
 		out = append(out, t)
@@ -1336,6 +1429,8 @@ func buildFacadeAgentOptions(
 	rootToolsets []adktool.Toolset,
 	subagents []*Agent,
 	userInst, replacePrompt, appendPrompt string,
+	memRouter *memory.Router,
+	memSettings MemorySettings,
 ) []Option {
 	opts := []Option{
 		WithMode(ModeAutonomous),
@@ -1348,6 +1443,7 @@ func buildFacadeAgentOptions(
 			MaxSessionUSD: derefFloat64(loadedCfg.Agent.MaxSessionCostUSD),
 		}),
 		WithCompactor(buildFacadeCompactor(loadedCfg.Compaction)),
+		WithMemory(memRouter, memSettings),
 	}
 	opts = appendFacadeGuardrailOptions(opts, loadedCfg)
 	if loadedCfg.Agent.MaxWallclockSeconds > 0 {

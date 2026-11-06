@@ -96,6 +96,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 	if a == nil {
 		return RunResult{}, fmt.Errorf("agent: Run: build returned nil agent")
 	}
+	defer func() { _ = a.EndSession(context.Background()) }()
 
 	var result RunResult
 

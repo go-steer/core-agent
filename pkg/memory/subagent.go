@@ -151,7 +151,7 @@ func (r *Router) DeriveForSubagent(cfg SubagentDeriveConfig) (*Router, error) {
 		withSharedCeilings(nextCeilings, nextGlobalMax),
 		WithDefaultTopK(r.defaultTopK),
 		WithStrictRecall(r.strictRecall),
-		WithAuditRecorder(r.audit),
+		WithAuditRecorder(r.baseAudit),
 		WithUserResolver(r.userResolver),
 	)
 }

@@ -1716,6 +1716,7 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	// session's agent from tool.Context rather than a daemon-global
 	// pointer (#1362).
 	runCtx = WithRunningAgent(runCtx, a)
+	runCtx = a.memoryUser(runCtx, drained.originator.Identity)
 	// Stamp this turn's triggering message onto runCtx so delegated
 	// subagents can attach it verbatim without the parent model
 	// transcribing it into tool arguments (#1499).

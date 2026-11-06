@@ -397,6 +397,8 @@ For scopes partitioned by user (`PartitionByUser`), the tools, preload and turn-
 
 `memory.NewInMemory()` is process-local and fits tests and single-process tools. Managed and persistent backends register a URI scheme with `memory.RegisterOpener` and open through `memory.OpenRouter`.
 
+On the `RunOneShot` / `compose.Run` facade, pass a pre-opened `MemoryRouter` + `MemorySettings` or let `agent.OpenConfigMemoryRouter` open `.agents/config.json`'s `memory` / `agent_engine` block automatically. Declarative subagents derive isolated private scopes (`agent_id = <subagent>`) and narrowed `shared:*` mounts (`inherit_shared: "ro"` by default; ad-hoc `spawn_agent` runs force `agent: "off"` and `shared:*` to `"ro"`). On the `core-agent` CLI, pass `--memory-ref`, `--agent-engine`, `--memory-namespace`, `--memory-agent`, `--memory-user`, `--memory-shared`, `--memory-preload`, and `--memory-consolidate` (or the corresponding `CORE_AGENT_MEMORY_*` / `CORE_AGENT_AGENT_ENGINE` environment variables).
+
 ## Background workers and the inbox
 
 For agents that need to delegate fan-out work the parent's model decides on at runtime, use `background.Manager` + the `spawn_agent` tool family. Background subagents run in goroutines inside the same process; events flow back through a per-turn drain so the parent sees them on its next turn.

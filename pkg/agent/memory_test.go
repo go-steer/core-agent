@@ -637,3 +637,111 @@ func TestPreTurnSteps_MemoryPreloadPosition(t *testing.T) {
 		t.Error("prepend-watchdog-feedback is no longer the last step")
 	}
 }
+
+func TestWithMemory_SubagentToolPreloadPersistAndAudit(t *testing.T) {
+	t.Parallel()
+	backend := memory.NewInMemory()
+	parentRouter, err := memory.NewRouter(backend, []memory.MountTemplate{
+		memory.AgentMount("prod", "root", memory.AccessReadWrite),
+		memory.SharedMount("prod", "runbooks", memory.AccessReadWrite),
+	})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	if _, err := parentRouter.Remember(context.Background(), "shared:runbooks", []memory.CandidateFact{{Fact: "Drain envoy before restarting pods"}}); err != nil {
+		t.Fatalf("seed shared: %v", err)
+	}
+
+	subRouter, err := parentRouter.DeriveForSubagent(memory.SubagentDeriveConfig{
+		SubagentName:     "researcher",
+		Mode:             string(SubagentModeChat),
+		NarrowAgentMode:  memory.SubagentScopeRW,
+		NarrowSharedMode: memory.SubagentScopeRO,
+	})
+	if err != nil {
+		t.Fatalf("DeriveForSubagent: %v", err)
+	}
+
+	subLLM := &callWithArgsLLM{
+		tool: "persist_memory",
+		args: map[string]any{"fact": "Researcher confirmed envoy drain takes 15s"},
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	subAgent, err := New(subLLM,
+		WithName("researcher"),
+		WithGate(gate),
+		WithMemory(subRouter, MemorySettings{
+			Preload:     MemoryPreloadTurnStart,
+			Consolidate: MemoryConsolidateTurnEnd,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New(subAgent): %v", err)
+	}
+
+	svc := session.InMemoryService()
+	parentLLM := &callWithArgsLLM{
+		tool: "researcher",
+		args: map[string]any{"request": "how do I restart pods?"},
+	}
+	parentAgent, err := New(parentLLM,
+		WithSessionService(svc),
+		WithSession("u", "parent-s1"),
+		WithGate(gate),
+		WithMemory(parentRouter, MemorySettings{}),
+		WithSubagents([]*Agent{subAgent}),
+	)
+	if err != nil {
+		t.Fatalf("New(parentAgent): %v", err)
+	}
+
+	runOnce(t, parentAgent, "delegate pod restart question")
+
+	// 1. Subagent should have received preloaded shared memory on its user turn.
+	if len(subLLM.requests) == 0 {
+		t.Fatal("subagent LLM received no requests")
+	}
+	firstSubReq := subLLM.requests[0]
+	if !strings.Contains(userText(firstSubReq), "Drain envoy before restarting pods") {
+		t.Fatalf("subagent preload missing shared runbook fact:\n%s", userText(firstSubReq))
+	}
+
+	// 2. Subagent's persist_memory should have landed in researcher's private agent scope, not parent's.
+	subItems, _, err := subRouter.Recall(context.Background(), "envoy", []string{memory.MountAgent}, nil, 10)
+	if err != nil || len(subItems) == 0 {
+		t.Fatalf("subagent private scope missing persisted/consolidated facts: items=%v err=%v", subItems, err)
+	}
+	parentPrivate, _, err := parentRouter.Recall(context.Background(), "confirmed", []string{memory.MountAgent}, nil, 10)
+	if err != nil || len(parentPrivate) != 0 {
+		t.Fatalf("subagent leaked private fact into parent's agent scope: %v", parentPrivate)
+	}
+
+	// 3. Subagent's memory/remember and memory/consolidate audit events must land in svc with branch "researcher".
+	listed, err := svc.List(context.Background(), &session.ListRequest{AppName: parentAgent.AppName(), UserID: "u"})
+	if err != nil {
+		t.Fatalf("svc.List: %v", err)
+	}
+	var rememberBranches, consolidateBranches []string
+	for _, s := range listed.Sessions {
+		got, err := svc.Get(context.Background(), &session.GetRequest{
+			AppName: s.AppName(), UserID: s.UserID(), SessionID: s.ID(),
+		})
+		if err != nil {
+			t.Fatalf("svc.Get(%s): %v", s.ID(), err)
+		}
+		for ev := range got.Session.Events().All() {
+			switch ev.Author {
+			case memory.AuditAuthorRemember:
+				rememberBranches = append(rememberBranches, ev.Branch)
+			case memory.AuditAuthorConsolidate:
+				consolidateBranches = append(consolidateBranches, ev.Branch)
+			}
+		}
+	}
+	if len(rememberBranches) != 1 || rememberBranches[0] != "researcher" {
+		t.Fatalf("subagent memory/remember audit branches = %v, want [researcher]", rememberBranches)
+	}
+	if len(consolidateBranches) != 1 || consolidateBranches[0] != "researcher" {
+		t.Fatalf("subagent memory/consolidate audit branches = %v, want [researcher]", consolidateBranches)
+	}
+}

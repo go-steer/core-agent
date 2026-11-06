@@ -35,6 +35,8 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 )
 
 // Compile-time check that *A2AClient implements RemoteAgentSpawner.
@@ -419,6 +421,14 @@ func (c *A2AClient) Spawn(ctx context.Context, spec RemoteAgentSpec) (RemoteAgen
 	}
 	if skill != "" {
 		msg.Metadata = map[string]any{"skillId": skill}
+	}
+	if c.cfg.PropagateMemoryScope && spec.Memory != nil {
+		if scopeMeta := a2aMemoryScopeMetadata(ctx, spec.Memory); len(scopeMeta) > 0 {
+			if msg.Metadata == nil {
+				msg.Metadata = make(map[string]any, 1)
+			}
+			msg.Metadata["core_agent.memory_scope"] = scopeMeta
+		}
 	}
 
 	handleID := spec.ID
@@ -949,4 +959,34 @@ func newA2AID() string {
 		panic(fmt.Sprintf("a2a: crypto/rand unavailable: %v", err))
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// a2aMemoryScopeMetadata constructs the logical core_agent.memory_scope
+// metadata dictionary forwarded to internal A2A peers when
+// PropagateMemoryScope is enabled (#948). It never includes raw backend
+// URIs or credentials.
+func a2aMemoryScopeMetadata(ctx context.Context, spec *memory.BindingSpec) map[string]any {
+	if spec == nil {
+		return nil
+	}
+	out := make(map[string]any, 3)
+	if ns := strings.TrimSpace(spec.Namespace); ns != "" {
+		out["namespace"] = ns
+	}
+	if uid := strings.TrimSpace(memory.UserIDFromContext(ctx)); uid != "" {
+		out["user_id"] = uid
+	}
+	var shared []map[string]string
+	for _, m := range spec.Mounts {
+		if pool, ok := memory.ParseSharedMountName(m.Name); ok {
+			shared = append(shared, map[string]string{
+				"pool": pool,
+				"mode": string(memory.AccessReadOnly),
+			})
+		}
+	}
+	if len(shared) > 0 {
+		out["shared"] = shared
+	}
+	return out
 }

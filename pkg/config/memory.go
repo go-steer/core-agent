@@ -477,6 +477,8 @@ func (c *Config) validateMemory() error {
 		if mode == MemoryModeRW {
 			writableMounts["agent"] = true
 		}
+	} else {
+		writableMounts["agent"] = true
 	}
 	if err := validateSharedMemorySlice("memory.shared", m.Shared, writableMounts); err != nil {
 		return err

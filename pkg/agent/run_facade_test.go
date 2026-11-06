@@ -33,6 +33,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/pricing"
 	"github.com/go-steer/core-agent/v3/pkg/tools"
@@ -494,7 +495,7 @@ func TestFacadeSubagents_GovernanceAndContracts(t *testing.T) {
 			Name:  "helper",
 			Tools: []string{"nonexistent_tool"},
 		}
-		if _, err := selectFacadeSubagentTools(spec, nil, nil); err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		if _, err := selectFacadeSubagentTools(spec, nil, nil, false); err == nil || !strings.Contains(err.Error(), "unknown tool") {
 			t.Fatalf("selectFacadeSubagentTools err = %v, want unknown tool error", err)
 		}
 	})
@@ -512,7 +513,7 @@ func TestFacadeSubagents_GovernanceAndContracts(t *testing.T) {
 		readTool, _ := functiontool.New(functiontool.Config{Name: "read_file", Description: "read"}, func(_ adkagent.Context, _ dummyIn) (dummyOut, error) {
 			return dummyOut{}, nil
 		})
-		got, err := selectFacadeSubagentTools(config.SubagentSpec{Name: "reader"}, []adktool.Tool{spawnTool, spawnRemoteTool, readTool}, nil)
+		got, err := selectFacadeSubagentTools(config.SubagentSpec{Name: "reader"}, []adktool.Tool{spawnTool, spawnRemoteTool, readTool}, nil, false)
 		if err != nil {
 			t.Fatalf("selectFacadeSubagentTools: %v", err)
 		}
@@ -898,10 +899,10 @@ func TestFacadeSubagents_MCPToolsServerMatchingAndSchemaScope(t *testing.T) {
 			OutputSchema: "../../secret-schema.json",
 		}
 		spec.SetBaseDir(subDir)
-		_, err := buildSingleFacadeSubagent(
+		_, _, err := buildSingleFacadeSubagent(
 			context.Background(), OneShotConfig{}, spec, config.DefaultConfig(),
 			&scriptedFacadeLLM{}, "", permissions.New(permissions.Options{Mode: permissions.ModeYolo}),
-			usage.NewTracker(), nil, nil, nil, nil, "", projectRoot, agentsDir,
+			usage.NewTracker(), nil, nil, nil, nil, "", projectRoot, agentsDir, nil, MemorySettings{},
 		)
 		if err == nil || !strings.Contains(err.Error(), "path escapes scope root") {
 			t.Fatalf("buildSingleFacadeSubagent err = %v, want path escapes scope root", err)
@@ -1407,4 +1408,159 @@ budget:
 			t.Errorf("res.Text = %q, want 'Synthesized final report from 2 tool cycles.'", res.Text)
 		}
 	})
+}
+
+func TestRunOneShot_MemoryPreloadSubagentAndConsolidate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	backend := memory.NewInMemory()
+	router, err := memory.NewRouter(backend, []memory.MountTemplate{
+		memory.AgentMount("prod", "root", memory.AccessReadWrite),
+		memory.SharedMount("prod", "team", memory.AccessReadWrite),
+	})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	if _, err := router.Remember(context.Background(), "shared:team", []memory.CandidateFact{
+		{Fact: "shared team sentinel"},
+	}); err != nil {
+		t.Fatalf("seed team fact: %v", err)
+	}
+
+	var (
+		rootSawPreload bool
+		subSawPreload  bool
+	)
+	llm := &scriptedFacadeLLM{
+		name: "gemini-2.5-flash",
+		steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+			// Root turn 1: verifies preloaded shared memory and delegates to subagent.
+			func(req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				for _, c := range req.Contents {
+					for _, p := range c.Parts {
+						if p != nil && strings.Contains(p.Text, "shared team sentinel") {
+							rootSawPreload = true
+						}
+					}
+				}
+				return &adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{FunctionCall: &genai.FunctionCall{
+								ID:   "sub-1",
+								Name: "mem_helper",
+								Args: map[string]any{"request": "store shared helper fact"},
+							}},
+						},
+					},
+					TurnComplete: true,
+				}, nil
+			},
+			// Subagent turn 1: verifies preloaded shared memory and calls persist_memory on its private agent mount.
+			func(req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				for _, c := range req.Contents {
+					for _, p := range c.Parts {
+						if p != nil && strings.Contains(p.Text, "shared team sentinel") {
+							subSawPreload = true
+						}
+					}
+				}
+				return &adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{FunctionCall: &genai.FunctionCall{
+								ID:   "p-1",
+								Name: "persist_memory",
+								Args: map[string]any{
+									"mount": "agent",
+									"fact":  "subagent private fact",
+								},
+							}},
+						},
+					},
+					TurnComplete: true,
+				}, nil
+			},
+			// Subagent turn 2: calls finish_task to complete.
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{
+							{FunctionCall: &genai.FunctionCall{
+								ID:   "f-1",
+								Name: FinishTaskToolName,
+								Args: map[string]any{"result": "stored"},
+							}},
+						},
+					},
+					TurnComplete: true,
+				}, nil
+			},
+			// Root turn 2: completes.
+			func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+				return &adkmodel.LLMResponse{
+					Content:      genai.NewContentFromText("all done", genai.RoleModel),
+					TurnComplete: true,
+				}, nil
+			},
+		},
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Permissions.Mode = config.PermissionModeYolo
+	cfg.Subagents = []config.SubagentSpec{
+		{
+			Name:         "mem_helper",
+			Description:  "Helper with memory tools.",
+			Mode:         config.SubagentModeTask,
+			Tools:        []string{"persist_memory", "recall_memory"},
+			Instructions: "Store helper fact.",
+			Memory: &config.SubagentMemoryConfig{
+				Agent: "rw",
+				Shared: []config.SharedMemoryConfig{
+					{Pool: "team", Mode: "ro"},
+				},
+			},
+		},
+	}
+
+	res, err := RunOneShot(context.Background(), OneShotConfig{
+		Dir:          dir,
+		Config:       cfg,
+		Model:        llm,
+		MemoryRouter: router,
+		MemorySettings: MemorySettings{
+			Preload:     MemoryPreloadTurnStart,
+			Consolidate: MemoryConsolidateSessionEnd,
+		},
+	}, "check shared memory")
+	if err != nil {
+		t.Fatalf("RunOneShot: %v", err)
+	}
+	if !rootSawPreload {
+		t.Error("root agent did not receive preloaded shared memory")
+	}
+	if !subSawPreload {
+		t.Error("subagent did not receive preloaded shared memory")
+	}
+	if res.Text != "all done" {
+		t.Errorf("res.Text = %q, want 'all done'", res.Text)
+	}
+	items, err := backend.Retrieve(context.Background(), memory.AgentMount("prod", "mem_helper", memory.AccessReadOnly).BaseScope, memory.RetrieveRequest{TopK: 10})
+	if err != nil {
+		t.Fatalf("Retrieve mem_helper: %v", err)
+	}
+	var sawPrivateFact bool
+	for _, it := range items {
+		if it.Fact == "subagent private fact" {
+			sawPrivateFact = true
+		}
+	}
+	if !sawPrivateFact {
+		t.Errorf("mem_helper private items = %+v, want item with 'subagent private fact'", items)
+	}
 }

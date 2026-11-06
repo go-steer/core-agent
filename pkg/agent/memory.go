@@ -35,7 +35,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,8 +49,10 @@ import (
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v3/pkg/auth"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/memory/memtools"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
 )
 
 // Memory preload modes (MemorySettings.Preload).
@@ -90,6 +97,9 @@ type MemorySettings struct {
 	// DisableTools keeps the Router (preload, consolidation, the ADK
 	// MemoryService bridge) but registers no model-facing memory tools.
 	DisableTools bool
+	// DisabledTools lists individual memory tool names (for example from
+	// config.Tools.Disable) to withhold when registering memory tools.
+	DisabledTools []string
 }
 
 // WithMemory gives the agent long-term memory backed by r. A nil r is a
@@ -119,6 +129,8 @@ type agentMemory struct {
 	consolidating sync.WaitGroup
 }
 
+type subagentMemoryAuditKey struct{}
+
 // wireMemory resolves WithMemory inside New: it binds the transcript
 // audit recorder (late, through ref, because the Agent does not exist
 // yet) and appends the memory tools to o.tools. Called before the
@@ -130,7 +142,11 @@ func wireMemory(o *options, ref func() *Agent) (*agentMemory, error) {
 	if err := validateMemorySettings(o.memorySettings); err != nil {
 		return nil, err
 	}
-	router := o.memoryRouter.With(memory.AppendAuditRecorder(func(_ context.Context, author string, payload map[string]any) error {
+	router := o.memoryRouter.With(memory.AppendAuditRecorder(func(ctx context.Context, author string, payload map[string]any) error {
+		if fn, ok := ctx.Value(subagentMemoryAuditKey{}).(func(string, map[string]any)); ok && fn != nil {
+			fn(author, payload)
+			return nil
+		}
 		if a := ref(); a != nil {
 			a.queueMemoryAudit(author, payload)
 		}
@@ -142,7 +158,11 @@ func wireMemory(o *options, ref func() *Agent) (*agentMemory, error) {
 		if err != nil {
 			return nil, fmt.Errorf("agent: memory tools: %w", err)
 		}
-		o.tools = append(o.tools, ts...)
+		for _, t := range ts {
+			if t != nil && !slices.Contains(o.memorySettings.DisabledTools, t.Name()) {
+				o.tools = append(o.tools, t)
+			}
+		}
 	}
 	return &agentMemory{router: router, settings: o.memorySettings}, nil
 }
@@ -175,6 +195,17 @@ func memoryService(o *options) adkmemory.Service {
 	return memory.AsADKService(o.memoryRouter, mount)
 }
 
+func (a *Agent) memoryRunnerService() adkmemory.Service {
+	if a == nil || a.memory == nil {
+		return nil
+	}
+	mount := a.memory.settings.ConsolidateMount
+	if a.memory.settings.Consolidate == "" || a.memory.settings.Consolidate == MemoryConsolidateOff {
+		mount = memory.SubagentScopeOff
+	}
+	return memory.AsADKService(a.memory.router, mount)
+}
+
 // MemoryRouter returns the Router this agent uses (with its transcript
 // audit recorder attached), or nil when memory is off.
 func (a *Agent) MemoryRouter() *memory.Router {
@@ -182,6 +213,15 @@ func (a *Agent) MemoryRouter() *memory.Router {
 		return nil
 	}
 	return a.memory.router
+}
+
+// MemorySettings returns the MemorySettings this agent was constructed
+// with, or the zero value when memory is off.
+func (a *Agent) MemorySettings() MemorySettings {
+	if a == nil || a.memory == nil {
+		return MemorySettings{}
+	}
+	return a.memory.settings
 }
 
 // memoryUser resolves the user_id for partition_by_user mounts: an id
@@ -466,8 +506,12 @@ func (a *Agent) drainMemoryAudit() {
 }
 
 func (a *Agent) appendMemoryAudit(ctx context.Context, ev *session.Event) error {
-	resp, err := a.sessionService.Get(ctx, &session.GetRequest{
-		AppName: a.appName, UserID: a.userID, SessionID: a.sessionID, NumRecentEvents: 1,
+	return appendSessionAudit(ctx, a.sessionService, a.appName, a.userID, a.sessionID, ev)
+}
+
+func appendSessionAudit(ctx context.Context, svc session.Service, appName, userID, sessionID string, ev *session.Event) error {
+	resp, err := svc.Get(ctx, &session.GetRequest{
+		AppName: appName, UserID: userID, SessionID: sessionID, NumRecentEvents: 1,
 	})
 	if err != nil {
 		return err
@@ -478,5 +522,350 @@ func (a *Agent) appendMemoryAudit(ctx context.Context, ev *session.Event) error 
 	if last := resp.Session.LastUpdateTime(); !last.IsZero() && ev.Timestamp.Before(last) {
 		ev.Timestamp = last
 	}
-	return a.sessionService.AppendEvent(ctx, resp.Session, ev)
+	return svc.AppendEvent(ctx, resp.Session, ev)
+}
+
+// prepareSubagentMemory sets up per-invocation memory context, audit
+// queueing, preload, and post-invocation consolidation/flush for a
+// synchronous NewSubagentTool delegation. Because a subagent *Agent may
+// be invoked concurrently or shared across sessions in multi-session
+// mode, all state lives on the returned ctx and finish closure rather
+// than mutating a.
+func (a *Agent) prepareSubagentMemory(
+	ctx context.Context,
+	svc session.Service,
+	appName, userID, sessionID, reqText string,
+	gate *permissions.Gate,
+) (context.Context, string, func(error)) {
+	if a == nil || a.memory == nil {
+		return ctx, reqText, func(error) {}
+	}
+	m := a.memory
+	ctx = a.memoryUser(ctx, userID)
+
+	var (
+		auditMu sync.Mutex
+		pending []*session.Event
+	)
+	ctx = context.WithValue(ctx, subagentMemoryAuditKey{}, func(author string, payload map[string]any) {
+		ev := session.NewEvent(context.Background(), "memory-audit")
+		ev.Author = author
+		ev.CustomMetadata = payload
+		auditMu.Lock()
+		pending = append(pending, ev)
+		auditMu.Unlock()
+	})
+
+	// NewSubagentTool (subagent.go) allocates a fresh invocation-unique
+	// subSessionID on every synchronous subagent tool call and runs a single
+	// runner.Run turn inside that child session, so session_start and
+	// turn_start preload semantics are identical on this path.
+	query := strings.TrimSpace(reqText)
+	if query != "" && (m.settings.Preload == MemoryPreloadTurnStart || m.settings.Preload == MemoryPreloadSessionStart) {
+		g := gate
+		if g == nil {
+			g = a.gate
+		}
+		if mounts := memtools.PermittedRecallMounts(ctx, g, m.router, query); len(mounts) > 0 {
+			rctx, cancel := context.WithTimeout(ctx, memoryPreloadTimeout)
+			items, _, err := m.router.Recall(rctx, query, mounts, nil, m.settings.PreloadTopK)
+			cancel()
+			if err != nil {
+				slog.Warn("core-agent: subagent memory preload failed; running without recalled memories",
+					"err", err, "subagent", a.agentName, "session", sessionID)
+			} else if block := memory.FormatContext(items); block != "" {
+				reqText = block + "\n\n" + reqText
+			}
+		}
+	}
+
+	flushAudit := func() {
+		auditMu.Lock()
+		batch := pending
+		pending = nil
+		auditMu.Unlock()
+		bg := context.Background()
+		for _, ev := range batch {
+			if err := appendSessionAudit(bg, svc, appName, userID, sessionID, ev); err != nil {
+				slog.Warn("core-agent: subagent memory audit row failed", "err", err, "subagent", a.agentName, "session", sessionID)
+			}
+		}
+	}
+
+	finish := func(turnErr error) {
+		flushAudit()
+		if turnErr != nil {
+			return
+		}
+		if m.settings.Consolidate != MemoryConsolidateTurnEnd && m.settings.Consolidate != MemoryConsolidateSessionEnd {
+			return
+		}
+		cctx, cancel := context.WithTimeout(ctx, memoryConsolidateTimeout)
+		defer cancel()
+		resp, err := svc.Get(cctx, &session.GetRequest{
+			AppName: appName, UserID: userID, SessionID: sessionID,
+		})
+		if err != nil || resp == nil || resp.Session == nil {
+			return
+		}
+		if _, err := m.router.ConsolidateSession(cctx, m.settings.ConsolidateMount, resp.Session, nil); err != nil && !errors.Is(err, memory.ErrAuditFailed) {
+			slog.Warn("core-agent: subagent memory consolidation failed", "err", err, "subagent", a.agentName, "session", sessionID)
+		}
+		flushAudit()
+	}
+	return ctx, reqText, finish
+}
+
+// OpenConfigMemoryRouter opens a memory.Router and resolves MemorySettings
+// from cfg.Memory and cfg.AgentEngine (#948). When memory is unconfigured,
+// it returns (nil, MemorySettings{}, noopClose, nil).
+func OpenConfigMemoryRouter(
+	ctx context.Context,
+	cfg *config.Config,
+	defaultAgentID string,
+	getenv func(string) string,
+) (*memory.Router, MemorySettings, func(), error) {
+	noop := func() {}
+	if cfg == nil || cfg.Memory == nil {
+		return nil, MemorySettings{}, noop, nil
+	}
+	ref, err := cfg.ResolveMemoryRef(getenv)
+	if err != nil {
+		return nil, MemorySettings{}, noop, err
+	}
+	if ref == "" {
+		return nil, MemorySettings{}, noop, nil
+	}
+	m := cfg.Memory
+	ns := m.ResolveNamespace(getenv)
+	agentID := strings.TrimSpace(defaultAgentID)
+	if agentID == "" {
+		agentID = "default"
+	}
+	var mounts []memory.MountTemplate
+	agentMode := config.MemoryModeRW
+	if m.Agent != nil {
+		if id := strings.TrimSpace(m.Agent.ID); id != "" {
+			agentID = id
+		}
+		if m.Agent.Mode != "" {
+			agentMode = m.Agent.Mode
+		}
+	}
+	if agentMode != config.MemoryModeOff {
+		mt := memory.AgentMount(ns, agentID, memory.AccessMode(agentMode))
+		if m.Agent != nil {
+			mt.PartitionByUser = m.Agent.PartitionByUser
+			if m.Agent.WriteMode != "" {
+				mt.WriteMode = memory.WriteMode(m.Agent.WriteMode)
+			}
+			ttl, err := m.Agent.ResolvedTTL()
+			if err != nil {
+				return nil, MemorySettings{}, noop, err
+			}
+			mt.DefaultTTL = ttl
+		}
+		mounts = append(mounts, mt)
+	}
+	for _, sh := range m.Shared {
+		mt, err := sharedMountFromConfig(ns, sh)
+		if err != nil {
+			return nil, MemorySettings{}, noop, err
+		}
+		mounts = append(mounts, mt)
+	}
+	var rOpts []memory.RouterOption
+	if m.TopK > 0 {
+		rOpts = append(rOpts, memory.WithDefaultTopK(m.TopK))
+	}
+	if m.StrictRecall {
+		rOpts = append(rOpts, memory.WithStrictRecall(true))
+	}
+	router, backend, err := memory.OpenRouter(ctx, memory.BindingSpec{
+		Ref:       ref,
+		Namespace: ns,
+		Mounts:    mounts,
+	}, rOpts...)
+	if err != nil {
+		return nil, MemorySettings{}, noop, err
+	}
+	settings := MemorySettings{
+		Preload:          m.Preload,
+		PreloadTopK:      m.TopK,
+		Consolidate:      m.Consolidate,
+		ConsolidateMount: m.ConsolidateMount,
+		DisabledTools:    slices.Clone(cfg.Tools.Disable),
+	}
+	if !CanConsolidateMount(router, settings.ConsolidateMount) {
+		settings.Consolidate = MemoryConsolidateOff
+	}
+	return router, settings, func() { _ = backend.Close() }, nil
+}
+
+// ResolveSubagentMemory resolves the memory.Router and MemorySettings for a
+// declarative subagent (#948), handling both inline subagents and rooted
+// subagent bundles (spec.Root != "") whose own config.json may declare a
+// standalone memory backend or mount overrides.
+func ResolveSubagentMemory(
+	ctx context.Context,
+	parent *memory.Router,
+	parentSettings MemorySettings,
+	spec config.SubagentSpec,
+	rootDir string,
+	getenv func(string) string,
+) (*memory.Router, MemorySettings, func(), error) {
+	noop := func() {}
+	subCfg := spec.Memory
+	if rootDir != "" {
+		if rootLoaded, err := loadRootedSubagentConfig(rootDir); err != nil {
+			return nil, MemorySettings{}, noop, err
+		} else if rootLoaded != nil && rootLoaded.Memory != nil {
+			if ref, rErr := rootLoaded.ResolveMemoryRef(getenv); rErr != nil {
+				return nil, MemorySettings{}, noop, rErr
+			} else if ref != "" {
+				r, s, closeFn, oErr := OpenConfigMemoryRouter(ctx, rootLoaded, spec.Name, getenv)
+				if oErr != nil {
+					return nil, MemorySettings{}, noop, oErr
+				}
+				if spec.EffectiveMode() == string(SubagentModeSingleTurn) {
+					s.DisableTools = true
+				}
+				return r, s, closeFn, nil
+			}
+			if subCfg == nil {
+				subCfg = subagentMemoryFromRootConfig(rootLoaded.Memory)
+			}
+		}
+	}
+	r, s, err := DeriveSubagentMemory(
+		parent,
+		parentSettings,
+		spec.Name,
+		spec.EffectiveMode(),
+		spec.Capability,
+		false,
+		subCfg,
+	)
+	return r, s, noop, err
+}
+
+func loadRootedSubagentConfig(rootDir string) (*config.Config, error) {
+	for _, dir := range []string{rootDir, filepath.Join(rootDir, config.AgentsDirName)} {
+		if _, err := os.Stat(filepath.Join(dir, config.ConfigFileName)); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		return config.Load(dir)
+	}
+	return nil, nil
+}
+
+func subagentMemoryFromRootConfig(m *config.MemoryConfig) *config.SubagentMemoryConfig {
+	if m == nil {
+		return nil
+	}
+	out := &config.SubagentMemoryConfig{
+		Shared:  slices.Clone(m.Shared),
+		Preload: m.Preload,
+	}
+	if m.Agent != nil {
+		out.Agent = m.Agent.Mode
+		out.AgentID = m.Agent.ID
+		out.PartitionByUser = m.Agent.PartitionByUser
+		out.WriteMode = m.Agent.WriteMode
+	}
+	return out
+}
+
+// IsMemoryToolName reports whether name is one of the model-facing memory
+// tools registered by WithMemory.
+func IsMemoryToolName(name string) bool {
+	return name == memtools.RecallToolName ||
+		name == memtools.PersistToolName ||
+		name == memtools.ForgetToolName
+}
+
+// DeriveSubagentMemory derives a subagent's memory.Router and MemorySettings
+// from parent and subCfg (#948).
+func DeriveSubagentMemory(
+	parent *memory.Router,
+	parentSettings MemorySettings,
+	subName, subMode, capability string,
+	adHoc bool,
+	subCfg *config.SubagentMemoryConfig,
+) (*memory.Router, MemorySettings, error) {
+	if parent == nil {
+		return nil, MemorySettings{}, nil
+	}
+	dc := memory.SubagentDeriveConfig{
+		SubagentName: subName,
+		Mode:         subMode,
+		Capability:   capability,
+		AdHoc:        adHoc,
+	}
+	if subCfg != nil {
+		dc.AgentMode = subCfg.Agent
+		dc.AgentIDOverride = subCfg.AgentID
+		dc.AgentPartitionByUser = subCfg.PartitionByUser
+		if subCfg.WriteMode != "" {
+			dc.AgentWriteMode = memory.WriteMode(subCfg.WriteMode)
+		}
+		dc.InheritShared = subCfg.InheritShared
+		ns := parent.Namespace()
+		for _, sh := range subCfg.Shared {
+			mt, err := sharedMountFromConfig(ns, sh)
+			if err != nil {
+				return nil, MemorySettings{}, err
+			}
+			dc.ExtraShared = append(dc.ExtraShared, mt)
+		}
+	}
+	r, err := parent.DeriveForSubagent(dc)
+	if err != nil || r == nil {
+		return nil, MemorySettings{}, err
+	}
+	s := parentSettings
+	if subCfg != nil && subCfg.Preload != "" {
+		s.Preload = subCfg.Preload
+	}
+	if subMode == string(SubagentModeSingleTurn) {
+		s.DisableTools = true
+	}
+	if !CanConsolidateMount(r, s.ConsolidateMount) {
+		s.Consolidate = MemoryConsolidateOff
+	}
+	return r, s, nil
+}
+
+// CanConsolidateMount reports whether r has the target consolidation mount
+// (defaulting to "agent" when mount is empty) mounted read-write.
+func CanConsolidateMount(r *memory.Router, mount string) bool {
+	if r == nil {
+		return false
+	}
+	if mount == "" {
+		mount = memory.MountAgent
+	}
+	for _, m := range r.Mounts() {
+		if m.Name == mount && m.Mode == memory.AccessReadWrite {
+			return true
+		}
+	}
+	return false
+}
+
+func sharedMountFromConfig(ns string, sh config.SharedMemoryConfig) (memory.MountTemplate, error) {
+	mt := memory.SharedMount(ns, sh.Pool, memory.AccessMode(sh.EffectiveMode()))
+	mt.PartitionByUser = sh.PartitionByUser
+	if sh.WriteMode != "" {
+		mt.WriteMode = memory.WriteMode(sh.WriteMode)
+	}
+	ttl, err := sh.ResolvedTTL()
+	if err != nil {
+		return memory.MountTemplate{}, err
+	}
+	mt.DefaultTTL = ttl
+	if len(sh.ScopeAttrs) > 0 {
+		mt.BaseScope = maps.Clone(sh.ScopeAttrs)
+	}
+	return mt, nil
 }

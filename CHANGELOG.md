@@ -29,6 +29,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 - **Multi-scope memory core (`pkg/memory`) and config schema (`pkg/config`).** Adds `Backend`, fan-out `Router`, `InMemory`, subagent scope derivation, `pkg/memory/memtest`, and `agent_engine` / `memory` config. ([#948](https://github.com/go-steer/core-agent/issues/948))
 - **`state.transcript.backend: "agentengine"` keeps the session transcript in Vertex AI Agent Engine Sessions** (`pkg/statestore/agentengine`, new `eventlog.Transcript` seam), so a session outlives the machine that held its SQLite file. ([#1192](https://github.com/go-steer/core-agent/issues/1192))
 - **`agent.WithMemory` and model-facing memory tools (`pkg/memory/memtools`).** Adds gated `recall_memory` / `persist_memory` / `forget_memory`, cache-safe preload, opt-in consolidation, and `memory/*` audit rows. ([#948](https://github.com/go-steer/core-agent/issues/948))
+- **Stateless `--memory-*` CLI/env flags, `OneShotConfig` / `compose` memory, and subagent derivation.** Wires `--memory-ref`, `--agent-engine`, `CORE_AGENT_MEMORY_*`, and subagent memory across sync, background, A2A, and `RunOneShot`. ([#948](https://github.com/go-steer/core-agent/issues/948))
 
 #### Security
 

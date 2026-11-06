@@ -515,6 +515,7 @@ func runSubagentInvocation(
 		AppName:           innerAppName,
 		Agent:             innerAgent,
 		SessionService:    wrapped,
+		MemoryService:     opts.Inner.memoryRunnerService(),
 		AutoCreateSession: true,
 	})
 	if err != nil {
@@ -522,8 +523,9 @@ func runSubagentInvocation(
 	}
 
 	childCtx, served := buildSubagentChildContext(toolCtx, name, args.Request)
+	childCtx, reqText, finishMem := opts.Inner.prepareSubagentMemory(childCtx, wrapped, innerAppName, innerUserID, subagentSessionID, args.Request, opts.Gate)
 
-	msg := genai.NewContentFromText(args.Request, genai.RoleUser)
+	msg := genai.NewContentFromText(reqText, genai.RoleUser)
 	var sb strings.Builder
 	// gen_ai.agent.invocation.duration (#338): the sync subagent
 	// drives the inner ADK runner directly here, bypassing the inner
@@ -537,7 +539,10 @@ func runSubagentInvocation(
 	// posture. turnErr carries error.type on a failed run.
 	started := time.Now()
 	var turnErr error
-	defer func() { opts.Inner.recordInvocation(time.Since(started).Seconds(), turnErr) }()
+	defer func() {
+		finishMem(turnErr)
+		opts.Inner.recordInvocation(time.Since(started).Seconds(), turnErr)
+	}()
 	// Bill the delegated turns to the parent (see
 	// SubagentOptions.ParentTracker). TurnTap is the shared
 	// discipline for this: Gemini's UsageMetadata is cumulative

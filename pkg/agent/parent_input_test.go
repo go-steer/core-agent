@@ -99,17 +99,19 @@ func (l *promptCapturingLLM) lastPrompt() string {
 // callWithArgsLLM invokes a named tool with caller-supplied args on its
 // first turn and finishes on the second turn.
 type callWithArgsLLM struct {
-	tool  string
-	args  map[string]any
-	calls int
-	mu    sync.Mutex
+	tool     string
+	args     map[string]any
+	calls    int
+	requests []*adkmodel.LLMRequest
+	mu       sync.Mutex
 }
 
 func (*callWithArgsLLM) Name() string { return "call-with-args" }
 
-func (l *callWithArgsLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+func (l *callWithArgsLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	l.mu.Lock()
 	l.calls++
+	l.requests = append(l.requests, req)
 	first := l.calls == 1
 	l.mu.Unlock()
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {

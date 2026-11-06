@@ -125,6 +125,8 @@ func main() {
 	trustWorkspace := flag.Bool("trust", false, "trust the discovered .agents/ workspace configuration (stdio MCP servers, command hooks, elevated permission modes, rooted subagents, and content_roots) and remember its SHA-256 content hash in ~/.core-agent/trusted_workspaces.json (#1353).")
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	subagentSyncWait := flag.String("subagent-sync-wait", "", "how long spawn_agent {wait: true} holds the parent's turn open, as a duration (\"10m\"). Default 5m. The cap is on the wait, not the subagent: past it the tool returns and the subagent's result arrives later as a pushed report. Raise it for deep diagnostics, where a parent that gets a timeout tends to redo the work itself. \"0s\" removes the cap and leaves the subagent's own turn/wallclock budgets as the only bound. Config-file equivalent: tools.spawn_agent.sync_wait_timeout.")
+	var memFlags memoryFlags
+	registerMemoryFlags(&memFlags)
 	allowURLHost := flag.String("allow-url-host", "", "comma-separated host patterns appended to url_scope.allow for the fetch_url tool (e.g. \"github.com,*.googleapis.com\"). HTTPS only unless the pattern carries an http:// prefix. Disable the tool entirely with --disable-tools=fetch_url.")
 	var allowPathEntries []config.PathScopeAllowEntry
 	var contentDirEntries []string
@@ -272,7 +274,7 @@ func main() {
 			noCheckpoint:    *noCheckpoint,
 			noCheckpointSet: flagWasSet(flag.CommandLine, "no-checkpoint"),
 		},
-		subagent: subagentOpts{syncWait: *subagentSyncWait},
+		subagent: subagentOpts{syncWait: *subagentSyncWait, memory: memFlags},
 		guardrails: guardrailOpts{
 			watchdogMode:      *watchdogMode,
 			maxTurnCostUSD:    *maxTurnCostUSD,
@@ -328,6 +330,23 @@ func main() {
 		metrics: metricsOpts{Addr: *metricsAddr},
 	})
 	os.Exit(code)
+}
+
+func registerMemoryFlags(dst *memoryFlags) {
+	flag.StringVar(&dst.ref, "memory-ref", "", "long-term memory backend URI (e.g. memorybank://projects/p/locations/l/reasoningEngines/123, sqlite:///path/memory.db, inmemory://default). Overrides CORE_AGENT_MEMORY_REF and memory.ref (#948).")
+	flag.StringVar(&dst.agentEngine, "agent-engine", "", "Vertex AI ReasoningEngine resource (projects/{p}/locations/{l}/reasoningEngines/{id} or {p}/{l}/{id}) shared by session store and memory bank. Overrides CORE_AGENT_AGENT_ENGINE and agent_engine.resource (#948).")
+	flag.StringVar(&dst.namespace, "memory-namespace", "", "logical memory namespace partitioning scopes across environments or tenants (default: \"default\"). Overrides CORE_AGENT_MEMORY_NAMESPACE and memory.namespace (#948).")
+	flag.StringVar(&dst.agent, "memory-agent", "", "agent private memory scope mount (<id>[:rw|ro]|rw|ro|off). Overrides CORE_AGENT_MEMORY_AGENT and memory.agent (#948).")
+	flag.StringVar(&dst.user, "memory-user", "", "explicit user identity for user-partitioned memory scopes in stateless or headless runs. Overrides CORE_AGENT_MEMORY_USER (#948).")
+	flag.Func("memory-shared", "mount a named shared memory pool (<pool>[:ro|rw], default ro; repeatable). Overrides CORE_AGENT_MEMORY_SHARED and merges onto memory.shared (#948).", func(s string) error {
+		if strings.TrimSpace(s) == "" {
+			return fmt.Errorf("--memory-shared requires <pool>[:ro|rw]")
+		}
+		dst.shared = append(dst.shared, s)
+		return nil
+	})
+	flag.StringVar(&dst.preload, "memory-preload", "", "pre-turn memory recall injection mode: off (default) | session_start | turn_start. Overrides CORE_AGENT_MEMORY_PRELOAD and memory.preload (#948).")
+	flag.StringVar(&dst.consolidate, "memory-consolidate", "", "opt-in conversation memory extraction trigger: off (default) | turn_end | session_end. Overrides CORE_AGENT_MEMORY_CONSOLIDATE and memory.consolidate (#948).")
 }
 
 func dispatchSubcommandOrVersion(args []string) (int, bool) {

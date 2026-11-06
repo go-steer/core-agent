@@ -69,7 +69,10 @@ DENYLIST=(
   '^github\.com/go-steer/core-agent(/v[0-9]+)?/cmd/'
   '^github\.com/go-steer/core-agent(/v[0-9]+)?/internal/(attachclient|coretuievent|coretuiremote|evals|webui)(/|$)'
   # Heavy or daemon-only pkg/ subsystems outside the slim library slice.
-  '^github\.com/go-steer/core-agent(/v[0-9]+)?/pkg/(approver|attachadapter|compose|instruction|mcp|runner|skills|telemetry)(/|$)'
+  '^github\.com/go-steer/core-agent(/v[0-9]+)?/pkg/(approver|attachadapter|compose|instruction|mcp|runner|skills|telemetry|tools/vcs)(/|$)'
+  # VCS / go-git subsystem (pulled in by pkg/tools/vcs and pkg/compose, not by pkg/agent or pkg/tools).
+  '^github\.com/go-steer/core-vcs(/|$)'
+  '^github\.com/go-git/'
   # Terminal UI frameworks.
   '^github\.com/go-steer/core-tui(/|$)'
   '^github\.com/charmbracelet/'
@@ -107,6 +110,9 @@ self_test() {
     "${mod_path}/pkg/compose"
     "${mod_path}/pkg/mcp"
     "${mod_path}/pkg/telemetry"
+    "${mod_path}/pkg/tools/vcs"
+    "github.com/go-steer/core-vcs/vcs"
+    "github.com/go-git/go-git/v5"
     "github.com/go-steer/core-tui/tui"
     "github.com/charmbracelet/bubbletea"
     "github.com/modelcontextprotocol/go-sdk/mcp"

@@ -77,7 +77,14 @@ var readOnlyBuiltins = map[string]bool{
 	// held the mutation lock, one open question would stall every
 	// edit in the same response for minutes (pre-#460 they ran
 	// concurrently, and should keep doing so).
-	"ask_user": true,
+	"ask_user":          true,
+	"vcs_capabilities":  true,
+	"vcs_clone":         true,
+	"vcs_status":        true,
+	"vcs_diff":          true,
+	"vcs_log":           true,
+	"vcs_proposal_view": true,
+	"vcs_proposal_list": true,
 }
 
 // ReadOnlyHinter is the optional interface a tool implements to

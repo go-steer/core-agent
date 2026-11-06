@@ -67,7 +67,7 @@ conduct, then the part only that deployment knows.
 `AGENTS.md`, a file under `.agents/AGENTS.d/`, a subagent's own content
 root, and the inline `instructions` of a declarative subagent.
 
-- **Available names:** `builtin:core`, `builtin:coder`, `builtin:sre`.
+- **Available names:** `builtin:core`, `builtin:coder`, `builtin:sre`, `builtin:propose-change`.
   `instruction.BuiltinNames()` is the programmatic list.
 - **Composition is safe.** `builtin:coder` and `builtin:sre` each open
   with `@include builtin:core`, and the loader's visited set means core

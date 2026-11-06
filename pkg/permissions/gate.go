@@ -379,6 +379,15 @@ var planExemptTools = map[string]bool{
 	"todo":              true,
 	"record_plan":       true,
 
+	// Read-only VCS tools (#1490, docs/gitops-vcs-design.md decision 13)
+	"vcs_capabilities":  true,
+	"vcs_clone":         true,
+	"vcs_status":        true,
+	"vcs_diff":          true,
+	"vcs_log":           true,
+	"vcs_proposal_view": true,
+	"vcs_proposal_list": true,
+
 	// Read-only skill introspection, exempt at NAMESPACE level: skill
 	// tools are registered through GateToolset(ts, gate, "skill") in
 	// pkg/skills/load.go, so "skill" (the namespace) is the only
@@ -568,7 +577,7 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	if err != nil {
 		return nil, fmt.Errorf("permissions policy: %w", err)
 	}
-	entries := make([]pathEntry, 0, len(cfg.PathScope.Allow)+len(cfg.PathScope.AllowPaths))
+	entries := make([]pathEntry, 0, len(cfg.PathScope.Allow)+len(cfg.PathScope.AllowPaths)+1)
 	for _, p := range cfg.PathScope.Allow {
 		entries = append(entries, pathEntry{Pattern: p, Access: AccessReadWrite})
 	}
@@ -578,6 +587,11 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 			return nil, fmt.Errorf("permissions: path_scope.allow_paths[%s]: %w", e.Path, err)
 		}
 		entries = append(entries, pathEntry{Pattern: e.Path, Access: access})
+	}
+	if cfg.VCS.Enabled() {
+		if absWS := cfg.VCS.EffectiveWorkspaceDir(projectRoot); absWS != "" {
+			entries = append(entries, pathEntry{Pattern: strings.TrimRight(filepath.Clean(absWS), "/") + "/...", Access: AccessReadWrite})
+		}
 	}
 	scope, err := NewPathScopeFromEntries(projectRoot, userRoot, entries)
 	if err != nil {
@@ -626,7 +640,9 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	// no gate: a library host that builds its gate here gets the
 	// @include refusal too. Add-only and idempotent.
 	g.ProtectCredentialFiles(cfg.CredentialFiles()...)
+	g.ProtectCredentialFiles(cfg.VCSCredentialFiles()...)
 	childenv.WithholdFiles(cfg.CredentialFiles()...)
+	childenv.WithholdFiles(cfg.VCSCredentialFiles()...)
 	if len(cfg.Tools.Policies) > 0 {
 		classes := make(map[string]ToolClass, len(cfg.Tools.Policies))
 		for _, p := range cfg.Tools.Policies {
@@ -1101,6 +1117,22 @@ func (g *Gate) resolveSessionGate(ctx context.Context) *Gate {
 		return sg
 	}
 	return g
+}
+
+// CheckPolicyDeny returns a non-nil error if a configured or session-scoped
+// deny rule matches (tool, key), or if the gate is in 'plan' mode. Used by
+// read-only VCS metadata tools (vcs_capabilities, vcs_proposal_view,
+// vcs_proposal_list) that do not touch a local path and do not prompt in 'ask'
+// mode unless explicitly denied (#1490).
+func (g *Gate) CheckPolicyDeny(ctx context.Context, toolName, key string) error {
+	g = g.resolveSessionGate(ctx)
+	if g.matchPolicy(toolName, key) == OutcomeDeny {
+		return fmt.Errorf("%s denied by config policy: %q", toolName, key)
+	}
+	if g.Mode() == ModePlan {
+		return fmt.Errorf("%s denied: tool execution disabled in 'plan' mode — cycle the permission chip (Shift+Tab) to leave plan mode", toolName)
+	}
+	return nil
 }
 
 // CheckGeneric gates an arbitrary tool call (used by MCP and skill

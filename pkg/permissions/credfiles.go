@@ -105,6 +105,33 @@ func (g *Gate) credentialFileDenial(toolName, path string) error {
 	return nil
 }
 
+// CheckCredentialMention refuses a tool call if any string in candidates
+// resolves to or mentions one of the daemon's protected credential files, in
+// any permission mode (#1201, #1490).
+func (g *Gate) CheckCredentialMention(toolName string, candidates ...string) error {
+	if g == nil || g.creds == nil {
+		return nil
+	}
+	for _, raw := range candidates {
+		c := strings.TrimSpace(raw)
+		if c == "" {
+			continue
+		}
+		if err := g.credentialFileDenial(toolName, c); err != nil {
+			return err
+		}
+		g.creds.mu.RLock()
+		pats := g.creds.bashPat
+		g.creds.mu.RUnlock()
+		for _, p := range pats {
+			if m := p.FindString(c); m != "" {
+				return credentialRefusal(toolName, strings.Trim(m, " \t\n'\"=<>(){};|&`"))
+			}
+		}
+	}
+	return nil
+}
+
 // credentialRefusal names the path the caller used, not the file it
 // resolved to: a model that came in through a link learns nothing new.
 func credentialRefusal(toolName, path string) error {

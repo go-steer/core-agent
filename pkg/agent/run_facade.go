@@ -569,6 +569,7 @@ func mergeFacadeScopesAndRuntime(dst, src *config.Config) {
 	if src.Monitor != nil {
 		dst.Monitor = src.Monitor
 	}
+	dst.VCS.MergeFrom(src.VCS)
 }
 
 func resolveFacadeModel(ctx context.Context, cfg OneShotConfig, loadedCfg *config.Config) (adkmodel.LLM, models.Provider, string, error) {

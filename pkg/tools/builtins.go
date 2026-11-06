@@ -154,6 +154,14 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.RecordPlan = false
 	case "sciontool_status":
 		b.SciontoolStatus = false
+	case "vcs_capabilities", "vcs_clone", "vcs_status", "vcs_diff", "vcs_log",
+		"vcs_commit", "vcs_publish", "vcs_propose", "vcs_proposal_view",
+		"vcs_proposal_list", "vcs_proposal_comment":
+		// VCS tools are constructed by pkg/tools/vcs.Build, which reads
+		// cfg.Tools.Disable directly so slim embeddings never link
+		// go-git via pkg/tools. Accepting the names here lets shared
+		// validation paths (--disable-tools, recipecheck, run_facade)
+		// verify the disable list without rejecting vcs_* names.
 	default:
 		return fmt.Errorf("tools: unknown built-in tool %q (valid: %v)", name, builtinToolNames)
 	}

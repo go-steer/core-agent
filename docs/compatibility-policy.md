@@ -65,6 +65,7 @@ Packages marked `unsupported` in `dev/api-surface.txt` live under `pkg/` so `cmd
 - `pkg/tools/agentic` — agentic-MCP wrapper toolset
 - `pkg/tools/alert` — outbound webhook `alert` tool implementation
 - `pkg/tools/peer` — peer-session messaging tools
+- `pkg/tools/vcs` — built-in `vcs_*` GitOps tool suite over `go-steer/core-vcs` (`#1490`)
 
 `unsupported` packages may change signatures between minor releases without a major version bump.
 

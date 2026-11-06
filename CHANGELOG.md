@@ -8,13 +8,17 @@ The SemVer-governed public API of `core-agent` is the exported surface of the `p
 
 - `agent` (+ `agent/autonomous`, `agent/background`), `eventlog`, `tools`, `permissions`, `config`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`, `models/profiles`), `pricing`, `recording`, `runner`, `transcript`, `usage`, `watchdog`, `instruction`, `mcp`, `skills`, `telemetry`
 
-Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `attachadapter`, `auth`, `childenv`, `compose`, `digest`, `hooks`, `modeltier`, `session`, `taskclass`, `tools/agentic`, `tools/alert`, `tools/peer`) are marked `unsupported` in `dev/api-surface.txt`: they are exported for in-repo and sibling-tool composition (`cmd/`, `internal/`, `extras/`) and may change in minor releases (adapters under `extras/`, such as `extras/scion`, live in separate Go modules and are outside this module's stability promise). Incompatible changes to `promised` packages require a major version bump (`/vN`) and are gated on every PR by `dev/ci/presubmits/verify-apidiff` (and at release time by `dev/release/cut-ga-tag.sh`). Deprecated symbols carry a `Deprecated: ... Removed in v<N>.<M>.` marker enforced by `TestDeprecationMarkersNameTheirRemoval`.
+Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `attachadapter`, `auth`, `childenv`, `compose`, `digest`, `hooks`, `modeltier`, `session`, `taskclass`, `tools/agentic`, `tools/alert`, `tools/peer`, `tools/vcs`) are marked `unsupported` in `dev/api-surface.txt`: they are exported for in-repo and sibling-tool composition (`cmd/`, `internal/`, `extras/`) and may change in minor releases (adapters under `extras/`, such as `extras/scion`, live in separate Go modules and are outside this module's stability promise). Incompatible changes to `promised` packages require a major version bump (`/vN`) and are gated on every PR by `dev/ci/presubmits/verify-apidiff` (and at release time by `dev/release/cut-ga-tag.sh`). Deprecated symbols carry a `Deprecated: ... Removed in v<N>.<M>.` marker enforced by `TestDeprecationMarkersNameTheirRemoval`.
 
 ---
 
 ## [Unreleased]
 
 ### Changes by Kind
+
+#### Feature
+
+- **Forge-neutral `vcs_*` tools (`pkg/tools/vcs`) and `config.vcs` for distroless GitOps.** Adds pure-Go `vcs_*` tools over `core-vcs@v1.1.0` (GitHub, GitLab, git), `builtin:propose-change`, token-file refusal, and `verify-core-vcs-pin`. ([#1490](https://github.com/go-steer/core-agent/issues/1490))
 
 #### Documentation
 

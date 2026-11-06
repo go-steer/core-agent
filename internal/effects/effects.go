@@ -91,18 +91,22 @@ var builtinClasses = map[string]Class{
 	"run_shape_fan_out_fan_in": ClassSpawning,
 
 	// Mutating tools.
-	"write_file":          ClassMutating,
-	"edit_file":           ClassMutating,
-	"delete_file":         ClassMutating,
-	"bash":                ClassMutating,
-	"fetch_url":           ClassMutating,
-	"alert":               ClassMutating,
-	"spawn_remote_agent":  ClassMutating,
-	"invoke_remote_agent": ClassMutating,
-	"call_peer":           ClassMutating,
-	"stop_subagent":       ClassMutating,
-	"stop_agent":          ClassMutating,
-	"send_message":        ClassMutating,
+	"write_file":           ClassMutating,
+	"edit_file":            ClassMutating,
+	"delete_file":          ClassMutating,
+	"bash":                 ClassMutating,
+	"fetch_url":            ClassMutating,
+	"alert":                ClassMutating,
+	"spawn_remote_agent":   ClassMutating,
+	"invoke_remote_agent":  ClassMutating,
+	"call_peer":            ClassMutating,
+	"stop_subagent":        ClassMutating,
+	"stop_agent":           ClassMutating,
+	"send_message":         ClassMutating,
+	"vcs_commit":           ClassMutating,
+	"vcs_publish":          ClassMutating,
+	"vcs_propose":          ClassMutating,
+	"vcs_proposal_comment": ClassMutating,
 
 	// Read-only tools.
 	"read_file":              ClassReadOnly,
@@ -133,6 +137,13 @@ var builtinClasses = map[string]Class{
 	"read_agent_logs":        ClassReadOnly,
 	"request_operator_input": ClassReadOnly,
 	"sciontool_status":       ClassReadOnly,
+	"vcs_capabilities":       ClassReadOnly,
+	"vcs_clone":              ClassReadOnly,
+	"vcs_status":             ClassReadOnly,
+	"vcs_diff":               ClassReadOnly,
+	"vcs_log":                ClassReadOnly,
+	"vcs_proposal_view":      ClassReadOnly,
+	"vcs_proposal_list":      ClassReadOnly,
 }
 
 // Predicate classifies a tool by name. See NewPredicate.

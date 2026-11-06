@@ -52,6 +52,7 @@ STEPS=(
   "vet               dev/tools/vet"
   "build             dev/tools/build"
   "coretui-guards    dev/tools/verify-coretui-guards"
+  "corevcs-pin       dev/tools/verify-core-vcs-pin"
   "slim-deps         dev/tools/verify-slim-deps"
   "apidiff           dev/tools/verify-apidiff"
   "config-pins       dev/tools/verify-harness-config-pinned"

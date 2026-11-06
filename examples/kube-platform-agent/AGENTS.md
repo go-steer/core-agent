@@ -87,9 +87,12 @@ overlay, this overlay wins.
   pull a repository, or drive `git`/`gh` — those mechanisms are not present here.
   **Do not `list_dir`/`glob`/`read_file` searching for a settings file, a repo,
   or a manifest to modify; they do not exist and the search only burns turns.**
-  Deliver the exact change — target repo, file path, and unified diff — inside
-  your plan and final report, and hand it to the operator. Until a GitHub write
-  path lands, that hand-off *is* the change.
+  When `vcs_*` tools are registered via `config.vcs`, follow `builtin:propose-change`
+  (`vcs_capabilities` → `vcs_clone` → file edit → `vcs_diff` → `vcs_commit` →
+  `vcs_publish` → `vcs_propose`) to open a proposal on the configured GitOps
+  repository. When `vcs_*` tools are not registered, deliver the exact change —
+  target repo, file path, and unified diff — inside your plan and final report,
+  and hand it to the operator.
 - **Governance SOPs are on-demand.** The fleet playbooks in `upstream/governance/`
   are indexed by `AGENTS.d/50-governance.md`. Read the matching SOP with
   `read_file` when a task triggers it — they are not loaded into every turn.

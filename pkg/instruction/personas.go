@@ -99,9 +99,10 @@ const builtinScope = "builtin"
 // added here is not reachable, and TestEveryPersonaFileIsRegistered
 // fails rather than letting it rot unused.
 var builtinPersonas = map[string]string{
-	"core":  "identity and honesty for any core-agent agent; included by the others",
-	"coder": "conduct for changing software in a codebase you did not write",
-	"sre":   "conduct for operating a live system you did not build",
+	"core":           "identity and honesty for any core-agent agent; included by the others",
+	"coder":          "conduct for changing software in a codebase you did not write",
+	"sre":            "conduct for operating a live system you did not build",
+	"propose-change": "GitOps workflow for cloning, editing, committing, publishing, and opening a proposal via vcs_* tools",
 }
 
 // BuiltinNames returns the available builtin persona names, sorted.

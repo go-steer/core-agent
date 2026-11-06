@@ -69,6 +69,24 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 |---|---|---|
 | `sciontool_status` | Signal a sticky lifecycle event (`ask_user`, `blocked`, `task_completed`, `limits_exceeded`) to a Scion hub. Registered only when the `sciontool` binary is on `PATH` — outside a Scion container the tool is hidden from the model rather than exposed as a subprocess no-op. See [Scion adapter](/reference/scion-adapter/). | `status_type`, `message` |
 
+### Version control (`vcs_*`, v3.2+, #1490)
+
+Registered only when [`vcs`](/reference/configuration/#vcs-v32-1490) is configured (`vcs.forges` and `vcs.repositories` non-empty). Built on [`go-steer/core-vcs`](https://github.com/go-steer/core-vcs) (pure Go via `go-git` plus native GitHub, GitLab, and bare-git providers) so agents running inside `distroless/static` with `bash` disabled can clone, inspect, commit, publish a branch, and open or comment on a proposal without a shell or `git`/`gh`/`glab` binaries.
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `vcs_capabilities` | Inspect the forge's supported verbs (`proposal`: `supported` or `missing`), `proposal_noun` (`pull request`, `merge request`, `link`, or `missing`), `base_branch`, `role`, and `branch_prefix`. | `repository?` |
+| `vcs_clone` | Single-branch clone of the repository into `<vcs.workspace_dir>/<forge>/<repo>`, checked against `path_scope` and `max_clone_bytes`. Read-class (no prompt under `ask`, plan-exempt under `plan_mode: required`). | `repository?`, `branch?` |
+| `vcs_status` | Working-tree status (current branch, HEAD revision, clean flag, and modified/untracked files). | `repository?` |
+| `vcs_diff` | Unified diff of working-tree changes against HEAD (or against the cloned base revision when `against_base` is true). | `repository?`, `paths?`, `against_base?` |
+| `vcs_log` | Commit log starting from HEAD. | `repository?`, `limit?` |
+| `vcs_commit` | Stage working-tree changes and create a commit using the forge's `commit_identity` (optionally switching/creating a topic `branch` starting with `vcs.branch_prefix`). Refuses an empty diff, a message under 10 characters, a `context`-role repository (`ROLE_VCS_VERBS`), or a branch equal to the base branch (`TARGET_IS_BRANCH`). | `repository?`, `branch?`, `message` |
+| `vcs_publish` | Push a branch created in this process to the remote repository after enforcing `TARGET_IS_BRANCH`, `BRANCH_NOT_OURS`, `BASE_MOVED`, and `PROTECTED_BRANCH`. Records a durable `vcs.published` event in the session event log. | `repository?`, `branch` |
+| `vcs_propose` | Open a proposal (pull request / merge request / compare link) from a published branch against the repository's base branch. Records a durable `vcs.proposed` event in the session event log. | `repository?`, `title`, `body`, `source_branch`, `target_branch?`, `draft?`, `labels?` |
+| `vcs_proposal_view` | Read a proposal's metadata and review comments by number. | `repository?`, `number` |
+| `vcs_proposal_list` | List proposals filtered by state (`open`, `closed`, `merged`, `all`) and optional source/target branch or labels. | `repository?`, `state?`, `source_branch?`, `target_branch?`, `labels?`, `limit?`, `page?` |
+| `vcs_proposal_comment` | Post a review reply or status comment on an existing proposal. | `repository?`, `number`, `body` |
+
 ## `wait_and_verify` (v2.9+) — bounded poll-until-condition
 
 Fix-and-verify needs a wait in the middle: apply the change, let the system converge, confirm the new state. Doing that with `bash sleep` needs a shell the distroless recipes deliberately don't have, and doing it by re-checking across turns costs a full prompt per look — so agents skipped it and asserted success instead. `wait_and_verify` collapses the whole loop into one tool call and one tool result:

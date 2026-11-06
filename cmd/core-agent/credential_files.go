@@ -73,6 +73,7 @@ var hostCredentialProbes = credentialProbes{
 // carry when it came from the flag.
 func withholdCredentialFiles(cfg *config.Config, tokenFile string) {
 	childenv.WithholdFiles(cfg.CredentialFiles()...)
+	childenv.WithholdFiles(cfg.VCSCredentialFiles()...)
 	childenv.WithholdFiles(tokenFile)
 }
 

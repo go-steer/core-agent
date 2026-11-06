@@ -17,7 +17,6 @@ package autonomous
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -27,7 +26,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/adk/v2/session"
-	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
@@ -85,28 +83,9 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 	}
 
 	doneCh := make(chan string, 1)
-	doneTools, err := buildDoneTools(&cfg, doneCh)
+	extras, scheduleCh, err := buildLifecycleTools(&cfg, "agent: Run", doneCh)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: Run: build done tool: %w", err)
-	}
-
-	// Optional schedule tool: only wired when a Scheduler is installed
-	// via WithScheduler. Loops without a scheduler never see the tool,
-	// so the model can't emit schedule intent the driver doesn't know
-	// how to honor.
-	extras := append([]tool.Tool(nil), doneTools...)
-	var scheduleCh <-chan coretools.ScheduleEvent
-	if cfg.scheduler != nil {
-		schTool, ch, err := coretools.NewScheduleTool(coretools.ScheduleOptions{
-			Name:        cfg.scheduleToolName,
-			Description: cfg.scheduleToolDescription,
-			MaxDefer:    cfg.scheduleToolMaxDefer,
-		})
-		if err != nil {
-			return RunResult{}, fmt.Errorf("agent: Run: build schedule tool: %w", err)
-		}
-		extras = append(extras, schTool)
-		scheduleCh = ch
+		return RunResult{}, err
 	}
 
 	a, err := build(extras)
@@ -118,13 +97,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		return RunResult{}, fmt.Errorf("agent: Run: build returned nil agent")
 	}
 
-	startedAt := time.Now()
-	prompt := goal
-	result := RunResult{}
-	// Whether result.FinalText currently holds the text of a turn that
-	// used tools. Once it does, a later tool-less turn can't displace
-	// it — see keepFinalText (#731).
-	haveSubstantive := false
+	var result RunResult
 
 	// core_agent.autonomous.runs (#338): one point per run, recorded
 	// via defer because the loop has many exit sites and no single
@@ -151,254 +124,20 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		log.Printf("autonomous: runs counter unavailable, runs will be uncounted: %v", cErr)
 	}
 
-	// Convenience: emit a final checkpoint with the configured
-	// stop reason regardless of which exit path the loop takes.
-	// Skipped when the agent has no event log; checkpoints are only
-	// useful for durable sessions.
-	emitFinalCheckpoint := func(reason StopReason) {
-		// Detached write: the final checkpoint is the crash-resume
-		// anchor and is emitted even when the loop exits because ctx
-		// was cancelled — passing the dead ctx here silently lost the
-		// checkpoint on exactly the shutdown path where it matters
-		// most (#365).
-		emitFinalCheckpointDetached(ctx, a, checkpointPayload{
-			Turn:                 result.Turns,
-			InputTokens:          result.InputTokens,
-			OutputTokens:         result.OutputTokens,
-			CostUSD:              result.CostUSD,
-			Goal:                 goal,
-			ContinuationPrompt:   cfg.continuationPrompt,
-			StopReason:           string(reason),
-			DoneDetail:           result.DoneDetail,
-			FinalText:            result.FinalText,
-			FinalTextSubstantive: haveSubstantive,
-		})
+	loop := &turnLoop{
+		callerPrefix:  "agent: Run",
+		ctx:           ctx,
+		turnBaseCtx:   ctx,
+		a:             a,
+		cfg:           &cfg,
+		goal:          goal,
+		initialPrompt: goal,
+		doneCh:        doneCh,
+		scheduleCh:    scheduleCh,
+		startedAt:     time.Now(),
 	}
-
-	for {
-		// Pre-turn budget checks.
-		if reason := budgetStop(&cfg, &result, time.Since(startedAt)); reason != "" {
-			result.Reason = reason
-			break
-		}
-		if err := ctx.Err(); err != nil {
-			result.Reason = StopReasonContextCancelled
-			result.Duration = time.Since(startedAt)
-			emitFinalCheckpoint(StopReasonContextCancelled)
-			return result, err
-		}
-
-		// BeforeTurn hook (used by Handle to implement
-		// Pause). Runs after budget + ctx checks; may block (e.g.
-		// pause waits for resume) and may return an error to abort.
-		if cfg.beforeTurn != nil {
-			if err := cfg.beforeTurn(ctx, result.Turns+1); err != nil {
-				// Treat hook-returned errors as a stop signal. If the
-				// ctx itself was cancelled while the hook was blocked,
-				// classify as ContextCancelled to match the rest of the
-				// loop; otherwise the hook's error becomes the run
-				// error and we use the RetryAborted reason.
-				if errors.Is(err, context.Canceled) && ctx.Err() != nil {
-					result.Reason = StopReasonContextCancelled
-				} else {
-					result.Reason = StopReasonRetryAborted
-				}
-				result.Duration = time.Since(startedAt)
-				emitFinalCheckpoint(result.Reason)
-				return result, err
-			}
-		}
-
-		// Per-turn context (timeout is optional).
-		turnCtx := ctx
-		var cancel context.CancelFunc
-		if cfg.perTurnTimeout > 0 {
-			turnCtx, cancel = context.WithTimeout(ctx, cfg.perTurnTimeout)
-		}
-
-		// A goal a person wrote governs every turn of the run, so every
-		// turn hands it to the auto-mode approver as the task (#1175).
-		// The continuation prompts never are: the loop wrote them.
-		if cfg.operatorGoal {
-			turnCtx = agent.WithOperatorTask(turnCtx, goal)
-		}
-		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1, result.CostUSD)
-		if cancel != nil {
-			cancel()
-		}
-
-		// Roll up usage from this turn into the overall result.
-		result.InputTokens += turnRes.inputTokens
-		result.OutputTokens += turnRes.outputTokens
-		result.CostUSD += turnRes.costUSD
-		result.Turns++
-		// Provenance rolls up here, before the turnErr branch below
-		// returns early: a turn that failed still made the calls it
-		// made, and those are exactly the ones a parent asking "what
-		// did you manage before you died" needs.
-		//
-		// The cap is re-applied across the run rather than left to the
-		// per-turn recorders. A standing worker runs for hundreds of
-		// turns, and a bound that only holds within one of them is not
-		// a bound on what the result carries.
-		var dropped int
-		result.Calls, dropped = toolcalls.Append(result.Calls, turnRes.calls, toolcalls.DefaultMaxCalls)
-		result.CallsDropped += turnRes.callsDropped + dropped
-		if keepFinalText(turnRes.text, turnRes.usedTools, haveSubstantive) {
-			result.FinalText = turnRes.text
-			haveSubstantive = haveSubstantive || turnRes.usedTools
-		}
-
-		if turnErr != nil {
-			bankReturn(&result, turnRes)
-			// Context cancellation propagates immediately regardless of
-			// retry policy — the caller asked us to stop.
-			if errors.Is(turnErr, context.Canceled) && ctx.Err() != nil {
-				result.Reason = StopReasonContextCancelled
-				result.Duration = time.Since(startedAt)
-				emitFinalCheckpoint(StopReasonContextCancelled)
-				return result, turnErr
-			}
-			decision := AbortRun
-			if cfg.retryPolicy != nil {
-				decision = cfg.retryPolicy(turnErr, result.Turns)
-			}
-			switch decision {
-			case RetryTurn:
-				// Re-run the same prompt next iteration. Treat the
-				// failed turn as not-counted so a tight max_turns cap
-				// still allows the retry to land — but we keep the
-				// turn counter incremented so retry policy's attempt
-				// number stays accurate.
-				continue
-			case SkipTurn:
-				// Move on to the continuation prompt as if the turn
-				// had completed without producing a done signal.
-				prompt = cfg.continuationPrompt
-				_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
-				continue
-			default:
-				result.Reason = StopReasonRetryAborted
-				result.Duration = time.Since(startedAt)
-				emitFinalCheckpoint(StopReasonRetryAborted)
-				return result, turnErr
-			}
-		}
-
-		if turnRes.doneSignaled {
-			result.Reason = StopReasonCompleted
-			// The only path that sets Returned on a clean stop: the
-			// model chose to hand something back (#710). Same helper
-			// the error path uses, so a return is recorded in exactly
-			// one place whichever way the run then ends (#1002).
-			bankReturn(&result, turnRes)
-			break
-		}
-
-		// A turn the max-cost bound cut short (#729). Same stop reason
-		// as the between-turn check — to every consumer this is one
-		// budget outcome, just detected earlier — and the same break,
-		// so the run's FinalText (already rolled up above) carries
-		// whatever the model had established to the caller. Ranked
-		// below done: a turn that both finished the work and crossed
-		// the bound finished the work.
-		if turnRes.costCapped {
-			result.Reason = StopReasonMaxCost
-			break
-		}
-
-		// Natural end of a bounded delegation (#730): the model stopped
-		// asking for tools, so it has finished the task it was handed.
-		// Its last message is the deliverable. Ranked below the two
-		// checks above because both describe a stop the model didn't
-		// choose, and below done because a run that signalled done is
-		// done for that reason.
-		//
-		// Off by default: for a standing worker a text-only turn is a
-		// status report, not an ending, and the loop keeps going.
-		//
-		// Ranked *below* an explicit schedule_next_turn (checked just
-		// after, and skipped here) even though report_done outranks
-		// one: done is a choice the model made, natural end is
-		// inferred from the absence of a choice, and an inference
-		// must not override the model asking in so many words to be
-		// woken again.
-		if cfg.stopOnNaturalEnd && !turnRes.requestedTools && !turnRes.scheduleSignaled {
-			result.Reason = StopReasonCompleted
-			bankNaturalEnd(&result, turnRes)
-			break
-		}
-
-		// Schedule emission: if the model called schedule_next_turn
-		// AND a scheduler is wired, hand the event off to the
-		// scheduler between turns. report_done already won above if
-		// both were emitted in the same turn.
-		if turnRes.scheduleSignaled && cfg.scheduler != nil {
-			ev := turnRes.scheduleEvent
-			// Driver-level MaxDefer is a silent ceiling — the tool-
-			// level cap (ScheduleOptions.MaxDefer) is the model-facing
-			// surface. If the model somehow exceeds the driver cap
-			// anyway, clamp and log so an operator can spot the drift.
-			if cfg.maxDefer > 0 {
-				ceiling := time.Now().Add(cfg.maxDefer)
-				if ev.WakeAt.After(ceiling) {
-					log.Printf("agent: Run: clamping scheduler wake-time from %s to driver MaxDefer ceiling %s (max_defer=%s)",
-						ev.WakeAt.Format(time.RFC3339), ceiling.Format(time.RFC3339), cfg.maxDefer)
-					ev.WakeAt = ceiling
-				}
-			}
-
-			// Per-turn checkpoint with next_wake_at populated so a
-			// crash mid-defer can resume to the right wake-time.
-			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev, haveSubstantive))
-
-			serr := awaitScheduledWake(ctx, a, &cfg, ev)
-			switch {
-			case serr == nil:
-				// Scheduler honored the wait (or no wait was needed).
-				// Continue the loop with the model-supplied prompt, or
-				// fall back to the default continuation prompt.
-				if ev.NextPrompt != "" {
-					prompt = ev.NextPrompt
-				} else {
-					prompt = cfg.continuationPrompt
-				}
-				continue
-			case errors.Is(serr, coretools.ErrSchedulerDefer):
-				// Orchestrator-managed exit: the process should end
-				// cleanly with the wake-time persisted to the eventlog
-				// for Resume to pick up. break out of the
-				// for-select via the labeled break below.
-				result.Reason = StopReasonDeferred
-				result.NextWakeAt = ev.WakeAt
-				goto deferredExit // break out of the outer for loop
-			case errors.Is(serr, context.Canceled) && ctx.Err() != nil:
-				result.Reason = StopReasonContextCancelled
-				result.Duration = time.Since(startedAt)
-				emitFinalCheckpoint(StopReasonContextCancelled)
-				return result, serr
-			default:
-				// Treat any other scheduler error as a hard abort.
-				result.Reason = StopReasonRetryAborted
-				result.Duration = time.Since(startedAt)
-				emitFinalCheckpoint(StopReasonRetryAborted)
-				return result, fmt.Errorf("agent: Run: scheduler: %w", serr)
-			}
-		}
-
-		// Per-turn checkpoint after a clean (non-done, non-error)
-		// turn. Per-turn emission is the cursor Resume
-		// continues from; a no-checkpoint run can still resume from
-		// turn 0 if its session has events but no checkpoints.
-		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
-
-		prompt = cfg.continuationPrompt
-	}
-
-deferredExit:
-	result.Duration = time.Since(startedAt)
-	emitFinalCheckpoint(result.Reason)
-	return result, nil
+	result, err = loop.run()
+	return result, err
 }
 
 // awaitScheduledWake hands a schedule intent to the scheduler, telling

@@ -28,7 +28,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,6 +168,7 @@ func main() {
 	ask := flag.String("ask", "", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise). Empty (default) behaves as off.")
 	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory. attach mode turns this on by itself)")
 	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set or implied by attach mode (default: ~/.<binary>/sessions.db)")
+	permissionMode := flag.String("permission-mode", "", "permission gate mode: ask|auto|acceptEdits|plan|allow|yolo (overrides permissions.mode)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
 	trustWorkspace := flag.Bool("trust", false, "trust the discovered .agents/ workspace configuration (stdio MCP servers, command hooks, elevated permission modes, rooted subagents, and content_roots) and remember its SHA-256 content hash in ~/.core-agent/trusted_workspaces.json (#1353).")
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
@@ -245,6 +245,9 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	logFile := flag.String("log-file", "", `mirror daemon stderr (operator diagnostics) to this path in addition to the terminal. Empty (default) or "-" leaves stderr-only. Recommended: /tmp/core-agent.log so TUI screen-takeover doesn't swallow startup diagnostics.`)
 	metricsAddr := flag.String("metrics-addr", "", "Prometheus scrape endpoint bind address (e.g. :9464). Overrides cfg.otel.metrics.prometheus_addr. Ignored unless cfg.otel.metrics.exporter (or OTEL_METRICS_EXPORTER) selects prometheus or both. Empty leaves the config value in effect; :9464 is the default when neither is set.")
+	flag.CommandLine.Usage = func() {
+		writeCLIUsage(flag.CommandLine.Output(), flag.CommandLine)
+	}
 	flag.Parse()
 
 	// Install --log-file tee BEFORE run() so any config-load / mcp
@@ -282,6 +285,7 @@ func main() {
 			bashSearchGate:    *bashSearchGate,
 			approvalTimeout:   *approvalTimeout,
 			trust:             *trustWorkspace,
+			permissionMode:    *permissionMode,
 		},
 		toolProfileOpts{
 			enableTools: *enableTools,
@@ -708,7 +712,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		case len(profileDisables) > 0:
 			toolNote = "tools=default−" + strings.Join(profileDisables, ",")
 		}
-		send(fmt.Sprintf("task class: %s → model=%s compaction-threshold=%.2f ask=%s %s (override individual knobs with --model / --compaction-threshold / --ask / --enable-tools / --plan-first)",
+		send(fmt.Sprintf("task class: %s → model=%s compaction-threshold=%.2f ask=%s %s (override individual knobs with --model / --compaction-threshold / --ask / --enable-tools / --plan-mode)",
 			cfg.Session.TaskClass, cfg.Model.Name, profile.CompactionThreshold, ask, toolNote))
 	}
 
@@ -731,61 +735,13 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// Plan-first (#160) is resolved for every run, not just --task
 	// ones, because the flag is also the CLI mirror of
 	// permissions.require_plan_artifact. The profile can only turn the
-	// gate on; --plan-first=false is the way out. Must land before
-	// permissions.FromConfig reads cfg.Permissions and before
-	// tools.Build decides whether to register record_plan.
-	// Whether record_plan will actually be in the catalog. tools.Build
-	// needs an agentsDir to write plans into and the built-in suite to
-	// be on; the operator can also have disabled the tool outright.
-	// Each of those turns plan-first from a stricter posture into a
-	// deadlock, so name the specific one rather than saying "off".
-	planBlocker := ""
-	switch {
-	case agentsDir == "":
-		planBlocker = "no .agents/ directory resolved, so record_plan has nowhere to write plans"
-	case noBuiltinTools:
-		planBlocker = "--no-builtin-tools drops record_plan along with the rest of the suite"
-	case slices.Contains(cfg.Tools.Disable, "record_plan"):
-		planBlocker = "record_plan is in cfg.tools.disable"
-	case slices.Contains(splitList(disableTools), "record_plan"):
-		planBlocker = "record_plan is in --disable-tools"
-	}
-	if err := validatePlanModeFlag(toolProfile.planMode); err != nil {
+	// gate on; --plan-mode=off (or the deprecated --plan-first=false)
+	// is the way out. Must land before permissions.FromConfig reads
+	// cfg.Permissions and before tools.Build decides whether to
+	// register record_plan.
+	if err := applyPlanMode(cfg, agentsDir, noBuiltinTools, disableTools, toolProfile, taskProfile, send); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
-	}
-	planMode, planSource := resolvePlanMode(planModeInputs{
-		FlagMode:       toolProfile.planMode,
-		Flag:           toolProfile.planFirst,
-		FlagSet:        toolProfile.planFirstSet,
-		ConfigSet:      cfg.Permissions.PlanModeSet(),
-		ConfigResolved: cfg.Permissions.ResolvedPlanMode(),
-		ConfigSpelling: cfg.Permissions.PlanModeSpelling(),
-		Profile:        taskProfile.RequirePlanArtifact,
-		CanRecordPlan:  planBlocker == "",
-	})
-	// Collapse to PlanMode alone, so nothing downstream can read the
-	// pre-resolution value and disagree with ResolvedPlanMode.
-	cfg.Permissions.NormalizePlanMode(planMode)
-	switch {
-	case planSource == sourcePlanNoRecorder:
-		send(fmt.Sprintf("plan mode: off — the %s profile asks for plan-first, but %s", cfg.Session.TaskClass, planBlocker))
-	case planMode == config.PlanModeRequired && planBlocker != "":
-		// Explicit operator intent, so we honor it rather than
-		// silently flipping it off — but with no record_plan, /replan
-		// only revokes and nothing grants, so every mutating tool call
-		// is denied for the life of the session. Say so at boot rather
-		// than letting the operator discover it one denial at a time.
-		fmt.Fprintf(os.Stderr, "core-agent: plan mode: required (%s) but %s — every mutating tool call will be denied with no way to clear the gate. Fix that, or pass --plan-mode=advisory.\n", planSource, planBlocker)
-	case planMode == config.PlanModeRequired:
-		send(fmt.Sprintf("plan mode: required (%s) — mutating tools are denied until the model calls record_plan", planSource))
-	case planMode == config.PlanModeAdvisory && planBlocker != "":
-		// Advisory can't deadlock, but it can be inert, which looks
-		// identical to "working" until an operator goes looking for
-		// an audit trail that was never written.
-		fmt.Fprintf(os.Stderr, "core-agent: plan mode: advisory (%s) but %s — no plan artifact will be written.\n", planSource, planBlocker)
-	case planMode == config.PlanModeAdvisory:
-		send(fmt.Sprintf("plan mode: advisory (%s) — record_plan is registered and its artifact persists to .agents/plans/, but no tool call is blocked on it", planSource))
 	}
 
 	otelShutdown, err := telemetry.Setup(ctx, cfg.OTEL.Exporter)
@@ -904,11 +860,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		homeAgentsDir = filepath.Join(userHome, ".agents")
 	}
 
-	if yolo {
-		// --yolo overrides the configured mode unconditionally. Done
-		// before FromConfig so the mode is consistent with the
-		// constructed Gate (and any future code that reads it back).
-		cfg.Permissions.Mode = string(permissions.ModeYolo)
+	if err := resolvePermissionModeFlag(&cfg.Permissions.Mode, &yolo, guardrails.permissionMode, send); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
 	}
 	// CLI --allow-path entries layer on top of whatever the config
 	// file already lists; CLI > config > nothing. Validated in two
@@ -932,7 +886,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			return runner.ExitConfigError
 		}
 	}
-	prompter := resolveGatePrompter(yolo, os.Stdin, os.Stderr)
+	prompter := resolveGatePrompter(cfg.Permissions.Mode == string(permissions.ModeYolo), os.Stdin, os.Stderr)
 	// Runaway backstops: the behavioral watchdog (#123/#623), the cost
 	// ceilings (#145), and the unattended approval-timeout bound (#1364).
 	// Resolved here, ahead of permissions.FromConfig, so the resolved

@@ -18,6 +18,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 #### Feature
 
+- **Add `--permission-mode <mode>`, grouped `--help`, and subcommands.** Adds `--permission-mode` (`ask|auto|acceptEdits|plan|allow|yolo`, `--yolo` alias), groups `--help` into 6 sections plus subcommands, and deprecates `--plan-first`. ([#1380](https://github.com/go-steer/core-agent/issues/1380))
 - **Graduate permission mode `auto` and `pkg/approver` out of experimental.** Places `permissions.Approver` / `ApproverRequest` / `ApproverContext` / `Verdict`, `PermissionsConfig.Auto`, and `pkg/approver` under the SemVer promise. ([#1213](https://github.com/go-steer/core-agent/issues/1213))
 - **Per-subagent `git worktree` isolation (`safety.parallel_subagent_writes: "worktree"`).** Provisions an isolated git worktree per write-capable background subagent and scopes relative paths, `bash` cwd, and file writes to it. ([#653](https://github.com/go-steer/core-agent/issues/653))
 - **Headless `--output-format=text|json|stream-json`, `-q` / `--quiet`, and TTY-gated `asst ›` prefix.** Omits `asst ›` when stdout is piped, adds JSON/NDJSON `-p` output in `pkg/runner`, and adds `--quiet` to suppress stderr summaries. ([#1379](https://github.com/go-steer/core-agent/issues/1379))

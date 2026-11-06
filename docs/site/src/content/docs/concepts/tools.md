@@ -270,7 +270,7 @@ tool.read_file          # the read_file tool
 tool.fetch_url          # the fetch_url tool
 ```
 
-See [Permissions](/concepts/permissions/) for the full pattern grammar, gate modes (`ask` / `accept-edits` / `plan` / `yolo`), and per-call vs. session-scoped grants.
+See [Permissions](/concepts/permissions/) for the full pattern grammar, gate modes (`ask` / `auto` / `acceptEdits` / `plan` / `allow` / `yolo`), and per-call vs. session-scoped grants.
 
 The gate also enforces two cross-cutting scopes — both default-deny, both configured under `cfg`:
 

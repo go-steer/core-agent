@@ -131,8 +131,7 @@ func sessionDBConflictMessage(cfg *config.Config) string {
 // printSessionStoreLines emits the startup lines naming the session
 // database (and what implied it, if the operator did not ask) and, when
 // the transcript is external, the store that holds it, through run()'s
-// send (which -q silences). Kept out of run(), which is under the #685
-// size cap.
+// send (which -q silences). Kept as a named helper out of run() (#685).
 func printSessionStoreLines(send func(string), path string, implied bool, implier, storeLine string) {
 	if implied {
 		send(fmt.Sprintf("session db: %s [implied by %s; --session-db-path to relocate]", path, implier))

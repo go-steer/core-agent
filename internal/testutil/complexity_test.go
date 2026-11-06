@@ -36,7 +36,8 @@ import (
 //  2. A ratchet on the *count* of non-test functions in pkg/ over 150 lines,
 //     not only the single worst function.
 //  3. A hard cap on cmd/core-agent's `run()` (lines, statements, and
-//     parameters) while it remains exempted from .golangci.yml awaiting #685.
+//     parameters) after #685 decomposed it and removed its .golangci.yml
+//     exemption.
 //
 // Like .golangci.yml, these numbers only go down.
 const (
@@ -49,9 +50,9 @@ const (
 	maxDevFuncLines      = 254 // dev/uat/scheduled-monitor/main.go run
 	maxDevFuncStatements = 114 // dev/uat/scheduled-monitor/main.go run
 
-	maxCmdRunLines      = 1441 // cmd/core-agent/main.go run (#685)
-	maxCmdRunStatements = 760  // cmd/core-agent/main.go run (#685)
-	maxCmdRunParams     = 43   // cmd/core-agent/main.go run (#685)
+	maxCmdRunLines      = 12 // cmd/core-agent/main.go run (#685)
+	maxCmdRunStatements = 8  // cmd/core-agent/main.go run (#685)
+	maxCmdRunParams     = 1  // cmd/core-agent/main.go run (#685)
 )
 
 // TestComplexityRatchet_PkgAndDevThresholds enforces separate funlen line and
@@ -113,8 +114,8 @@ func TestComplexityRatchet_PkgAndDevThresholds(t *testing.T) {
 }
 
 // TestComplexityRatchet_CmdRunCap caps cmd/core-agent's `run` at its current
-// lines, statements, and parameter count so it cannot grow while exempted from
-// funlen and gocognit in dev/tools/.golangci.yml (#1371, #685).
+// lines, statements, and parameter count after #685 decomposed it and removed
+// its funlen/gocognit exemption from dev/tools/.golangci.yml (#1371, #685).
 func TestComplexityRatchet_CmdRunCap(t *testing.T) {
 	t.Parallel()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -154,7 +155,7 @@ func TestComplexityRatchet_CmdRunCap(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("cmd/core-agent/main.go: func run not found (if #685 removed it, delete the exclusion in dev/tools/.golangci.yml and this cap)")
+		t.Fatalf("cmd/core-agent/main.go: func run not found")
 	}
 }
 

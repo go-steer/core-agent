@@ -55,8 +55,7 @@ import (
 const defaultSyncWaitTimeout = 5 * time.Minute
 
 // subagentOpts carries the subagent-tuning flags into run(), following
-// guardrailOpts/toolProfileOpts rather than adding another positional
-// parameter to a signature #685 already calls out.
+// guardrailOpts/toolProfileOpts (#685).
 type subagentOpts struct {
 	// syncWait is --subagent-sync-wait as the operator typed it;
 	// empty == unset, which lets config then the built-in default

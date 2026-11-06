@@ -49,7 +49,8 @@ research + friction logs, or handover notes.
 - [`session-resume-design.md`](session-resume-design.md) — transparent session resume on daemon restart
 - [`external-state-design.md`](external-state-design.md) — failover without a shared database: pluggable transcript / control / index / memory stores (SQL, Redis, Agent Engine Sessions + Memory Bank, Kubernetes Lease), a residency lease with self-fencing, single writer per session (proposed)
 - [`auto-continue-design.md`](auto-continue-design.md) — auto-continuation of restart-interrupted turns, on by default for daemons since #559 (detection from eventlog tails, crash-loop breaker)
-- [`shared-memory-design.md`](shared-memory-design.md) — `Memory` interface + FTS5-over-eventlog in-tree + audit-derived recall + Redis AMS extras adapter
+- [`memory-service-design.md`](memory-service-design.md) — stateless agent-specific (`agent`) and shared (`shared:<pool>`) long-term memory: multi-scope `Router` fan-out, Gemini Enterprise Agent Platform Memory Bank (`DirectMemoriesSource` / `DirectContentsSource`), shared `agent_engine` config + `--memory-ref`, subagent scoping across all six execution paths, and pluggable local/external backends (proposed)
+- [`shared-memory-design.md`](shared-memory-design.md) — **superseded** by [`memory-service-design.md`](memory-service-design.md): earlier daemon-centric `Memory` interface + FTS5-over-eventlog + Redis AMS sketch (audit-trail and permission-gate invariants carried forward)
 - [`purser/docs/DESIGN.md`](https://github.com/go-steer/purser/blob/main/docs/DESIGN.md) — **lives in [go-steer/purser](https://github.com/go-steer/purser)**: extracting `pkg/auth` into a shared module so identity comes from SPIFFE SVIDs, standard-CA client certs, and OIDC instead of the static bearer table (proposed)
 
 ### Context, cost + model management

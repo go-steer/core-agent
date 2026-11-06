@@ -162,14 +162,19 @@ does with each:
     because the fake doesn't enforce `resourceVersion` conflicts and the
     lease's CAS is the property under test.
 
-11. **Memory stays the #948 `memory.Memory` interface.** Memory Bank and
-    Redis AMS are adapters behind it, not ADK's `memory.Service`. ADK's
-    interface returns no IDs, has no forget, and its Go Memory Bank
-    client scopes only by user with a top-K of 3. The #948 settled
-    decisions still apply, in particular that **every `Remember` /
-    `Forget` emits a transcript event** whichever backend recalls it.
-    The one exception is the auto-capture rule, which decision 15
-    reopens.
+11. **Memory follows [`memory-service-design.md`](memory-service-design.md)
+    (superseding #948's single-scope `memory.Memory` draft).** Memory
+    Bank, SQLite FTS5, and external stores implement `memory.Backend`
+    behind a multi-scope `memory.Router` (`0..1` private `agent` mount +
+    `0..N` named `shared:<pool>` mounts), rather than ADK's
+    `memory.Service` directly (`memory.AsADKService` bridges third-party
+    ADK tools). Every completed `Remember`, `Forget`, and
+    `ConsolidateSession` still emits a `memory/*` transcript event into
+    whichever `session.Service` is wired. Conversation consolidation on
+    Memory Bank defaults to `DirectContentsSource` (with an optional
+    `VertexSessionOrigin` fast path to `VertexSessionSource` when
+    transcript and memory share a `ReasoningEngine`), decoupling Memory
+    Bank from session-store choice.
 
 12. **No request proxying.** If a request reaches a non-owner while a
     live lease exists, the instance answers `409 Conflict` with the
@@ -216,17 +221,22 @@ does with each:
     - **It is never implicit.** The default is `"off"`. A recipe that
       wants it says so, and `/status` shows it.
 
-    `shared-memory-design.md` carries a pointer to this decision.
+    [`memory-service-design.md`](memory-service-design.md) specifies the full
+    consolidation contract (`"off" | "turn_end" | "session_end"`, targeting the
+    private `agent` mount by default unless `consolidation_target` names a
+    writable shared pool, via `DirectContentsSource` or `VertexSessionOrigin`).
 
-16. **The stores are in-tree; the memory adapters follow #948.**
+16. **The stores are in-tree; the memory adapters follow [`memory-service-design.md`](memory-service-design.md).**
     - **In-tree, under `pkg/statestore/{sql,agentengine,redis,kubernetes}`:**
       the Agent Engine, Redis and Kubernetes transcript, control and
       index backends. GKE images are the main consumer, and an
       out-of-tree store would keep missing the conformance suite.
-    - **In-tree:** the Memory Bank adapter, because it shares the
-      `aiplatform` client with the transcript backend.
-    - **`extras/redis-memory/`:** the Redis AMS adapter, as #948
-      planned.
+    - **In-tree (`pkg/memory`, `pkg/memory/memorybank`, `pkg/memory/sqlfts`):**
+      the driverless core/router/in-memory store (safe for the slim embed
+      ceiling), the Memory Bank adapter sharing the `aiplatform` client
+      with the Agent Engine session backend, and the local SQLite FTS5
+      backend.
+    - **`extras/redis-memory/`:** the Redis AMS adapter.
 
 ## Interfaces (sketch)
 
@@ -286,14 +296,19 @@ stops matching `gorm.ErrRecordNotFound` and matches
 - **Retention:** set to an explicit `ttl`, at least the 24h minimum.
   It doesn't follow the idle eviction (eviction only drops the session
   from memory).
-- **Memory Bank:** via `apiv1beta1.MemoryBankClient` (beta-only in Go):
-  - `Remember` → `CreateMemory`, with scope `{app, user, namespace}`;
-  - `Recall` → `RetrieveMemories` with `SimilaritySearchParams{TopK}`;
-  - `Forget` → `DeleteMemory`.
-  - `Kind` and `Topics` have no native field. See open question 1.
-  - Opt-in consolidation → `GenerateMemories` with a
-    `VertexSessionSource` (decision 15). Memory Bank reads the event
-    `content`, which decision 6 populates.
+- **Memory Bank:** via `apiv1beta1.MemoryBankClient` (beta-only in Go; full
+  RPC and scope mapping in [`memory-service-design.md`](memory-service-design.md)):
+  - `Remember` → `GenerateMemories` (`DirectMemoriesSource`, default
+    deduplicating consolidation) or `CreateMemory` when `WriteVerbatim` is
+    requested, scoped to discrete `agent` (`scope_kind="agent"`, `agent_id`)
+    or `shared:<pool>` (`scope_kind="shared"`, `pool`) mounts;
+  - `Recall` → `RetrieveMemories` (`SimilaritySearchParams{TopK}`) fanned
+    out concurrently across mounted scopes via `memory.Router`;
+  - `Forget` → `GetMemory` scope verification followed by `DeleteMemory`;
+  - Opt-in conversation extraction → `GenerateMemories` via
+    `DirectContentsSource`, taking a zero-copy fast path to
+    `VertexSessionSource` when the active session implements
+    `memory.VertexSessionOrigin` on the same `ReasoningEngine` (decision 15).
 - **Quotas:** apply per project and region. A 429 goes through the same
   transient-retry policy as the model calls (#935).
 
@@ -357,9 +372,11 @@ its RBAC.
    the GKE + Agent Engine stack is complete.
 5. **Redis backend** for transcript, control and index, with `miniredis`
    in CI.
-6. **Memory:** #948 lands (in-tree FTS5). Then the Memory Bank adapter,
-   with opt-in consolidation (decision 15). Then the Redis AMS adapter
-   in `extras/`.
+6. **Memory:** Phases 1–4 of [`memory-service-design.md`](memory-service-design.md)
+   (`pkg/memory` core + `InMemory` + `Router`, gated tools + subagent scope
+   binding + stateless `--memory-ref` / `agent_engine` wiring,
+   `pkg/memory/memorybank` with opt-in consolidation, then `pkg/memory/sqlfts`
+   and `extras/redis-memory/`).
 7. **Failover UAT** in `dev/uat/failover/`: two daemons share a backend;
    kill the owner mid-turn and assert:
    - the other instance resumes within `staleAfter`;
@@ -392,9 +409,12 @@ Each backend phase also adds:
 ```
 
 `index` and `memory` inherit the connection block of the same backend
-named elsewhere in `state`, so a deployment doesn't repeat it. The
-existing `--session-db` / `--session-db-path` flags stay as shorthand
-for "everything is sql at this path".
+named elsewhere in `state` (or the shared top-level `agent_engine` block
+defined in [`memory-service-design.md`](memory-service-design.md), where full
+`memory` scope and subagent configuration lives), so a deployment doesn't
+repeat the `ReasoningEngine` resource name. The existing `--session-db` /
+`--session-db-path` flags stay as shorthand for "everything is sql at this
+path".
 
 ## Out of scope
 
@@ -415,13 +435,13 @@ for "everything is sql at this path".
 
 ## Open questions
 
-1. **Filtering Memory Bank by `Kind` / `Topics`.** Memory Bank has no
-   field for either, and `RetrieveMemories` requires an exact scope
-   match. One option is a scope key per kind (`{app, user, namespace,
-   kind}`), which means one retrieve per requested kind. The other is
-   storing kind and topics in the fact text and post-filtering on the
-   client, which spends top-K on items that get thrown away. Lean: a
-   scope key for `Kind`, post-filter on `Topics`. Settle in phase 6.
+1. **Filtering Memory Bank by `Kind` / `Topics` and multi-agent sharing.**
+   *Settled in [`memory-service-design.md`](memory-service-design.md):*
+   Memory Bank's exact-match `scope` (`<= 5` keys, no wildcards) maps to
+   explicit private (`scope_kind="agent"`, `agent_id`) and shared
+   (`scope_kind="shared"`, `pool`) mounts queried via concurrent fan-out
+   on `memory.Router`, with topics stored on `Memory.Topics` and
+   post-filtered when needed.
 2. **Lease count limits.** Before phase 4 lands, check whether GKE
    Autopilot or cluster policies cap `Lease` objects per namespace, and
    what the apiserver write rate is at 50 resident sessions.

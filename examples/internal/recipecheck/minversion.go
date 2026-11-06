@@ -256,6 +256,13 @@ var GatedFeatures = []GatedFeature{
 			"and exposes the server's entire tool surface to the subagent",
 	},
 	{
+		Path: "subagents[].inherit",
+		Min:  "3.2.0-dev.1",
+		Why: "automatic parent-input splicing into subagent prompts (`inherit: [\"input\"]`, #1499). " +
+			"An older daemon drops `inherit`, so the subagent never receives the parent turn's " +
+			"triggering message that the recipe assumed would be appended automatically",
+	},
+	{
 		Path: "model.builtin_tools",
 		Min:  "2.9.0-dev.4",
 		Why: "the provider's server-side built-ins — web search, URL fetching, code execution (#876). " +

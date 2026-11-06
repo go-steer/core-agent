@@ -502,6 +502,7 @@ func buildDeclaredSubagents(
 			Scheduler:    spec.Scheduler,
 			SubagentMode: sub.SubagentMode(),
 			OutputSchema: sub.OutputSchema(),
+			InheritInput: spec.InheritsInput(),
 		})
 		if spec.Scheduler != "" {
 			scopeDesc += ", scheduler=" + spec.Scheduler
@@ -556,10 +557,11 @@ func buildRemoteSubagentTemplate(spec config.SubagentSpec, send func(string)) (b
 		send(line)
 	}
 	return background.SubagentTemplate{
-		Name:        spec.Name,
-		Description: spec.Description,
-		Remote:      client,
-		Budgets:     asyncBudgets(spec.Budgets),
+		Name:         spec.Name,
+		Description:  spec.Description,
+		Remote:       client,
+		Budgets:      asyncBudgets(spec.Budgets),
+		InheritInput: spec.InheritsInput(),
 	}, nil
 }
 
@@ -588,6 +590,9 @@ func assembleSubagent(spec config.SubagentSpec, finalReport bool, llm adkmodel.L
 	}
 	if spec.Mode != "" {
 		opts = append(opts, agent.WithSubagentMode(agent.SubagentMode(spec.Mode)))
+	}
+	if spec.InheritsInput() {
+		opts = append(opts, agent.WithSubagentInheritInput(true))
 	}
 	if spec.OutputSchema != "" {
 		schemaDirs := []string{spec.BaseDir(), rootAbs, rootBase}

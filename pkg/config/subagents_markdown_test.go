@@ -649,3 +649,44 @@ func TestSubagentHardening_1450(t *testing.T) {
 		}
 	})
 }
+
+func TestSubagentInherit_ConfigAndMarkdown(t *testing.T) {
+	t.Parallel()
+
+	cfgOK := DefaultConfig()
+	cfgOK.Subagents = []SubagentSpec{{
+		Name:    "triage",
+		Mode:    SubagentModeTask,
+		Inherit: []string{"input"},
+	}}
+	if err := cfgOK.Validate(); err != nil {
+		t.Fatalf("Validate(inherit: [input]): %v", err)
+	}
+	if !cfgOK.Subagents[0].InheritsInput() {
+		t.Errorf("InheritsInput() = false, want true")
+	}
+
+	cfgBad := DefaultConfig()
+	cfgBad.Subagents = []SubagentSpec{{
+		Name:    "triage",
+		Mode:    SubagentModeTask,
+		Inherit: []string{"history"},
+	}}
+	if err := cfgBad.Validate(); err == nil || !strings.Contains(err.Error(), "subagents[0].inherit[0]") {
+		t.Fatalf("Validate(inherit: [history]) = %v, want subagents[0].inherit[0] error", err)
+	}
+
+	tmp := t.TempDir()
+	mdPath := filepath.Join(tmp, "specialist.md")
+	md := "---\ndescription: Specialist\nmode: task\ninherit:\n  - input\n---\nInspect parent input.\n"
+	if err := os.WriteFile(mdPath, []byte(md), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := LoadSubagentMarkdownFile(mdPath)
+	if err != nil {
+		t.Fatalf("LoadSubagentMarkdownFile: %v", err)
+	}
+	if !spec.InheritsInput() {
+		t.Errorf("markdown spec InheritsInput() = false, want true (Inherit=%v)", spec.Inherit)
+	}
+}

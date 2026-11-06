@@ -90,6 +90,7 @@ type subagentFrontmatter struct {
 	Root         string                `yaml:"root"`
 	Budgets      *SubagentBudgets      `yaml:"budgets"`
 	Scheduler    string                `yaml:"scheduler"`
+	Inherit      []string              `yaml:"inherit"`
 	Remote       *SubagentRemoteConfig `yaml:"remote"`
 }
 
@@ -162,6 +163,7 @@ func LoadSubagentMarkdownFile(path string) (SubagentSpec, error) {
 		Root:         fm.Root,
 		Budgets:      fm.Budgets,
 		Scheduler:    fm.Scheduler,
+		Inherit:      fm.Inherit,
 		Remote:       fm.Remote,
 		fromMarkdown: true,
 		baseDir:      baseDir,

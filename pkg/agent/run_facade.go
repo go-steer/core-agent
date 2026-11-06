@@ -830,6 +830,7 @@ func buildSingleFacadeSubagent(
 		WithName(spec.Name),
 		WithDescription(spec.Description),
 		WithSubagentMode(mode),
+		WithSubagentInheritInput(spec.InheritsInput()),
 		WithSubagentMaxDepth(spec.MaxDepth),
 		WithSubagentBudgets(budgets),
 		WithMode(ModeAutonomous),

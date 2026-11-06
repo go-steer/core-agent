@@ -519,6 +519,9 @@ type Spec struct {
 	// Mode selects how the subagent's loop terminates. Empty derives
 	// it from Scheduler; see Mode.
 	Mode Mode
+	// InheritInput automatically appends the parent turn's triggering
+	// message verbatim to Goal before launching (#1499).
+	InheritInput bool
 	// Ref is the predefined-spec name this spec was resolved from, set
 	// by the reference path (resolvePredefinedSpec) and empty for an
 	// ad-hoc, inline-authored one. Name is rewritten to a per-instance

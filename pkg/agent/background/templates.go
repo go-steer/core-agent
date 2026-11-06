@@ -117,6 +117,9 @@ type SubagentTemplate struct {
 	// OutputSchema constrains the final assistant output for task and
 	// single_turn templates (#1401).
 	OutputSchema *genai.Schema
+	// InheritInput automatically appends the parent turn's triggering
+	// message verbatim to the spawn's goal (#1499).
+	InheritInput bool
 }
 
 // WithSubagentTemplates registers the declarative-subagent roster at
@@ -248,6 +251,40 @@ func validateTemplate(t SubagentTemplate) error {
 	return nil
 }
 
+// inheritsInput reports whether the named template or predefined spec
+// is configured with InheritInput (#1499).
+func (m *Manager) inheritsInput(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if tmpl, ok := m.templates[name]; ok {
+		return tmpl.InheritInput
+	}
+	if spec, ok := m.predefined[name]; ok {
+		return spec.InheritInput
+	}
+	return false
+}
+
+// predefinedDefaultGoal returns the default Goal configured on a predefined
+// Spec (or "" when none is configured) so NewSpawnAgentTool can seed an empty
+// args.Goal before splicing parent input (#1499).
+func (m *Manager) predefinedDefaultGoal(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if spec, ok := m.predefined[name]; ok {
+		return spec.Goal
+	}
+	return ""
+}
+
 // hasTemplate reports whether name refers to a registered declarative
 // subagent template.
 func (m *Manager) hasTemplate(name string) bool {
@@ -294,7 +331,11 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 	if len(ov.Tools) > 0 {
 		return nil, fmt.Errorf("background: cannot narrow tools of preconfigured subagent %q (its grant spans built-ins, MCP, and skills); configure a dedicated subagent", name)
 	}
-	goal := strings.TrimSpace(ov.Goal)
+	rawGoal := ov.Goal
+	if tmpl.InheritInput || ov.IncludeInput {
+		rawGoal = agent.SpliceParentInput(rawGoal, agent.ParentInputFromContext(ctx))
+	}
+	goal := strings.TrimSpace(rawGoal)
 	if goal == "" {
 		return nil, errors.New("background: goal is required when spawning a preconfigured subagent")
 	}
@@ -452,10 +493,11 @@ func (m *Manager) SpawnRef(ctx context.Context, parentBranch, name, goal string,
 		return m.SpawnTemplate(ctx, parentBranch, name, ov, explicitName)
 	}
 	spec, err := m.resolvePredefinedSpec(name, RefOverrides{
-		Goal:    goal,
-		Model:   ov.Model,
-		Tools:   ov.Tools,
-		Budgets: ov.Budgets,
+		Goal:         goal,
+		Model:        ov.Model,
+		Tools:        ov.Tools,
+		Budgets:      ov.Budgets,
+		IncludeInput: ov.IncludeInput,
 	})
 	if err != nil {
 		return nil, err

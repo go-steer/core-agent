@@ -95,6 +95,10 @@ DENYLIST=(
   '^github\.com/glebarez/(go-)?sqlite(/|$)'
   '^modernc\.org/'
   '^github\.com/mattn/go-sqlite3(/|$)'
+  # The Agent Engine transcript backend's client (pkg/statestore/agentengine)
+  # and ADK's own Vertex session service: a slim embed talks to no store.
+  '^cloud\.google\.com/go/aiplatform(/|$)'
+  '^google\.golang\.org/adk/v2/session/vertexai(/|$)'
 )
 
 join_denylist() {

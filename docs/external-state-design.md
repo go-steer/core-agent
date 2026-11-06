@@ -27,6 +27,17 @@ Recorded as the phases land; each names the decision it narrows.
   in the options; `eventlog.ResolveQuery(...).Scope()` extracts the
   root) rather than a separate `root` argument, and the interface adds
   `Subscribe` for decision 4's in-process wake-ups.
+- **2026-11-06 — Agent Engine backend details settled in code.**
+  Sessions are scoped to `(app, user)` by `core_agent.app_name` in
+  session state plus the service's `user_id`; a session found under a
+  mapped ID that belongs to another app or user is reported not found.
+  `raw_event` holds the event's own JSON at the top level with the seq
+  and sidecar under one `coreAgent` key, so another ADK runtime reading
+  `raw_event` as an Event still gets the event. An `AppendEvent` whose
+  outcome is unknown (any status other than a definite rejection)
+  invalidates the process's view of the tree, so the next seq is read
+  from the store rather than reused; this is the residual window
+  decision 3 accepts, named.
 - **2026-11-06 — Decision 4, as #1192 already noted:** the SQL Handle
   from `eventlog.Open` keeps polling, because a second process may be
   appending to the same SQLite file. Only a Handle from

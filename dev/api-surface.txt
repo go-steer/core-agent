@@ -75,6 +75,7 @@ unsupported pkg/compose
 # the Transcript seam is in pkg/eventlog (promised); the backends and the
 # conformance suite stay unsupported until the design's phases are done.
 unsupported pkg/statestore
+unsupported pkg/statestore/agentengine
 unsupported pkg/statestore/conformance
 unsupported pkg/statestore/memory
 # Local digesting primitives backing pkg/tools/agentic.

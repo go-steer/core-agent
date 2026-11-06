@@ -593,6 +593,7 @@ type specialistFrontmatter struct {
 	Model        *frontmatterModel    `yaml:"model"`
 	Capability   string               `yaml:"capability"`
 	OutputSchema string               `yaml:"output_schema"`
+	Inherit      []string             `yaml:"inherit"`
 	Budget       *SubagentBudgets     `yaml:"budget"`
 	Budgets      *SubagentBudgets     `yaml:"budgets"`
 	Tools        specialistToolsBlock `yaml:"tools"`
@@ -678,6 +679,7 @@ func loadSpecialistMarkdownFile(path, expectedName string) (SubagentSpec, error)
 		MCP:          mcpList,
 		MCPTools:     fm.Tools.MCP,
 		Skills:       fm.Tools.Skills,
+		Inherit:      fm.Inherit,
 		Budgets:      budgets,
 		fromMarkdown: true,
 		baseDir:      baseDir,
@@ -1010,6 +1012,7 @@ type subagentFrontmatterOut struct {
 	MCP          *[]string          `yaml:"mcp,omitempty"`
 	MCPTools     []MCPToolAllowlist `yaml:"mcp_tools,omitempty"`
 	Skills       *[]string          `yaml:"skills,omitempty"`
+	Inherit      []string           `yaml:"inherit,omitempty"`
 	Root         string             `yaml:"root,omitempty"`
 	Budgets      *SubagentBudgets   `yaml:"budgets,omitempty"`
 }
@@ -1023,6 +1026,7 @@ func writeSubagentMarkdownFile(path string, spec SubagentSpec) error {
 		Tier:         spec.Tier,
 		Capability:   spec.Capability,
 		MCPTools:     spec.MCPTools,
+		Inherit:      spec.Inherit,
 		Root:         spec.Root,
 		Budgets:      spec.Budgets,
 	}

@@ -357,9 +357,12 @@ type Agent struct {
 	// subagentBudgets bounds one delegation to this agent when it is
 	// wrapped as a subagent tool (set via WithSubagentBudgets). Read by
 	// a parent's WithSubagents resolution; zero = unbounded.
-	subagentBudgets SubagentBudgets
-	subagentMode    SubagentMode
-	outputSchema    *genai.Schema
+	subagentBudgets      SubagentBudgets
+	subagentMode         SubagentMode
+	subagentInheritInput bool
+	outputSchema         *genai.Schema
+	lastTriggerInputMu   sync.Mutex
+	lastTriggerInput     string
 	// billingBackend is the backend that bills this agent's model
 	// (WithBillingBackend); "" means the process backend.
 	billingBackend string
@@ -639,6 +642,7 @@ type options struct {
 	// inert when this agent runs as a parent.
 	subagentBudgets          SubagentBudgets
 	subagentMode             SubagentMode
+	subagentInheritInput     bool
 	outputSchema             *genai.Schema
 	beforeModelCallbacks     []llmagent.BeforeModelCallback
 	afterModelCallbacks      []llmagent.AfterModelCallback
@@ -1135,27 +1139,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		parentSvc = session.InMemoryService()
 		o.sessionService = parentSvc
 	}
-	for _, sa := range o.subagents {
-		if sa == nil {
-			continue
-		}
-		st, err := NewSubagentTool(SubagentOptions{
-			Inner:           sa,
-			Mode:            sa.subagentMode,
-			MaxDepth:        sa.subagentMaxDepth, // 0 → NewSubagentTool default
-			Budgets:         sa.subagentBudgets,  // zero → unbounded
-			Gate:            o.gate,
-			ParentTracker:   o.tracker, // bill delegated turns to the parent (#713)
-			ParentService:   parentSvc,
-			ParentAppName:   o.appName,
-			ParentUserID:    o.userID,
-			ParentSessionID: o.sessionID,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("agent: WithSubagents: %w", err)
-		}
-		o.tools = append(o.tools, st)
-		o.subagentToolNames = append(o.subagentToolNames, st.Name())
+	if err := wireSubagentTools(&o, parentSvc); err != nil {
+		return nil, err
 	}
 
 	// Register the mark_task_done built-in BEFORE llmagent.New —
@@ -1299,6 +1284,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		subagentMaxDepth:     o.subagentMaxDepth,
 		subagentBudgets:      o.subagentBudgets,
 		subagentMode:         o.subagentMode,
+		subagentInheritInput: o.subagentInheritInput,
 		outputSchema:         o.outputSchema,
 		billingBackend:       o.billingBackend,
 		pricingCatalog:       o.pricingCatalog,
@@ -1341,6 +1327,39 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		o.postConstruct(a)
 	}
 	return a, nil
+}
+
+func wireSubagentTools(o *options, parentSvc session.Service) error {
+	for _, sa := range o.subagents {
+		if sa == nil {
+			continue
+		}
+		st, err := NewSubagentTool(SubagentOptions{
+			Inner:           sa,
+			Mode:            sa.subagentMode,
+			InheritInput:    sa.subagentInheritInput,
+			MaxDepth:        sa.subagentMaxDepth, // 0 → NewSubagentTool default
+			Budgets:         sa.subagentBudgets,  // zero → unbounded
+			Gate:            o.gate,
+			ParentTracker:   o.tracker, // bill delegated turns to the parent (#713)
+			ParentService:   parentSvc,
+			ParentAppName:   o.appName,
+			ParentUserID:    o.userID,
+			ParentSessionID: o.sessionID,
+		})
+		if err != nil {
+			return fmt.Errorf("agent: WithSubagents: %w", err)
+		}
+		o.tools = append(o.tools, st)
+		o.subagentToolNames = append(o.subagentToolNames, st.Name())
+	}
+	return nil
+}
+
+func (a *Agent) resetTurnGuardrails() {
+	a.clearGuardrailHalt()
+	a.clearContextBudgetCut()
+	a.clearRefusalStorm()
 }
 
 // Tools returns the resolved tool list the agent was constructed
@@ -1761,17 +1780,9 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	// to whatever (operator prompt, inbox message) triggered the turn.
 	promptID := newPromptID()
 	started := time.Now()
-	// Fresh per-turn guardrail-halt marker (#818): whether a guardrail
-	// cut the PREVIOUS turn says nothing about this one, and a stale
-	// flag would swallow this turn's legitimate `canceled`.
-	a.clearGuardrailHalt()
-	// Same belt-and-braces for the in-turn context backstop (#975): a
-	// turn that never reached its cleanup must not leave the next one
-	// unable to cut itself.
-	a.clearContextBudgetCut()
-	// And for the gate's arm (#1081), which is armed by a count the
-	// gate itself clears at the same boundary.
-	a.clearRefusalStorm()
+	// Fresh per-turn guardrail-halt marker (#818), in-turn context
+	// backstop (#975), and gate refusal-storm arm (#1081).
+	a.resetTurnGuardrails()
 
 	// Announce the turn entering the streaming state. Only fields
 	// that change since the last emission need to be present
@@ -1828,6 +1839,10 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	// session's agent from tool.Context rather than a daemon-global
 	// pointer (#1362).
 	runCtx = WithRunningAgent(runCtx, a)
+	// Stamp this turn's triggering message onto runCtx so delegated
+	// subagents can attach it verbatim without the parent model
+	// transcribing it into tool arguments (#1499).
+	runCtx = a.withTurnParentInput(runCtx, tp, msg)
 	// This session's record of a served model call (#1247), for the
 	// provider's retry policy. Always installed, even nil, so a Run
 	// nested under another agent's turn never reads that agent's.

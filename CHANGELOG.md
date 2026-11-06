@@ -18,6 +18,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 #### Feature
 
+- **Subagent parent-input forwarding (`attach: ["input"]`, `include_input`, and `subagents[].inherit`).** Splices the parent turn's triggering message verbatim into sync and `spawn_agent` subagents without re-typing it. ([#1499](https://github.com/go-steer/core-agent/issues/1499))
 - **Forge-neutral `vcs_*` tools (`pkg/tools/vcs`) and `config.vcs` for distroless GitOps.** Adds pure-Go `vcs_*` tools over `core-vcs@v1.1.0` (GitHub, GitLab, git), `builtin:propose-change`, token-file refusal, and `verify-core-vcs-pin`. ([#1490](https://github.com/go-steer/core-agent/issues/1490))
 
 #### Security

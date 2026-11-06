@@ -32,7 +32,6 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/toolcalls"
-	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
@@ -154,6 +153,11 @@ type SubagentOptions struct {
 	// for this subagent tool. Empty falls back to Inner.SubagentMode()
 	// (which defaults to SubagentModeChat).
 	Mode SubagentMode
+
+	// InheritInput automatically appends the parent turn's triggering
+	// message verbatim to every request sent to this subagent (#1499).
+	// When false, falls back to Inner.SubagentInheritInput().
+	InheritInput bool
 }
 
 // SubagentBudgets caps one synchronous delegation along the same three
@@ -209,7 +213,9 @@ const (
 // subagent tool call: a single "request" string carrying the task
 // for the subagent.
 type subagentArgs struct {
-	Request string `json:"request" jsonschema:"the task for the subagent in plain language"`
+	Request      string   `json:"request" jsonschema:"the task for the subagent in plain language"`
+	Attach       []string `json:"attach,omitempty" jsonschema:"optional parent context items to append verbatim to request. Pass [\"input\"] to append the triggering message that started this turn without re-typing it."`
+	IncludeInput bool     `json:"include_input,omitempty" jsonschema:"when true, appends the triggering message that started this turn verbatim to request (shorthand for attach: [\"input\"])."`
 }
 
 // subagentResult is what comes back to the parent's model: the
@@ -358,6 +364,11 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 			return nil, fmt.Errorf("agent: NewSubagentTool %q: %w", name, err)
 		}
 		taskHandler := func(toolCtx adkagent.Context, args subagentArgs) (subagentTaskResult, error) {
+			reqText, err := resolveSubagentRequest(toolCtx, name, args, opts)
+			if err != nil {
+				return subagentTaskResult{}, err
+			}
+			args.Request = reqText
 			text, lastOutput, stopReason, calls, refused, err := runSubagentInvocation(
 				toolCtx, args, opts, name, maxDepth, branch, parentService,
 				dispatched, innerAppName, innerUserID, innerModelName, billTo, parentSessionID, true,
@@ -405,6 +416,11 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 	}
 
 	handler := func(toolCtx adkagent.Context, args subagentArgs) (subagentResult, error) {
+		reqText, err := resolveSubagentRequest(toolCtx, name, args, opts)
+		if err != nil {
+			return subagentResult{}, err
+		}
+		args.Request = reqText
 		text, _, stopReason, calls, refused, err := runSubagentInvocation(
 			toolCtx, args, opts, name, maxDepth, branch, parentService,
 			innerAgent, innerAppName, innerUserID, innerModelName, billTo, parentSessionID, false,
@@ -501,21 +517,7 @@ func runSubagentInvocation(
 		return "", nil, "", calls, "", fmt.Errorf("subagent %q: build runner: %w", name, err)
 	}
 
-	// Push the new depth into the context value chain so any
-	// further subagent calls from inside this one see the
-	// incremented count.
-	childCtx := subsession.WithDepth(toolCtx, subsession.CurrentDepth(toolCtx)+1)
-	// Record which subagent we're inside so a spawn_agent call made
-	// from in here can't re-launch this same subagent asynchronously
-	// (#732). A declarative subagent is reachable both ways — as a
-	// parent tool call and by reference — under one name, so the
-	// guard has to see the synchronous half of the stack too.
-	childCtx = subsession.WithLineage(childCtx, name)
-	// The parent's served calls say nothing about this subagent's
-	// own instruction and tools, so the delegation gets a record of
-	// its own, marked from the loop below (#1247; prior_success.go).
-	served := models.NewPriorSuccess()
-	childCtx = models.WithPriorSuccess(childCtx, served)
+	childCtx, served := buildSubagentChildContext(toolCtx, name, args.Request)
 
 	msg := genai.NewContentFromText(args.Request, genai.RoleUser)
 	var sb strings.Builder

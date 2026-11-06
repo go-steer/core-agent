@@ -1539,6 +1539,14 @@ type SubagentSpec struct {
 	// delegation, which has no turns to schedule between.
 	Scheduler string `json:"scheduler,omitempty" yaml:"scheduler,omitempty"`
 
+	// Inherit lists parent context items automatically appended verbatim
+	// to every delegation to this subagent on both the synchronous
+	// parent-tool door and the spawn_agent reference door (#1499).
+	// Supported values: SubagentInheritInput ("input"), which appends
+	// the parent turn's triggering message without the parent model
+	// re-typing it.
+	Inherit []string `json:"inherit,omitempty" yaml:"inherit,omitempty"`
+
 	// Remote configures this subagent as an out-of-process A2A v0.3
 	// delegate (#1396). When set, spawn_agent {agent: "<name>"} routes
 	// to the configured A2A endpoint (message/stream when the remote
@@ -1550,6 +1558,20 @@ type SubagentSpec struct {
 
 	fromMarkdown bool   `json:"-" yaml:"-"`
 	baseDir      string `json:"-" yaml:"-"`
+}
+
+// SubagentInheritInput is the SubagentSpec.Inherit item that appends the
+// parent turn's triggering message verbatim to the subagent's prompt (#1499).
+const SubagentInheritInput = "input"
+
+// InheritsInput reports whether s.Inherit includes SubagentInheritInput.
+func (s SubagentSpec) InheritsInput() bool {
+	for _, item := range s.Inherit {
+		if strings.TrimSpace(item) == SubagentInheritInput {
+			return true
+		}
+	}
+	return false
 }
 
 // EffectiveMode returns the subagent's execution mode, defaulting to
@@ -2654,7 +2676,19 @@ func (c *Config) validateSubagentFields(i int, sa SubagentSpec) error {
 		return fmt.Errorf("config: subagents[%d].capability %q is unknown (want %q or %q)",
 			i, sa.Capability, CapabilityReadOnly, CapabilityChangeExecutor)
 	}
+	if err := validateSubagentInherit(i, sa.Inherit); err != nil {
+		return err
+	}
 	return validateSubagentMCPTools(i, sa.MCP, sa.MCPTools)
+}
+
+func validateSubagentInherit(i int, inherit []string) error {
+	for j, item := range inherit {
+		if strings.TrimSpace(item) != SubagentInheritInput {
+			return fmt.Errorf("config: subagents[%d].inherit[%d] %q is unknown (want %q)", i, j, item, SubagentInheritInput)
+		}
+	}
+	return nil
 }
 
 func (c *Config) validateToolPolicies() error {

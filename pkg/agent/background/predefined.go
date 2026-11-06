@@ -74,10 +74,11 @@ var ErrAdhocDisabled = errors.New("background: ad-hoc subagents are disabled")
 //   - Budgets tighten only: a smaller positive cap wins; a larger or
 //     zero override is ignored.
 type RefOverrides struct {
-	Goal    string
-	Model   string
-	Tools   []string
-	Budgets Budgets
+	Goal         string
+	Model        string
+	Tools        []string
+	Budgets      Budgets
+	IncludeInput bool
 }
 
 // Predefined returns the registered spec for name (a copy) and whether
@@ -208,6 +209,7 @@ func (m *Manager) resolvePredefinedSpec(name string, ov RefOverrides) (Spec, err
 	// Budgets: tighten only.
 	spec.Budgets = tightenBudgets(base.Budgets, ov.Budgets)
 	spec.curatedMaxCost = base.Budgets.MaxCost > 0
+	spec.InheritInput = base.InheritInput || ov.IncludeInput
 
 	return spec, nil
 }

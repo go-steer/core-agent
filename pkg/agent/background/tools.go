@@ -23,6 +23,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/toolcalls"
 )
@@ -325,13 +326,19 @@ func completionResult(h *Handle) spawnAgentResult {
 // — the latter gated by allow_adhoc (#626). Declarative-subagent
 // templates are handled earlier, in the tool handler, via SpawnTemplate.
 func buildSpawnSpec(mgr *Manager, args spawnAgentArgs) (Spec, string, error) {
+	attachInput, err := agent.ValidateSubagentAttach(args.Attach)
+	if err != nil {
+		return Spec{}, spawnTargetName(args), err
+	}
+	includeInput := attachInput || args.IncludeInput
 	budgets := budgetsFromArgs(args)
 	if ref := strings.TrimSpace(args.Agent); ref != "" {
 		spec, err := mgr.resolvePredefinedSpec(ref, RefOverrides{
-			Goal:    args.Goal,
-			Model:   args.Model,
-			Tools:   args.Tools,
-			Budgets: budgets,
+			Goal:         args.Goal,
+			Model:        args.Model,
+			Tools:        args.Tools,
+			Budgets:      budgets,
+			IncludeInput: includeInput,
 		})
 		if err != nil {
 			return Spec{}, ref, err
@@ -359,6 +366,7 @@ func buildSpawnSpec(mgr *Manager, args spawnAgentArgs) (Spec, string, error) {
 		Budgets:      budgets,
 		ModelID:      modelID,
 		Scheduler:    args.Scheduler,
+		InheritInput: includeInput,
 	}, args.Name, nil
 }
 
@@ -381,6 +389,8 @@ type spawnAgentArgs struct {
 	MaxWallclockSeconds int      `json:"max_wallclock_seconds,omitempty" jsonschema:"tighten the per-subagent wall-clock cap (may only lower a preconfigured subagent's cap)"`
 	Scheduler           string   `json:"scheduler,omitempty" jsonschema:"ad-hoc only: between-turn scheduler for this subagent. Values: 'default' (use the manager's default — typical), 'sleep' (in-process goroutine sleep — long-lived daemon shape), 'exit_on_defer' (exit cleanly so an orchestrator like k8s CronJob restarts at the wake-time), 'none' (no scheduler — schedule_next_turn unavailable, useful for one-shot triage subagents). Default: 'default'. This also picks how the subagent stops: with a scheduler it is a standing worker that keeps looping until a budget or an explicit return; without one it is a bounded delegation that finishes as soon as it stops calling tools."`
 	Wait                bool     `json:"wait,omitempty" jsonschema:"set true to run the subagent synchronously: block this turn until it finishes and return its final output inline (like a direct delegation). Omit (the default) to fire-and-continue — the subagent runs in the background and its result is pushed to a later turn. A synchronous wait is capped by a tighter wall-clock; on timeout the subagent keeps running in the background and its result is pushed later."`
+	Attach              []string `json:"attach,omitempty" jsonschema:"optional parent context items to append verbatim to goal. Pass [\"input\"] to append the triggering message that started this turn without re-typing it."`
+	IncludeInput        bool     `json:"include_input,omitempty" jsonschema:"when true, appends the triggering message that started this turn verbatim to goal (shorthand for attach: [\"input\"])."`
 }
 
 type spawnAgentResult struct {
@@ -617,6 +627,18 @@ func requiresAbsorbDisclosure(class StopClass) bool {
 // configuration problems.
 func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 	handler := func(toolCtx adkagent.Context, args spawnAgentArgs) (spawnAgentResult, error) {
+		attachInput, err := agent.ValidateSubagentAttach(args.Attach)
+		if err != nil {
+			return refusedSpawn(spawnTargetName(args), err), nil
+		}
+		includeInput := attachInput || args.IncludeInput || mgr.inheritsInput(args.Agent)
+		if includeInput {
+			baseGoal := args.Goal
+			if strings.TrimSpace(baseGoal) == "" {
+				baseGoal = mgr.predefinedDefaultGoal(args.Agent)
+			}
+			args.Goal = agent.SpliceParentInput(baseGoal, agent.ParentInputFromContext(toolCtx))
+		}
 		// Gate the spawn before resolving it. A denial is a refusal, not
 		// a Go error, for the same reason every other failed launch here
 		// is one: the model can act on it (record the plan, pick a
@@ -636,11 +658,13 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 			return refusedSpawn(spawnTargetName(args), err), nil
 		}
 		parentBranch := toolCtx.Branch()
+		// args.Goal already carries any spliced parent input, so clear the
+		// context value before SpawnTemplate / Spawn to avoid splicing twice.
+		spawnCtx := agent.WithParentInput(toolCtx, "")
 
 		var (
 			h    *Handle
 			name string
-			err  error
 		)
 		// Declarative-subagent template reference (rooted or inline
 		// subagent registered via SetSubagentTemplates) takes the
@@ -648,11 +672,12 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 		// built and can't be reconstructed from the catalog (#626).
 		if ref := strings.TrimSpace(args.Agent); ref != "" && mgr.hasTemplate(ref) {
 			name = ref
-			h, err = mgr.SpawnTemplate(toolCtx, parentBranch, ref, RefOverrides{
-				Goal:    args.Goal,
-				Model:   args.Model,
-				Tools:   args.Tools,
-				Budgets: budgetsFromArgs(args),
+			h, err = mgr.SpawnTemplate(spawnCtx, parentBranch, ref, RefOverrides{
+				Goal:         args.Goal,
+				Model:        args.Model,
+				Tools:        args.Tools,
+				Budgets:      budgetsFromArgs(args),
+				IncludeInput: includeInput,
 			}, args.Name)
 		} else {
 			// Catalog reference or ad-hoc inline persona → concrete Spec.
@@ -664,7 +689,7 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 				// model can adapt.
 				return refusedSpawn(name, err), nil
 			}
-			h, err = mgr.Spawn(toolCtx, parentBranch, spec)
+			h, err = mgr.Spawn(spawnCtx, parentBranch, spec)
 		}
 
 		// Fire-and-continue (the default) or a failed launch → report the

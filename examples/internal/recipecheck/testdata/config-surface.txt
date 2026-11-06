@@ -211,6 +211,7 @@ subagents[].budgets.max_turns
 subagents[].budgets.max_wallclock_seconds
 subagents[].capability
 subagents[].description
+subagents[].inherit
 subagents[].instructions
 subagents[].max_depth
 subagents[].mcp

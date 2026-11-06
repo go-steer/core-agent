@@ -170,6 +170,9 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 // spawn is Spawn; maxCostExplicit reports that an operator, not a
 // default or the parent's model, wrote spec.Budgets.MaxCost.
 func (m *Manager) spawn(ctx context.Context, parentBranch string, maxCostExplicit bool, spec Spec) (*Handle, error) {
+	if spec.InheritInput {
+		spec.Goal = agent.SpliceParentInput(spec.Goal, agent.ParentInputFromContext(ctx))
+	}
 	if err := validateSpec(spec); err != nil {
 		return nil, err
 	}

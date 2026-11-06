@@ -79,7 +79,7 @@ func globFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[glob
 		if root == "" {
 			root = "."
 		}
-		absRoot, err := absolutize(root)
+		absRoot, err := absolutizeIn(ctx, root)
 		if err != nil {
 			return globResult{}, err
 		}

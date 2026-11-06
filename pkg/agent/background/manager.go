@@ -105,8 +105,9 @@ type Manager struct {
 	defaultScheduler coretools.Scheduler
 
 	// parallelWrites is the resolved safety.parallel_subagent_writes
-	// policy: refuse (default) / warn / allow. See parallelwrites.go.
-	parallelWrites string
+	// policy: refuse (default) / warn / allow / worktree. See parallelwrites.go.
+	parallelWrites  string
+	worktreeBaseDir string
 
 	// predefined is the operator-curated roster the model can spawn by
 	// reference (spawn_agent {agent: "<name>"}), keyed by spec name.
@@ -185,6 +186,14 @@ type Handle struct {
 	// holding only m.mu.
 	writesFS bool
 
+	// worktreeDir and worktreeCleanup hold the isolated git worktree
+	// provisioned for this subagent when safety.parallel_subagent_writes
+	// is "worktree" (#653). Empty/nil when the subagent shares the
+	// parent's working directory. Guarded by mu.
+	worktreeDir     string
+	worktreeCleanup func()
+	cleanupOnDone   bool
+
 	mu     sync.Mutex
 	status Status
 	result *autonomous.RunResult
@@ -202,6 +211,60 @@ type Handle struct {
 	// consolidated model message (#1283).
 	lastAlert string
 	lastText  string
+}
+
+// WorktreeDir returns the isolated git worktree directory provisioned
+// for this subagent when safety.parallel_subagent_writes is "worktree",
+// or "" when the subagent shares the parent's working directory (#653).
+func (h *Handle) WorktreeDir() string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.worktreeDir
+}
+
+func (h *Handle) setWorktree(dir string, cleanup func()) {
+	h.mu.Lock()
+	h.worktreeDir = dir
+	h.worktreeCleanup = cleanup
+	runNow := h.cleanupOnDone
+	h.mu.Unlock()
+	if runNow && cleanup != nil {
+		cleanup()
+	}
+}
+
+func (h *Handle) cleanupWorktree() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	select {
+	case <-h.done:
+		fn := h.worktreeCleanup
+		h.mu.Unlock()
+		if fn != nil {
+			fn()
+		}
+	default:
+		h.cleanupOnDone = true
+		h.mu.Unlock()
+	}
+}
+
+func (h *Handle) finishDone() {
+	h.mu.Lock()
+	close(h.done)
+	var fn func()
+	if h.cleanupOnDone {
+		fn = h.worktreeCleanup
+	}
+	h.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // syncClaim tracks whether a spawn_agent {wait: true} caller is going
@@ -588,6 +651,7 @@ type bgMgrConfig struct {
 	spawnPricing     func(SpawnPricing) error
 	syncWaitTimeout  time.Duration
 	parallelWrites   string
+	worktreeBaseDir  string
 }
 
 // WithProvider wires the model provider + model ID used to
@@ -638,14 +702,20 @@ func WithMaxTerminalHandles(n int) ManagerOption {
 
 // WithParallelWritePolicy selects what happens when a write-capable
 // subagent would start while another write-capable subagent is still
-// running — they share one working directory (#653).
+// running (#653).
 //
-// One of "refuse" (default), "warn", or "allow"; empty or unrecognized
-// resolves to "refuse". See config.SafetyConfig.ParallelSubagentWrites
-// for the operator-facing description and parallelwrites.go for why
-// refusing the shape is the guarantee on offer instead of isolation.
+// One of "refuse" (default), "worktree", "warn", or "allow"; empty or
+// unrecognized resolves to "refuse". See config.SafetyConfig.ParallelSubagentWrites
+// for the operator-facing description.
 func WithParallelWritePolicy(mode string) ManagerOption {
 	return func(c *bgMgrConfig) { c.parallelWrites = mode }
+}
+
+// WithWorktreeBaseDir overrides the git repository directory from which
+// per-subagent git worktrees are created when WithParallelWritePolicy("worktree")
+// is active (#653). Empty defaults to the process working directory.
+func WithWorktreeBaseDir(dir string) ManagerOption {
+	return func(c *bgMgrConfig) { c.worktreeBaseDir = dir }
 }
 
 // WithDefaultBudgets sets the budgets a spawn request
@@ -802,6 +872,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		maxConcurrent:    cfg.maxConcurrent,
 		maxTerminal:      cfg.maxTerminal,
 		parallelWrites:   resolveWritePolicy(cfg.parallelWrites),
+		worktreeBaseDir:  cfg.worktreeBaseDir,
 		defaultBudgets:   cfg.defaultBudgets,
 		defaultScheduler: cfg.defaultScheduler,
 		predefined:       predefined,
@@ -1169,12 +1240,16 @@ func (m *Manager) Close() error {
 	}()
 	select {
 	case <-drained:
+		for _, h := range handles {
+			h.cleanupWorktree()
+		}
 		return nil
 	case <-time.After(closeDrainTimeout):
 		stuck := 0
 		for _, h := range handles {
 			select {
 			case <-h.done:
+				h.cleanupWorktree()
 			default:
 				stuck++
 			}
@@ -1226,6 +1301,7 @@ func (m *Manager) evictTerminalHandlesLocked() {
 	})
 	excess := len(terminal) - m.maxTerminal
 	for i := 0; i < excess; i++ {
+		terminal[i].cleanupWorktree()
 		delete(m.agents, terminal[i].Name)
 	}
 }

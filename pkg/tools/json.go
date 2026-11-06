@@ -87,7 +87,7 @@ func jsonQueryFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func
 
 		var raw []byte
 		if hasPath {
-			path, err := absolutize(in.Path)
+			path, err := absolutizeIn(ctx, in.Path)
 			if err != nil {
 				return jsonQueryResult{}, err
 			}

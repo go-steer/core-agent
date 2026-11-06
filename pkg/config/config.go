@@ -205,7 +205,10 @@ type SafetyConfig struct {
 	// Values: "refuse" (default) rejects a spawn whose granted tools
 	// can write while another write-capable background agent is still
 	// running, with an error naming the agent already holding the tree;
-	// "warn" allows it and logs a structured alert; "allow" disables
+	// "worktree" provisions a dedicated git worktree per write-capable
+	// background subagent and isolates its cwd and file writes to that
+	// worktree so multiple writers can run in parallel; "warn" allows
+	// shared-tree writes and logs a structured alert; "allow" disables
 	// the check.
 	//
 	// The check is on the *capability*, not on an observed collision —
@@ -2364,11 +2367,11 @@ func (c *Config) Validate() error {
 			c.Safety.BashSearchGate, BashSearchGateEnforce, BashSearchGateWarn, BashSearchGateAllow)
 	}
 	switch c.Safety.ParallelSubagentWrites {
-	case "", ParallelSubagentWritesRefuse, ParallelSubagentWritesWarn, ParallelSubagentWritesAllow:
+	case "", ParallelSubagentWritesRefuse, ParallelSubagentWritesWarn, ParallelSubagentWritesAllow, ParallelSubagentWritesWorktree:
 		// ok; "" defaults to refuse (see SafetyConfig.ParallelSubagentWrites).
 	default:
-		return fmt.Errorf("config: unknown safety.parallel_subagent_writes %q (want one of %q, %q, %q)",
-			c.Safety.ParallelSubagentWrites, ParallelSubagentWritesRefuse, ParallelSubagentWritesWarn, ParallelSubagentWritesAllow)
+		return fmt.Errorf("config: unknown safety.parallel_subagent_writes %q (want one of %q, %q, %q, %q)",
+			c.Safety.ParallelSubagentWrites, ParallelSubagentWritesRefuse, ParallelSubagentWritesWarn, ParallelSubagentWritesAllow, ParallelSubagentWritesWorktree)
 	}
 	switch c.Permissions.PlanMode {
 	case "", PlanModeOff, PlanModeAdvisory, PlanModeRequired:
@@ -2507,9 +2510,10 @@ const (
 // Parallel-subagent-write policy constants. See
 // SafetyConfig.ParallelSubagentWrites. Listed strongest to weakest.
 const (
-	ParallelSubagentWritesRefuse = "refuse"
-	ParallelSubagentWritesWarn   = "warn"
-	ParallelSubagentWritesAllow  = "allow"
+	ParallelSubagentWritesRefuse   = "refuse"
+	ParallelSubagentWritesWarn     = "warn"
+	ParallelSubagentWritesAllow    = "allow"
+	ParallelSubagentWritesWorktree = "worktree"
 )
 
 // Plan-mode constants. See PermissionsConfig.PlanMode for behavior.

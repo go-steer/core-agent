@@ -207,7 +207,7 @@ files. Wait for "reviewer-1" to finish (or stop_agent it) and spawn again, give
 spawn_remote_agent, which runs out of process with its own filesystem
 ```
 
-Write-capable means the *granted tools*, not an observed collision: a subagent holding `bash` counts even if all it runs is `go test`, because by the time a collision is observable the tree is already wrong. Read-only fan-out is unaffected, so Pattern 2 against a roster of read-only investigators works exactly as before — which is most of the fan-outs worth doing. `safety.parallel_subagent_writes` selects `refuse` (default), `warn` (run it, log an operator notice) or `allow`.
+Write-capable means the *granted tools*, not an observed collision: a subagent holding `bash` counts even if all it runs is `go test`, because by the time a collision is observable the tree is already wrong. Read-only fan-out is unaffected, so Pattern 2 against a roster of read-only investigators works exactly as before — which is most of the fan-outs worth doing. `safety.parallel_subagent_writes` selects `refuse` (default), `worktree` (provision a dedicated detached `git worktree` per write-capable background subagent and isolate its `cwd` and file writes to that worktree so multiple writers can run in parallel), `warn` (run it on the shared tree, log an operator notice) or `allow`.
 
 **Serializing the background agents instead was the obvious alternative and it is worse.** A background `bash` running a ten-minute test suite would hold the lock for ten minutes and block the parent's own edits behind it. Background subagents exist to be non-blocking; a safety property bought by stalling the interactive session is not a trade an operator would take.
 

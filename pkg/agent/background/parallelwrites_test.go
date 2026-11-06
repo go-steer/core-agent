@@ -18,6 +18,9 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +31,9 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 // parkedProvider yields an LLM that parks until release is closed,
@@ -251,6 +257,7 @@ func TestResolveWritePolicy(t *testing.T) {
 		"refuse":   policyRefuse,
 		"warn":     policyWarn,
 		"allow":    policyAllow,
+		"worktree": policyWorktree,
 		"REFUSE":   policyRefuse,
 		"Allow":    policyRefuse, // case-sensitive, and a typo must not disarm
 		"whatever": policyRefuse,
@@ -259,6 +266,170 @@ func TestResolveWritePolicy(t *testing.T) {
 		if got := resolveWritePolicy(in); got != want {
 			t.Errorf("resolveWritePolicy(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func initTestGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@example.com")
+	runGit("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "shared.txt"), []byte("parent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "shared.txt")
+	runGit("commit", "-m", "init")
+	return repo
+}
+
+// Per-subagent git worktree isolation (#653): under policy "worktree",
+// two write-capable background subagents run concurrently, each in its
+// own detached git worktree, and writing to relative paths or running
+// bash modifies only each subagent's own worktree without touching the
+// parent repo or the sibling's worktree.
+func TestSpawn_WorktreePolicyIsolatesConcurrentWriters(t *testing.T) {
+	repo := initTestGitRepo(t)
+	scope, err := permissions.NewPathScope(repo, "", nil)
+	if err != nil {
+		t.Fatalf("NewPathScope: %v", err)
+	}
+	gate := permissions.New(permissions.Options{
+		Mode:  permissions.ModeYolo,
+		Scope: scope,
+	})
+	reg, err := coretools.Build(config.DefaultConfig(), gate, repo, coretools.Default())
+	if err != nil {
+		t.Fatalf("tools.Build: %v", err)
+	}
+	built := reg.Tools
+
+	// scriptedProvider issues a write_file("shared.txt", "<agentName>")
+	// on turn 1 and completes on turn 2.
+	prov := &worktreeWriterProvider{}
+	mgr, err := NewManager(
+		WithProvider(prov, "writer"),
+		WithGate(gate),
+		WithMaxConcurrent(8),
+		WithAlertBuffer(16),
+		WithCatalog(built),
+		WithParallelWritePolicy("worktree"),
+		WithWorktreeBaseDir(repo),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	newTestParent(t, mgr)
+
+	h1, err := mgr.Spawn(context.Background(), "", Spec{
+		Name: "w1", Goal: "write w1", SystemPrompt: "writer", Tools: []string{"write_file"},
+	})
+	if err != nil {
+		t.Fatalf("spawn w1: %v", err)
+	}
+	h2, err := mgr.Spawn(context.Background(), "", Spec{
+		Name: "w2", Goal: "write w2", SystemPrompt: "writer", Tools: []string{"write_file"},
+	})
+	if err != nil {
+		t.Fatalf("spawn w2 concurrently under worktree policy: %v", err)
+	}
+
+	if h1.WorktreeDir() == "" || h2.WorktreeDir() == "" {
+		t.Fatalf("WorktreeDir empty: w1=%q w2=%q", h1.WorktreeDir(), h2.WorktreeDir())
+	}
+	if h1.WorktreeDir() == h2.WorktreeDir() {
+		t.Fatalf("w1 and w2 share WorktreeDir %q", h1.WorktreeDir())
+	}
+
+	for _, h := range []*Handle{h1, h2} {
+		select {
+		case <-h.Done():
+		case <-time.After(20 * time.Second):
+			t.Fatalf("%s did not finish", h.Name)
+		}
+		if h.Err() != nil {
+			t.Fatalf("%s failed: %v", h.Name, h.Err())
+		}
+	}
+
+	// Each worktree has its own edit, while the parent repo is untouched.
+	got1, err := os.ReadFile(filepath.Join(h1.WorktreeDir(), "shared.txt"))
+	if err != nil || string(got1) != "from-write w1\n" {
+		t.Errorf("w1 worktree shared.txt = %q (err=%v), want %q", got1, err, "from-write w1\n")
+	}
+	got2, err := os.ReadFile(filepath.Join(h2.WorktreeDir(), "shared.txt"))
+	if err != nil || string(got2) != "from-write w2\n" {
+		t.Errorf("w2 worktree shared.txt = %q (err=%v), want %q", got2, err, "from-write w2\n")
+	}
+	gotParent, err := os.ReadFile(filepath.Join(repo, "shared.txt"))
+	if err != nil || string(gotParent) != "parent\n" {
+		t.Errorf("parent shared.txt = %q (err=%v), want untouched %q", gotParent, err, "parent\n")
+	}
+
+	// Closing the manager removes the temporary worktrees.
+	wt1, wt2 := h1.WorktreeDir(), h2.WorktreeDir()
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(wt1); !os.IsNotExist(err) {
+		t.Errorf("w1 worktree %q still exists after Close: %v", wt1, err)
+	}
+	if _, err := os.Stat(wt2); !os.IsNotExist(err) {
+		t.Errorf("w2 worktree %q still exists after Close: %v", wt2, err)
+	}
+}
+
+type worktreeWriterProvider struct{}
+
+func (*worktreeWriterProvider) Name() string { return "writer" }
+func (*worktreeWriterProvider) Model(context.Context, string) (adkmodel.LLM, error) {
+	return &worktreeWriterLLM{}, nil
+}
+
+type worktreeWriterLLM struct {
+	called bool
+}
+
+func (*worktreeWriterLLM) Name() string { return "writer-llm" }
+func (l *worktreeWriterLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if !l.called {
+			l.called = true
+			goal := "subagent"
+			if req != nil && len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 {
+				goal = strings.TrimSpace(req.Contents[0].Parts[0].Text)
+			}
+			yield(&adkmodel.LLMResponse{
+				Content: &genai.Content{
+					Role: genai.RoleModel,
+					Parts: []*genai.Part{{
+						FunctionCall: &genai.FunctionCall{
+							ID:   "call-write",
+							Name: "write_file",
+							Args: map[string]any{
+								"path":    "shared.txt",
+								"content": "from-" + goal + "\n",
+							},
+						},
+					}},
+				},
+				FinishReason: genai.FinishReasonStop,
+				TurnComplete: true,
+			}, nil)
+			return
+		}
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}},
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+		}, nil)
 	}
 }
 

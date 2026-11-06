@@ -31,7 +31,9 @@ import (
 type EventsOption func(*eventsConfig)
 
 type eventsConfig struct {
-	color bool
+	color  bool
+	prefix bool
+	format OutputFormat
 }
 
 // eventsConfigFromOpts resolves the eventsConfig from a slice of
@@ -39,7 +41,10 @@ type eventsConfig struct {
 // display path can know whether to render colored ↪ lines without
 // re-parsing the opts itself.
 func eventsConfigFromOpts(opts []EventsOption) eventsConfig {
-	cfg := eventsConfig{}
+	cfg := eventsConfig{
+		prefix: true,
+		format: OutputFormatText,
+	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -53,6 +58,20 @@ func eventsConfigFromOpts(opts []EventsOption) eventsConfig {
 // IsTerminal(out)).
 func WithColor(on bool) EventsOption {
 	return func(c *eventsConfig) { c.color = on }
+}
+
+// WithPrefix controls whether WriteEvents prefixes each assistant
+// speaking block with "asst › ". Enabled by default for interactive
+// REPL rendering; Headless disables it automatically when stdout is
+// not a terminal so piped `-p` output contains only the model's text (#1379).
+func WithPrefix(on bool) EventsOption {
+	return func(c *eventsConfig) { c.prefix = on }
+}
+
+// WithOutputFormat selects the output encoding for Headless:
+// OutputFormatText (default), OutputFormatJSON, or OutputFormatStreamJSON (#1379).
+func WithOutputFormat(format OutputFormat) EventsOption {
+	return func(c *eventsConfig) { c.format = format }
 }
 
 // seenLines is a small set used to dedupe ↪ output within one
@@ -78,8 +97,11 @@ func (s seenLines) add(line string) (newLine bool) {
 //
 // Routing:
 //   - Partial assistant text (event.Partial == true) streams to out
-//     as it arrives, with no prefix — so a model's reply renders
-//     character-by-character like an interactive chat.
+//     as it arrives, prefixed once per assistant speaking block with
+//     `asst › ` by default (or unprefixed when WithPrefix(false) is
+//     passed, as Headless does when stdout is not a terminal) — so a
+//     model's reply renders character-by-character like an interactive
+//     chat.
 //   - Tool calls render as `→ name(key=value, ...)` to info.
 //   - Tool responses render as `← name(key=value, ...)` to info.
 //   - Server-side built-in evidence (Gemini grounding metadata)
@@ -118,10 +140,7 @@ func (s seenLines) add(line string) (newLine bool) {
 // Returns the first iterator error, or nil on clean completion. A
 // trailing newline is written to out if any text was streamed.
 func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, opts ...EventsOption) error {
-	cfg := eventsConfig{}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
+	cfg := eventsConfigFromOpts(opts)
 	wroteText := false
 	// asstStarted tracks whether we've written the `asst › ` sigil
 	// for the current assistant response. We reset it when a
@@ -181,15 +200,12 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, o
 				case p.Text != "" && event.Partial:
 					if !asstStarted {
 						// Emit the speaker sigil before the first chunk
-						// of this assistant block. Bold cyan so it
-						// stands out from the green model text without
-						// burning a whole line. Keeps the visual
-						// boundary between user input and model reply
-						// obvious, which the previous (no-prefix)
-						// rendering blurred — particularly under the
-						// echo provider where the reply text equals
-						// the prompt.
-						_, _ = io.WriteString(out, paint("asst › ", ansiCyan, cfg.color))
+						// of this assistant block when prefix mode is on
+						// (interactive TTY / REPL). Dropped on piped
+						// headless stdout so `-p` output can be piped cleanly (#1379).
+						if cfg.prefix {
+							_, _ = io.WriteString(out, paint("asst › ", ansiCyan, cfg.color))
+						}
 						asstStarted = true
 					}
 					text := paint(p.Text, ansiGreen, cfg.color)

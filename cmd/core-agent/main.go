@@ -160,6 +160,11 @@ func main() {
 	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
 	color := flag.String("color", "auto", "ANSI color in streamed output: auto|always|never (auto = TTY-detect on stdout)")
+	outputFormat := flag.String("output-format", "text", "output format for headless (-p) runs: text (default; omits 'asst › ' prefix when stdout is not a terminal) | json (single JSON document on stdout at turn end) | stream-json (NDJSON event stream on stdout)")
+	var quietVal bool
+	flag.BoolVar(&quietVal, "q", false, "suppress startup config summary and closing turn summary on stderr; errors still print")
+	flag.BoolVar(&quietVal, "quiet", false, "long-form alias for -q — same behavior")
+	quiet := &quietVal
 	// Default "" (not "off") so run() can tell "operator didn't pass --ask"
 	// from an explicit --ask=off. A task profile's ask mode only applies to
 	// the former; "" is treated as "off" everywhere downstream.
@@ -287,7 +292,7 @@ func main() {
 			planFirstSet: flagWasSet(flag.CommandLine, "plan-first"),
 			planMode:     *planMode,
 		},
-		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, *noPromptCache, *promptCacheTTL, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
+		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, *noPromptCache, *promptCacheTTL, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile, outputFormat: *outputFormat, quiet: *quiet},
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -517,6 +522,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			return runner.ExitConfigError
 		}
 	}
+	outFormat, err := resolveOutputFormat(promptCfg.outputFormat, prompt)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
 
 	// Filter "Error context canceled" out of the default log
 	// output. genai's SSE scanner unconditionally log.Printfs
@@ -525,6 +535,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// suppress at the source, so we drop the line at the
 	// process-wide log writer here.
 	installLogFilter(os.Stderr)
+	send := func(s string) {
+		if !promptCfg.quiet {
+			fmt.Fprintln(os.Stderr, "core-agent: "+s)
+		}
+	}
 
 	cwd, _ := os.Getwd()
 	cfg, agentsDir, err := loadConfig(cfgPath, agentsDirFlag, cwd)
@@ -687,8 +702,8 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		case len(profileDisables) > 0:
 			toolNote = "tools=default−" + strings.Join(profileDisables, ",")
 		}
-		fmt.Fprintf(os.Stderr, "core-agent: task class: %s → model=%s compaction-threshold=%.2f ask=%s %s (override individual knobs with --model / --compaction-threshold / --ask / --enable-tools / --plan-first)\n",
-			cfg.Session.TaskClass, cfg.Model.Name, profile.CompactionThreshold, ask, toolNote)
+		send(fmt.Sprintf("task class: %s → model=%s compaction-threshold=%.2f ask=%s %s (override individual knobs with --model / --compaction-threshold / --ask / --enable-tools / --plan-first)",
+			cfg.Session.TaskClass, cfg.Model.Name, profile.CompactionThreshold, ask, toolNote))
 	}
 
 	// A provider profile has no entry in taskclass's tables, so the
@@ -704,7 +719,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			return runner.ExitConfigError
 		}
 		cfg.Model.Name = id
-		fmt.Fprintf(os.Stderr, "core-agent: provider profile %s → model=%s (from the profile's tiers; override with --model)\n", cfg.Model.Provider, id)
+		send(fmt.Sprintf("provider profile %s → model=%s (from the profile's tiers; override with --model)", cfg.Model.Provider, id))
 	}
 
 	// Plan-first (#160) is resolved for every run, not just --task
@@ -748,7 +763,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	cfg.Permissions.NormalizePlanMode(planMode)
 	switch {
 	case planSource == sourcePlanNoRecorder:
-		fmt.Fprintf(os.Stderr, "core-agent: plan mode: off — the %s profile asks for plan-first, but %s\n", cfg.Session.TaskClass, planBlocker)
+		send(fmt.Sprintf("plan mode: off — the %s profile asks for plan-first, but %s", cfg.Session.TaskClass, planBlocker))
 	case planMode == config.PlanModeRequired && planBlocker != "":
 		// Explicit operator intent, so we honor it rather than
 		// silently flipping it off — but with no record_plan, /replan
@@ -757,14 +772,14 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// than letting the operator discover it one denial at a time.
 		fmt.Fprintf(os.Stderr, "core-agent: plan mode: required (%s) but %s — every mutating tool call will be denied with no way to clear the gate. Fix that, or pass --plan-mode=advisory.\n", planSource, planBlocker)
 	case planMode == config.PlanModeRequired:
-		fmt.Fprintf(os.Stderr, "core-agent: plan mode: required (%s) — mutating tools are denied until the model calls record_plan\n", planSource)
+		send(fmt.Sprintf("plan mode: required (%s) — mutating tools are denied until the model calls record_plan", planSource))
 	case planMode == config.PlanModeAdvisory && planBlocker != "":
 		// Advisory can't deadlock, but it can be inert, which looks
 		// identical to "working" until an operator goes looking for
 		// an audit trail that was never written.
 		fmt.Fprintf(os.Stderr, "core-agent: plan mode: advisory (%s) but %s — no plan artifact will be written.\n", planSource, planBlocker)
 	case planMode == config.PlanModeAdvisory:
-		fmt.Fprintf(os.Stderr, "core-agent: plan mode: advisory (%s) — record_plan is registered and its artifact persists to .agents/plans/, but no tool call is blocked on it\n", planSource)
+		send(fmt.Sprintf("plan mode: advisory (%s) — record_plan is registered and its artifact persists to .agents/plans/, but no tool call is blocked on it", planSource))
 	}
 
 	otelShutdown, err := telemetry.Setup(ctx, cfg.OTEL.Exporter)
@@ -832,7 +847,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// skipped — never breaks agent startup.
 	contextCacheManager := compose.MaybeWireContextCache(
 		ctx, provider, cfg, noContextCache,
-		func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) },
+		send,
 	)
 	if contextCacheManager != nil {
 		defer func() {
@@ -851,7 +866,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// was already applied inside models.Resolve; this only layers the
 	// CLI flag on top.
 	if status, _ := compose.MaybeWirePromptCacheTTL(provider, noPromptCache, promptCacheTTL); status != "" {
-		fmt.Fprintln(os.Stderr, "core-agent: "+status)
+		send(status)
 	}
 
 	m, err := provider.Model(ctx, cfg.Model.Name)
@@ -1006,8 +1021,6 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		fmt.Fprintf(os.Stderr, "core-agent: instruction load: %v\n", err)
 		return runner.ExitConfigError
 	}
-
-	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }
 
 	// Instruction-load visibility. Loading nothing is silently permitted
 	// (single-shot -p invocations, mock/scripted runs, freshly-cloned
@@ -1439,7 +1452,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		})
 		if perr != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: pricing refresh: %v\n", perr)
-		} else {
+		} else if !promptCfg.quiet {
 			compose.DescribeRefresh(os.Stderr, outcome)
 		}
 	}
@@ -1986,7 +1999,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// turns off the automatic trigger.
 	if !noCompact {
 		compactor := compose.BuildCompactor(cfg.Compaction)
-		if dc, ok := compactor.(*agent.DefaultCompactor); ok {
+		if dc, ok := compactor.(*agent.DefaultCompactor); ok && !promptCfg.quiet {
 			fmt.Fprintln(os.Stderr, compactionBootLine(dc, cfg.Model.Name))
 		}
 		opts = append(opts, agent.WithCompactor(compactor))
@@ -2168,7 +2181,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			// "wrap disabled" during the 2026-07-15 demo drive; the
 			// only way to confirm was to inspect /tools for
 			// retrieve_raw.
-			fmt.Fprintf(os.Stderr, "core-agent: mcp digest store: bound EventlogStore for session %s (retrieve_raw enabled)\n", a.SessionID())
+			send(fmt.Sprintf("mcp digest store: bound EventlogStore for session %s (retrieve_raw enabled)", a.SessionID()))
 		}
 	}))
 	sessionDB, impliedSessionDB, sessionDBConflict := resolveSessionDB(
@@ -2226,9 +2239,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		opts = append(opts, agent.WithEventLog(handle))
 		eventlogHandle = handle
 		if impliedSessionDB {
-			fmt.Fprintf(os.Stderr, "core-agent: session db: %s [implied by attach mode; --session-db-path to relocate]\n", path)
+			send(fmt.Sprintf("session db: %s [implied by attach mode; --session-db-path to relocate]", path))
 		} else {
-			fmt.Fprintf(os.Stderr, "core-agent: session db: %s\n", path)
+			send(fmt.Sprintf("session db: %s", path))
 		}
 
 		// digestStore is bound below, after agent.New — the
@@ -2248,7 +2261,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		// a line on every CLI invocation is the kind of noise that
 		// teaches people to stop reading startup output — which would
 		// cost more than this warning buys.
-		fmt.Fprintln(os.Stderr, "core-agent: session db: off (in-memory) — no resume, no auto-continue, no guardrail state across restart; this session is gone when the process exits. --session-db to persist.")
+		send("session db: off (in-memory) — no resume, no auto-continue, no guardrail state across restart; this session is gone when the process exits. --session-db to persist.")
 	}
 
 	// Auto-continue config (#539, #558, #559): resolved once here,
@@ -2624,36 +2637,11 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// commonly bind 0.0.0.0 for Listen but need to publish a specific
 	// pod IP to the hub.
 	if attachCfg.RegisterTo != "" {
-		if attachCfg.RegisterEndpoint == "" {
-			fmt.Fprintln(os.Stderr, "core-agent: --attach-register-to requires --attach-register-endpoint (the URL the hub should record for this agent)")
+		stopPeer, regErr := registerWithPeerHub(ctx, attachCfg, attachToken, send)
+		if regErr != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", regErr)
 			return runner.ExitConfigError
 		}
-		regName := attachCfg.RegisterName
-		if regName == "" {
-			if h, herr := os.Hostname(); herr == nil {
-				regName = h
-			} else {
-				regName = "core-agent"
-			}
-		}
-		peerClientOpts := []attach.PeerClientOption{}
-		if attachToken != "" {
-			peerClientOpts = append(peerClientOpts, attach.WithPeerBearerToken(attachToken))
-		}
-		peerClient := attach.NewPeerClient(attachCfg.RegisterTo, peerClientOpts...)
-		regCtx, regCancel := context.WithTimeout(ctx, 10*time.Second)
-		stopPeer, err := peerClient.RegisterAndHeartbeat(regCtx, attach.RegisterRequest{
-			Name:     regName,
-			Endpoint: attachCfg.RegisterEndpoint,
-			Labels:   map[string]string{"core-agent-version": "dev"},
-		})
-		regCancel()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: register with hub %s: %v\n", attachCfg.RegisterTo, err)
-			return runner.ExitConfigError
-		}
-		fmt.Fprintf(os.Stderr, "core-agent: registered with hub %s as %q (endpoint=%s)\n",
-			attachCfg.RegisterTo, regName, attachCfg.RegisterEndpoint)
 		defer stopPeer()
 	}
 
@@ -2662,7 +2650,10 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
-	eventsOpts := []runner.EventsOption{runner.WithColor(colorOn)}
+	eventsOpts := []runner.EventsOption{
+		runner.WithColor(colorOn),
+		runner.WithOutputFormat(outFormat),
+	}
 
 	var code int
 	if prompt != "" {
@@ -2671,7 +2662,9 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		}
 		if code == runner.ExitOK {
-			runner.WriteSummary(os.Stderr, tracker, m.Name())
+			if !promptCfg.quiet {
+				runner.WriteSummary(os.Stderr, tracker, m.Name())
+			}
 			persistTranscript(agentsDir, m.Name(), prompt, tracker)
 		}
 		return code
@@ -2696,9 +2689,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 			return runner.ExitAgentError
 		}
-		fmt.Fprintf(os.Stderr,
-			"core-agent: --no-repl: attach-only mode, session %s (Ctrl-C or SIGTERM to exit)\n",
-			a.SessionID())
+		send(fmt.Sprintf("--no-repl: attach-only mode, session %s (Ctrl-C or SIGTERM to exit)", a.SessionID()))
 		// Auto-continue for the startup session (#558): a headless
 		// single-user daemon has no human present, so a restart-
 		// interrupted turn deserves the same continuation the
@@ -2791,7 +2782,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			}
 		}
 		if didRun {
-			if code == runner.ExitOK {
+			if code == runner.ExitOK && !promptCfg.quiet {
 				runner.WriteSummary(os.Stderr, tracker, m.Name())
 			}
 			return code
@@ -2819,10 +2810,42 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 	}
-	if code == runner.ExitOK {
+	if code == runner.ExitOK && !promptCfg.quiet {
 		runner.WriteSummary(os.Stderr, tracker, m.Name())
 	}
 	return code
+}
+
+func registerWithPeerHub(ctx context.Context, attachCfg attachOpts, attachToken string, send func(string)) (func(), error) {
+	if attachCfg.RegisterEndpoint == "" {
+		return nil, fmt.Errorf("--attach-register-to requires --attach-register-endpoint (the URL the hub should record for this agent)")
+	}
+	regName := attachCfg.RegisterName
+	if regName == "" {
+		if h, herr := os.Hostname(); herr == nil {
+			regName = h
+		} else {
+			regName = "core-agent"
+		}
+	}
+	peerClientOpts := []attach.PeerClientOption{}
+	if attachToken != "" {
+		peerClientOpts = append(peerClientOpts, attach.WithPeerBearerToken(attachToken))
+	}
+	peerClient := attach.NewPeerClient(attachCfg.RegisterTo, peerClientOpts...)
+	regCtx, regCancel := context.WithTimeout(ctx, 10*time.Second)
+	stopPeer, err := peerClient.RegisterAndHeartbeat(regCtx, attach.RegisterRequest{
+		Name:     regName,
+		Endpoint: attachCfg.RegisterEndpoint,
+		Labels:   map[string]string{"core-agent-version": "dev"},
+	})
+	regCancel()
+	if err != nil {
+		return nil, fmt.Errorf("register with hub %s: %w", attachCfg.RegisterTo, err)
+	}
+	send(fmt.Sprintf("registered with hub %s as %q (endpoint=%s)",
+		attachCfg.RegisterTo, regName, attachCfg.RegisterEndpoint))
+	return stopPeer, nil
 }
 
 // loadConfig resolves the config from cfgPath (when set) or by walking

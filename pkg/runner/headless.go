@@ -67,19 +67,36 @@ func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr
 		return ExitAgentError, err
 	}
 
-	return streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing, eventsOpts)
+	// Default the `asst › ` prefix to TTY-detection on stdout so piped
+	// `-p` invocations receive raw assistant text without a chat sigil
+	// (#1379). Prepending lets an explicit WithPrefix(...) in eventsOpts
+	// still override when a caller wants it.
+	mergedOpts := append([]EventsOption{WithPrefix(IsTerminal(stdout))}, eventsOpts...)
+	return streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing, mergedOpts)
 }
 
 // streamTurn is the shared one-turn driver used by Headless and REPL.
 // Wraps the agent's event iterator so per-turn usage lands in tracker
 // via the shared TurnTap discipline (overwrite-per-event, commit-once-
 // per-TurnComplete, reset between turns — see pkg/usage.TurnTap), then
-// hands the wrapped iterator to WriteEvents for formatting.
+// hands the wrapped iterator to WriteEvents (or writeJSONTurn when a
+// structured output format is selected) for formatting.
 func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts []EventsOption) (int, error) {
+	cfg := eventsConfigFromOpts(eventsOpts)
+	effectiveTracker := tracker
+	if effectiveTracker == nil && (cfg.format == OutputFormatJSON || cfg.format == OutputFormatStreamJSON) {
+		effectiveTracker = usage.NewTracker()
+	}
 	// Headless's -p prompt and the REPL's typed lines are the
 	// operator's own words, the auto-mode approver's task (#1175). A
 	// REPL wake turn arrives here with an empty prompt and adds none.
-	events := tapTracker(a.Run(agent.WithOperatorTask(ctx, prompt), prompt), tracker, m.Name(), pricing)
+	events := tapTracker(a.Run(agent.WithOperatorTask(ctx, prompt), prompt), effectiveTracker, m.Name(), pricing)
+	if cfg.format == OutputFormatJSON || cfg.format == OutputFormatStreamJSON {
+		if err := writeJSONTurn(events, stdout, effectiveTracker, m.Name(), cfg.format); err != nil {
+			return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
+		}
+		return ExitOK, nil
+	}
 	if err := WriteEvents(events, stdout, stderr, eventsOpts...); err != nil {
 		return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
 	}

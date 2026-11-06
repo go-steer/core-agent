@@ -26,6 +26,12 @@ and then drives it over HTTP as two identities.
   ([#1201](https://github.com/go-steer/core-agent/issues/1201)).
   `BuildMultiSessionAuthn` already keeps the table out of
   `@include`.
+- `compose.ResolveGuardrailsFromConfig` + `compose.ResolveAutoContinue` — resolves
+  the unattended safety defaults (`enforce`-mode watchdog, `$10` session cost
+  ceiling, `30m` approval timeout wired into `permissions.Options.ApprovalTimeout`,
+  and `auto_continue` on by default) directly from `pkg/compose` without copying
+  `cmd/core-agent/main.go`
+  ([#1369](https://github.com/go-steer/core-agent/issues/1369)).
 - `compose.SessionFactoryDeps` + `BuildSessionFactory` /
   `BuildSessionResumer` — `POST /sessions` mints a fresh agent per
   caller (own sub-gate, own tracker, own wake loop); the resumer

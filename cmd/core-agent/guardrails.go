@@ -15,77 +15,40 @@
 package main
 
 import (
-	"errors"
 	"flag"
-	"fmt"
-	"os"
-	"strings"
-	"sync"
+	"io"
 	"time"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/background"
+	"github.com/go-steer/core-agent/v3/pkg/compose"
 	"github.com/go-steer/core-agent/v3/pkg/config"
-	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
-// DefaultUnattendedSessionCostUSD is the session spend ceiling applied
-// when an unattended run leaves both --max-session-cost-usd and
-// agent.max_session_cost_usd unset (#642).
-//
-// The value is a backstop, not a budget: it is high enough that real
-// autonomous work finishes under it and low enough that a drifting
-// session stops before it becomes an invoice nobody chose. Operators
-// who want a different number set one; operators who deliberately want
-// no ceiling pass --max-session-cost-usd=0 or set
-// agent.max_session_cost_usd to 0 in config.
-const DefaultUnattendedSessionCostUSD = 10.0
-
-// DefaultUnattendedApprovalTimeout is the permission-prompt deadline
-// applied when an unattended run with a prompt surface (e.g.
-// --attach-listen) runs in permissions.mode "ask" and leaves both
-// --approval-timeout and permissions.approval_timeout unset (#1364).
-//
-// Without a finite deadline, an unanswered permission prompt holds the
-// session's turnLock and wake-loop goroutine open forever. Operators
-// who want a different bound set one; operators who deliberately want
-// to wait indefinitely pass --approval-timeout=0s or set
-// permissions.approval_timeout to "0s".
-const DefaultUnattendedApprovalTimeout = 30 * time.Minute
+// DefaultUnattendedSessionCostUSD and DefaultUnattendedApprovalTimeout
+// re-export the canonical pkg/compose defaults (#1369).
+const (
+	DefaultUnattendedSessionCostUSD  = compose.DefaultUnattendedSessionCostUSD
+	DefaultUnattendedApprovalTimeout = compose.DefaultUnattendedApprovalTimeout
+)
 
 // guardrailOpts bundles the runaway-backstop CLI flags so run()'s
 // signature carries one parameter instead of three, and so the
 // "operator actually passed --max-session-cost-usd" bit travels with
 // the value it qualifies.
 type guardrailOpts struct {
-	// watchdogMode is --watchdog; empty == unset.
-	watchdogMode string
-	// maxTurnCostUSD is --max-turn-cost-usd; 0 == unset (there is no
-	// mode default for the per-turn ceiling, so 0 and "unset" mean the
-	// same thing here and no set-bit is needed).
-	maxTurnCostUSD float64
-	// maxSessionCostUSD is --max-session-cost-usd, qualified by
-	// maxSessionCostSet — 0 is a meaningful explicit value.
+	watchdogMode      string
+	maxTurnCostUSD    float64
 	maxSessionCostUSD float64
 	maxSessionCostSet bool
-	// bashSearchGate is --bash-search-gate; empty == unset, which
-	// leaves config (then the "enforce" default) to decide. Unlike
-	// the watchdog this has no mode-dependent resolution: bash-as-grep
-	// is the wrong call whether or not an operator is watching.
-	bashSearchGate string
-	// approvalTimeout is --approval-timeout; empty == unset ("0s" is
-	// the explicit opt-out from the unattended default).
-	approvalTimeout string
-	// trust is --trust (#1353): trust the workspace .agents/ directory
-	// and persist its content hash in ~/.core-agent/trusted_workspaces.json.
-	trust bool
-	// permissionMode is --permission-mode (#1380); empty == unset.
-	permissionMode string
+	bashSearchGate    string
+	approvalTimeout   string
+	trust             bool
+	permissionMode    string
 }
 
 // flagWasSet reports whether name was present on the command line, as
-// opposed to sitting at its registered default. flag exposes this only
-// through Visit (set flags) versus VisitAll (all flags).
+// opposed to sitting at its registered default.
 func flagWasSet(fs *flag.FlagSet, name string) bool {
 	found := false
 	fs.Visit(func(f *flag.Flag) {
@@ -96,377 +59,85 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 	return found
 }
 
-// guardrailInputs is everything resolveGuardrails needs to decide the
-// run's runaway-backstop posture. Split out from run()'s parameter
-// list so the resolution is a pure function with a table test rather
-// than an inline switch nobody can exercise.
-type guardrailInputs struct {
-	// WatchdogFlag is --watchdog. Empty == operator left it unset.
-	WatchdogFlag string
-	// WatchdogConfig is safety.watchdog. Empty == unset.
-	WatchdogConfig string
+type guardrailInputs = compose.GuardrailInputs
+type guardrailResolution = compose.GuardrailResolution
 
-	// SessionCostFlag is --max-session-cost-usd, and SessionCostFlagSet
-	// reports whether the operator actually passed it. The pair matters
-	// because 0 is a meaningful explicit value ("no ceiling") that must
-	// be distinguishable from the flag's zero default.
-	SessionCostFlag    float64
-	SessionCostFlagSet bool
-	// SessionCostConfig is agent.max_session_cost_usd; nil == unset.
-	SessionCostConfig *float64
-
-	// Unattended reports that no operator is watching this run's
-	// output: -p one-shot, a --no-repl daemon, or a non-TTY stdin.
-	// Observe-and-log is not a backstop when nobody is reading the log.
-	Unattended bool
-
-	// ApprovalTimeoutFlag is --approval-timeout; empty == unset.
-	ApprovalTimeoutFlag string
-	// ApprovalTimeoutConfig is permissions.approval_timeout; empty == unset.
-	ApprovalTimeoutConfig string
-	// PermMode is the resolved permissions.mode (empty defaults to "ask").
-	PermMode string
-	// HasPromptSurface reports whether a permission prompt can be
-	// delivered to a prompter (e.g. an attach listener's PromptBroker
-	// or a TTY prompter). When true on an unattended run in "ask"
-	// mode, an unset approval_timeout defaults to
-	// DefaultUnattendedApprovalTimeout (#1364).
-	HasPromptSurface bool
-}
-
-// guardrailResolution is the decided posture plus, for each knob, the
-// reason it came out that way — the startup summary prints the reason
-// so an operator can tell "the default did this" from "my config did
-// this" without re-deriving the precedence chain.
-type guardrailResolution struct {
-	// Watchdog is one of config.WatchdogOff / WatchdogWarn /
-	// WatchdogFeedback / WatchdogEnforce. Never empty.
-	Watchdog       string
-	WatchdogSource string
-
-	// SessionCostUSD is the resolved session ceiling; 0 == disabled.
-	SessionCostUSD    float64
-	SessionCostSource string
-
-	// ApprovalTimeout is the resolved permission-prompt deadline; 0 ==
-	// wait indefinitely.
-	ApprovalTimeout       time.Duration
-	ApprovalTimeoutSource string
-}
-
-// Sources reported in guardrailResolution, kept as constants so the
-// tests assert on the same strings the startup summary prints.
 const (
-	sourceFlag               = "--watchdog flag"
-	sourceConfig             = "safety.watchdog config"
-	sourceUnattendedDefault  = "unattended default"
-	sourceInteractiveDefault = "interactive default"
+	sourceFlag               = compose.WatchdogSourceFlag
+	sourceConfig             = compose.WatchdogSourceConfig
+	sourceUnattendedDefault  = compose.WatchdogSourceUnattendedDefault
+	sourceInteractiveDefault = compose.WatchdogSourceInteractiveDefault
 
-	sourceCostFlag              = "--max-session-cost-usd flag"
-	sourceCostConfig            = "agent.max_session_cost_usd config"
-	sourceCostUnattendedDefault = "unattended default"
-	sourceCostUnset             = "unset"
+	sourceCostFlag              = compose.SessionCostSourceFlag
+	sourceCostConfig            = compose.SessionCostSourceConfig
+	sourceCostUnattendedDefault = compose.SessionCostSourceUnattendedDefault
+	sourceCostUnset             = compose.SessionCostSourceUnset
 
-	sourceApprovalTimeoutFlag              = "--approval-timeout flag"
-	sourceApprovalTimeoutConfig            = "permissions.approval_timeout config"
-	sourceApprovalTimeoutUnattendedDefault = "unattended default"
-	sourceApprovalTimeoutUnset             = "unset"
+	sourceApprovalTimeoutFlag              = compose.ApprovalTimeoutSourceFlag
+	sourceApprovalTimeoutConfig            = compose.ApprovalTimeoutSourceConfig
+	sourceApprovalTimeoutUnattendedDefault = compose.ApprovalTimeoutSourceUnattendedDefault
+	sourceApprovalTimeoutUnset             = compose.ApprovalTimeoutSourceUnset
 )
 
-// resolveGuardrails decides the watchdog mode and session cost ceiling
-// for a run.
-//
-// Watchdog precedence: --watchdog > safety.watchdog > mode default,
-// mirroring --small-tier-parent / safety.small_tier_parent (#660). The
-// mode default is "enforce" when unattended and "warn" otherwise
-// (#642): an interactive operator sees the alert and can hit Ctrl-C,
-// an unattended daemon cannot, so for it warn is indistinguishable
-// from off.
-//
-// Session-ceiling precedence: --max-session-cost-usd (including an
-// explicit 0) > agent.max_session_cost_usd (including an explicit 0) >
-// DefaultUnattendedSessionCostUSD when unattended > disabled.
-//
-// Returns an error for an unrecognized watchdog value from either
-// source. config.Validate already rejects a bad config value, but a
-// library caller can hand-build a Config, so this re-checks rather
-// than silently falling through to a default.
 func resolveGuardrails(in guardrailInputs) (guardrailResolution, error) {
-	res := guardrailResolution{}
-
-	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
-	valid := func(s string) bool {
-		switch s {
-		case config.WatchdogOff, config.WatchdogWarn, config.WatchdogFeedback, config.WatchdogEnforce:
-			return true
-		}
-		return false
-	}
-	modes := strings.Join([]string{config.WatchdogOff, config.WatchdogWarn, config.WatchdogFeedback, config.WatchdogEnforce}, "|")
-
-	switch flagMode, cfgMode := norm(in.WatchdogFlag), norm(in.WatchdogConfig); {
-	case flagMode != "":
-		if !valid(flagMode) {
-			return res, fmt.Errorf("invalid --watchdog mode %q (want %s)", in.WatchdogFlag, modes)
-		}
-		res.Watchdog, res.WatchdogSource = flagMode, sourceFlag
-	case cfgMode != "":
-		if !valid(cfgMode) {
-			return res, fmt.Errorf("invalid safety.watchdog %q (want %s)", in.WatchdogConfig, modes)
-		}
-		res.Watchdog, res.WatchdogSource = cfgMode, sourceConfig
-	case in.Unattended:
-		res.Watchdog, res.WatchdogSource = config.WatchdogEnforce, sourceUnattendedDefault
-	default:
-		res.Watchdog, res.WatchdogSource = config.WatchdogWarn, sourceInteractiveDefault
-	}
-
-	switch {
-	case in.SessionCostFlagSet:
-		res.SessionCostUSD, res.SessionCostSource = in.SessionCostFlag, sourceCostFlag
-	case in.SessionCostConfig != nil:
-		res.SessionCostUSD, res.SessionCostSource = *in.SessionCostConfig, sourceCostConfig
-	case in.Unattended:
-		res.SessionCostUSD, res.SessionCostSource = DefaultUnattendedSessionCostUSD, sourceCostUnattendedDefault
-	default:
-		res.SessionCostUSD, res.SessionCostSource = 0, sourceCostUnset
-	}
-	// A negative ceiling would trip on the first token; treat it the
-	// way the agent does and normalize to disabled.
-	if res.SessionCostUSD < 0 {
-		res.SessionCostUSD = 0
-	}
-
-	// Approval-timeout precedence (#1364): --approval-timeout >
-	// permissions.approval_timeout > DefaultUnattendedApprovalTimeout
-	// (when unattended in "ask" mode with a prompt surface) > unset (0).
-	// An explicit "0s" / "0" from either flag or config opts out of the
-	// unattended default and leaves ApprovalTimeout == 0.
-	mode := strings.TrimSpace(in.PermMode)
-	if mode == "" {
-		mode = config.PermissionModeAsk
-	}
-	parseApprovalDur := func(raw, label string) (time.Duration, error) {
-		d, err := time.ParseDuration(raw)
-		if err != nil {
-			return 0, fmt.Errorf("invalid %s %q: %w (want a Go duration like \"30m\" or \"0s\")", label, raw, err)
-		}
-		if d < 0 {
-			return 0, fmt.Errorf("invalid %s %q: duration must not be negative (use \"0s\" to wait indefinitely)", label, raw)
-		}
-		return d, nil
-	}
-	switch flagDur, cfgDur := strings.TrimSpace(in.ApprovalTimeoutFlag), strings.TrimSpace(in.ApprovalTimeoutConfig); {
-	case flagDur != "":
-		d, err := parseApprovalDur(flagDur, "--approval-timeout")
-		if err != nil {
-			return res, err
-		}
-		res.ApprovalTimeout, res.ApprovalTimeoutSource = d, sourceApprovalTimeoutFlag
-	case cfgDur != "":
-		d, err := parseApprovalDur(cfgDur, "permissions.approval_timeout")
-		if err != nil {
-			return res, err
-		}
-		res.ApprovalTimeout, res.ApprovalTimeoutSource = d, sourceApprovalTimeoutConfig
-	case in.Unattended && mode == config.PermissionModeAsk && in.HasPromptSurface:
-		res.ApprovalTimeout, res.ApprovalTimeoutSource = DefaultUnattendedApprovalTimeout, sourceApprovalTimeoutUnattendedDefault
-	default:
-		res.ApprovalTimeout, res.ApprovalTimeoutSource = 0, sourceApprovalTimeoutUnset
-	}
-
-	return res, nil
+	return compose.ResolveGuardrails(in)
 }
 
-// ceilingPricing decides whether a cost ceiling can price a model: at
-// startup, and at each door that picks a model later (/model, a
-// background spawn). An unpriced model costs $0 to every ceiling, so the
-// ceiling can never trip on it — a ceiling in name only, worse than none
-// because the operator believes they have one.
-//
-// The policy (decided 2026-10-19, for #1299/#1327):
-//   - A ceiling the operator asked for (either flag, or config) over an
-//     unpriced model is refused, on every provider: the catalog prices
-//     Gemini, Claude, OpenAI and xAI per backend, and a self-hosted model
-//     is priced only by model.pricing (zero rates price it at $0) or
-//     by real rates declared in its profile (core-models rejects
-//     all-zero profile rates at load).
-//   - The unattended default session ceiling, which nobody asked for,
-//     only warns: refusing it would fail every unattended run on a
-//     self-hosted model.
-//   - A subagent budget an operator wrote on an unpriced model is
-//     refused: a declared subagent's budgets.max_cost_usd at startup, and
-//     an attach caller's max_cost_usd at the spawn door. Somebody wrote
-//     that budget down, and it cannot hold. The manager's default budget
-//     and one the parent's model chose only warn (spawnDoor).
-//
-// Pricing is a property of the configuration, so this is where it is
-// refused. A model that still reaches a ceiling at runtime is skipped
-// and warned about by pkg/agent (warnUnpricedOnce), never refused per
-// request. The remedies named here and there are the same.
 type ceilingPricing struct {
 	ceiling       agent.CostCeiling
 	sessionSource string
 }
 
-// operatorSet reports whether any active ceiling is one the operator
-// asked for, as opposed to only the unattended default.
-func (p ceilingPricing) operatorSet() bool {
-	return p.ceiling.MaxTurnUSD > 0 || (p.ceiling.MaxSessionUSD > 0 && p.sessionSource != sourceCostUnattendedDefault)
+func (p ceilingPricing) toCompose() compose.CeilingPricing {
+	return compose.CeilingPricing{
+		Ceiling:       p.ceiling,
+		SessionSource: p.sessionSource,
+	}
 }
 
-// check vets one model. who names it in the message ("model",
-// `subagent "cluster"`). budget is that subagent's own max_cost_usd, 0
-// for none. A refusal comes back as err; a warning to print as warn.
 func (p ceilingPricing) check(who, model, backend string, budget float64) (warn string, err error) {
-	if model == "" || !usage.PriceOn(backend, model).Unpriced {
-		return "", nil
-	}
-	why := unpricedCeilingWhy(who, model, backend)
-	if budget > 0 {
-		return "", fmt.Errorf("%s budgets.max_cost_usd ($%.2f) cannot hold: %s; or drop the budget", who, budget, why)
-	}
-	if p.ceiling.MaxTurnUSD <= 0 && p.ceiling.MaxSessionUSD <= 0 {
-		return "", nil
-	}
-	if p.operatorSet() {
-		return "", fmt.Errorf("%s; or drop the ceiling", why)
-	}
-	return fmt.Sprintf("WARNING: %s. The unattended default session ceiling ($%.2f) is NOT protecting this run.", why, p.ceiling.MaxSessionUSD), nil
+	return p.toCompose().Check(who, model, backend, budget)
 }
 
-// unpricedCeilingWhy is the reason both halves of the policy give. It
-// names the remedies in the same words as pkg/agent's runtime warning.
 func unpricedCeilingWhy(who, model, backend string) string {
-	where := ""
-	if backend != "" {
-		where = fmt.Sprintf(" on backend %q", backend)
-	}
-	return fmt.Sprintf("%s %q%s has no price — no pricing layer has a rate for it — so the cost ceiling counts its calls as $0 and can never trip. %s",
-		who, model, where, unpricedRemedy)
+	return compose.UnpricedCeilingWhy(who, model, backend)
 }
 
-// unpricedRemedy names the fixes for an unpriced model, short of
-// dropping the ceiling or budget that needs the price.
-const unpricedRemedy = "Set model.pricing for it (zero rates are fine there for a self-hosted model you don't pay per token for), " +
-	"or declare real models[].rates in its provider profile"
+type ceilingModel = compose.CeilingModel
 
-// ceilingModel is one model a ceiling or budget has to price at startup.
-type ceilingModel struct {
-	who, model, backend string
-	budget              float64
-}
-
-// startupCeilingModels lists every model the configured ceilings reach:
-// the main model, each declared subagent's (both doors share one
-// template), and the background small tier a spawn may downshift to.
 func startupCeilingModels(cfg *config.Config, templates []background.SubagentTemplate, smallModel string) []ceilingModel {
-	mainBackend := usage.BackendFor(cfg)
-	out := []ceilingModel{{who: "model", model: cfg.Model.Name, backend: mainBackend}}
-	for _, t := range templates {
-		out = append(out, ceilingModel{
-			who:     fmt.Sprintf("subagent %q: model", t.Name),
-			model:   t.ModelID,
-			backend: t.Backend,
-			budget:  t.Budgets.MaxCost,
-		})
-	}
-	if smallModel != "" && smallModel != cfg.Model.Name {
-		out = append(out, ceilingModel{who: "background small-tier model", model: smallModel, backend: mainBackend})
-	}
-	return out
+	return compose.StartupCeilingModels(cfg, templates, smallModel)
 }
 
-// checkStartup runs check over every model the ceilings reach. All
-// refusals are reported at once, so a config with three unpriced
-// subagents needs one fix, not three restarts.
 func (p ceilingPricing) checkStartup(ms []ceilingModel) (warns []string, err error) {
-	var errs []error
-	for _, m := range ms {
-		w, e := p.check(m.who, m.model, m.backend, m.budget)
-		if e != nil {
-			errs = append(errs, e)
-		} else if w != "" {
-			warns = append(warns, w)
-		}
-	}
-	return warns, errors.Join(errs...)
+	return p.toCompose().CheckStartup(ms)
 }
 
-// door is check for a model picked after startup — /model, a background
-// spawn — under the ceilings this process runs with. A warning is
-// printed to stderr and the model is allowed; only a refusal stops it.
-//
-// It applies the ceiling rule only; a background spawn's budget goes
-// through spawnDoor.
 func (p ceilingPricing) door(who, model, backend string) error {
-	warn, err := p.check(who, model, backend, 0)
-	if warn != "" {
-		fmt.Fprintf(os.Stderr, "core-agent: %s\n", warn)
-	}
-	return err
+	return p.toCompose().Door(who, model, backend)
 }
 
-const spawnDoorWho = "background spawn: model"
-
-// spawnDoor is door for a background spawn, which also brings the
-// subagent's own budget (background.WithSpawnPricingCheck).
-//
-// A budget an operator wrote — an attach caller's max_cost_usd, a
-// declared subagent's own budget after a "small" downshift, or a
-// library host's predefined spec's (background.WithPredefinedSpecs) — gets the
-// budget rule, as at startup: it cannot hold, so it is refused. The
-// manager's default MaxCost and a budget the parent's model chose only
-// warn, once per model per process (warned): every spawn carries the
-// default, which no operator wrote, so refusing it would refuse every
-// spawn on a self-hosted model with no ceiling configured at all.
-//
-// Like check, it returns its warnings rather than printing them.
 func (p ceilingPricing) spawnDoor(s background.SpawnPricing, warned *warnOnce) (warns []string, err error) {
-	budget := 0.0
-	if s.MaxCostExplicit {
-		budget = s.MaxCost
-	}
-	warn, err := p.check(spawnDoorWho, s.ModelID, s.Backend, budget)
-	if err != nil {
-		return nil, err
-	}
-	if warn != "" {
-		warns = append(warns, warn)
-	}
-	if !s.MaxCostExplicit && s.MaxCost > 0 && s.ModelID != "" && usage.PriceOn(s.Backend, s.ModelID).Unpriced && warned.first(s.Backend+"/"+s.ModelID) {
-		warns = append(warns, unpricedBudgetWarning(s))
-	}
-	return warns, nil
+	return p.toCompose().SpawnDoor(s, warned)
 }
 
-// unpricedBudgetWarning is spawnDoor's warning for a default or
-// model-written budget on an unpriced model.
-func unpricedBudgetWarning(s background.SpawnPricing) string {
-	where := ""
-	if s.Backend != "" {
-		where = fmt.Sprintf(" on backend %q", s.Backend)
-	}
-	return fmt.Sprintf("WARNING: %s %q%s has no price, so a background subagent's budgets.max_cost_usd ($%.2f) counts its calls as $0 and cannot stop it. %s. (Warned once per model.)",
-		spawnDoorWho, s.ModelID, where, s.MaxCost, unpricedRemedy)
+type warnOnce = compose.WarnOnce
+
+// autoContinueResolution wraps compose.AutoContinueResolution so existing
+// callers and tests in package main keep working unchanged (#1369).
+type autoContinueResolution struct {
+	enabled       bool
+	freshness     time.Duration
+	retry         bool
+	retryInterval time.Duration
 }
 
-// warnOnce reports the first time it sees each key. The zero value is
-// ready to use.
-type warnOnce struct {
-	mu   sync.Mutex
-	seen map[string]bool
-}
-
-func (w *warnOnce) first(key string) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.seen[key] {
-		return false
-	}
-	if w.seen == nil {
-		w.seen = map[string]bool{}
-	}
-	w.seen[key] = true
-	return true
+func resolveAutoContinue(ac *config.AutoContinueConfig, multiSession, noREPL, haveEventlog bool, stderr io.Writer) (autoContinueResolution, error) {
+	res, err := compose.ResolveAutoContinue(ac, multiSession, noREPL, haveEventlog, stderr)
+	return autoContinueResolution{
+		enabled:       res.Enabled,
+		freshness:     res.Freshness,
+		retry:         res.Retry,
+		retryInterval: res.RetryInterval,
+	}, err
 }

@@ -1223,9 +1223,9 @@ type AutoContinueConfig struct {
 	// library use are excluded by that precondition, so they never
 	// auto-continue by default. An explicit false is a hard opt-out; an
 	// explicit true forces it on (and, in a mode where it cannot apply,
-	// warns and is ignored). The precondition gate lives with the CLI
-	// wiring (resolveAutoContinue in cmd/core-agent) since config alone
-	// cannot see the run mode or eventlog presence.
+	// warns and is ignored). The precondition gate lives in
+	// pkg/compose.ResolveAutoContinue since config alone cannot see the
+	// run mode or eventlog presence.
 	Enabled *bool `json:"enabled,omitempty"`
 
 	// Freshness bounds how old an interruption may be and still get

@@ -878,6 +878,18 @@ Session-scoped defaults picked up on startup.
 
 ---
 
+## `state` (v3.2+)
+
+Where a session's durable state lives. Only the transcript has a backend other than the local SQLite file so far; see [Sessions → Agent Engine Sessions as the transcript](/concepts/sessions/#agent-engine-sessions-as-the-transcript-v32).
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `transcript.backend` | string | `"sql"` | `"sql"`: the `--session-db` file holds the transcript. `"agentengine"`: Vertex AI Agent Engine Sessions holds it; the local file is still required for control and state, so this implies `--session-db` (and conflicts with `--session-db=false`). |
+| `transcript.agentengine.reasoning_engine` | string | top-level `agent_engine` | Full resource name `projects/P/locations/L/reasoningEngines/N`; the regional API endpoint is derived from `L`. When empty, the top-level `agent_engine` block (shared with `memory`) is used; one of the two is required for `agentengine`. Auth is Application Default Credentials. |
+| `transcript.agentengine.session_ttl` | duration | `"720h"` | Expiry set on every session and refreshed on append once half has elapsed. Service minimum `"24h"`. |
+
+---
+
 ## `safety`
 
 Startup safety checks that guard against footguns.

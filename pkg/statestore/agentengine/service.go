@@ -88,7 +88,7 @@ func (s *service) Create(ctx context.Context, req *session.CreateRequest) (*sess
 	if err != nil {
 		return nil, wrapRPC("create session "+id, err)
 	}
-	r := &resident{appName: k.app, userID: k.user, id: id, state: appState(created.GetSessionState())}
+	r := &resident{parent: s.t.parent, appName: k.app, userID: k.user, id: id, state: appState(created.GetSessionState())}
 	if len(r.state) == 0 {
 		// A service that echoes no state back: keep what we sent, minus
 		// our own keys, which appState would have stripped.
@@ -228,7 +228,7 @@ func (s *service) List(ctx context.Context, req *session.ListRequest) (*session.
 		if ident.id == "" || ident.app != req.AppName {
 			continue
 		}
-		ls := &localSession{appName: req.AppName, userID: sess.GetUserId(), id: ident.id, state: &localState{m: appState(sess.GetSessionState())}}
+		ls := &localSession{parent: s.t.parent, appName: req.AppName, userID: sess.GetUserId(), id: ident.id, state: &localState{m: appState(sess.GetSessionState())}}
 		if ut := sess.GetUpdateTime(); ut != nil {
 			ls.updatedAt = ut.AsTime()
 		}

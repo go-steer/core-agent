@@ -25,6 +25,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 - **Subagent parent-input forwarding (`attach: ["input"]`, `include_input`, and `subagents[].inherit`).** Splices the parent turn's triggering message verbatim into sync and `spawn_agent` subagents without re-typing it. ([#1499](https://github.com/go-steer/core-agent/issues/1499))
 - **Forge-neutral `vcs_*` tools (`pkg/tools/vcs`) and `config.vcs` for distroless GitOps.** Adds pure-Go `vcs_*` tools over `core-vcs@v1.1.0` (GitHub, GitLab, git), `builtin:propose-change`, token-file refusal, and `verify-core-vcs-pin`. ([#1490](https://github.com/go-steer/core-agent/issues/1490))
 - **Multi-scope memory core (`pkg/memory`) and config schema (`pkg/config`).** Adds `Backend`, fan-out `Router`, `InMemory`, subagent scope derivation, `pkg/memory/memtest`, and `agent_engine` / `memory` config. ([#948](https://github.com/go-steer/core-agent/issues/948))
+- **`state.transcript.backend: "agentengine"` keeps the session transcript in Vertex AI Agent Engine Sessions** (`pkg/statestore/agentengine`, new `eventlog.Transcript` seam), so a session outlives the machine that held its SQLite file. ([#1192](https://github.com/go-steer/core-agent/issues/1192))
 
 #### Security
 

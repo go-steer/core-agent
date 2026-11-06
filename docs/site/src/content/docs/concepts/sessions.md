@@ -90,6 +90,61 @@ For SQLite, WAL mode is enabled at startup (`PRAGMA journal_mode=WAL`) so concur
 
 ---
 
+## Agent Engine Sessions as the transcript (v3.2+)
+
+A session whose only copy is a SQLite file lives and dies with the machine (or pod, or sandbox) that holds the file. `state.transcript.backend: "agentengine"` moves the **transcript** — the ADK session record every turn appends to — into [Vertex AI Agent Engine Sessions](https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/sessions/overview), a managed store authenticated with Application Default Credentials. A new process on a new machine, given the same session ID, resumes from it.
+
+```json
+{
+  "state": {
+    "transcript": {
+      "backend": "agentengine",
+      "agentengine": {
+        "reasoning_engine": "projects/my-project/locations/us-central1/reasoningEngines/1234567890",
+        "session_ttl": "720h"
+      }
+    }
+  }
+}
+```
+
+**What you need.** One Agent Engine instance (a *reasoning engine*) per deployment, created without deploying any code; its full resource name goes in `reasoning_engine` — or leave that out and set the top-level `agent_engine` block, which Memory Bank shares, so sessions and memory live in one engine named once. The principal running core-agent needs `roles/aiplatform.user` on the project (or a narrower role that grants `aiplatform.sessions.*` and `aiplatform.sessionEvents.*`), and egress to `{location}-aiplatform.googleapis.com`.
+
+**The local database stays.** `state.transcript.backend` other than `sql` *implies* `--session-db` exactly as attach mode does: the run lock, continuation claims, boot log, guardrail state, spend ledger, approval decisions, pause tokens, session ACLs and residency leases still live in the SQLite file. Pass `--session-db-path` to say where. The startup log names both:
+
+```
+core-agent: session db: /workspace/.core-agent/sessions.db [implied by state.transcript.backend=agentengine; --session-db-path to relocate]
+core-agent: session store: agentengine projects/…/reasoningEngines/1234567890 (transcript); local db holds control, state and residency leases
+```
+
+**One writer per session, enforced.** With an external transcript the daemon holds a *residency lease* on every session it writes to — taken when it creates the session, resumes it as a multi-session tenant, or first writes to it, and never just for reading it — and releases it when the session is evicted or the daemon exits. It refuses to write to a session whose lease it cannot show it still holds, on its own clock, before the store could tell it otherwise, because Agent Engine cannot reject a stale writer; an evicted session's late writes are refused too. A daemon that is not a session's writer can still read it, but may see a cached view until it becomes the writer. If a lease is lost, the session stops: a multi-session tenant is evicted; a single-session process stops, so a restart competes for the lease again. While the lease lives in the local SQLite file (until [#1192](https://github.com/go-steer/core-agent/issues/1192) phase 4 moves control off it) it excludes only processes sharing that file, so **across machines, single-writer still has to come from the deployment** — one pod, one Agent Engine session, as an ax task per session gives you.
+
+**What survives the loss of the machine, and what does not (v3.2).**
+
+| State | Survives |
+|---|---|
+| Transcript: every event, its `seq`, the caller sidecar, session state | **Yes** — read back from Agent Engine on the first `Get` |
+| Spend ledger | Yes — rebuilt from the transcript's priced events at the current catalog, by the multi-session resume path (which today needs the ACL row; see below) |
+| Run lock, continuation claims, boot log | Not needed — a new machine has nothing to hand over |
+| Guardrail state (trips, budget extensions), approval decisions and parked calls, pause/interrupt tokens, MCP digest raw payloads | **No** — SQLite-only. The guardrail restore reads the local state row and the local overlay index, neither of which exists on a new machine, so a tripped watchdog or cost ceiling is forgotten. The next phase of [#1192](https://github.com/go-steer/core-agent/issues/1192) moves these into the transcript. |
+| Session ACLs (`attach` multi-session) | **No** — and the attach server's lazy resume reads the ACL row to decide who may open a session, so on a machine with a fresh SQLite file `GET /sessions/{app}/{sid}` answers 404 even though the transcript is in Agent Engine. Resuming there works through the library (`eventlog.OpenTranscript` + `Service.Get`, `autonomous.Resume`) until the index moves off SQLite (#1192 phase 4). |
+
+What this phase delivers, then, is a transcript that outlives the machine and a library path to it. Do not make `agentengine` the production default for a deployment that relies on attach-level resume or on the approval/pause rows surviving a restart.
+
+**How it stores events.** Each Agent Engine `SessionEvent` carries the whole ADK event as JSON in `raw_event` — so `UsageMetadata`, `FinishReason` (via the `finish_reason` stamp), `FunctionCall.ID`, compaction summaries and everything else resume reads back survive the round-trip — plus a `coreAgent` block with the per-tree `seq` and the sidecar. The typed envelope fields (author, text and function parts, state deltas, branch) are populated too, so the Agent Engine console and Memory Bank can read the session. Session IDs the service's charset would reject (UUIDv7 IDs starting with a digit, `<id>:sub:…` subagent sessions) are mapped deterministically on the wire; the original IDs live in session state and nothing above the store sees the mapped form.
+
+**Reads cost no RPC.** One process is the writer for a session, so once a session tree is loaded (one `ListSessions` plus one `ListEvents` per member) the in-memory copy is authoritative: `Get`, `Since`, `Watch` and `HighestSeq` read it. `Watch` is wake-up driven here rather than polled.
+
+**`seq` after a restore.** Sequence numbers are per root session tree and continue where the store left off, so an attached client's `?since=` cursor from before the restart stays valid.
+
+**Quota and failure.** The project default is 300 `appendEvent` calls per minute; twelve tool-heavy agents will exceed it, so request an increase before a fleet goes live. A quota rejection (`ResourceExhausted`) is retried once after 2 seconds, from a small shared budget, as model calls are; if that does not rescue it, the turn's event fails with the status intact and nothing is written anywhere else — there is no fall-back to local. An append whose outcome is unknown (the reply was lost) is not retried; the process re-reads the tree from the store before assigning the next `seq`, so a lost reply cannot leave a duplicate behind.
+
+**TTL.** Every session is created with `session_ttl` (default 30 days, service minimum 24 hours) and the expiry is refreshed on append once less than half of it remains.
+
+Library callers reach the same backend directly: `agentengine.Open` returns an `eventlog.Transcript`, and `eventlog.OpenTranscript(ctx, transcript, sqlite.Open(path))` builds the `Handle`. `pkg/statestore/conformance` is the contract every transcript backend passes.
+
+---
+
 ## Schema
 
 `eventlog.Open` manages ADK's session tables plus `pkg/eventlog`'s durable overlay and state tables in the same database:
@@ -230,3 +285,4 @@ The CLIs add the `glebarez/sqlite` driver — pure-Go, ~10 MB binary growth. CGO
 - **Encrypted-at-rest event log.** Defer to filesystem/DB-level encryption.
 - **Streaming subscribers over the network.** No gRPC/HTTP bridge in v1; an `extras/eventlog-server/` adapter would land if a consumer wants AX-style remote tail.
 - **Multi-writer coordination across processes for plain `autonomous.Run`.** The session lock is acquired by `autonomous.Resume` only; concurrent fresh runs against the same session ID are possible but not protected.
+- **Control, index and per-session state outside SQLite.** With an Agent Engine transcript these still live in the local file; moving them (and a residency lease held for the whole time a session is loaded) is the remaining work of [#1192](https://github.com/go-steer/core-agent/issues/1192).

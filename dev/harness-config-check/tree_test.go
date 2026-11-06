@@ -136,6 +136,7 @@ func TestInvocationCensus(t *testing.T) {
 		"dev/smoke/09-vertex-anthropic-toolloop.sh": 2,
 		"dev/smoke/10-multi-session-resume.sh":      1,
 		"dev/smoke/13-vcs-github.sh":                1,
+		"dev/uat/agentengine-transcript/run.sh":     1,
 		"dev/uat/attach/run.sh":                     4, // 2 dispatched + attach + ls
 		"dev/uat/kode-gopher/run.sh":                2, // dry-run echo + live smoke
 		"dev/uat/self-dev/run.sh":                   3, // dry-run boot + the graded run + the attended (t2) daemon

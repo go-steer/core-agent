@@ -200,6 +200,8 @@ type Handle struct {
 	lockHeartbeatInterval time.Duration
 	lockStaleAfter        time.Duration
 	pauseMu               sync.Mutex
+	// residency is set by OpenTranscript under WithResidencyLease.
+	residency *residency
 }
 
 // Close releases all resources held by the Handle: the Stream and the
@@ -210,6 +212,12 @@ func (h *Handle) Close() error {
 		return nil
 	}
 	var firstErr error
+	// Leases heartbeat against the database closed below, so they go
+	// first; releasing them also lets a successor take the trees at once
+	// instead of waiting out the staleness window.
+	if h.residency != nil {
+		h.residency.closeAll()
+	}
 	if h.Stream != nil {
 		if err := h.Stream.Close(); err != nil {
 			firstErr = err
@@ -238,6 +246,8 @@ func closeGormDB(db *gorm.DB) error {
 type Option func(*openOpts)
 
 type openOpts struct {
+	residencyLease        bool
+	residencyLost         func(appName, userID, root string, stolen bool)
 	watchInterval         time.Duration
 	gormConfig            *gorm.Config
 	skipWAL               bool

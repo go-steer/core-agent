@@ -100,6 +100,33 @@ type SessionLock struct {
 	// opposed to a heartbeat stall. Written by the heartbeat goroutine
 	// before it closes done; read by Release after <-done.
 	stolen bool
+
+	// fenceMu guards validUntil, which the heartbeat goroutine moves
+	// forward and a writer reads (ValidUntil).
+	fenceMu    sync.Mutex
+	validUntil time.Time
+}
+
+// ValidUntil is the holder's own deadline for treating the lease as
+// held: the start of the last heartbeat that reached the database plus
+// the loss window (docs/external-state-design.md decision 3). It is
+// measured on this process's monotonic clock; a successor decides
+// staleness against the wall-clock heartbeat_at, so a forward wall-clock
+// step larger than one heartbeat interval can still open a window —
+// the residual risk decision 3 accepts. Past ValidUntil a successor may
+// already have stolen the row, and a writer that cannot fence at the
+// store — Agent Engine cannot — must stop writing even if Lost() has
+// not fired yet.
+func (l *SessionLock) ValidUntil() time.Time {
+	l.fenceMu.Lock()
+	defer l.fenceMu.Unlock()
+	return l.validUntil
+}
+
+func (l *SessionLock) extendFence(beatStart time.Time) {
+	l.fenceMu.Lock()
+	defer l.fenceMu.Unlock()
+	l.validUntil = beatStart.Add(l.lossWindow())
 }
 
 // lossWindow is how long heartbeats may fail before the holder declares
@@ -225,6 +252,7 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 		done:              make(chan struct{}),
 		lost:              make(chan struct{}),
 	}
+	lock.extendFence(now)
 	go lock.heartbeatLoop()
 	return lock, nil
 }
@@ -381,6 +409,7 @@ func (l *SessionLock) beat() (lost, stolen bool) {
 		return true, true
 	}
 	l.lastHeartbeat = now
+	l.extendFence(now)
 	return false, false
 }
 

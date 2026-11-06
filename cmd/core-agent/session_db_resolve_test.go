@@ -14,7 +14,10 @@
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestResolveSessionDB is the #973 gate. The rows marked "fails-first"
 // are the ones that fail against pre-#973 code, where attach mode did
@@ -34,6 +37,7 @@ func TestResolveSessionDB(t *testing.T) {
 		path         string
 		listen       string
 		unixSocket   string
+		external     bool
 		wantEnabled  bool
 		wantImplied  bool
 		wantConflict bool
@@ -120,13 +124,37 @@ func TestResolveSessionDB(t *testing.T) {
 			wantEnabled:  false,
 			wantImplied:  false,
 		},
+		{
+			// An external transcript needs the local file for control and
+			// state, so it implies the database exactly as attach does.
+			name:        "external transcript with no flags implies a durable db",
+			external:    true,
+			wantEnabled: true,
+			wantImplied: true,
+		},
+		{
+			name:         "external transcript with --session-db=false conflicts",
+			external:     true,
+			sessionDBSet: true,
+			wantConflict: true,
+		},
+		{
+			// A named path is a request, not a conflict, as for attach;
+			// --session-db-path alone drives the branch, so nothing is
+			// implied or claimed.
+			name:        "external transcript with --session-db-path keeps the path and claims nothing",
+			external:    true,
+			path:        "/tmp/x.db",
+			wantEnabled: false,
+			wantImplied: false,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			enabled, implied, conflict := resolveSessionDB(
-				tc.sessionDB, tc.sessionDBSet, tc.path, tc.listen, tc.unixSocket)
+				tc.sessionDB, tc.sessionDBSet, tc.path, tc.listen, tc.unixSocket, tc.external)
 			if conflict != tc.wantConflict {
 				t.Errorf("conflict = %v, want %v", conflict, tc.wantConflict)
 			}
@@ -172,7 +200,7 @@ func TestResolveSessionDBAttachAlwaysDurable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			enabled, _, conflict := resolveSessionDB(
-				tc.sessionDB, false, tc.path, tc.listen, tc.unixSocket)
+				tc.sessionDB, false, tc.path, tc.listen, tc.unixSocket, false)
 			if conflict {
 				t.Fatal("no row here disables the session db; conflict is a bug")
 			}
@@ -182,5 +210,35 @@ func TestResolveSessionDBAttachAlwaysDurable(t *testing.T) {
 				t.Fatal("attach mode reached steady state with no durable session db")
 			}
 		})
+	}
+}
+
+func TestResidencyLostFallback(t *testing.T) {
+	t.Parallel()
+	var stopped bool
+	residencyLostFallback(true, func() { stopped = true })("app", "u", "tree", true)
+	if stopped {
+		t.Fatal("a multi-session daemon stopped on an unclaimed tree's loss; it must only fence it")
+	}
+	residencyLostFallback(false, func() { stopped = true })("app", "u", "primary", false)
+	if !stopped {
+		t.Fatal("a single-session process did not stop when its session's lease was lost")
+	}
+}
+
+func TestPrintSessionStoreLines(t *testing.T) {
+	t.Parallel()
+	var got []string
+	send := func(s string) { got = append(got, s) }
+	printSessionStoreLines(send, "/tmp/s.db", true, "state.transcript.backend=agentengine", "session store: agentengine X (transcript)")
+	want := "session db: /tmp/s.db [implied by state.transcript.backend=agentengine; --session-db-path to relocate]|" +
+		"session store: agentengine X (transcript)"
+	if strings.Join(got, "|") != want {
+		t.Fatalf("got %q, want %q", strings.Join(got, "|"), want)
+	}
+	got = nil
+	printSessionStoreLines(send, "/tmp/s.db", false, "", "")
+	if strings.Join(got, "|") != "session db: /tmp/s.db" {
+		t.Fatalf("plain sql line = %q", got)
 	}
 }

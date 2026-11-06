@@ -68,6 +68,7 @@ type Config struct {
 	Compaction  CompactionConfig   `json:"compaction,omitempty"`
 	Checkpoint  CheckpointConfig   `json:"checkpoint,omitempty"`
 	Session     SessionConfig      `json:"session,omitempty"`
+	State       StateConfig        `json:"state,omitempty" yaml:"state,omitempty"`
 	Safety      SafetyConfig       `json:"safety,omitempty"`
 	Schedule    *ScheduleConfig    `json:"schedule,omitempty" yaml:"schedule,omitempty"`
 	Monitor     *MonitorConfig     `json:"monitor,omitempty" yaml:"monitor,omitempty"`
@@ -2192,7 +2193,7 @@ func (c *Config) Validate() error {
 	if c.Model.Name == "" {
 		return fmt.Errorf("config: model.name is required")
 	}
-	if err := c.validateProviders(); err != nil {
+	if err := c.validateBackends(); err != nil {
 		return err
 	}
 	if !c.KnownProvider(c.Model.Provider) {

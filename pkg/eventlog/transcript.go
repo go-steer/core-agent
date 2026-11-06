@@ -208,7 +208,7 @@ func OpenTranscript(ctx context.Context, t Transcript, dialector gorm.Dialector,
 		decisions:         stores.decisions,
 		metadataExtractor: o.metadataExtractor,
 	}
-	return &Handle{
+	h := &Handle{
 		Stream:                stream,
 		Service:               svc,
 		Guardrail:             stores.guardrail,
@@ -218,7 +218,16 @@ func OpenTranscript(ctx context.Context, t Transcript, dialector gorm.Dialector,
 		DB:                    db,
 		lockHeartbeatInterval: o.lockHeartbeatInterval,
 		lockStaleAfter:        o.lockStaleAfter,
-	}, nil
+	}
+	if o.residencyLease {
+		var invalidate func(string, string, string)
+		if inv, ok := t.(TranscriptInvalidator); ok {
+			invalidate = inv.Invalidate
+		}
+		h.residency = newResidency(h, o.residencyLost, invalidate)
+		svc.residency = h.residency
+	}
+	return h, nil
 }
 
 // transcriptStream adapts a Transcript to the Stream interface for a

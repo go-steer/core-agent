@@ -4,7 +4,14 @@
 only — `eventlog.Transcript`, `eventlog.OpenTranscript`,
 `pkg/statestore/{memory,conformance}` — with control, index and the
 per-session state stores still on the local SQL database (see
-Amendments). Phase 3, the Agent Engine transcript backend, follows.
+Amendments). Phase 3, the Agent Engine transcript backend, is
+`pkg/statestore/agentengine`, selected with `state.transcript.backend:
+"agentengine"` in `.agents/config.json`, and it ships together with the
+part of phase 2 a `state` block requires: the residency lease, the
+self-fence and stop-on-loss (decisions 1–3), on the local control
+store. The rest of phase 2 (plan, todo and gate state into the
+transcript; the `409` owner hint) and phase 4 are still open; the
+site's Sessions page says what survives a machine loss at this point.
 Open questions 1–4 of the first draft were settled by the maintainer
 on 2026-10-01 (decisions 13–16).
 
@@ -38,6 +45,60 @@ Recorded as the phases land; each names the decision it narrows.
   invalidates the process's view of the tree, so the next seq is read
   from the store rather than reused; this is the residual window
   decision 3 accepts, named.
+- **2026-11-06 — Phase 3 lands with phase 2's lease, not after it.**
+  The #1192 compatibility table gates decision 1 on a `state` block
+  being present, and phase 3 is what introduces one, so the lease ships
+  with it rather than in phase order: `eventlog.WithResidencyLease`
+  (set by the CLI for the `agentengine` transcript) takes a lease when
+  the instance creates a session, when the multi-session registry
+  builds a tenant (create or resume, via `Handle.AcquireResidency`), or
+  on the first write to a tree never resident here — never on a read,
+  so scans (auto-continue, `/parks`, auto-resume) claim nothing; a read
+  of a tree another instance is writing may be served from this
+  instance's cache until it becomes the writer. It covers the session's
+  tree with its `:sub:`, `:digest` and `:mast-ops` trees, but not
+  caller-chosen IDs that merely contain `:`. It is released on eviction,
+  root delete (without a tombstone) and Close, and an evicted tree is
+  tombstoned so a write still in flight is refused rather than
+  re-taking it — until the session is resumed again in the same
+  process, after which a straggler from the old generation is not
+  distinguished (pinned). Every write is fenced on `SessionLock.ValidUntil` and
+  `Lost()` and runs under a context deadline at the moment a successor
+  could steal the row (decision 3), which also bounds the 429 retry.
+  Taking a lease invalidates the transcript's cached view of the tree
+  (`eventlog.TranscriptInvalidator`), since another instance may have
+  written meanwhile. On loss a tenant is evicted; an unclaimed tree
+  stops a single-session process and is only fenced in a multi-session
+  daemon (decision 2). Two narrowings, both until phase 4: the lease is a row
+  in the local `agent_run_lock` table, so it excludes only processes
+  that share that SQLite file — single-writer across machines still
+  comes from the deployment (one ax task per session, in shipmind) —
+  and it is a separate row from the run lock `autonomous.Resume` and
+  auto-continue take (key `residency:<root>`), so those callers are
+  unchanged; merging the two is phase 2 proper. The `409` owner hint
+  (decision 12) and plan/todo/gate state in the transcript are not
+  here.
+- **2026-11-06 — The engine is named once, with memory.** Following
+  `docs/memory-service-design.md` decision 4 (merged meanwhile),
+  `state.transcript.agentengine.reasoning_engine` is optional and falls
+  back to the top-level `agent_engine` block that Memory Bank reads, via
+  `Config.ResolveAgentEngineResource`. This replaces the sketch's
+  `state.transcript.agentengine.reasoning_engine` as the only source.
+- **2026-11-06 — Agent Engine 429s follow #935's policy, narrowed to
+  quota rejections.** A `ResourceExhausted` append is retried once after
+  2s from a shared budget of three refilling one per 30s, the model
+  retry's shape and defaults. `Unavailable` and `DeadlineExceeded` are
+  not retried: their outcome is unknown, so a blind retry could write
+  the event twice; they take the invalidate path above instead. The
+  backoff runs inside the write's fence deadline, so it is cut short
+  rather than landing after a successor; it does hold the process's
+  write mutex while it waits, so other appends queue behind it for up
+  to the backoff.
+- **2026-11-06 — Decision 16, the SQL backend's location.** The SQL
+  transcript is `eventlog.OpenSQLTranscript` in `pkg/eventlog`, not
+  `pkg/statestore/sql`: it is the overlay and ADK service that package
+  already owns, and moving it would move `eventlog.Open`'s internals
+  with it. The other backends are under `pkg/statestore/` as decided.
 - **2026-11-06 — Decision 4, as #1192 already noted:** the SQL Handle
   from `eventlog.Open` keeps polling, because a second process may be
   appending to the same SQLite file. Only a Handle from

@@ -34,7 +34,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/term"
 	adkmodel "google.golang.org/adk/v2/model"
@@ -166,8 +165,8 @@ func main() {
 	// from an explicit --ask=off. A task profile's ask mode only applies to
 	// the former; "" is treated as "off" everywhere downstream.
 	ask := flag.String("ask", "", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise). Empty (default) behaves as off.")
-	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory. attach mode turns this on by itself)")
-	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set or implied by attach mode (default: ~/.<binary>/sessions.db)")
+	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory. attach mode and a non-sql state.transcript.backend turn this on by themselves)")
+	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set or implied by attach mode or an external transcript (default: ~/.<binary>/sessions.db)")
 	permissionMode := flag.String("permission-mode", "", "permission gate mode: ask|auto|acceptEdits|plan|allow|yolo (overrides permissions.mode)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
 	trustWorkspace := flag.Bool("trust", false, "trust the discovered .agents/ workspace configuration (stdio MCP servers, command hooks, elevated permission modes, rooted subagents, and content_roots) and remember its SHA-256 content hash in ~/.core-agent/trusted_workspaces.json (#1353).")
@@ -2065,8 +2064,10 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 	// captured into a closure that nothing ever invokes).
 	// Durable sessions + audit log. Either flag enables: --session-db
 	// alone uses the default path (~/.<binary>/sessions.db);
-	// --session-db-path enables and overrides the path. Off by default
-	// to preserve historical CLI behavior (in-memory, ephemeral).
+	// --session-db-path enables and overrides the path. Attach mode and
+	// an external transcript imply it (resolveSessionDB). Otherwise off
+	// by default to preserve historical CLI behavior (in-memory,
+	// ephemeral).
 	//
 	// eventlogHandle is hoisted above tools.Build so late-bound closures
 	// (such as compose.VCSEventSink and the PostConstruct hook below)
@@ -2074,6 +2075,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 
 	opts = append(opts, agent.WithPostConstruct(func(a *agent.Agent) {
 		agentRef = a
+		acquirePrimaryResidency(eventlogHandle, a, stop)
 		// Stamp the primary session's identity into the metrics
 		// observer so cumulative counters get session.id + app.name +
 		// user.id attributes from the first turn onward. Before this
@@ -2106,11 +2108,12 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			send(fmt.Sprintf("mcp digest store: bound EventlogStore for session %s (retrieve_raw enabled)", a.SessionID()))
 		}
 	}))
+	attaching := attachCfg.Listen != "" || attachCfg.UnixSocket != ""
 	sessionDB, impliedSessionDB, sessionDBConflict := resolveSessionDB(
 		sessionDB, flagWasSet(flag.CommandLine, "session-db"),
-		sessionDBPath, attachCfg.Listen, attachCfg.UnixSocket)
+		sessionDBPath, attachCfg.Listen, attachCfg.UnixSocket, cfg.TranscriptIsExternal())
 	if sessionDBConflict {
-		fmt.Fprintln(os.Stderr, "core-agent: --session-db=false cannot be combined with attach mode: the live-tail broadcaster, /events replay and subagent history all read the event log")
+		fmt.Fprintln(os.Stderr, "core-agent: "+sessionDBConflictMessage(cfg))
 		fmt.Fprintln(os.Stderr, "core-agent:   drop --session-db=false, or pass --session-db-path=PATH to choose where it lands")
 		return runner.ExitConfigError
 	}
@@ -2127,25 +2130,16 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			// may not even have — the fix (name a writable path) has
 			// to be in the error.
 			if impliedSessionDB {
-				fmt.Fprintf(os.Stderr, "core-agent: attach mode needs a durable session db, and %s is not writable: %v\n", filepath.Dir(path), err)
+				fmt.Fprintf(os.Stderr, "core-agent: %s needs a local session db, and %s is not writable: %v\n", sessionDBImplier(cfg, attaching), filepath.Dir(path), err)
 				fmt.Fprintln(os.Stderr, "core-agent:   pass --session-db-path=/some/writable/path/sessions.db")
 				return runner.ExitConfigError
 			}
 			fmt.Fprintf(os.Stderr, "core-agent: session db dir: %v\n", err)
 			return runner.ExitConfigError
 		}
-		// WithMetadataExtractor wires the auth-aware extractor that
-		// reads auth.Caller / proxy_by off the request context and
-		// stamps them onto each eventlog row's Metadata sidecar (see
-		// docs/multi-session-design.md). In single-user mode the
-		// extractor returns nil maps (no Caller on context) → no
-		// sidecar JSON is written; multi-session deployments get
-		// per-event identity threading in the audit log automatically.
-		handle, err := eventlog.Open(ctx, sqlite.Open(path),
-			eventlog.WithMetadataExtractor(agent.EventlogMetadataExtractor()),
-		)
+		handle, storeLine, err := openSessionStore(ctx, cfg, path, stop)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: open session db %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 			return runner.ExitConfigError
 		}
 		defer func() { _ = handle.Close() }()
@@ -2160,11 +2154,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		}
 		opts = append(opts, agent.WithEventLog(handle))
 		eventlogHandle = handle
-		if impliedSessionDB {
-			send(fmt.Sprintf("session db: %s [implied by attach mode; --session-db-path to relocate]", path))
-		} else {
-			send(fmt.Sprintf("session db: %s", path))
-		}
+		printSessionStoreLines(send, path, impliedSessionDB, sessionDBImplier(cfg, attaching), storeLine)
 
 		// digestStore is bound below, after agent.New — the
 		// EventlogStore constructor rejects empty session identity
@@ -2849,7 +2839,8 @@ func resolveSessionDBPath(override string) (string, error) {
 //
 // The implication only fires when NEITHER flag was given. An operator
 // who passes --session-db-path keeps their path; nobody's database
-// moves. Outside attach mode nothing is implied — a one-shot run that
+// moves. Outside the two implying shapes (attach mode, and an external
+// transcript — see below) nothing is implied: a one-shot run that
 // wanted durability would have asked for it.
 //
 // conflict reports the one case the implication must not swallow:
@@ -2859,15 +2850,21 @@ func resolveSessionDBPath(override string) (string, error) {
 // be no rather than watching a database appear anyway. It is not a
 // conflict alongside --session-db-path, which is itself a request for
 // a durable log at a named location.
-func resolveSessionDB(sessionDB, sessionDBSet bool, sessionDBPath, attachListen, attachUnixSocket string) (enabled, implied, conflict bool) {
-	attaching := attachListen != "" || attachUnixSocket != ""
-	if attaching && sessionDBSet && !sessionDB && sessionDBPath == "" {
+//
+// An external transcript (state.transcript.backend other than sql,
+// #1192) implies the database the same way: the transcript lives
+// elsewhere, but the run lock, claims, guardrail state, spend ledger
+// and session ACLs still live in the local file, and the backend
+// cannot be opened without it.
+func resolveSessionDB(sessionDB, sessionDBSet bool, sessionDBPath, attachListen, attachUnixSocket string, externalTranscript bool) (enabled, implied, conflict bool) {
+	implying := attachListen != "" || attachUnixSocket != "" || externalTranscript
+	if implying && sessionDBSet && !sessionDB && sessionDBPath == "" {
 		return false, false, true
 	}
 	if sessionDB || sessionDBPath != "" {
 		return sessionDB, false, false
 	}
-	if !attaching {
+	if !implying {
 		return false, false, false
 	}
 	return true, true, false

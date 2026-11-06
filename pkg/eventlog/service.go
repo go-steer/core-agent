@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
@@ -87,12 +88,20 @@ type service struct {
 	// (EntryMetadataFrom). On the SQL path the gormStream owns it.
 	metadataExtractor MetadataExtractor
 
+	// residency is set on a Handle opened with WithResidencyLease: a
+	// create (or an explicit resume, or a first write) makes a tree
+	// resident, reads never do, and every write is fenced on its lease
+	// (residency.go).
+	residency *residency
+
 	writeMu sync.Mutex
 }
 
 // Get / List are pure pass-throughs — no mutex needed.
 
 func (s *service) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
+	// Reading never takes a residency lease: scans read many sessions
+	// they will never write to (residency.go).
 	return s.inner.Get(ctx, req)
 }
 
@@ -107,9 +116,27 @@ func (s *service) List(ctx context.Context, req *session.ListRequest) (*session.
 func (s *service) Create(ctx context.Context, req *session.CreateRequest) (*session.CreateResponse, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.residency != nil && req != nil && req.SessionID != "" {
+		// Creating a session makes its tree resident here. Creating a
+		// derived one ("<sid>:sub:…") does not override an eviction: a
+		// subagent still running after its session was evicted must not
+		// take the lease back.
+		explicit := req.SessionID == residencyRoot(req.SessionID)
+		if err := s.residency.acquire(ctx, keyOf(req.AppName, req.UserID, req.SessionID), explicit); err != nil {
+			return nil, err
+		}
+	}
 	resp, err := s.inner.Create(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	if s.residency != nil && req != nil && req.SessionID == "" && resp != nil && resp.Session != nil {
+		// The backend chose the ID; take the lease now that it is
+		// known. If another instance already holds that tree the
+		// session exists but this instance will not write to it.
+		if err := s.residency.acquire(ctx, keyOf(resp.Session.AppName(), resp.Session.UserID(), resp.Session.ID()), true); err != nil {
+			return nil, err
+		}
 	}
 	if resp != nil && resp.Session != nil && s.guardrail != nil {
 		_ = s.guardrail.ensureState(ctx, resp.Session.AppName(), resp.Session.UserID(), resp.Session.ID())
@@ -124,8 +151,25 @@ func (s *service) Create(ctx context.Context, req *session.CreateRequest) (*sess
 func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.inner.Delete(ctx, req); err != nil {
+	innerCtx := ctx
+	if s.residency != nil && req != nil {
+		deadline, err := s.residency.fence(ctx, req.AppName, req.UserID, req.SessionID)
+		if err != nil {
+			return err
+		}
+		// The deadline bounds the transcript call only; the local
+		// cleanup below must not be cut off after the store has deleted.
+		var cancel context.CancelFunc
+		innerCtx, cancel = withFenceDeadline(ctx, deadline)
+		defer cancel()
+	}
+	if err := s.inner.Delete(innerCtx, req); err != nil {
 		return err
+	}
+	if s.residency != nil && req != nil && req.SessionID == residencyRoot(req.SessionID) {
+		// The session is gone, so there is nothing for a tombstone to
+		// protect; dropping it keeps per-turn sessions from piling up.
+		defer s.residency.forget(req.AppName, req.UserID, req.SessionID)
 	}
 	if err := s.deleteChildSessionsInADK(ctx, req); err != nil {
 		return err
@@ -196,8 +240,23 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 		// Transcript backend: it persists the sidecar itself.
 		ctx = ContextWithEntryMetadata(ctx, s.metadataExtractor(ctx))
 	}
+	innerCtx := ctx
+	if s.residency != nil && sess != nil && ev != nil && !ev.Partial {
+		// Self-fence (decision 3): nothing is written once this
+		// instance cannot show it still holds the tree, and the write
+		// must finish before a successor could steal it.
+		// The deadline bounds the transcript call only, not the local
+		// guardrail write after it.
+		deadline, err := s.residency.fence(ctx, sess.AppName(), sess.UserID(), sess.ID())
+		if err != nil {
+			return err
+		}
+		var cancel context.CancelFunc
+		innerCtx, cancel = withFenceDeadline(ctx, deadline)
+		defer cancel()
+	}
 	recoveredFallback := false
-	if err := s.inner.AppendEvent(ctx, sess, ev); err != nil {
+	if err := s.inner.AppendEvent(innerCtx, sess, ev); err != nil {
 		incomplete, probeErr := s.checkIncompleteFallbackEvent(ctx, sess, ev, err)
 		if probeErr != nil {
 			return probeErr
@@ -278,6 +337,15 @@ func isDuplicateKeyError(err error) bool {
 		strings.Contains(msg, "duplicate key") ||
 		strings.Contains(msg, "duplicate entry") ||
 		strings.Contains(msg, "primary key constraint")
+}
+
+// withFenceDeadline bounds a write by the residency fence's deadline;
+// a zero deadline leaves ctx as it is.
+func withFenceDeadline(ctx context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	if deadline.IsZero() {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, deadline)
 }
 
 // stampFinishReason mirrors a model turn's abnormal genai FinishReason

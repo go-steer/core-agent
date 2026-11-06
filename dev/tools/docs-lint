@@ -25,6 +25,7 @@
 #   2. Spelled image counts    — "three container variants", "four images", ...
 #   3. Pinned @vX.Y.Z installs — `go get github.com/go-steer/core-agent@v2.0.0`
 #   4. Wrong-major version pins — "as of v1.5", "Current release: v1.8.0"
+#   5. Design doc status/index — Status: line, archive placement, docs/README.md index
 #
 # Scope:
 #   README.md + docs/site/src/content/**/*.{md,mdx} by default. docs/release-process.md
@@ -155,6 +156,52 @@ check_wrong_major_pins() {
     }' || true
 }
 
+# Check 5: docs/ status field, archive placement, and docs/README.md index (#1388).
+#
+# Rules:
+#   a. Every docs/*-design.md, docs/north-star.md, and docs/archive/*.md
+#      must carry a `Status: <shipped|proposed|abandoned|superseded>` line
+#      within the first 25 lines.
+#   b. Every top-level docs/*-design.md must have Status: proposed;
+#      shipped, superseded, or abandoned design docs belong in docs/archive/.
+#   c. Every docs/*.md (excluding docs/README.md) and docs/archive/*.md
+#      must be referenced in docs/README.md.
+check_design_doc_status() {
+  local root="${1:-.}"
+  local readme="$root/docs/README.md"
+  local path rel base status_line status
+
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    rel="${path#"$root/"}"
+    [[ "$rel" == "docs/README.md" ]] && continue
+    base=$(basename "$path")
+
+    if [[ "$rel" == docs/*-design.md || "$rel" == "docs/north-star.md" || "$rel" == docs/archive/*.md ]]; then
+      status_line=$(head -n 25 "$path" | grep -E -i '(^|>[[:space:]]*|\*\*)Status:\*{0,2}[[:space:]]*(shipped|proposed|abandoned|superseded)\b' | head -n 1 || true)
+      if [[ -z "$status_line" ]]; then
+        printf "%s:1: missing Status: <shipped|proposed|abandoned|superseded> line in the first 25 lines\n" "$rel"
+      else
+        status=$(printf '%s\n' "$status_line" | sed -E 's/.*[Ss]tatus:\*{0,2}[[:space:]]*(shipped|proposed|abandoned|superseded).*/\1/I' | tr '[:upper:]' '[:lower:]')
+        if [[ "$rel" == docs/*-design.md && "$rel" != docs/*/* && "$status" != "proposed" ]]; then
+          printf "%s:1: top-level design doc has Status: %s — move shipped/superseded/abandoned design docs to docs/archive/\n" "$rel" "$status"
+        fi
+      fi
+    fi
+
+    if [[ -f "$readme" ]]; then
+      if ! grep -Fq "$base" "$readme"; then
+        printf "%s:1: %s is not indexed in docs/README.md\n" "$rel" "$rel"
+      fi
+    fi
+  done < <(
+    {
+      find "$root/docs" -maxdepth 1 -type f -name '*.md' 2>/dev/null || true
+      find "$root/docs/archive" -maxdepth 1 -type f -name '*.md' 2>/dev/null || true
+    } | sort
+  )
+}
+
 # ---- driver -----------------------------------------------------------
 
 run_all_checks() {
@@ -173,6 +220,13 @@ run_all_checks() {
       findings=$((findings + $(printf '%s\n' "$out" | wc -l)))
     fi
   done < <(scoped_paths)
+
+  local doc_out
+  doc_out=$(check_design_doc_status ".")
+  if [[ -n "$doc_out" ]]; then
+    printf '%s\n' "$doc_out"
+    findings=$((findings + $(printf '%s\n' "$doc_out" | wc -l)))
+  fi
 
   if (( findings > 0 )); then
     echo ""
@@ -228,8 +282,24 @@ EOF
   n=$(check_wrong_major_pins "$tmp/fixture.md" | wc -l)
   (( n >= 1 )) || { echo "self-test: check_wrong_major_pins fired 0 times, expected ≥1"; out=1; }
 
+  mkdir -p "$tmp/docs/archive"
+  cat > "$tmp/docs/README.md" <<'EOF'
+# Docs
+- [shipped-design.md](./shipped-design.md)
+EOF
+  cat > "$tmp/docs/shipped-design.md" <<'EOF'
+# Shipped Design
+
+**Status:** shipped
+EOF
+  cat > "$tmp/docs/no-status-design.md" <<'EOF'
+# No Status Design
+EOF
+  n=$(check_design_doc_status "$tmp" | wc -l)
+  (( n >= 3 )) || { echo "self-test: check_design_doc_status fired $n times, expected ≥3"; out=1; }
+
   if (( out == 0 )); then
-    echo "docs-lint self-test: OK (all 4 rules fired on the fixture)"
+    echo "docs-lint self-test: OK (all 5 rules fired on the fixture)"
   fi
   return $out
 }

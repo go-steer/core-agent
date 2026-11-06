@@ -2,7 +2,7 @@
 
 **Status:** proposed, 2026-11-06. Design of record for stateless and
 multi-session long-term memory; supersedes
-[`docs/shared-memory-design.md`](./shared-memory-design.md) and refines
+[`docs/archive/shared-memory-design.md`](./archive/shared-memory-design.md) and refines
 [`docs/external-state-design.md`](./external-state-design.md) § Memory.
 
 ## Motivation

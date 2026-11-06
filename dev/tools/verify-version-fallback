@@ -128,7 +128,7 @@ if [[ -n "$MODULE_PATH" ]]; then
     # docs-lint's own bad-example fixtures.
     if git rev-parse --git-dir >/dev/null 2>&1; then
         stale=$(git grep -nE 'github\.com/go-steer/core-agent(/v[0-9]+)?/(cmd|pkg|internal)/' -- . \
-                    ':!CHANGELOG.md' ':!docs/*.md' ':!docs/changelog-archive/*.md' ':!dev/uat/selfdev-soak/testdata' \
+                    ':!CHANGELOG.md' ':!docs/*.md' ':!docs/archive/*.md' ':!docs/changelog-archive/*.md' ':!dev/uat/selfdev-soak/testdata' \
                     ':!dev/uat/selfdev-soak/grade_a7_selftest.py' ':!dev/tools/docs-lint' \
                 | grep -vF "${MODULE_PATH}/" || true)
         if [[ -n "$stale" ]]; then

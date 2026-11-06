@@ -1,5 +1,7 @@
 # Bidirectional MCP: core-agent as an MCP server
 
+**Status:** proposed.
+
 Design doc for adding **MCP server mode** to core-agent. Untracked
 sibling to `docs/background-subagents-design.md` and
 `docs/scion-harness-improvements-design.md`. Targets a future minor

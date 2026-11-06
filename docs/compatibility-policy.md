@@ -1,6 +1,6 @@
 # Public API Compatibility & Deprecation Policy
 
-**Status:** Settled ([#1368](https://github.com/go-steer/core-agent/issues/1368), [#1373](https://github.com/go-steer/core-agent/issues/1373), [#1398](https://github.com/go-steer/core-agent/issues/1398))
+**Status:** shipped — Settled ([#1368](https://github.com/go-steer/core-agent/issues/1368), [#1373](https://github.com/go-steer/core-agent/issues/1373), [#1398](https://github.com/go-steer/core-agent/issues/1398))
 
 This document defines which packages in `github.com/go-steer/core-agent/v3` carry a Semantic Versioning compatibility promise, how CI enforces that promise on every pull request, and how deprecated symbols are tracked to removal.
 

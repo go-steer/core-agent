@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # GoReleaser needs full history for changelog detection
           # and accurate {{.Date}} / {{.FullCommit}} resolution.
@@ -145,7 +145,7 @@ jobs:
           fi
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       # Install git-cliff — used by dev/release/compose-release-notes.sh
       # for the pre-release fallback path (auto-generated PR list when
@@ -227,7 +227,7 @@ jobs:
       # Retroactive-tag republish → same, plus --skip=validate so goreleaser
       # tolerates the working-tree drift from the overlay step above.
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
           version: '~> v2'
@@ -289,7 +289,7 @@ jobs:
       # downloaded without a second hop through checksums.txt (#1408).
       - name: Attest the release assets
         if: ${{ !inputs.dry_run }}
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: 'dist/*.tar.gz, dist/checksums.txt'
 
@@ -304,7 +304,7 @@ jobs:
       # tag (#1408).
       - name: Attest the dry-run artifacts
         if: ${{ inputs.dry_run }}
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: 'dist/*.tar.gz, dist/checksums.txt'
 
@@ -319,7 +319,7 @@ jobs:
       # downloaded + inspected without a Release ever being created.
       - name: Upload dry-run artifacts
         if: ${{ inputs.dry_run }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist-dry-run-${{ steps.notes.outputs.tag }}
           path: dist/

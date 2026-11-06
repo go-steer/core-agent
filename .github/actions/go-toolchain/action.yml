@@ -71,7 +71,7 @@ runs:
         echo "GOTOOLCHAIN=go${version}" >> "$GITHUB_ENV"
         echo "Pinned Go toolchain: ${version}"
 
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: ${{ steps.resolve.outputs.version }}
         cache-dependency-path: ${{ inputs.cache-dependency-path }}

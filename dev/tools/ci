@@ -47,6 +47,7 @@ STEPS=(
   "docs-lint         dev/tools/docs-lint"
   "attribution       dev/tools/verify-no-agent-attribution"
   "toolchain         dev/tools/verify-go-toolchain"
+  "action-pins       dev/tools/verify-action-pins"
   "version-fallback  dev/tools/verify-version-fallback"
   "format            dev/tools/verify-go-format"
   "vet               dev/tools/vet"

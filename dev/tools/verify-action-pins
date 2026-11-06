@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Verify that every third-party `uses:` in .github/workflows/ and
+# .github/actions/ is pinned to a full 40-hex commit SHA with a trailing
+# `# <tag>` comment, and every external `FROM` base image in the root
+# Dockerfile is pinned by `@sha256:<64-hex>` digest (#1357).
+#
+# Modes:
+#   verify-action-pins              # check the repo (runs --self-test first)
+#   verify-action-pins --self-test  # run fixture self-tests
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+check_tree() {
+  local root="$1"
+  local failed=0
+
+  # 1. Check all YAML files under .github/workflows and .github/actions.
+  while IFS= read -r -d '' file; do
+    local lineno=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      lineno=$((lineno + 1))
+      # Strip leading whitespace; ignore comment lines.
+      local trimmed="${line#"${line%%[![:space:]]*}"}"
+      if [[ "$trimmed" == \#* ]]; then
+        continue
+      fi
+      # Match `- uses: ...` or `uses: ...`
+      if [[ "$trimmed" =~ ^(-[[:space:]]+)?uses:[[:space:]]*(.+)$ ]]; then
+        local rest="${BASH_REMATCH[2]}"
+        # Local composite actions (`./...`) are part of the checked-out commit.
+        if [[ "$rest" == ./* ]]; then
+          continue
+        fi
+        # Third-party actions must be `<owner>/<repo>[/<path>]@<40-hex> # <tag>`.
+        if ! [[ "$rest" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]+[^[:space:]]+ ]]; then
+          echo "verify-action-pins: ${file#${root}/}:${lineno}: unpinned or missing tag comment on uses: ${rest}" >&2
+          failed=1
+        fi
+      fi
+    done < "$file"
+  done < <(find "$root/.github/workflows" "$root/.github/actions" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null | sort -z)
+
+  # 2. Check the root Dockerfile for unpinned external FROM lines and `# syntax=`.
+  local dockerfile="$root/Dockerfile"
+  if [[ -f "$dockerfile" ]]; then
+    local lineno=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      lineno=$((lineno + 1))
+      local trimmed="${line#"${line%%[![:space:]]*}"}"
+      if [[ "$trimmed" =~ ^#[[:space:]]*syntax= ]] && ! [[ "$trimmed" =~ @sha256:[0-9a-f]{64} ]]; then
+        echo "verify-action-pins: Dockerfile:${lineno}: floating # syntax= directive: ${trimmed}" >&2
+        failed=1
+      fi
+      if [[ "$trimmed" == \#* ]]; then
+        continue
+      fi
+      if [[ "$trimmed" =~ ^FROM[[:space:]]+(.+)$ ]]; then
+        local args="${BASH_REMATCH[1]}"
+        # Strip optional `--platform=...` flag.
+        args="${args#--platform=[^[:space:]]*[[:space:]]}"
+        local image="${args%%[[:space:]]*}"
+        if ! [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
+          echo "verify-action-pins: Dockerfile:${lineno}: FROM image is not digest-pinned (@sha256:...): ${image}" >&2
+          failed=1
+        fi
+      fi
+    done < "$dockerfile"
+  fi
+
+  return "$failed"
+}
+
+self_test() {
+  local tmp
+  tmp="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" RETURN
+
+  mkdir -p "$tmp/good/.github/workflows" "$tmp/good/.github/actions/a"
+  cat > "$tmp/good/.github/workflows/ci.yml" <<'EOF'
+steps:
+  - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+  - uses: ./.github/actions/go-toolchain
+EOF
+  cat > "$tmp/good/.github/actions/a/action.yml" <<'EOF'
+runs:
+  steps:
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+EOF
+  cat > "$tmp/good/Dockerfile" <<'EOF'
+ARG GO_VERSION=1.26.10
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS builder
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+EOF
+  if ! check_tree "$tmp/good" 2>/dev/null; then
+    echo "verify-action-pins: self-test failed on valid fixture" >&2
+    return 1
+  fi
+
+  # Bad action tag pin must fail.
+  mkdir -p "$tmp/bad-action/.github/workflows" "$tmp/bad-action/.github/actions"
+  cat > "$tmp/bad-action/.github/workflows/ci.yml" <<'EOF'
+steps:
+  - uses: actions/checkout@v4
+EOF
+  if check_tree "$tmp/bad-action" 2>/dev/null; then
+    echo "verify-action-pins: self-test accepted tag-pinned action" >&2
+    return 1
+  fi
+
+  # Bad Dockerfile FROM without digest must fail.
+  mkdir -p "$tmp/bad-docker/.github/workflows" "$tmp/bad-docker/.github/actions"
+  cat > "$tmp/bad-docker/Dockerfile" <<'EOF'
+FROM gcr.io/distroless/static-debian12:nonroot
+EOF
+  if check_tree "$tmp/bad-docker" 2>/dev/null; then
+    echo "verify-action-pins: self-test accepted tag-pinned Dockerfile FROM" >&2
+    return 1
+  fi
+
+  echo "verify-action-pins: OK (self-test)"
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  self_test
+  exit 0
+fi
+
+self_test
+check_tree "."
+echo "verify-action-pins: OK (all actions SHA-pinned and Dockerfile bases digest-pinned)"

@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-#
 # Multi-stage distroless build for core-agent / core-agent-slim /
 # core-agent-tui. Same Dockerfile produces all three variants via
 # build args:
@@ -37,7 +35,7 @@
 # CI cold-cache pulls. CGO_ENABLED=0 below means we don't care about
 # the builder's libc (musl vs glibc); we only ship the binary.
 ARG GO_VERSION=1.26.10
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS builder
 
 WORKDIR /src
 
@@ -95,7 +93,7 @@ RUN go build \
 #
 # :nonroot tag pre-creates UID 65532 + GID 65532 (user "nonroot")
 # and sets USER, so the binary runs unprivileged out of the box.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 # OCI image labels for registry tooling + GHCR metadata pages.
 # Only the truly per-image-invariant labels live here — the release

@@ -20,6 +20,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 - **Forge-neutral `vcs_*` tools (`pkg/tools/vcs`) and `config.vcs` for distroless GitOps.** Adds pure-Go `vcs_*` tools over `core-vcs@v1.1.0` (GitHub, GitLab, git), `builtin:propose-change`, token-file refusal, and `verify-core-vcs-pin`. ([#1490](https://github.com/go-steer/core-agent/issues/1490))
 
+#### Security
+
+- **SHA-pin third-party GitHub Actions and digest-pin Dockerfile base images.** Pins all workflow `uses:` refs to 40-hex commit SHAs, digest-pins `Dockerfile` base images, adds `.github/dependabot.yml`, and enforces pins in CI. ([#1357](https://github.com/go-steer/core-agent/issues/1357))
+
 #### Documentation
 
 - **Clarify OTel/pricing outbound calls, prompt-cache read rates (`5–10%`), and CLI flag docs.** Updates `README.md`, `cmd/core-agent`, and `docs/site/` for `--no-pricing-refresh`, 5% cache reads, and `--config` / `--attach-register-*`. ([#1381](https://github.com/go-steer/core-agent/issues/1381))

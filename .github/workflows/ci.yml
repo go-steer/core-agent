@@ -75,7 +75,7 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # verify-apidiff compares promised packages against the nearest
           # v[1-9]* release tag reachable from HEAD (#1368).
@@ -87,7 +87,7 @@ jobs:
           # the `tar: File exists` collision an explicit actions/cache@v4
           # caused when both tried to restore the same directories.
           cache-dependency-path: '**/go.sum'
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_wrapper: false
       - run: go mod download
@@ -151,13 +151,15 @@ jobs:
       # cache nor this checkout's tag history — a few seconds of bash.
       - name: Release notes
         run: dev/ci/presubmits/verify-release-notes
+      - name: Action and base-image pins
+        run: dev/ci/presubmits/verify-action-pins
       - name: Coverage summary
         run: |
           echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           go tool cover -func=coverage.out | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage
           path: coverage.out
@@ -168,7 +170,7 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/go-toolchain
         with:
           # setup-go@v5 owns the Go module + build caches.
@@ -190,7 +192,7 @@ jobs:
     name: go mod tidy is clean
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/go-toolchain
       - name: Verify tidy
         run: dev/ci/presubmits/verify-mod-tidy
@@ -199,7 +201,7 @@ jobs:
     name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/go-toolchain
       - name: Vuln scan
         run: dev/ci/presubmits/verify-vuln

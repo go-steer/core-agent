@@ -74,13 +74,13 @@ jobs:
     # the GitHub default to trip.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Docker is preinstalled on ubuntu-latest runners; kind needs
       # explicit install. helm/kind-action is the standard idiom and
       # handles the version pin + registry pull idempotently.
       - name: Install kind
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
         with:
           # Skip cluster creation — the e2e script owns cluster
           # lifecycle so it can clean up on failure via trap.
@@ -90,7 +90,7 @@ jobs:
       # kubectl comes with kind's install path but pin it explicitly
       # for reproducibility; version matches what recent GKE clusters
       # commonly serve.
-      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
         with:
           version: v1.30.0
 

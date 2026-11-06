@@ -60,7 +60,7 @@ Packages marked `unsupported` in `dev/api-surface.txt` live under `pkg/` so `cmd
 - `pkg/childenv` — child-process credential-stripping helper
 - `pkg/compose` — CLI/daemon composition glue lifted out of `cmd/core-agent`
 - `pkg/digest` — local digesting primitives backing `pkg/tools/agentic`
-- `pkg/statestore`, `pkg/statestore/conformance`, `pkg/statestore/memory` — pluggable session-state backends and their conformance suite (`docs/external-state-design.md`); the `Transcript` seam itself is in `pkg/eventlog`
+- `pkg/statestore`, `pkg/statestore/agentengine`, `pkg/statestore/conformance`, `pkg/statestore/memory` — pluggable session-state backends and their conformance suite (`docs/external-state-design.md`); the `Transcript` seam itself is in `pkg/eventlog`
 - `pkg/hooks` — lifecycle hook runner
 - `pkg/memory/memtest` — shared conformance suite for `pkg/memory.Backend` implementations
 - `pkg/modeltier` — model-tier routing table

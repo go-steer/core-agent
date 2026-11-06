@@ -151,7 +151,7 @@ func CloseAll(servers []*Server) {
 // Servers that fail to start come back with Status==StatusError so
 // they're visible without breaking the rest of the agent.
 func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(string), gate *permissions.Gate, elicitor ElicitorFn, digestOpts *DigestOptions) ([]*Server, []tool.Toolset, error) {
-	cfg, err := LoadAll(agentsDir, homeAgentsDir)
+	cfg, err := loadAllWithTrust(ctx, agentsDir, homeAgentsDir, send)
 	if err != nil {
 		return nil, nil, err
 	}

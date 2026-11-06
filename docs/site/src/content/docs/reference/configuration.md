@@ -33,6 +33,17 @@ Per-loader precedence (higher-scope entries win on collision):
 - **MCP servers**: `<project>/.agents/mcp.json` > `~/.agents/mcp.json` — merged by server-name key; project wins on collision. Non-server fields (`agentic_wrap*`) take the first explicitly-set value.
 - **Config**: `<project>/.agents/config.json` only — no user-scope layering today. If you want personal defaults, use the CLI `-c ~/.agents/config.json` (or `--config ~/.agents/config.json`) to point at a HOME file explicitly.
 
+### Workspace trust (`--trust` and `~/.core-agent/trusted_workspaces.json`)
+
+When `core-agent` discovers a project `.agents/` directory by walking up from the working directory, it checks whether `.agents/` declares any privileged capabilities before starting child processes or relaxing permissions:
+
+- `stdio` MCP servers in `.agents/mcp.json`
+- command `hooks` in `.agents/config.json`
+- `permissions.mode` above `"ask"` (`"acceptEdits"`, `"auto"`, `"allow"`, `"yolo"`)
+- `subagents[].root` or `content_roots`
+
+Plain instructions (`AGENTS.md`), skills, HTTP MCP servers, and read-only config (`model`, `compaction`, `ui`, `permissions.mode: "ask"` or `"plan"`) do not require workspace trust. For an untrusted workspace that declares privileged capabilities, interactive sessions prompt once and persist the canonical path + SHA-256 content hash of `.agents/` in `~/.core-agent/trusted_workspaces.json` (override with `CORE_AGENT_TRUST_FILE` or allowlist with `CORE_AGENT_TRUSTED_DIRS`). Non-interactive / `-p` runs refuse the privileged fields (clamping mode to `"ask"` and skipping `stdio` MCP servers, hooks, and external roots) unless `--trust` is passed. Editing any configuration file in `.agents/` changes the hash and revokes trust automatically.
+
 ---
 
 ## Multi-file instructions (v2.3+)

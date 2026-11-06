@@ -32,6 +32,7 @@
 promised pkg/agent
 promised pkg/agent/autonomous
 promised pkg/agent/background
+promised pkg/approver
 promised pkg/attach/wire
 promised pkg/config
 promised pkg/eventlog
@@ -59,8 +60,6 @@ promised pkg/watchdog
 unsupported pkg/agentenv
 # Durable write gate and operator approval plugin (#1400).
 unsupported pkg/approval
-# Model-backed approver behind experimental permission mode `auto`.
-unsupported pkg/approver
 # HTTP/SSE remote-attach server and handlers. Its wire vocabulary is
 # the promised pkg/attach/wire above, re-exported here by alias.
 unsupported pkg/attach

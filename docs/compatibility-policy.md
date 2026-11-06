@@ -24,9 +24,10 @@ This document defines which packages in `github.com/go-steer/core-agent/v3` carr
 
 ### `promised` packages (SemVer-governed)
 
-The 24 `promised` packages form the supported embedding API of `core-agent`:
+The 25 `promised` packages form the supported embedding API of `core-agent`:
 
 - `pkg/agent`, `pkg/agent/autonomous`, `pkg/agent/background`
+- `pkg/approver`
 - `pkg/attach/wire`
 - `pkg/config`
 - `pkg/eventlog`
@@ -53,7 +54,6 @@ Packages marked `unsupported` in `dev/api-surface.txt` live under `pkg/` so `cmd
 
 - `pkg/agentenv` — daemon and sandbox environment readers (`CORE_AGENT_*`)
 - `pkg/approval` — durable write gate and operator approval plugin (`#1400`)
-- `pkg/approver` — model-backed approver behind experimental permission mode `auto`
 - `pkg/attach` — HTTP/SSE remote-attach server and handler (re-exports `pkg/attach/wire` by alias)
 - `pkg/attachadapter` — bridge adapting `pkg/agent` onto `pkg/attach`
 - `pkg/auth` — static bearer-token authentication (moving to `go-steer/purser`)

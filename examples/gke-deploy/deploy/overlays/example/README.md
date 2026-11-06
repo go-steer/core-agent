@@ -27,7 +27,7 @@ That's it for the required setup. The base's ConfigMap (`config.json`, `mcp.json
 
 ## Optional — override the agentic small model
 
-The base wires `--agentic-tools` + `--agentic-small-model=gemini-3.5-flash-lite` so bulk tool reads (file/grep/MCP fetches) route through a cheap Flash subtask rather than burning Pro tokens on raw output. This is real cost savings for an always-on agent doing dense GKE inspection — typically 5-10× cheaper per turn.
+The base wires `--agentic-tools` + `--agentic-small-model=gemini-3.5-flash-lite` so bulk tool reads (file/grep/MCP fetches) route through a cheap Flash subtask rather than burning Pro tokens on raw output. Combined with prompt caching, this projects to roughly 5-10× lower cost from per-token list-price ratios on dense GKE inspection sessions (see `internal/evals/costbench`).
 
 To override, uncomment the `AGENTIC_SMALL_MODEL` env block in `patch-deployment.yaml`:
 

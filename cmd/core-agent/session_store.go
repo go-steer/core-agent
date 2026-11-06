@@ -125,6 +125,22 @@ func sessionDBConflictMessage(cfg *config.Config) string {
 	return "--session-db=false cannot be combined with attach mode: the live-tail broadcaster, /events replay and subagent history all read the event log"
 }
 
+// printSessionStoreLines emits the startup lines naming the session
+// database (and what implied it, if the operator did not ask) and, when
+// the transcript is external, the store that holds it, through run()'s
+// send (which -q silences). Kept out of run(), which is under the #685
+// size cap.
+func printSessionStoreLines(send func(string), path string, implied bool, implier, storeLine string) {
+	if implied {
+		send(fmt.Sprintf("session db: %s [implied by %s; --session-db-path to relocate]", path, implier))
+	} else {
+		send(fmt.Sprintf("session db: %s", path))
+	}
+	if storeLine != "" {
+		send(storeLine)
+	}
+}
+
 // sessionDBImplier names what turned --session-db on without the
 // operator asking, for the startup line and the not-writable error.
 func sessionDBImplier(cfg *config.Config, attaching bool) string {

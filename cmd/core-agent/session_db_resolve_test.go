@@ -14,7 +14,10 @@
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestResolveSessionDB is the #973 gate. The rows marked "fails-first"
 // are the ones that fail against pre-#973 code, where attach mode did
@@ -220,5 +223,22 @@ func TestResidencyLostFallback(t *testing.T) {
 	residencyLostFallback(false, func() { stopped = true })("app", "u", "primary", false)
 	if !stopped {
 		t.Fatal("a single-session process did not stop when its session's lease was lost")
+	}
+}
+
+func TestPrintSessionStoreLines(t *testing.T) {
+	t.Parallel()
+	var got []string
+	send := func(s string) { got = append(got, s) }
+	printSessionStoreLines(send, "/tmp/s.db", true, "state.transcript.backend=agentengine", "session store: agentengine X (transcript)")
+	want := "session db: /tmp/s.db [implied by state.transcript.backend=agentengine; --session-db-path to relocate]|" +
+		"session store: agentengine X (transcript)"
+	if strings.Join(got, "|") != want {
+		t.Fatalf("got %q, want %q", strings.Join(got, "|"), want)
+	}
+	got = nil
+	printSessionStoreLines(send, "/tmp/s.db", false, "", "")
+	if strings.Join(got, "|") != "session db: /tmp/s.db" {
+		t.Fatalf("plain sql line = %q", got)
 	}
 }

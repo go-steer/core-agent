@@ -2154,14 +2154,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		}
 		opts = append(opts, agent.WithEventLog(handle))
 		eventlogHandle = handle
-		if impliedSessionDB {
-			send(fmt.Sprintf("session db: %s [implied by %s; --session-db-path to relocate]", path, sessionDBImplier(cfg, attaching)))
-		} else {
-			send(fmt.Sprintf("session db: %s", path))
-		}
-		if storeLine != "" {
-			send(storeLine)
-		}
+		printSessionStoreLines(send, path, impliedSessionDB, sessionDBImplier(cfg, attaching), storeLine)
 
 		// digestStore is bound below, after agent.New — the
 		// EventlogStore constructor rejects empty session identity

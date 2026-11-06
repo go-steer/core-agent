@@ -17,7 +17,7 @@ package agent
 import (
 	"context"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // SubagentManager is the narrow seam the core Agent uses to talk to a
@@ -60,25 +60,25 @@ type SubagentManager interface {
 
 	// ListSubagents returns attach-facing metadata for the manager's
 	// live subagents. Backs attachadapter.AttachAgents
-	// (attach.AgentsProvider).
-	ListSubagents() []attach.AgentInfo
+	// (wire.AgentsProvider).
+	ListSubagents() []wire.AgentInfo
 
 	// ListSubagentCatalog returns the CONFIGURED subagent roster —
 	// declarative templates + predefined catalog specs — as opposed to
 	// ListSubagents' live/spawned instances. Backs
-	// attachadapter.AttachSubagentCatalog (attach.SubagentCatalogProvider,
+	// attachadapter.AttachSubagentCatalog (wire.SubagentCatalogProvider,
 	// #627).
-	ListSubagentCatalog() []attach.SubagentCatalogInfo
+	ListSubagentCatalog() []wire.SubagentCatalogInfo
 
 	// SpawnSubagent spawns a subagent from an attach spec. Backs
-	// attachadapter.AttachSpawnSubagent (attach.SubagentSpawner).
-	SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error)
+	// attachadapter.AttachSpawnSubagent (wire.SubagentSpawner).
+	SpawnSubagent(ctx context.Context, spec wire.SubagentSpec) (wire.SubagentSpawnResponse, error)
 
 	// StopSubagent stops one subagent by name, reporting what the
 	// attempt actually did: whether the name is registered at all,
 	// whether this call was the thing that halted it, and the status
 	// it now carries. Backs attachadapter.AttachStopAgentOutcome
-	// (attach.AgentStopReporter) — the operator route for a runaway
+	// (wire.AgentStopReporter) — the operator route for a runaway
 	// subagent, which interrupting the PARENT can't reach.
-	StopSubagent(name string) (attach.StopAgentOutcome, error)
+	StopSubagent(name string) (wire.StopAgentOutcome, error)
 }

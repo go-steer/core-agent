@@ -34,7 +34,7 @@ import (
 	"google.golang.org/adk/v2/session"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/toolcalls"
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
@@ -118,7 +118,7 @@ func (e *watchdogError) Error() string { return e.reason }
 // trigger prose, which made the recorded kind a lottery over whatever
 // a runaway happened to be looping on.
 // Nil-receiver safe for the same reason as costCeilingError's.
-func (e *watchdogError) AsTurnError() attach.TurnError {
+func (e *watchdogError) AsTurnError() wire.TurnError {
 	if e == nil {
 		return watchdogTurnError("")
 	}
@@ -128,16 +128,16 @@ func (e *watchdogError) AsTurnError() attach.TurnError {
 // watchdogTurnError is the one construction site for the watchdog
 // payload — shared by the trip emit and the refusal classification
 // above so the two cannot drift apart.
-func watchdogTurnError(reason string) attach.TurnError {
-	return attach.TurnError{
-		Kind:      attach.TurnErrorWatchdog,
+func watchdogTurnError(reason string) wire.TurnError {
+	return wire.TurnError{
+		Kind:      wire.TurnErrorWatchdog,
 		Code:      "watchdog",
 		Message:   reason,
 		Retryable: false, // operator must reset, not the host
 	}
 }
 
-var _ attach.SelfClassifyingError = (*watchdogError)(nil)
+var _ wire.SelfClassifyingError = (*watchdogError)(nil)
 
 // IsWatchdogTripped reports whether err was returned by Run because a
 // prior turn tripped the behavioral watchdog under --watchdog=enforce.
@@ -626,7 +626,7 @@ func (a *Agent) enforceWatchdogInTurn() {
 		// `canceled` turn-error itself now stands as this turn's one
 		// terminal frame — the trip went out on its own non-terminal
 		// event above, so there is nothing left to suppress (#891).
-		a.markGuardrailHalt(attach.TurnErrorWatchdog)
+		a.markGuardrailHalt(wire.TurnErrorWatchdog)
 		a.Interrupt()
 	}
 }
@@ -795,7 +795,7 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert, haltedTurn bool) bool
 	// The durable row — the halt row when halt, a per-turn trip row
 	// otherwise (#1258) — is written by emitGuardrailTrip, so the log
 	// line, the row and the frame come from one site.
-	a.emitGuardrailTrip(attach.GuardrailWatchdog, reason, haltedTurn, halt)
+	a.emitGuardrailTrip(wire.GuardrailWatchdog, reason, haltedTurn, halt)
 	return true
 }
 

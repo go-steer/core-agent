@@ -35,8 +35,9 @@ import matches the slim-embed denylist:
 - `cmd/core-agent`, `cmd/core-agent-tui`
 - `internal/attachclient`, `internal/coretuievent`, `internal/coretuiremote`,
   `internal/evals`, `internal/webui`
-- `pkg/approver`, `pkg/attachadapter`, `pkg/compose`, `pkg/instruction`,
-  `pkg/mcp`, `pkg/runner`, `pkg/skills`, `pkg/telemetry`
+- `pkg/approver`, `pkg/attach`, `pkg/attachadapter`, `pkg/compose`,
+  `pkg/instruction`, `pkg/mcp`, `pkg/runner`, `pkg/skills`, `pkg/telemetry`,
+  `pkg/tools/vcs`
 - `github.com/go-steer/core-tui/...`, `github.com/charmbracelet/...`
 - `github.com/modelcontextprotocol/...`
 - `github.com/prometheus/...`
@@ -44,18 +45,20 @@ import matches the slim-embed denylist:
 - `github.com/glebarez/sqlite`, `github.com/glebarez/go-sqlite`,
   `modernc.org/...`, `github.com/mattn/go-sqlite3`
 
-Note: `pkg/agent` imports `pkg/attach` and `pkg/eventlog` for its option and
+Note: `pkg/agent` imports `pkg/attach/wire` and `pkg/eventlog` for its option and
 audit-event types (`WithAttachEmitter`, `WithEventLog`), and `google.golang.org/genai`
 plus `pkg/agent` import the OpenTelemetry API (`go.opentelemetry.io/otel`,
 `/trace`, `/metric`). Neither pulls in SQLite drivers, Prometheus, or the
 OpenTelemetry SDK unless `pkg/telemetry` or `github.com/glebarez/sqlite` is
-imported by the host binary. Three heavier edges remain in the graph by
-decision ([#1415](https://github.com/go-steer/core-agent/issues/1415)):
-`gorm.io/gorm` core, because `eventlog.Handle` is part of `pkg/agent`'s
-contract and the durable session log is gorm-backed; `github.com/gorilla/websocket`,
-which is `genai`'s Live API and not this repository's to remove; and
-`github.com/itchyny/gojq`, because two built-in tools are jq. Because the
-denylist cannot see that kind of arrival, the script also enforces a
-transitive package-count ceiling (`SLIM_MAX_PACKAGES`, 570 against a
-measured 546); a PR that knowingly adds weight raises it in the same change
-and says what came in.
+imported by the host binary. `pkg/attach/wire` is the attach protocol's
+vocabulary only ([#1372](https://github.com/go-steer/core-agent/issues/1372),
+[#1415](https://github.com/go-steer/core-agent/issues/1415)): the HTTP/SSE
+server in `pkg/attach` is not in this graph. Three heavier edges remain in the
+graph by decision: `gorm.io/gorm` core (driverless), because `eventlog.Handle`
+is part of `pkg/agent`'s contract and the durable session log is gorm-backed;
+`github.com/gorilla/websocket`, which `google.golang.org/genai` imports for the
+Live API; and `github.com/itchyny/gojq`, because two built-in tools are jq.
+Because the denylist cannot see that kind of arrival, the script also enforces
+a transitive package-count ceiling (`SLIM_MAX_PACKAGES`, 570 against a measured
+567); a PR that knowingly adds weight raises it in the same change and says
+what came in.

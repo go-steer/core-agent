@@ -19,12 +19,12 @@ import (
 
 	"google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // catalogToolNames flattens one roster entry's tool grant to names, for
 // assertions that care about membership and order.
-func catalogToolNames(e attach.SubagentCatalogInfo) []string {
+func catalogToolNames(e wire.SubagentCatalogInfo) []string {
 	out := make([]string, 0, len(e.Tools))
 	for _, t := range e.Tools {
 		out = append(out, t.Name)
@@ -32,7 +32,7 @@ func catalogToolNames(e attach.SubagentCatalogInfo) []string {
 	return out
 }
 
-func catalogEntry(t *testing.T, cat []attach.SubagentCatalogInfo, name string) attach.SubagentCatalogInfo {
+func catalogEntry(t *testing.T, cat []wire.SubagentCatalogInfo, name string) wire.SubagentCatalogInfo {
 	t.Helper()
 	for _, e := range cat {
 		if e.Name == name {
@@ -40,7 +40,7 @@ func catalogEntry(t *testing.T, cat []attach.SubagentCatalogInfo, name string) a
 		}
 	}
 	t.Fatalf("%q absent from the catalog (%d entries)", name, len(cat))
-	return attach.SubagentCatalogInfo{}
+	return wire.SubagentCatalogInfo{}
 }
 
 // TestCatalog_TemplateToolsMergeBuiltinsAndToolsets is #768's core
@@ -59,9 +59,9 @@ func TestCatalog_TemplateToolsMergeBuiltinsAndToolsets(t *testing.T) {
 			newNamedStubTool(t, "read_file"),
 			newNamedStubTool(t, "grep"),
 		},
-		ToolsetTools: []attach.ToolInfo{
-			{Name: "gke_list_clusters", Description: "list clusters", Source: attach.ToolSourceMCP, Server: "gke"},
-			{Name: "list_skills", Description: "enumerate skills", Source: attach.ToolSourceSkill},
+		ToolsetTools: []wire.ToolInfo{
+			{Name: "gke_list_clusters", Description: "list clusters", Source: wire.ToolSourceMCP, Server: "gke"},
+			{Name: "list_skills", Description: "enumerate skills", Source: wire.ToolSourceSkill},
 		},
 	}})
 
@@ -77,21 +77,21 @@ func TestCatalog_TemplateToolsMergeBuiltinsAndToolsets(t *testing.T) {
 		}
 	}
 
-	byName := map[string]attach.ToolInfo{}
+	byName := map[string]wire.ToolInfo{}
 	for _, ti := range got.Tools {
 		byName[ti.Name] = ti
 	}
 	// MCP attribution survives the projection — the whole point of
 	// snapshotting at registration rather than enumerating here.
-	if mcp := byName["gke_list_clusters"]; mcp.Source != attach.ToolSourceMCP || mcp.Server != "gke" {
+	if mcp := byName["gke_list_clusters"]; mcp.Source != wire.ToolSourceMCP || mcp.Server != "gke" {
 		t.Errorf("gke_list_clusters = %+v, want source=mcp server=gke", mcp)
 	}
-	if sk := byName["list_skills"]; sk.Source != attach.ToolSourceSkill || sk.Server != "" {
+	if sk := byName["list_skills"]; sk.Source != wire.ToolSourceSkill || sk.Server != "" {
 		t.Errorf("list_skills = %+v, want source=skill and no server", sk)
 	}
 	// Built-ins classify by the same roster GET .../tools uses, and keep
 	// their descriptions so a detail view has something to render.
-	if bi := byName["read_file"]; bi.Source != attach.ToolSourceBuiltin || bi.Description == "" {
+	if bi := byName["read_file"]; bi.Source != wire.ToolSourceBuiltin || bi.Description == "" {
 		t.Errorf("read_file = %+v, want source=builtin with a description", bi)
 	}
 }
@@ -198,8 +198,8 @@ func TestCatalog_ToolsDedupeByName(t *testing.T) {
 		Name:         "cluster",
 		ModelFactory: tmplFactory(prov, "m"),
 		Tools:        []tool.Tool{newNamedStubTool(t, "read_file")},
-		ToolsetTools: []attach.ToolInfo{
-			{Name: "read_file", Source: attach.ToolSourceMCP, Server: "impostor"},
+		ToolsetTools: []wire.ToolInfo{
+			{Name: "read_file", Source: wire.ToolSourceMCP, Server: "impostor"},
 		},
 	}})
 
@@ -207,7 +207,7 @@ func TestCatalog_ToolsDedupeByName(t *testing.T) {
 	if names := catalogToolNames(got); len(names) != 1 {
 		t.Fatalf("tools = %v, want one row for read_file", names)
 	}
-	if got.Tools[0].Source != attach.ToolSourceBuiltin {
+	if got.Tools[0].Source != wire.ToolSourceBuiltin {
 		t.Errorf("read_file source = %q, want builtin — the resolved instance wins", got.Tools[0].Source)
 	}
 }

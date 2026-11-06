@@ -31,17 +31,11 @@ import (
 // took effect, while readers can accept "nothing here" silently.
 var ErrCapabilityNotRegistered = errors.New("attach: capability not registered on this OperatorView")
 
-// Tool source classifications surfaced via GET /sessions/.../tools.
-// Bare strings (not a typed enum) so JSON clients downstream — the
-// TUI, an eventual WebUI, operator scripts — don't have to know a
-// Go type to reason about them.
-const (
-	ToolSourceBuiltin  = "builtin"
-	ToolSourceMCP      = "mcp"
-	ToolSourceSkill    = "skill"
-	ToolSourceSubagent = "subagent"
-	ToolSourceOther    = "other"
-)
+// Tool source classifications (ToolSource*), ToolInfo, the subagent
+// statuses (AgentStatus*), AgentInfo and SubagentCatalogInfo are
+// declared in pkg/attach/wire and re-exported from wire.go: the agent
+// projects them, so they belong to the vocabulary rather than the
+// server.
 
 // Agent run-states surfaced via GET /sessions/.../status. "running"
 // covers any active turn; "deferred" means the scheduler is sleeping
@@ -63,90 +57,6 @@ const (
 	AgentStatePaused   = "paused"
 	AgentStateIdle     = "idle"
 )
-
-// ToolInfo is one entry in the GET /sessions/.../tools response.
-//
-// GateState carries the pre-flight projection from
-// permissions.Gate.ToolGateState — empty when no gate is wired
-// (library callers with no permission policy). The TUI v1 fetches the
-// field but doesn't surface it; v1.1 adds the column in the /tools
-// modal.
-type ToolInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Source      string `json:"source"`           // builtin | mcp | skill | subagent | other
-	Server      string `json:"server,omitempty"` // MCP server attribution when Source=mcp
-	GateState   string `json:"gate_state,omitempty"`
-}
-
-// SUBagent statuses carried on AgentInfo.Status — the string form of
-// background.Status. Distinct from the AgentState* set above, which
-// describes the SESSION's loop rather than one spawned subagent.
-const (
-	AgentStatusRunning   = "running"
-	AgentStatusCompleted = "completed"
-	AgentStatusFailed    = "failed"
-	AgentStatusStopped   = "stopped"
-	AgentStatusDeferred  = "deferred"
-)
-
-// AgentInfo is one background subagent the parent agent knows about,
-// surfaced via GET /sessions/.../agents. Populated from the
-// BackgroundAgentManager when one is wired; empty list otherwise.
-//
-// LastReport is the returned result, else the final text, once the
-// subagent has finished; while it runs, its latest report_alert text,
-// or failing that its latest model message, cut to 1 KiB (protocol
-// 1.20.0, #1283).
-//
-// NextWakeAt and WakeDetail (protocol 1.20.0, #1283) are set only while
-// the subagent is sleeping between turns on a schedule_next_turn wake:
-// the time it will wake, and the one-line reason it gave. Status stays
-// "running" while it sleeps, because a new status word would read as
-// finished to clients that predate it. Both are absent otherwise, and
-// always absent from a pre-1.20.0 daemon.
-type AgentInfo struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Status          string    `json:"status"` // AgentStatus*: running | completed | failed | stopped | deferred
-	StartedAt       time.Time `json:"started_at"`
-	ParentSessionID string    `json:"parent_session_id,omitempty"`
-	LastReport      string    `json:"last_report,omitempty"` // see the type comment
-	NextWakeAt      time.Time `json:"next_wake_at,omitzero"`
-	WakeDetail      string    `json:"wake_detail,omitempty"`
-}
-
-// SubagentCatalogInfo is one CONFIGURED subagent in the roster surfaced
-// via GET /sessions/.../subagents (#627) — what the daemon LOADED, as
-// opposed to what it has spawned (AgentInfo / GET .../agents, "what's
-// running"). Populated from the BackgroundAgentManager's catalog when one
-// is wired; empty list otherwise (e.g. --no-background-agents, where
-// nothing is spawnable by reference).
-type SubagentCatalogInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Model       string `json:"model,omitempty"` // resolved model id; empty only for a predefined spec that inherits the parent's
-	Root        string `json:"root,omitempty"`  // own content root, when rooted
-	// Modes is how this subagent can be invoked ON THIS SESSION: always
-	// "async" (spawn_agent by reference), plus "sync" only when this
-	// session's agent also carries it as a parent tool. A session created
-	// via POST /sessions gets the background manager but not the
-	// synchronous subagent tools, so its entries are async-only (#741).
-	Modes []string `json:"modes"`
-	// Tools is the subagent's CONFIGURED tool grant, sorted by name and
-	// classified the same way GET .../tools classifies the parent's
-	// (#767): builtin / mcp / skill / other, with MCP server attribution.
-	// It answers "can this specialist actually reach kubectl?" — the
-	// question an operator asks immediately after "what specialists
-	// exist?" (#768).
-	//
-	// Configured, not effective: the loop-control tools every spawned
-	// subagent gets wired regardless (return_result, report_alert,
-	// schedule_next_turn) are absent, because they are a property of the
-	// runtime rather than of this subagent's configuration. Empty for a
-	// subagent granted no tools at all.
-	Tools []ToolInfo `json:"tools,omitempty"`
-}
 
 // StatusInfo is the response shape of GET /sessions/.../status.
 // ModelName is what the TUI's usage panel labels with; the rest is
@@ -197,22 +107,9 @@ type ToolsProvider interface {
 	AttachTools() []ToolInfo
 }
 
-// AgentsProvider is the optional capability for GET /sessions/.../agents.
-// Returns the background subagents tracked by the registrant's
-// BackgroundAgentManager (if any).
-type AgentsProvider interface {
-	AttachAgents() []AgentInfo
-}
-
-// SubagentCatalogProvider is the optional capability for
-// GET /sessions/.../subagents (#627). Returns the CONFIGURED subagent
-// roster (declarative templates + predefined catalog specs) — distinct
-// from AgentsProvider, which returns live/spawned instances. Absence (or
-// a nil manager) reports an empty list rather than 501, matching the
-// other read-only projections.
-type SubagentCatalogProvider interface {
-	AttachSubagentCatalog() []SubagentCatalogInfo
-}
+// AgentsProvider (GET /sessions/.../agents) and SubagentCatalogProvider
+// (GET /sessions/.../subagents, #627) are declared in pkg/attach/wire
+// and re-exported from wire.go.
 
 // StatusProvider is the optional capability for GET /sessions/.../status.
 // Returns the agent's current run-state + model identity.
@@ -232,31 +129,8 @@ type InterruptProvider interface {
 }
 
 // InterruptSelfAuditor is the optional capability a registrant
-// implements when it records the operator-interrupt audit event itself,
-// from inside its own serialized turn loop, instead of leaving the
-// /interrupt handler to append it out-of-band.
-//
-// The handler's fallback (appendInterruptAudit) does a
-// Get-then-AppendEvent on the live session row while the interrupted
-// turn is still flushing its final events. That extra write bumps the
-// row's last_update_time and can trip the runner's optimistic-
-// concurrency check mid-flush, so the operator's clean cancel surfaces
-// as an opaque "stale session error" instead of ctx.Canceled (#565).
-//
-// A registrant that implements this interface takes ownership of the
-// audit: MarkInterruptPending records the intent, and the registrant
-// appends the audit row once the interrupted turn unwinds — the one
-// window with no live runner handle racing the write. When a registrant
-// implements it, the /interrupt handler calls MarkInterruptPending and
-// skips its own append.
-type InterruptSelfAuditor interface {
-	// MarkInterruptPending records that an operator interrupt fired and
-	// an audit row should be appended once the current turn unwinds.
-	// Called from the /interrupt handler only after AttachInterrupt
-	// reported an in-flight turn was cancelled. Safe to call
-	// concurrently with the registrant's turn loop.
-	MarkInterruptPending()
-}
+// implements when it records the operator-interrupt audit event itself
+// (#565). Declared in pkg/attach/wire and re-exported from wire.go.
 
 // UsageInfo is the response shape of GET /sessions/.../usage. Backs
 // the remote TUI's /stats slash. PerModel is empty when only one model
@@ -488,15 +362,9 @@ type SkillsProvider interface {
 	AttachSkills() []SkillInfo
 }
 
-// DescriptionProvider is the optional capability the agent-card
-// handler consults when AgentCardConfig.Description is empty. Returns
-// a one-line summary of what the agent does — fed by the same source
-// as ADK's llmagent.Config.Description, so the operator writes it
-// once and it flows to both the LLM's system prompt and the public
-// discovery card.
-type DescriptionProvider interface {
-	Description() string
-}
+// DescriptionProvider — the per-AGENT one-line description the
+// agent-card handler consults — is declared in pkg/attach/wire and
+// re-exported from wire.go.
 
 // SessionTitleProvider is the optional capability the GET /sessions
 // handler consults for a session's short operator-facing label — the
@@ -875,32 +743,9 @@ func (e *SideQueryEmptyError) Error() string {
 	return "side query: model returned no text (" + e.Detail + ")"
 }
 
-// SubagentSpec is the POST body for /slash/subagent. Mirrors
-// agent.BackgroundSpec in JSON-friendly form.
-type SubagentSpec struct {
-	Name         string         `json:"name"`
-	SystemPrompt string         `json:"system_prompt,omitempty"`
-	Goal         string         `json:"goal"`
-	Tools        []string       `json:"tools,omitempty"`
-	Extras       []string       `json:"extras,omitempty"`
-	Budgets      SubagentBudget `json:"budgets,omitempty"`
-	Scheduler    string         `json:"scheduler,omitempty"`
-}
-
-// SubagentBudget mirrors agent.BackgroundBudgets. Zero values mean
-// "use the manager's default for that field".
-type SubagentBudget struct {
-	MaxTurns      int     `json:"max_turns,omitempty"`
-	MaxCostUSD    float64 `json:"max_cost_usd,omitempty"`
-	MaxWallClockS int     `json:"max_wall_clock_seconds,omitempty"`
-}
-
-// SubagentSpawnResponse confirms the spawn. StartedAt is the
-// manager's record of when the subagent's first turn dispatched.
-type SubagentSpawnResponse struct {
-	Name      string    `json:"name"`
-	StartedAt time.Time `json:"started_at"`
-}
+// SubagentSpec, SubagentBudget and SubagentSpawnResponse — the
+// /slash/subagent body and reply — are declared in pkg/attach/wire and
+// re-exported from wire.go, as is SubagentSpawner below.
 
 // CompactSlashProvider is the optional capability for
 // POST /sessions/.../slash/compact.
@@ -918,12 +763,6 @@ type CheckpointSlashProvider interface {
 // POST /sessions/.../slash/btw.
 type SideQueryProvider interface {
 	AttachAskSideQuestion(ctx context.Context, question string) (string, error)
-}
-
-// SubagentSpawner is the optional capability for
-// POST /sessions/.../slash/subagent.
-type SubagentSpawner interface {
-	AttachSpawnSubagent(ctx context.Context, spec SubagentSpec) (SubagentSpawnResponse, error)
 }
 
 // ReplanProvider is the optional capability for

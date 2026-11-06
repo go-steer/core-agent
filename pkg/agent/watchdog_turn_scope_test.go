@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
@@ -66,13 +66,13 @@ func TestDrainWatchdogAlerts_TurnScopedCriticalCutsTheTurnNotTheSession(t *testi
 	w := &fakeWatchdog{pending: []watchdog.Alert{
 		turnScopedAlert("3 tool calls in a row (mark_task_done) reported that they changed nothing."),
 	}}
-	var trips []attach.GuardrailTrip
+	var trips []wire.GuardrailTrip
 	a := &Agent{watchdog: w, watchdogEnforce: true}
 	a.SetOperatorEventEmitter(func(kind string, payload any) {
-		if kind != attach.EventGuardrailTrip {
+		if kind != wire.EventGuardrailTrip {
 			return
 		}
-		trips = append(trips, payload.(attach.GuardrailTrip))
+		trips = append(trips, payload.(wire.GuardrailTrip))
 	})
 
 	if !a.drainWatchdogAlerts(true) {
@@ -99,7 +99,7 @@ func TestDrainWatchdogAlerts_TurnScopedCriticalCutsTheTurnNotTheSession(t *testi
 		t.Fatalf("guardrail-trip events = %d, want 1: %+v", len(trips), trips)
 	}
 	trip := trips[0]
-	if trip.Guardrail != attach.GuardrailWatchdog || !trip.HaltedTurn {
+	if trip.Guardrail != wire.GuardrailWatchdog || !trip.HaltedTurn {
 		t.Errorf("trip = %+v, want the watchdog guardrail with halted_turn=true", trip)
 	}
 	// The operator reads this line to find out how much stopped. It has
@@ -241,9 +241,9 @@ func TestEnforceWatchdogInTurn_CutsOnATurnScopedCritical(t *testing.T) {
 	a.mu.Lock()
 	got := a.guardrailHaltKind
 	a.mu.Unlock()
-	if got != attach.TurnErrorWatchdog {
+	if got != wire.TurnErrorWatchdog {
 		t.Fatalf("the cut turn is labelled %q, want %q — an unlabelled cut is reported as a bare operator cancel",
-			got, attach.TurnErrorWatchdog)
+			got, wire.TurnErrorWatchdog)
 	}
 }
 

@@ -30,7 +30,7 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 	"github.com/go-steer/core-agent/v3/pkg/watchdog"
@@ -97,7 +97,7 @@ func TestGuardrailPersist_WatchdogTripSurvivesRestart(t *testing.T) {
 	if tripped, _ := first.WatchdogTripped(); !tripped {
 		t.Fatalf("watchdog should have tripped at the post-turn drain")
 	}
-	if got := countGuardrailRows(t, first, attach.GuardrailTripEventAuthor); got != 1 {
+	if got := countGuardrailRows(t, first, wire.GuardrailTripEventAuthor); got != 1 {
 		t.Fatalf("durable trip rows = %d, want 1", got)
 	}
 
@@ -215,8 +215,8 @@ func TestGuardrailPersist_ResetSurvivesRestart(t *testing.T) {
 	runTurnToCompletion(t, first)
 
 	first.ResetWatchdog()
-	first.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 0, "alice@example.com")
-	if got := countGuardrailRows(t, first, attach.GuardrailResetEventAuthor); got != 1 {
+	first.RecordGuardrailReset([]string{wire.GuardrailWatchdog}, 0, "alice@example.com")
+	if got := countGuardrailRows(t, first, wire.GuardrailResetEventAuthor); got != 1 {
 		t.Fatalf("durable reset rows = %d, want 1", got)
 	}
 
@@ -250,7 +250,7 @@ func TestRecordGuardrailReset_NoOpWritesNothing(t *testing.T) {
 		t.Fatalf("agent.New: %v", err)
 	}
 	a.RecordGuardrailReset(nil, 0, "alice@example.com")
-	if got := countGuardrailRows(t, a, attach.GuardrailResetEventAuthor); got != 0 {
+	if got := countGuardrailRows(t, a, wire.GuardrailResetEventAuthor); got != 0 {
 		t.Errorf("reset rows = %d, want 0 for a reset that cleared nothing", got)
 	}
 }
@@ -415,7 +415,7 @@ func TestGuardrailPersist_NoEventLogIsNoOp(t *testing.T) {
 	if tripped, _ := a.WatchdogTripped(); !tripped {
 		t.Error("in-memory enforce should still trip")
 	}
-	a.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 5, "alice")
+	a.RecordGuardrailReset([]string{wire.GuardrailWatchdog}, 5, "alice")
 	if err := a.RestoreGuardrails(context.Background()); err != nil {
 		t.Errorf("RestoreGuardrails with no eventlog = %v, want nil", err)
 	}
@@ -479,9 +479,9 @@ func TestGuardrailPersist_SurvivesAReopenedDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
-	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
-	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "looping"))
-	a.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 5, "alice@example.com")
+	a.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "blew the budget"))
+	a.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailWatchdog, "looping"))
+	a.RecordGuardrailReset([]string{wire.GuardrailWatchdog}, 5, "alice@example.com")
 	if err := first.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestRestoreGuardrails_RetriesAfterAFailedRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
-	writer.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
+	writer.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "blew the budget"))
 
 	// The restart, with a first read that cannot succeed: the session
 	// ID it looks for does not exist yet.
@@ -643,7 +643,7 @@ func TestGuardrailPersist_PerTurnTripDoesNotSurviveARestart(t *testing.T) {
 	if !first.maybeEnforceCostCeiling(false) {
 		t.Fatalf("setup: the per-turn ceiling should have tripped")
 	}
-	if got := countGuardrailRows(t, first, attach.GuardrailTripEventAuthor); got != 0 {
+	if got := countGuardrailRows(t, first, wire.GuardrailTripEventAuthor); got != 0 {
 		t.Errorf("a per-turn trip wrote %d durable guardrail rows, want 0 — "+
 			"one turn's spend must not outlive the pod that spent it", got)
 	}
@@ -700,7 +700,7 @@ func TestGuardrailPersist_PerTurnStreakEscalationSurvivesARestart(t *testing.T) 
 	}
 	// Exactly one row for the whole streak: the escalation. The trips
 	// before it ended their own turns and nothing else.
-	if got := countGuardrailRows(t, first, attach.GuardrailTripEventAuthor); got != 1 {
+	if got := countGuardrailRows(t, first, wire.GuardrailTripEventAuthor); got != 1 {
 		t.Errorf("durable trip rows = %d, want exactly 1 (the escalation)", got)
 	}
 
@@ -820,7 +820,7 @@ func TestGuardrailPersist_TransientDrainErrorRequeuesAndSurvivesRestart(t *testi
 	flaky.mu.Unlock()
 	first.mu.Lock()
 	first.pendingOutOfBandEvents = append(first.pendingOutOfBandEvents,
-		queuedOutOfBandEvent{ev: attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget")})
+		queuedOutOfBandEvent{ev: wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "blew the budget")})
 	first.mu.Unlock()
 	first.drainOutOfBandEvents()
 
@@ -899,7 +899,7 @@ func TestGuardrailPersist_BackfillsPreUpgradeDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
-	first.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "legacy cost halt"))
+	first.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "legacy cost halt"))
 	first.RecordGuardrailReset(nil, 5, "alice@example.com")
 
 	// Simulate a pre-upgrade database by wiping agent_guardrail_state
@@ -991,8 +991,8 @@ func TestGuardrailPersist_PostCommitDuplicateRetryUnblocksQueue(t *testing.T) {
 			t.Fatalf("agent.New: %v", err)
 		}
 
-		ev1 := attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "looping on grep")
-		ev2 := attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "exceeded session cap")
+		ev1 := wire.NewGuardrailTripEvent(wire.GuardrailWatchdog, "looping on grep")
+		ev2 := wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "exceeded session cap")
 		a.mu.Lock()
 		a.pendingOutOfBandEvents = []queuedOutOfBandEvent{{ev: ev1}, {ev: ev2}}
 		a.mu.Unlock()
@@ -1016,7 +1016,7 @@ func TestGuardrailPersist_PostCommitDuplicateRetryUnblocksQueue(t *testing.T) {
 		if remaining != 0 {
 			t.Fatalf("pending after retry drain = %d, want 0 (blocked behind duplicate key)", remaining)
 		}
-		if got := countGuardrailRows(t, a, attach.GuardrailTripEventAuthor); got != 2 {
+		if got := countGuardrailRows(t, a, wire.GuardrailTripEventAuthor); got != 2 {
 			t.Fatalf("durable trip rows = %d, want 2", got)
 		}
 	})
@@ -1042,8 +1042,8 @@ func TestGuardrailPersist_PostCommitDuplicateRetryUnblocksQueue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("agent.New: %v", err)
 		}
-		ev1 := attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "first")
-		ev2 := attach.NewGuardrailResetAuditEvent("alice@example.com", []string{attach.GuardrailWatchdog}, 0)
+		ev1 := wire.NewGuardrailTripEvent(wire.GuardrailWatchdog, "first")
+		ev2 := wire.NewGuardrailResetAuditEvent("alice@example.com", []string{wire.GuardrailWatchdog}, 0)
 		a.mu.Lock()
 		a.pendingOutOfBandEvents = []queuedOutOfBandEvent{{ev: ev1}, {ev: ev2}}
 		a.mu.Unlock()
@@ -1057,7 +1057,7 @@ func TestGuardrailPersist_PostCommitDuplicateRetryUnblocksQueue(t *testing.T) {
 		if remaining != 0 {
 			t.Fatalf("pending after raw ADK retry = %d, want 0", remaining)
 		}
-		if got := countGuardrailRows(t, a, attach.GuardrailResetEventAuthor); got != 1 {
+		if got := countGuardrailRows(t, a, wire.GuardrailResetEventAuthor); got != 1 {
 			t.Fatalf("reset rows behind duplicate event = %d, want 1", got)
 		}
 	})
@@ -1069,9 +1069,9 @@ func TestGuardrailPersist_PoisonEventDroppedAfterMaxAttemptsAndQueueDrains(t *te
 	defer cleanup()
 	createTestSession(t, h, "core-agent", "u", "s-1438-poison")
 
-	poison := attach.NewGuardrailResetAuditEvent("bob@example.com", []string{attach.GuardrailWatchdog}, 0)
+	poison := wire.NewGuardrailResetAuditEvent("bob@example.com", []string{wire.GuardrailWatchdog}, 0)
 	poison.ID = "poison-event-1438"
-	healthy := attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "session cap tripped behind poison")
+	healthy := wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "session cap tripped behind poison")
 
 	wrapped := &postCommitFailService{Service: h.Service, poisonEventID: poison.ID}
 	h.Service = wrapped
@@ -1153,8 +1153,8 @@ func TestRecordGuardrailReset_BeforeFirstRunFoldsLegacyEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
-	first.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "legacy watchdog halt"))
-	first.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "legacy cost halt"))
+	first.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailWatchdog, "legacy watchdog halt"))
+	first.queueOutOfBandEvent(wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "legacy cost halt"))
 	first.RecordGuardrailReset(nil, 5, "alice@example.com")
 
 	// Simulate a pre-upgrade database by wiping agent_guardrail_state while
@@ -1178,7 +1178,7 @@ func TestRecordGuardrailReset_BeforeFirstRunFoldsLegacyEvents(t *testing.T) {
 		t.Fatalf("AddSessionCostBudget: %v", err)
 	}
 	second.ResetWatchdog()
-	second.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 3, "bob@example.com")
+	second.RecordGuardrailReset([]string{wire.GuardrailWatchdog}, 3, "bob@example.com")
 
 	if tripped, _ := second.WatchdogTripped(); tripped {
 		t.Error("watchdog halt should remain cleared after operator reset")
@@ -1224,9 +1224,9 @@ func TestGuardrailEventContractMatchesEventLogStore(t *testing.T) {
 	}
 	sess := getResp.Session
 	events := []*session.Event{
-		attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "wd-reason"),
-		attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "cost-reason"),
-		attach.NewGuardrailResetAuditEvent("op@example.com", []string{attach.GuardrailWatchdog}, 6.5),
+		wire.NewGuardrailTripEvent(wire.GuardrailWatchdog, "wd-reason"),
+		wire.NewGuardrailTripEvent(wire.GuardrailCostCeiling, "cost-reason"),
+		wire.NewGuardrailResetAuditEvent("op@example.com", []string{wire.GuardrailWatchdog}, 6.5),
 	}
 	for i, ev := range events {
 		if err := h.Service.AppendEvent(ctx, sess, ev); err != nil {
@@ -1240,7 +1240,7 @@ func TestGuardrailEventContractMatchesEventLogStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(full): %v", err)
 	}
-	folded := attach.FoldGuardrailEvents(eventSeq(fullResp.Session))
+	folded := wire.FoldGuardrailEvents(eventSeq(fullResp.Session))
 	stored, err := h.Guardrail.Load(ctx, "core-agent", "u", "s-1439-contract")
 	if err != nil {
 		t.Fatalf("Guardrail.Load: %v", err)
@@ -1250,6 +1250,6 @@ func TestGuardrailEventContractMatchesEventLogStore(t *testing.T) {
 		stored.CostTripped != folded.CostTripped ||
 		stored.CostReason != folded.CostReason ||
 		stored.BudgetExtensionUSD != folded.BudgetAddedUSD {
-		t.Fatalf("GuardrailStore state %+v diverged from attach.FoldGuardrailEvents %+v", stored, folded)
+		t.Fatalf("GuardrailStore state %+v diverged from wire.FoldGuardrailEvents %+v", stored, folded)
 	}
 }

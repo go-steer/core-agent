@@ -29,7 +29,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
@@ -64,8 +64,8 @@ func TestUnknownContextWindow_AnnouncesItselfOnTheEventLog(t *testing.T) {
 	}
 
 	op, detail := findContextReductionDegradedRow(t, a)
-	if op != attach.ContextReductionWindowUnknown {
-		t.Errorf("degraded row operation = %q, want %q", op, attach.ContextReductionWindowUnknown)
+	if op != wire.ContextReductionWindowUnknown {
+		t.Errorf("degraded row operation = %q, want %q", op, wire.ContextReductionWindowUnknown)
 	}
 	// The two facts an operator needs to act: which model, and what we
 	// guessed. "Compaction is degraded" on its own is not actionable.
@@ -258,8 +258,8 @@ func TestMechanicalFallback_AnnouncesItselfOnTheEventLog(t *testing.T) {
 	}
 
 	op, detail := findContextReductionDegradedRow(t, a)
-	if op != attach.ContextReductionMechanical {
-		t.Errorf("degraded row operation = %q, want %q", op, attach.ContextReductionMechanical)
+	if op != wire.ContextReductionMechanical {
+		t.Errorf("degraded row operation = %q, want %q", op, wire.ContextReductionMechanical)
 	}
 	if !strings.Contains(detail, "RESOURCE_EXHAUSTED") {
 		t.Errorf("detail = %q, want the summarizer failure that caused it", detail)
@@ -399,7 +399,7 @@ func TestMechanicalCompact_EmptyWindowIsNotReportedAsAFailure(t *testing.T) {
 func findContextReductionDegradedRow(t *testing.T, a *Agent) (operation, detail string) {
 	t.Helper()
 	for _, ev := range allEventLogEvents(t, a) {
-		if op, d, ok := attach.ContextReductionDegraded(ev); ok {
+		if op, d, ok := wire.ContextReductionDegraded(ev); ok {
 			return op, d
 		}
 	}
@@ -411,7 +411,7 @@ func countContextReductionDegradedRows(t *testing.T, a *Agent) int {
 	t.Helper()
 	n := 0
 	for _, ev := range allEventLogEvents(t, a) {
-		if _, _, ok := attach.ContextReductionDegraded(ev); ok {
+		if _, _, ok := wire.ContextReductionDegraded(ev); ok {
 			n++
 		}
 	}

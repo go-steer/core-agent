@@ -27,10 +27,17 @@
 #     and instruments. The OTel SDK (go.opentelemetry.io/otel/sdk/...)
 #     and exporters (go.opentelemetry.io/otel/exporters/...) live behind
 #     pkg/telemetry and are denylisted below.
-#   - pkg/attach and pkg/eventlog: imported by pkg/agent for its option
-#     and audit-event types (WithAttachEmitter, WithEventLog). Neither
-#     package imports SQLite drivers (glebarez/sqlite, modernc.org),
-#     Prometheus, or the attach bridge (pkg/attachadapter).
+#   - pkg/attach/wire and pkg/eventlog: imported by pkg/agent for its
+#     option and audit-event types (WithAttachEmitter, WithEventLog).
+#     pkg/attach/wire is the attach protocol's vocabulary only (#1415);
+#     the HTTP/SSE server in pkg/attach is no longer in this graph.
+#     Neither package imports SQLite drivers (glebarez/sqlite,
+#     modernc.org), Prometheus, or the attach bridge (pkg/attachadapter).
+#     gorm.io/gorm core (driverless) stays, by decision: eventlog.Handle
+#     is part of pkg/agent's contract (docs/mast-fold-design.md
+#     decision 9). github.com/gorilla/websocket stays too, because
+#     google.golang.org/genai imports it for the Live API; nothing in
+#     this repository does.
 #
 # Usage:
 #   dev/tools/verify-slim-deps [package ...]
@@ -45,8 +52,10 @@ cd "$(repo_root)"
 # Ceiling on the transitive package count of the slim target. The
 # denylist below names the heavy subsystems; this number is the tripwire
 # for everything it does not name — weight arriving through a type-only
-# import looks like nothing in particular until the count moves (#1415).
-# Measured 546 at the time of writing. The heavy edges inside that figure
+# import looks like nothing in particular until the count moves (#1415,
+# #1372). Measured 567 after the attach wire-vocabulary split (pkg/attach's
+# HTTP/SSE server, internal/subagentlog, internal/version and
+# x/sync/singleflight left the graph); the heavy edges inside that figure
 # are there by decision, not oversight (#1415, settled 2026-11-01):
 #   - gorm.io/gorm core, driverless: pkg/agent's promised options name
 #     eventlog.Handle, and the durable session log is gorm-backed. A
@@ -57,9 +66,6 @@ cd "$(repo_root)"
 #   - github.com/itchyny/gojq: two built-in tools (json_query and
 #     wait_and_verify's predicates) are jq.
 #   - otelhttp: genai.
-# pkg/agent → pkg/attach is a type-only edge to the attach server; the
-# extraction that removes it is parked on branch refactor/attach-wire-leaf
-# (546 → 543 packages, no third-party weight, ten apidiff false positives).
 # Raise the ceiling only in the PR that knowingly adds weight, and say
 # what came in.
 SLIM_MAX_PACKAGES="${SLIM_MAX_PACKAGES:-570}"
@@ -68,7 +74,9 @@ DENYLIST=(
   # Binary entrypoints and TUI/daemon internal packages.
   '^github\.com/go-steer/core-agent(/v[0-9]+)?/cmd/'
   '^github\.com/go-steer/core-agent(/v[0-9]+)?/internal/(attachclient|coretuievent|coretuiremote|evals|webui)(/|$)'
-  # Heavy or daemon-only pkg/ subsystems outside the slim library slice.
+  # Heavy or daemon-only pkg/ subsystems outside the slim library slice
+  # (pkg/attach/wire is the protocol vocabulary leaf; pkg/attach is the HTTP/SSE server).
+  '^github\.com/go-steer/core-agent(/v[0-9]+)?/pkg/attach$'
   '^github\.com/go-steer/core-agent(/v[0-9]+)?/pkg/(approver|attachadapter|compose|instruction|mcp|runner|skills|telemetry|tools/vcs)(/|$)'
   # VCS / go-git subsystem (pulled in by pkg/tools/vcs and pkg/compose, not by pkg/agent or pkg/tools).
   '^github\.com/go-steer/core-vcs(/|$)'
@@ -107,6 +115,7 @@ self_test() {
   local samples=(
     "${mod_path}/cmd/core-agent"
     "${mod_path}/internal/coretuievent"
+    "${mod_path}/pkg/attach"
     "${mod_path}/pkg/compose"
     "${mod_path}/pkg/mcp"
     "${mod_path}/pkg/telemetry"

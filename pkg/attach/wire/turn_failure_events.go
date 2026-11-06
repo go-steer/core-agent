@@ -46,7 +46,7 @@
 //     eventlog, which a shared author plus a "scope" key would not
 //     have guaranteed.
 
-package attach
+package wire
 
 import (
 	"context"

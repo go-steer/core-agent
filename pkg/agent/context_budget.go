@@ -57,7 +57,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // ContextBudgetHardCeiling is the fraction of the context window past
@@ -224,7 +224,7 @@ func (a *Agent) cutTurnForContextBudget(used, size int) {
 	// session, so it has a caller by construction and is exactly the
 	// reader for whom "a -p run ends here" is noise.
 	log.Printf("agent:%s %s %s", a.logSessionSuffix(), detail, turnCutNoNextTurn)
-	a.recordContextReductionDegraded(attach.ContextReductionTurnCut, detail)
+	a.recordContextReductionDegraded(wire.ContextReductionTurnCut, detail)
 	a.Interrupt()
 }
 

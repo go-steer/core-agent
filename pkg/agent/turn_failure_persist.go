@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // The agent side of the per-turn failure rows (#1258) — see
-// pkg/attach/turn_failure_events.go for the rows themselves and
+// pkg/attach/wire/turn_failure_events.go for the rows themselves and
 // docs/durable-turn-failures-design.md for the decisions.
 //
 // Two writers, each at the site that already reports the failure on the
@@ -35,7 +35,7 @@ package agent
 import (
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // persistFailureRow queues a failure row and returns its event id, for
@@ -54,7 +54,7 @@ func (a *Agent) persistFailureRow(row *session.Event) string {
 // turn's correlation handle (empty for a pre-turn refusal, which never
 // got one); cutBy is the guardrail kind whose cut produced the error, as
 // consumeGuardrailHalt reports it, or empty.
-func (a *Agent) recordTurnError(te attach.TurnError, promptID, cutBy string) attach.TurnError {
-	te.EventID = a.persistFailureRow(attach.NewTurnErrorEvent(te, promptID, cutBy))
+func (a *Agent) recordTurnError(te wire.TurnError, promptID, cutBy string) wire.TurnError {
+	te.EventID = a.persistFailureRow(wire.NewTurnErrorEvent(te, promptID, cutBy))
 	return te
 }

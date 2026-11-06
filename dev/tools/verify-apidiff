@@ -129,13 +129,49 @@ ack_in_changelog() {
   return 1
 }
 
+# is_compatible_type_alias_move returns 0 when an apidiff incompatibility line
+# is solely a non-breaking type-alias move from pkg/attach to pkg/attach/wire
+# (#1372, #1415), where:
+#   1. The line has the form `<sym>: changed from <old> to <new>`.
+#   2. Replacing `/pkg/attach/wire.` with `/pkg/attach.` in <new> yields <old>
+#      exactly.
+#   3. Every `<Type>` referenced as `/pkg/attach/wire.<Type>` in <new> is
+#      re-exported as a type alias (`<Type> = wire.<Type>`) in pkg/attach/wire.go.
+is_compatible_type_alias_move() {
+  local line="$1"
+  [[ "$line" == *": changed from "*" to "* ]] || return 1
+  local rest="${line#*: changed from }"
+  local old_sig="${rest%% to *}"
+  local new_sig="${rest#* to }"
+  [[ "$old_sig" != "$new_sig" ]] || return 1
+  local mapped="${new_sig//\/pkg\/attach\/wire./\/pkg\/attach.}"
+  [[ "$mapped" == "$old_sig" ]] || return 1
+  [[ -f "$ROOT/pkg/attach/wire.go" ]] || return 1
+  local t
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    grep -Eq "^[[:space:]]*(type[[:space:]]+)?${t}[[:space:]]*=[[:space:]]*wire\.${t}([[:space:]]|$)" "$ROOT/pkg/attach/wire.go" || return 1
+  done < <(grep -oE '/pkg/attach/wire\.[A-Za-z0-9_]+' <<<"$new_sig" | sed 's|^/pkg/attach/wire\.||' | sort -u)
+  return 0
+}
+
 unacked=()
 checked=0
 
 for pkg in "${PROMISED[@]}"; do
+  base_pkg="$pkg"
+  filter_unmoved_attach=0
   if ! compgen -G "$BASE_TREE/$pkg/*.go" >/dev/null; then
-    # Package added after BASE_TAG — no baseline to break.
-    continue
+    # pkg/attach/wire was extracted from pkg/attach after v3.1.0 (#1372);
+    # diff its symbols against BASE_TAG's pkg/attach so any incompatible
+    # change to a moved wire type is still caught before v3.2.0 is tagged.
+    if [[ "$pkg" == "pkg/attach/wire" ]] && compgen -G "$BASE_TREE/pkg/attach/*.go" >/dev/null; then
+      base_pkg="pkg/attach"
+      filter_unmoved_attach=1
+    else
+      # Package added after BASE_TAG — no baseline to break.
+      continue
+    fi
   fi
   if ! compgen -G "$ROOT/$pkg/*.go" >/dev/null; then
     if ack_in_breaks_file "$pkg" "*" || ack_in_changelog "$pkg" "$pkg"; then
@@ -147,8 +183,20 @@ for pkg in "${PROMISED[@]}"; do
   fi
 
   snap="$SNAP_DIR/$(tr '/' '_' <<<"$pkg").api"
-  (cd "$BASE_TREE" && apidiff -w "$snap" "./$pkg")
+  (cd "$BASE_TREE" && apidiff -w "$snap" "./$base_pkg")
   diff_out="$(apidiff "$snap" "./$pkg")"
+  attach_incompat=""
+  if [[ "$filter_unmoved_attach" -eq 1 ]]; then
+    attach_diff="$(apidiff "$snap" "./pkg/attach")"
+    attach_incompat="$(awk '
+      /^Incompatible changes:/ { inc = 1; next }
+      /^Compatible changes:/   { inc = 0; next }
+      inc && /^[[:space:]]*-[[:space:]]+/ {
+        sub(/^[[:space:]]*-[[:space:]]+/, "")
+        print
+      }
+    ' <<<"$attach_diff")"
+  fi
   checked=$((checked + 1))
 
   [[ -z "$diff_out" ]] && continue
@@ -169,6 +217,19 @@ for pkg in "${PROMISED[@]}"; do
     [[ -z "$line" ]] && continue
     sym="${line%%:*}"
     sym="${sym%% *}"
+    if [[ "$filter_unmoved_attach" -eq 1 && "$line" == "${sym}: removed" ]]; then
+      # Server-only symbol that stayed in pkg/attach rather than moving to
+      # pkg/attach/wire: verify apidiff against ./pkg/attach itself does NOT
+      # report it removed (package-level export check via go/types, never
+      # matching struct fields) and that it is not a wire alias in wire.go.
+      if ! grep -Fxq "$line" <<<"$attach_incompat" && \
+         ! grep -Eq "^[[:space:]]*((type|var|const)[[:space:]]+)?${sym}[[:space:]]*=[[:space:]]*wire\.${sym}([[:space:]]|$)" "$ROOT/pkg/attach/wire.go"; then
+        continue
+      fi
+    fi
+    if is_compatible_type_alias_move "$line"; then
+      continue
+    fi
     if ack_in_breaks_file "$pkg" "$sym" || ack_in_changelog "$pkg" "$sym"; then
       echo "verify-apidiff: acknowledged break in $pkg: $line"
     else

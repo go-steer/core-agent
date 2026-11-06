@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
@@ -102,7 +102,7 @@ func resolveWritePolicy(s string) string {
 //     arbitrary names, so a server calling its tool `grep` must not
 //     inherit our `grep`'s classification, and the snapshot does not
 //     record which tools declared readOnlyHint (#1098 plumbed the hint
-//     onto the tool objects, not into attach.ToolInfo).
+//     onto the tool objects, not into wire.ToolInfo).
 //   - a template that has toolsets but NO snapshot is a writer. The
 //     field is optional, so an empty one means "unknown surface", and
 //     unknown resolves the fail-safe way.
@@ -117,7 +117,7 @@ func spawnWritesSharedFilesystem(rs resolvedSpawn) bool {
 		return true
 	}
 	for _, ti := range rs.toolsetTools {
-		if ti.Source != attach.ToolSourceSkill {
+		if ti.Source != wire.ToolSourceSkill {
 			return true
 		}
 		if coretools.WritesSharedFilesystemName(ti.Name) {

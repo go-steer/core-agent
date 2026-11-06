@@ -24,7 +24,7 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
@@ -131,7 +131,7 @@ func (r rosterTool) ProcessRequest(_ adkagent.Context, req *model.LLMRequest) er
 // subagent configured without one is listed with an explicit note
 // rather than a blank — a missing description is an operator omission
 // the model should see, not a subagent it should assume is unusable.
-func rosterBlock(roster []attach.SubagentCatalogInfo) string {
+func rosterBlock(roster []wire.SubagentCatalogInfo) string {
 	var b strings.Builder
 	b.WriteString("Configured subagents you may reference by name in 'agent' — this is the complete list, there are no others:")
 	for _, s := range roster {
@@ -152,7 +152,7 @@ func rosterBlock(roster []attach.SubagentCatalogInfo) string {
 // top-level schema, its Properties map, and the one property being
 // rewritten are cloned; the sibling property schemas are shared,
 // because nothing here mutates them.
-func withRosterEnum(in *jsonschema.Schema, roster []attach.SubagentCatalogInfo, allowAdhoc bool) *jsonschema.Schema {
+func withRosterEnum(in *jsonschema.Schema, roster []wire.SubagentCatalogInfo, allowAdhoc bool) *jsonschema.Schema {
 	if in == nil {
 		return nil
 	}

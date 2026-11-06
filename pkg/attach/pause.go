@@ -186,39 +186,6 @@ type AgentStopper interface {
 	AttachStopAgent(name string) (bool, error)
 }
 
-// StopAgentOutcome is what a stop attempt actually did, as opposed to
-// what the operator asked for. The two differ whenever the subagent
-// beat the operator to it, which is the ordinary case for a subagent
-// an operator only noticed because it had been running a while.
-type StopAgentOutcome struct {
-	// Found reports whether the manager has a subagent registered
-	// under this name — live or finished. False is the only thing that
-	// justifies a 404: the operator aimed at a name that does not
-	// exist, so they missed, and a retry against the same name will
-	// miss too.
-	Found bool
-	// Stopped reports whether THIS call halted a live subagent. False
-	// with Found=true means it had already reached a terminal status
-	// before the call arrived.
-	Stopped bool
-	// Status is the subagent's status after the call — "stopped" when
-	// Stopped is true, otherwise whatever it terminated as
-	// ("completed", "failed", "deferred"). Empty when the registrant
-	// only implements AgentStopper and cannot say.
-	Status string
-}
-
-// AgentStopReporter is the 1.12.0 refinement of AgentStopper: it
-// separates "this call stopped a running subagent" from "the subagent
-// had already finished", which a single bool cannot carry and which
-// the route consequently reported wrong for its whole life (#897).
-//
-// A separate interface rather than a changed AgentStopper signature,
-// following IdentifyingInjector (#840): these capability interfaces are
-// implemented outside this repository, and the handler degrades to the
-// old answer when only the old method is present.
-type AgentStopReporter interface {
-	// AttachStopAgentOutcome stops the named background subagent and
-	// reports what the attempt actually did.
-	AttachStopAgentOutcome(name string) (StopAgentOutcome, error)
-}
+// StopAgentOutcome and AgentStopReporter — the 1.12.0 refinement of
+// AgentStopper (#897) — are declared in pkg/attach/wire and re-exported
+// from wire.go, because the background manager fills them in.

@@ -29,7 +29,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // emptySummaryLLM reproduces the response shape that reaches the
@@ -288,8 +288,8 @@ func TestRunPendingCompaction_EmptySummaryWritesTheFailureRow(t *testing.T) {
 	a.runPendingCompaction(context.Background())
 
 	op, reason := findContextReductionRow(t, a)
-	if op != attach.ContextReductionCompaction {
-		t.Errorf("failure row operation = %q, want %q", op, attach.ContextReductionCompaction)
+	if op != wire.ContextReductionCompaction {
+		t.Errorf("failure row operation = %q, want %q", op, wire.ContextReductionCompaction)
 	}
 	if !strings.Contains(reason, "model returned no summary text") {
 		t.Errorf("failure row reason = %q, want the summarizer's message", reason)
@@ -325,8 +325,8 @@ func TestRunPendingCheckpoint_EmptySummaryWritesTheFailureRow(t *testing.T) {
 	a.runPendingCheckpoint(context.Background())
 
 	op, reason := findContextReductionRow(t, a)
-	if op != attach.ContextReductionCheckpoint {
-		t.Errorf("failure row operation = %q, want %q", op, attach.ContextReductionCheckpoint)
+	if op != wire.ContextReductionCheckpoint {
+		t.Errorf("failure row operation = %q, want %q", op, wire.ContextReductionCheckpoint)
 	}
 	if !strings.Contains(reason, string(genai.FinishReasonSafety)) {
 		t.Errorf("failure row reason = %q, want the provider's explanation", reason)
@@ -416,7 +416,7 @@ func TestRetryableEmptySummary(t *testing.T) {
 func findContextReductionRow(t *testing.T, a *Agent) (operation, reason string) {
 	t.Helper()
 	for _, ev := range allEventLogEvents(t, a) {
-		if op, r, ok := attach.ContextReductionFailure(ev); ok {
+		if op, r, ok := wire.ContextReductionFailure(ev); ok {
 			return op, r
 		}
 	}
@@ -428,7 +428,7 @@ func countContextReductionRows(t *testing.T, a *Agent) int {
 	t.Helper()
 	n := 0
 	for _, ev := range allEventLogEvents(t, a) {
-		if _, _, ok := attach.ContextReductionFailure(ev); ok {
+		if _, _, ok := wire.ContextReductionFailure(ev); ok {
 			n++
 		}
 	}

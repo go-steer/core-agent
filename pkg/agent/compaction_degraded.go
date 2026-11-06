@@ -55,7 +55,7 @@ import (
 
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 )
 
 // AssumedContextWindowSize is the window DefaultCompactor.ShouldCompact
@@ -170,7 +170,7 @@ func (a *Agent) noteAssumedContextWindow(modelID string) {
 	// the durable degraded row's text and is already stored against its
 	// session (#1136's split, #1137's sweep).
 	log.Printf("agent:%s %s", a.logSessionSuffix(), detail)
-	a.recordContextReductionDegraded(attach.ContextReductionWindowUnknown, detail)
+	a.recordContextReductionDegraded(wire.ContextReductionWindowUnknown, detail)
 }
 
 // errNothingToTruncate reports a mechanical compaction that found no
@@ -261,7 +261,7 @@ func (a *Agent) fallBackToMechanicalCompaction(ctx context.Context, summarizerEr
 		// remaining defence against context growth, so it is reported
 		// as a failure rather than as a degradation.
 		log.Printf("agent:%s mechanical compaction fallback also failed: %v", a.logSessionSuffix(), err)
-		a.recordContextReductionFailure(attach.ContextReductionCompaction, err, 0, 0)
+		a.recordContextReductionFailure(wire.ContextReductionCompaction, err, 0, 0)
 		return
 	}
 	a.mu.Lock()
@@ -287,7 +287,7 @@ func (a *Agent) noteMechanicalCompaction(detail string) {
 	// Log line only; detail is the durable row's text. See
 	// noteAssumedContextWindow.
 	log.Printf("agent:%s %s", a.logSessionSuffix(), detail)
-	a.recordContextReductionDegraded(attach.ContextReductionMechanical, detail)
+	a.recordContextReductionDegraded(wire.ContextReductionMechanical, detail)
 }
 
 // mechanicalSummary renders the boundary text for a truncation.

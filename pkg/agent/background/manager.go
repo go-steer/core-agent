@@ -31,7 +31,7 @@ import (
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
-	"github.com/go-steer/core-agent/v3/pkg/attach"
+	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
@@ -1339,7 +1339,7 @@ var _ agent.SubagentManager = (*Manager)(nil)
 
 // ListSubagents implements agent.SubagentManager. Returns attach-facing
 // metadata for the manager's live subagents; backs Agent.AttachAgents.
-func (m *Manager) ListSubagents() []attach.AgentInfo {
+func (m *Manager) ListSubagents() []wire.AgentInfo {
 	if m == nil {
 		return nil
 	}
@@ -1348,9 +1348,9 @@ func (m *Manager) ListSubagents() []attach.AgentInfo {
 		parentSessionID = p.SessionID()
 	}
 	handles := m.List()
-	out := make([]attach.AgentInfo, 0, len(handles))
+	out := make([]wire.AgentInfo, 0, len(handles))
 	for _, h := range handles {
-		ai := attach.AgentInfo{
+		ai := wire.AgentInfo{
 			ID:              h.Name, // Handle keys by name
 			Name:            h.Name,
 			Status:          h.Status().String(),
@@ -1383,9 +1383,9 @@ func (m *Manager) ListSubagents() []attach.AgentInfo {
 // A real failure is an error; there are none today, since not-found is
 // the only thing StopAndReport can fail with and it is a Found=false
 // answer rather than a fault.
-func (m *Manager) StopSubagent(name string) (attach.StopAgentOutcome, error) {
+func (m *Manager) StopSubagent(name string) (wire.StopAgentOutcome, error) {
 	if m == nil {
-		return attach.StopAgentOutcome{}, nil
+		return wire.StopAgentOutcome{}, nil
 	}
 	// Small window between the stop and the status read: if the handle
 	// is unregistered in between, StopAndReport's not-found error is
@@ -1393,9 +1393,9 @@ func (m *Manager) StopSubagent(name string) (attach.StopAgentOutcome, error) {
 	// than a 500.
 	stopped, err := m.StopAndReport(name)
 	if err != nil {
-		return attach.StopAgentOutcome{}, nil //nolint:nilerr // not-found is the only failure StopAndReport returns
+		return wire.StopAgentOutcome{}, nil //nolint:nilerr // not-found is the only failure StopAndReport returns
 	}
-	out := attach.StopAgentOutcome{Found: true, Stopped: stopped}
+	out := wire.StopAgentOutcome{Found: true, Stopped: stopped}
 	if h, ok := m.Get(name); ok {
 		out.Status = h.Status().String()
 	}
@@ -1408,7 +1408,7 @@ func (m *Manager) StopSubagent(name string) (attach.StopAgentOutcome, error) {
 //
 // A max_cost_usd here is the attach caller's own, so the pricing check
 // is told the budget is explicit (SpawnPricing.MaxCostExplicit).
-func (m *Manager) SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
+func (m *Manager) SpawnSubagent(ctx context.Context, spec wire.SubagentSpec) (wire.SubagentSpawnResponse, error) {
 	handle, err := m.spawn(ctx, "" /* parentBranch */, spec.Budgets.MaxCostUSD > 0, Spec{
 		Name:         spec.Name,
 		SystemPrompt: spec.SystemPrompt,
@@ -1423,9 +1423,9 @@ func (m *Manager) SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (
 		Scheduler: spec.Scheduler,
 	})
 	if err != nil {
-		return attach.SubagentSpawnResponse{}, err
+		return wire.SubagentSpawnResponse{}, err
 	}
-	return attach.SubagentSpawnResponse{Name: handle.Name, StartedAt: handle.StartedAt}, nil
+	return wire.SubagentSpawnResponse{Name: handle.Name, StartedAt: handle.StartedAt}, nil
 }
 
 // ManagerOf recovers the concrete *Manager from an agent's

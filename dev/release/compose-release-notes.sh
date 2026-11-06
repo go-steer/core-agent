@@ -134,6 +134,16 @@ last_stable_before() {
 # Path to the git-cliff config that ships alongside this script.
 # Located next to compose-release-notes.sh so both stay together.
 CLIFF_CONFIG="$(dirname "$0")/cliff.toml"
+HARNESS_RATIO="$(cd "$(dirname "$0")/../tools" && pwd)/harness-ratio"
+
+# Emit the "### Harness vs Product LOC" section for the tag range (#1383).
+render_harness_ratio() {
+  local start_ref="$1" end_ref="$2"
+  if [[ ! -x "$HARNESS_RATIO" ]]; then
+    return
+  fi
+  "$HARNESS_RATIO" --markdown "$start_ref" "$end_ref" 2>/dev/null || true
+}
 
 # Emit the K8s-style grouped PR list for the tag range via git-cliff.
 # Used as the fallback body when compose's primary CHANGELOG-section
@@ -248,6 +258,7 @@ fi
 LAST_STABLE="${LAST_STABLE:-$(last_stable_before "$TAG" || true)}"
 {
   echo
+  render_harness_ratio "$LAST_STABLE" "$TAG"
   render_contributors "$LAST_STABLE" "$TAG"
 } >> "$NOTES"
 
@@ -353,6 +364,7 @@ write_compact_notes() {
       fi
       render_range_with_cliff "$LAST_STABLE" "$TAG"
       echo
+      render_harness_ratio "$LAST_STABLE" "$TAG"
       render_contributors "$LAST_STABLE" "$TAG"
     fi
   } > "$dest"

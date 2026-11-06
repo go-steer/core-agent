@@ -182,6 +182,10 @@ skip cleanly without credentials.
 
 There is one long-lived branch, `main`. Work happens on short-lived branches
 (`feat/…`, `fix/…`, `chore/…`, `docs/…`), each with a PR against `main`.
+- **Worktrees for feature branches.** Do feature and parallel-track work in a
+  dedicated git worktree under `.worktrees/<name>` (`git worktree add
+  .worktrees/<name> -b <branch> origin/main`) rather than switching branches in
+  the root checkout. `.worktrees/` is gitignored.
 - **Merging.** A PR merges when branch protection's required checks are green.
   The live list:
   `gh api repos/go-steer/core-agent/branches/main/protection/required_status_checks --jq '.contexts[]'`.

@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `approver`, `attach`, `
 
 ## [Unreleased]
 
-_No unreleased changes since [3.1.0]._
+### Changes by Kind
+
+#### Documentation
+
+- **`.worktrees/` worktree convention in `AGENTS.md` and `.gitignore`.** Documents isolating feature branches in `.worktrees/<name>` git worktrees and ignores `/.worktrees/` so parallel worktrees do not dirty the root checkout. ([#1116](https://github.com/go-steer/core-agent/issues/1116))
 
 ## [3.1.0] — 2026-11-06
 

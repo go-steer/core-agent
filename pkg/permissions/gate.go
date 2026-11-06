@@ -645,7 +645,7 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		RequirePlanArtifact: cfg.Permissions.PlanGateArmed(),
 		BashSearchGate:      cfg.Safety.BashSearchGate,
 		ApprovalTimeout:     approvalTimeout,
-		Sandbox:             cfg.Safety.Sandbox,
+		Sandbox:             cfg.Safety.SandboxConfig(),
 	})
 	// Derived from config here, not wired by the host, so every gate a
 	// config builds protects the files that config makes the daemon

@@ -237,7 +237,7 @@ type SafetyConfig struct {
 	ParallelSubagentWrites string `json:"parallel_subagent_writes,omitempty"`
 
 	// Sandbox configures built-in execution sandboxing for bash and
-	// mutating file tools (#651). By default (Mode == "" or "auto"),
+	// mutating file tools (#651). By default (nil or Mode == "" or "auto"),
 	// filesystem write containment (workspace + /tmp + explicit
 	// writable_paths / write-granted path_scope entries, plus hard refusal
 	// of writes to protected host credential/startup paths such as
@@ -246,7 +246,25 @@ type SafetyConfig struct {
 	// and yolo modes, and bash commands are wrapped in an OS/container
 	// sandbox when Mode == "enforce" or an explicit Driver ("bwrap",
 	// "seatbelt", "container") is configured.
-	Sandbox SandboxConfig `json:"sandbox,omitempty"`
+	Sandbox *SandboxConfig `json:"sandbox,omitempty"`
+}
+
+// SandboxConfig returns the configured SandboxConfig, or a zero-value
+// SandboxConfig (mode="auto") when Sandbox is nil (#651).
+func (s SafetyConfig) SandboxConfig() SandboxConfig {
+	if s.Sandbox == nil {
+		return SandboxConfig{}
+	}
+	return *s.Sandbox
+}
+
+// EnsureSandbox returns a non-nil *SandboxConfig on s, allocating one
+// if s.Sandbox is nil (#651).
+func (s *SafetyConfig) EnsureSandbox() *SandboxConfig {
+	if s.Sandbox == nil {
+		s.Sandbox = &SandboxConfig{}
+	}
+	return s.Sandbox
 }
 
 // SandboxConfig configures built-in execution sandboxing (#651).
@@ -2508,28 +2526,29 @@ func (c *Config) validateMemoryAndMultiSession() error {
 }
 
 func (c *Config) validateSandbox() error {
-	switch c.Safety.Sandbox.Mode {
+	sb := c.Safety.SandboxConfig()
+	switch sb.Mode {
 	case "", SandboxModeAuto, SandboxModeEnforce, SandboxModeOff:
 	default:
 		return fmt.Errorf("config: unknown safety.sandbox.mode %q (want one of %q, %q, %q)",
-			c.Safety.Sandbox.Mode, SandboxModeAuto, SandboxModeEnforce, SandboxModeOff)
+			sb.Mode, SandboxModeAuto, SandboxModeEnforce, SandboxModeOff)
 	}
-	switch c.Safety.Sandbox.Driver {
+	switch sb.Driver {
 	case "", SandboxDriverAuto, SandboxDriverPolicy, SandboxDriverBwrap, SandboxDriverSeatbelt, SandboxDriverContainer:
 	default:
 		return fmt.Errorf("config: unknown safety.sandbox.driver %q (want one of %q, %q, %q, %q, %q)",
-			c.Safety.Sandbox.Driver, SandboxDriverAuto, SandboxDriverPolicy, SandboxDriverBwrap, SandboxDriverSeatbelt, SandboxDriverContainer)
+			sb.Driver, SandboxDriverAuto, SandboxDriverPolicy, SandboxDriverBwrap, SandboxDriverSeatbelt, SandboxDriverContainer)
 	}
-	if c.Safety.Sandbox.Driver == SandboxDriverContainer && strings.TrimSpace(c.Safety.Sandbox.ContainerImage) == "" {
+	if sb.Driver == SandboxDriverContainer && strings.TrimSpace(sb.ContainerImage) == "" {
 		return fmt.Errorf("config: safety.sandbox.driver=%q requires a non-empty safety.sandbox.container_image", SandboxDriverContainer)
 	}
-	switch c.Safety.Sandbox.Network {
+	switch sb.Network {
 	case "", SandboxNetworkAllow, SandboxNetworkNone:
 	default:
 		return fmt.Errorf("config: unknown safety.sandbox.network %q (want one of %q, %q)",
-			c.Safety.Sandbox.Network, SandboxNetworkAllow, SandboxNetworkNone)
+			sb.Network, SandboxNetworkAllow, SandboxNetworkNone)
 	}
-	for i, wp := range c.Safety.Sandbox.WritablePaths {
+	for i, wp := range sb.WritablePaths {
 		if strings.TrimSpace(wp) == "" {
 			return fmt.Errorf("config: safety.sandbox.writable_paths[%d] must not be empty", i)
 		}

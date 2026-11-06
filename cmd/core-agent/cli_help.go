@@ -133,10 +133,12 @@ func applyPermissionAndSandboxFlags(cfg *config.Config, yolo *bool, guardrails g
 	if err := resolvePermissionModeFlag(&cfg.Permissions.Mode, yolo, guardrails.permissionMode, send); err != nil {
 		return err
 	}
-	if err := resolveSandboxFlags(&cfg.Safety.Sandbox, guardrails.sandbox, guardrails.noSandbox); err != nil {
-		return err
+	if strings.TrimSpace(guardrails.sandbox) != "" || guardrails.noSandbox {
+		if err := resolveSandboxFlags(cfg.Safety.EnsureSandbox(), guardrails.sandbox, guardrails.noSandbox); err != nil {
+			return err
+		}
 	}
-	if cfg.Safety.Sandbox.Mode == config.SandboxModeOff && send != nil {
+	if cfg.Safety.SandboxConfig().Mode == config.SandboxModeOff && send != nil {
 		send("warning: sandbox disabled (--no-sandbox / safety.sandbox.mode=off)")
 	}
 	return nil

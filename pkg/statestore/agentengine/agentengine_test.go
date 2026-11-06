@@ -16,6 +16,7 @@ package agentengine_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -253,9 +254,9 @@ func TestAgentEngine_RestorePaginates(t *testing.T) {
 	}
 }
 
-// The store's own failure surfaces from AppendEvent with its status
-// intact (so a quota 429 is recognisable), and nothing is recorded
-// locally: the next append reuses the seq.
+// A quota rejection that persists through the one retry surfaces from
+// AppendEvent with its status intact (so a 429 is recognisable), and
+// nothing is recorded locally: the next append reuses the seq.
 func TestAgentEngine_AppendFailsClosed(t *testing.T) {
 	t.Parallel()
 	tr, f := openFake(t)
@@ -263,14 +264,18 @@ func TestAgentEngine_AppendFailsClosed(t *testing.T) {
 	root := mustCreate(t, tr, "q")
 	mustAppend(t, tr, root, ev("e1", "model", ""))
 	f.mu.Lock()
-	f.failAppend = codes.ResourceExhausted
+	f.failAppend, f.failAppendN = codes.ResourceExhausted, 2
 	f.mu.Unlock()
 	err := tr.Service().AppendEvent(ctx, root, ev("e2", "model", ""))
 	if err == nil {
-		t.Fatal("AppendEvent succeeded while the store refused it")
+		t.Fatal("AppendEvent succeeded while the store refused it twice")
 	}
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("error lost its status: %v", err)
+	}
+	var re *agentengine.AppendRetryError
+	if !errors.As(err, &re) || re.Outcome != "persisted" {
+		t.Fatalf("error = %v, want an AppendRetryError with outcome persisted", err)
 	}
 	if high, _ := tr.HighestSeq(ctx, "app", "u", "q"); high != 1 {
 		t.Fatalf("HighestSeq after failed append = %d, want 1", high)
@@ -285,6 +290,72 @@ func TestAgentEngine_AppendFailsClosed(t *testing.T) {
 	}
 	if len(seqs) != 2 || seqs[1] != 2 {
 		t.Fatalf("seqs after recovery = %v, want [1 2]", seqs)
+	}
+}
+
+// One quota rejection is absorbed by the retry (#935's policy): the
+// append succeeds and is written exactly once.
+func TestAgentEngine_QuotaRejectionIsRetriedOnce(t *testing.T) {
+	t.Parallel()
+	tr, f := openFake(t)
+	root := mustCreate(t, tr, "retry")
+	f.mu.Lock()
+	f.failAppend = codes.ResourceExhausted
+	before := f.appendCalls
+	f.mu.Unlock()
+	mustAppend(t, tr, root, ev("e1", "model", ""))
+	f.mu.Lock()
+	calls, stored := f.appendCalls-before, len(f.events[testEngine+"/sessions/retry"])
+	f.mu.Unlock()
+	if calls != 2 || stored != 1 {
+		t.Fatalf("append RPCs = %d, stored = %d; want 2 and 1", calls, stored)
+	}
+}
+
+// An ambiguous failure is never retried blindly — that could write the
+// event twice — and a rejection that is not a quota error is not either.
+func TestAgentEngine_OnlyQuotaRejectionsAreRetried(t *testing.T) {
+	t.Parallel()
+	for _, code := range []codes.Code{codes.Unavailable, codes.InvalidArgument, codes.DeadlineExceeded} {
+		t.Run(code.String(), func(t *testing.T) {
+			t.Parallel()
+			tr, f := openFake(t)
+			root := mustCreate(t, tr, "nr")
+			f.mu.Lock()
+			f.failAppend = code
+			before := f.appendCalls
+			f.mu.Unlock()
+			if err := tr.Service().AppendEvent(context.Background(), root, ev("e1", "model", "")); err == nil {
+				t.Fatal("append succeeded")
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if n := f.appendCalls - before; n != 1 {
+				t.Fatalf("%s was attempted %d times, want 1", code, n)
+			}
+		})
+	}
+}
+
+// The budget is shared and small: once it is spent, a quota rejection
+// fails at once with outcome "skipped" instead of waiting.
+func TestAgentEngine_RetryBudgetIsShared(t *testing.T) {
+	t.Parallel()
+	tr, f := openFake(t)
+	root := mustCreate(t, tr, "budget")
+	for i := 0; i < 3; i++ { // spend the burst: each append is rejected once, then rescued
+		f.mu.Lock()
+		f.failAppend = codes.ResourceExhausted
+		f.mu.Unlock()
+		mustAppend(t, tr, root, ev(fmt.Sprintf("b%d", i), "model", ""))
+	}
+	f.mu.Lock()
+	f.failAppend = codes.ResourceExhausted
+	f.mu.Unlock()
+	err := tr.Service().AppendEvent(context.Background(), root, ev("b3", "model", ""))
+	var re *agentengine.AppendRetryError
+	if !errors.As(err, &re) || re.Outcome != "skipped" {
+		t.Fatalf("fourth rejection = %v, want outcome skipped", err)
 	}
 }
 

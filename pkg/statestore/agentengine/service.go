@@ -324,9 +324,10 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 	if err != nil {
 		return err
 	}
-	if _, err := s.t.client.AppendEvent(ctx, &aiplatformpb.AppendEventRequest{
-		Name:  s.t.sessionName(sess.ID()),
-		Event: envelope(stored, raw),
+	req := &aiplatformpb.AppendEventRequest{Name: s.t.sessionName(sess.ID()), Event: envelope(stored, raw)}
+	if err := s.t.withAppendRetry(ctx, func() error {
+		_, err := s.t.client.AppendEvent(ctx, req)
+		return err
 	}); err != nil {
 		if !definiteRejection(err) {
 			// The write may have landed. Forget the tree so the next seq

@@ -60,8 +60,10 @@ type fakeServer struct {
 
 	// counters for assertions
 	appendCalls, listSessionsCalls, listEventsCalls, getSessionCalls, updateCalls int
-	// failAppend, when set, makes AppendEvent return this status code once.
-	failAppend codes.Code
+	// failAppend, when set, makes AppendEvent return this status code
+	// once, or failAppendN times when that is > 1.
+	failAppend  codes.Code
+	failAppendN int
 	// storeThenFail, when set with failAppend, stores the event and THEN
 	// returns the error: the ambiguous outcome of a lost reply.
 	storeThenFail bool
@@ -210,7 +212,11 @@ func (f *fakeServer) AppendEvent(_ context.Context, req *aiplatformpb.AppendEven
 	f.appendCalls++
 	if f.failAppend != codes.OK && !f.storeThenFail {
 		code := f.failAppend
-		f.failAppend = codes.OK
+		if f.failAppendN > 1 {
+			f.failAppendN--
+		} else {
+			f.failAppend, f.failAppendN = codes.OK, 0
+		}
 		return nil, status.Errorf(code, "injected")
 	}
 	if _, ok := f.sessions[req.GetName()]; !ok {
@@ -297,8 +303,9 @@ func openFake(t *testing.T) (*agentengine.Transcript, *fakeServer) {
 	t.Helper()
 	f := newFakeServer()
 	tr, err := agentengine.Open(context.Background(), agentengine.Config{
-		ReasoningEngine: testEngine,
-		ClientOptions:   f.start(t),
+		ReasoningEngine:    testEngine,
+		ClientOptions:      f.start(t),
+		AppendRetryBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -312,8 +319,9 @@ func openFake(t *testing.T) (*agentengine.Transcript, *fakeServer) {
 func reopenFake(t *testing.T, f *fakeServer) *agentengine.Transcript {
 	t.Helper()
 	tr, err := agentengine.Open(context.Background(), agentengine.Config{
-		ReasoningEngine: testEngine,
-		ClientOptions:   f.start(t),
+		ReasoningEngine:    testEngine,
+		ClientOptions:      f.start(t),
+		AppendRetryBackoff: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Open (reopen): %v", err)

@@ -75,6 +75,11 @@ type Config struct {
 	// ClientOptions are passed to aiplatform.NewSessionClient after the
 	// endpoint, so a caller's option wins. Tests use WithGRPCConn.
 	ClientOptions []option.ClientOption
+	// AppendRetryBackoff is the wait before the one retry a quota
+	// rejection (ResourceExhausted) on AppendEvent gets, drawn from a
+	// shared budget as the model-call retry does (#935). Zero means 2s;
+	// negative disables the retry.
+	AppendRetryBackoff time.Duration
 }
 
 // Validate checks the config without opening a connection.
@@ -109,6 +114,9 @@ type Transcript struct {
 	client *aiplatform.SessionClient
 	parent string // the reasoning engine resource name
 	ttl    time.Duration
+
+	retryBackoff time.Duration
+	retryBudget  *retryBudget
 
 	// mu guards trees and their membership; each resident has its own
 	// lock for its events and state.
@@ -148,7 +156,14 @@ func Open(ctx context.Context, cfg Config) (*Transcript, error) {
 	if ttl == 0 {
 		ttl = DefaultSessionTTL
 	}
-	t := &Transcript{client: client, parent: cfg.ReasoningEngine, ttl: ttl, trees: make(map[treeKey]*tree)}
+	backoff := cfg.AppendRetryBackoff
+	if backoff == 0 {
+		backoff = defaultAppendRetryBackoff
+	}
+	t := &Transcript{
+		client: client, parent: cfg.ReasoningEngine, ttl: ttl, trees: make(map[treeKey]*tree),
+		retryBackoff: backoff, retryBudget: newRetryBudget(),
+	}
 	t.svc = &service{t: t}
 	return t, nil
 }

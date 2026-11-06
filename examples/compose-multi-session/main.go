@@ -125,11 +125,25 @@ func run() error {
 	}
 	fmt.Println("authn: bearer table loaded (alice, bob)")
 
-	// --- permissions: template gate + persistent grant store ----------
+	// --- unattended guardrails + permissions: template gate -----------
+
+	// Resolve the unattended defaults from pkg/compose (#1369) ahead of
+	// permissions.New so the resolved ApprovalTimeout (30m) feeds the
+	// template gate that every session inherits.
+	cfg := config.DefaultConfig()
+	guard, err := compose.ResolveGuardrailsFromConfig(cfg, true, true)
+	if err != nil {
+		return fmt.Errorf("ResolveGuardrailsFromConfig: %w", err)
+	}
+	if guard.Watchdog != config.WatchdogEnforce || guard.SessionCostUSD != compose.DefaultUnattendedSessionCostUSD || guard.ApprovalTimeout != compose.DefaultUnattendedApprovalTimeout {
+		return fmt.Errorf("unexpected unattended guardrail defaults: %+v", guard)
+	}
+	cfg.Agent.MaxSessionCostUSD = &guard.SessionCostUSD
 
 	gate := permissions.New(permissions.Options{
-		Mode:     permissions.ModeAsk,
-		Prompter: allowAlwaysPrompter{},
+		Mode:            permissions.ModeAsk,
+		Prompter:        allowAlwaysPrompter{},
+		ApprovalTimeout: guard.ApprovalTimeout,
 	})
 	gate.SetGrantStore(&permissions.ConfigGrantStore{AgentsDir: agentsDir})
 	// A gate built with permissions.New (not FromConfig) knows nothing
@@ -179,14 +193,31 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// --- auto-continue + session factory ------------------------------
+
+	ac, err := compose.ResolveAutoContinue(cfg.Agent.AutoContinue, true, false, true, io.Discard)
+	if err != nil {
+		return fmt.Errorf("ResolveAutoContinue: %w", err)
+	}
+	if !ac.Enabled {
+		return fmt.Errorf("expected auto-continue enabled by default for multi-session + eventlog")
+	}
+	fmt.Printf("guardrails: watchdog=%s (%s), session_ceiling=$%.2f (%s), approval_timeout=%s, auto_continue=%v\n",
+		guard.Watchdog, guard.WatchdogSource, guard.SessionCostUSD, guard.SessionCostSource, guard.ApprovalTimeout, ac.Enabled)
+
 	deps := compose.SessionFactoryDeps{
-		DaemonCtx:      ctx,
-		Model:          llm,
-		Template:       gate,
-		EventlogHandle: handle,
-		AgentsDir:      agentsDir,
-		Registry:       reg,
-		ACLStore:       aclStore,
+		DaemonCtx:             ctx,
+		Model:                 llm,
+		Template:              gate,
+		EventlogHandle:        handle,
+		AgentsDir:             agentsDir,
+		Registry:              reg,
+		ACLStore:              aclStore,
+		Cfg:                   cfg,
+		WatchdogMode:          guard.Watchdog,
+		AutoContinueEnabled:   ac.Enabled,
+		AutoContinueFreshness: ac.Freshness,
 	}
 
 	srv, err := attach.NewServer(attach.Options{

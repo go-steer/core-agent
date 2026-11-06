@@ -71,7 +71,7 @@
 //     before the call, and input estimates are not provider
 //     tokenization.
 //   - An unpriced model is not screened at all: refused where it is
-//     configured (cmd/core-agent's ceilingPricing — startup, /model, a
+//     configured (pkg/compose's CeilingPricing — startup, /model, a
 //     spawn), and at runtime skipped with one warning (warnUnpricedOnce),
 //     never counted toward the streak.
 //   - Subtask costs (Mechanism-B agentic_* wrappers) are included in

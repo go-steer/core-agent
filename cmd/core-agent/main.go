@@ -72,7 +72,6 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/tools/vcs"
 	"github.com/go-steer/core-agent/v3/pkg/transcript"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
-	"github.com/go-steer/core-agent/v3/pkg/watchdog"
 )
 
 func main() {
@@ -1957,30 +1956,8 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 		send(w)
 	}
 	ceilingPolicy.Store(&pricingPolicy)
-	opts = appendCostAndWallclockOpts(opts, cfg, ceiling, guard.SessionCostSource, send)
-	// Behavioral watchdog (#123 PR 2), a ladder rather than a set of
-	// alternatives: "warn" observes and logs to the operator, "feedback"
-	// adds the model-facing injection (#159), "enforce" adds the halt
-	// (#623). Options are accumulated in that order so the stronger
-	// modes can't drift from the weaker ones they contain.
-	if guard.Watchdog == config.WatchdogOff {
-		send(fmt.Sprintf("watchdog: off [%s] (no runaway-pattern observation)", guard.WatchdogSource))
-	} else {
-		w := watchdog.NewDefaultWatchdog()
-		opts = append(opts, agent.WithWatchdog(w, func(a watchdog.Alert) {
-			send(fmt.Sprintf("watchdog %s", a.String()))
-		}))
-		detail := "observes tool-call stream; logs structured alerts on runaway patterns"
-		if guard.Watchdog == config.WatchdogFeedback || guard.Watchdog == config.WatchdogEnforce {
-			opts = append(opts, agent.WithWatchdogFeedback())
-			detail += "; injects the observation into the model's next turn"
-		}
-		if guard.Watchdog == config.WatchdogEnforce {
-			opts = append(opts, agent.WithWatchdogEnforce())
-			detail += "; halts the turn in flight and refuses new ones until cleared with /guardrail reset, or POST /sessions/{id}/guardrails/reset"
-		}
-		send(fmt.Sprintf("watchdog: %s mode [%s] (%s)", guard.Watchdog, guard.WatchdogSource, detail))
-	}
+	opts = compose.AppendCostAndWallclockOpts(opts, cfg, ceiling, guard.SessionCostSource, send)
+	opts = compose.AppendWatchdogOpts(opts, guard, send)
 	// Bash search gate (#158). Reported on every boot, including the
 	// default: "which guardrails are actually armed" is the question
 	// this milestone exists to make answerable, and a posture that
@@ -2961,17 +2938,6 @@ func resolveGatePrompter(yolo bool, in *os.File, out io.Writer) permissions.Prom
 // container runtime's own kill grace period.
 const wakeLoopDrainTimeout = 5 * time.Second
 
-// autoContinueResolution is the decided auto-continue enablement plus the
-// parsed freshness window and retry-driver settings, produced by
-// resolveAutoContinue and consumed by both the multi-session boot-scan
-// path and the --no-repl startup path.
-type autoContinueResolution struct {
-	enabled       bool
-	freshness     time.Duration
-	retry         bool
-	retryInterval time.Duration
-}
-
 // primarySessionID returns a getter for the primary agent's session id,
 // safe to call before — and on a multi-session daemon, instead of — the
 // agent ever existing.
@@ -2993,109 +2959,6 @@ func primarySessionID(ref **agent.Agent) func() string {
 		}
 		return (*ref).SessionID()
 	}
-}
-
-// resolveAutoContinue decides whether restart-interrupted turns are
-// auto-continued (#539/#559), given the parsed config block and the run
-// context. The default — config left unset (nil block or nil enabled) —
-// is ON when the feature can apply: a multi-session daemon or a --no-repl
-// single-user daemon, with a durable eventlog. It is OFF, silently,
-// otherwise, so interactive REPL/TUI runs are never surprised by
-// unattended token spend. An explicit enabled:false is a hard opt-out; an
-// explicit enabled:true forces it on where it can apply and otherwise
-// warns and is ignored (the pre-#559 behavior). When enabled by default
-// (not by an explicit true) a one-line notice is emitted so the spend is
-// never invisible. Freshness / retry_interval overrides follow the same
-// duration-string convention as session_idle_timeout and are parsed only
-// when the feature ends up on; a parse or validation failure returns a
-// non-nil error (mapped to ExitConfigError by the caller).
-func resolveAutoContinue(ac *config.AutoContinueConfig, multiSession, noREPL, haveEventlog bool, stderr io.Writer) (autoContinueResolution, error) {
-	res := autoContinueResolution{freshness: time.Hour, retryInterval: 5 * time.Minute}
-	applies := (multiSession || noREPL) && haveEventlog
-
-	// Intent: an explicit enabled value wins; unset defaults to the
-	// precondition gate.
-	explicit := ac != nil && ac.Enabled != nil
-	want := applies
-	if explicit {
-		want = *ac.Enabled
-	}
-	if !want {
-		// Off: explicit opt-out, or unset in a mode where the feature
-		// cannot apply. The latter is intentionally silent — a REPL/TUI
-		// user has no reason to hear about a daemon feature.
-		return res, nil
-	}
-	if !applies {
-		// Reachable only via an explicit true (the default path set
-		// want=applies, so a false want already returned above).
-		// Preserve the pre-#559 warn-and-ignore, keeping the two
-		// distinct diagnostics; mode check first so the missing
-		// session-db message never points at the wrong knob.
-		switch {
-		case !multiSession && !noREPL:
-			fmt.Fprintln(stderr, "core-agent: agent.auto_continue has no effect in this mode; it applies to multi-session daemons and --no-repl single-user daemons — ignoring")
-		case !haveEventlog:
-			fmt.Fprintln(stderr, "core-agent: agent.auto_continue requires --session-db (durable eventlog); ignoring")
-		}
-		return res, nil
-	}
-
-	// On. Parse freshness / retry-interval overrides (nil block → all
-	// defaults, retry default-on).
-	res.enabled = true
-	if ac != nil && ac.Freshness != "" {
-		d, err := time.ParseDuration(ac.Freshness)
-		if err != nil {
-			return res, fmt.Errorf("parse agent.auto_continue.freshness=%q: %w", ac.Freshness, err)
-		}
-		if d < 0 {
-			return res, fmt.Errorf("agent.auto_continue.freshness=%q: must be >= 0 (\"0s\" disables the window)", ac.Freshness)
-		}
-		res.freshness = d // 0 = disabled window, by design
-	}
-	// In-lifetime retry driver (#575 defect B). Default-on wherever
-	// auto-continue is enabled — including the unset (nil block) default;
-	// an explicit retry:false keeps the one-shot-then-wait contract.
-	res.retry = ac == nil || ac.RetryEnabled()
-	if ac != nil && ac.RetryInterval != "" {
-		d, err := time.ParseDuration(ac.RetryInterval)
-		if err != nil {
-			return res, fmt.Errorf("parse agent.auto_continue.retry_interval=%q: %w", ac.RetryInterval, err)
-		}
-		if d <= 0 {
-			return res, fmt.Errorf("agent.auto_continue.retry_interval=%q: must be > 0", ac.RetryInterval)
-		}
-		res.retryInterval = d
-	}
-
-	if !explicit {
-		fmt.Fprintln(stderr, "core-agent: auto_continue on by default (multi-session/--no-repl + durable eventlog); set agent.auto_continue.enabled=false to opt out")
-	}
-	return res, nil
-}
-
-func appendCostAndWallclockOpts(opts []agent.Option, cfg *config.Config, ceiling agent.CostCeiling, sessionCostSource string, send func(string)) []agent.Option {
-	if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
-		opts = append(opts, agent.WithCostCeiling(ceiling))
-		// 0 means "no ceiling", so print that rather than "$0.0000",
-		// which reads like a ceiling that trips on the first token.
-		sessionCeiling := "disabled"
-		if ceiling.MaxSessionUSD > 0 {
-			sessionCeiling = fmt.Sprintf("$%.4f", ceiling.MaxSessionUSD)
-		}
-		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=%s [session ceiling from %s] (refuses new turns when exceeded; clear with /guardrail reset, or POST /sessions/{id}/guardrails/reset — a per-session trip needs +budget)", ceiling.MaxTurnUSD, sessionCeiling, sessionCostSource))
-	}
-	if cfg != nil && cfg.Agent.MaxWallclockSeconds > 0 {
-		opts = append(opts, agent.WithMaxWallclock(time.Duration(cfg.Agent.MaxWallclockSeconds)*time.Second))
-	}
-	if cfg != nil && cfg.Agent.MaxSteps > 0 {
-		opts = append(opts, agent.WithMaxSteps(cfg.Agent.MaxSteps))
-	}
-	if cfg != nil && cfg.Agent.FinalReport {
-		opts = append(opts, agent.WithFinalReport(true))
-	}
-	return opts
 }
 
 func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) {

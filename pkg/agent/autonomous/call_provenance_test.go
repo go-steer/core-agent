@@ -168,3 +168,52 @@ func TestRunAutonomous_ATurnThatEndsInErrorStillReportsItsCalls(t *testing.T) {
 		t.Errorf("Calls = %+v, want the probe made before the turn died", res.Calls)
 	}
 }
+
+// TestResumeAutonomous_CallsRollUpThroughSharedTurnLoop verifies that Resume
+// shares the same turn loop as Run (#1370) and therefore rolls up tool-call
+// provenance into RunResult.Calls across resumed turns.
+func TestResumeAutonomous_CallsRollUpThroughSharedTurnLoop(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+
+	seedLLM := &stubLLM{scenarios: []scenarioFn{textTurn("seed", 1, 1)}}
+	if _, err := Run(context.Background(),
+		runBuilder(seedLLM, h, "app", "u", "resume-calls"),
+		"look around", WithMaxTurns(1)); err != nil {
+		t.Fatalf("seed Run: %v", err)
+	}
+
+	resumeLLM := &stubLLM{scenarios: []scenarioFn{
+		probeCallTurn("payments"),
+		doneCallTurn("payments checked"),
+		textTurn("done", 2, 2),
+	}}
+	build := func(extras []tool.Tool, sessionID string) (*agent.Agent, error) {
+		probe, err := functiontool.New(
+			functiontool.Config{Name: "probe", Description: "look at a namespace"},
+			func(_ adkagent.Context, _ probeIn) (probeOut, error) {
+				return probeOut{Phase: "Running"}, nil
+			})
+		if err != nil {
+			return nil, err
+		}
+		return agent.New(resumeLLM,
+			agent.WithAppName("app"),
+			agent.WithSession("u", sessionID),
+			agent.WithEventLog(h),
+			agent.WithTools(append(append([]tool.Tool(nil), extras...), probe)),
+			agent.WithInstruction("test agent"),
+		)
+	}
+
+	res, err := Resume(context.Background(), build,
+		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "resume-calls"},
+		WithMaxTurns(3))
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if len(res.Calls) != 1 || res.Calls[0].Tool != "probe" || res.Calls[0].Args["namespace"] != "payments" {
+		t.Errorf("Resume Calls = %+v, want [probe(payments)]", res.Calls)
+	}
+}

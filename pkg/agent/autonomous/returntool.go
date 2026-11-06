@@ -141,7 +141,7 @@ func buildDoneTools(cfg *autoConfig, doneCh chan string) ([]tool.Tool, error) {
 	// WithReturnTool alongside it is not a contradiction but a request
 	// for both, and it wins here (#745). The two terminations do not
 	// compete — the loop ranks a done signal above a natural end
-	// (autonomous.go) — so the tool becomes the preferred exit, with a
+	// (loop.go) — so the tool becomes the preferred exit, with a
 	// curated result instead of a scraped last message, and natural end
 	// stays as the backstop for a model that simply stops. What the
 	// bounded-only path avoids is a run that hangs because the model

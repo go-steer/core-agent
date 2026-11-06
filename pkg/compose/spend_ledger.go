@@ -34,6 +34,7 @@ import (
 
 	"google.golang.org/adk/v2/session"
 
+	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
@@ -55,9 +56,22 @@ const spendLedgerWriteTimeout = 10 * time.Second
 // is logged and the turn proceeds; the ledger is a record of spend, not
 // a gate on it. A nil store installs nothing.
 //
-// Install AFTER restoreResumedTracker so a partial event-stream failure
-// cannot leave a truncated ledger behind; restoreResumedTracker seeds
+// InstallSpendLedger makes tracker write every billed Turn to store
+// under (spendLedgerApp, user, sid). Synchronous: one INSERT per model
+// call, on the goroutine that billed it. Writes detach from caller
+// cancellation (context.WithoutCancel + spendLedgerWriteTimeout) so an
+// in-flight turn completing during daemon shutdown drain after
+// DaemonCtx is cancelled still persists its cost row. A write failure
+// is logged and the turn proceeds; the ledger is a record of spend, not
+// a gate on it. A nil store installs nothing.
+//
+// Install AFTER RestoreResumedTracker so a partial event-stream failure
+// cannot leave a truncated ledger behind; RestoreResumedTracker seeds
 // historical rows atomically once RebuildTrackerFromEvents succeeds.
+func InstallSpendLedger(ctx context.Context, store *eventlog.SpendStore, tracker *usage.Tracker, user, sid string) {
+	installSpendLedger(ctx, store, tracker, user, sid)
+}
+
 func installSpendLedger(ctx context.Context, store *eventlog.SpendStore, tracker *usage.Tracker, user, sid string) {
 	if store == nil || tracker == nil {
 		return
@@ -163,6 +177,27 @@ const (
 // Returns the path taken and how many turns were restored. Errors on
 // either path are non-fatal: the session still functions, with a
 // zero (or partial) baseline, and the failure is logged.
+// RestoreResumedTracker fills a resumed session's fresh tracker with
+// its durable spend history (#1374, #1433), falling back to replaying
+// the event stream and seeding SpendStore.AppendBatch when the session
+// predates the spend ledger. Returns the number of restored turns.
+func RestoreResumedTracker(
+	ctx context.Context,
+	h *eventlog.Handle,
+	cfg *config.Config,
+	user, sid string,
+	tracker *usage.Tracker,
+	modelName string,
+	pricingRate usage.Pricing,
+) int {
+	_, n := restoreResumedTracker(SessionFactoryDeps{
+		DaemonCtx:      ctx,
+		EventlogHandle: h,
+		Cfg:            cfg,
+	}, user, sid, tracker, modelName, pricingRate)
+	return n
+}
+
 func restoreResumedTracker(deps SessionFactoryDeps, user, sid string, tracker *usage.Tracker,
 	modelName string, pricingRate usage.Pricing,
 ) (spendRestorePath, int) {

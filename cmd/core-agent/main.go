@@ -39,8 +39,6 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
 
-	"github.com/go-steer/core-models/adkv2"
-
 	"github.com/go-steer/core-agent/v3/internal/approvalnotify"
 	"github.com/go-steer/core-agent/v3/internal/version"
 	"github.com/go-steer/core-agent/v3/internal/webui"
@@ -164,8 +162,10 @@ func main() {
 	// from an explicit --ask=off. A task profile's ask mode only applies to
 	// the former; "" is treated as "off" everywhere downstream.
 	ask := flag.String("ask", "", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise). Empty (default) behaves as off.")
-	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory. attach mode and a non-sql state.transcript.backend turn this on by themselves)")
-	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set or implied by attach mode or an external transcript (default: ~/.<binary>/sessions.db)")
+	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory. attach mode, a non-sql state.transcript.backend, --continue, and --resume turn this on by themselves)")
+	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set or implied by attach mode / external transcript / --continue / --resume (default: ~/.<binary>/sessions.db)")
+	continueSession := flag.Bool("continue", false, "continue the most recent session for this project in the session database (implies --session-db)")
+	resumeSession := flag.String("resume", "", "resume a previous session from the session database: pass --resume <session-id> to resume a specific session, or bare --resume to select interactively from this project's sessions (implies --session-db)")
 	permissionMode := flag.String("permission-mode", "", "permission gate mode: ask|auto|acceptEdits|plan|allow|yolo (overrides permissions.mode)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
 	trustWorkspace := flag.Bool("trust", false, "trust the discovered .agents/ workspace configuration (stdio MCP servers, command hooks, elevated permission modes, rooted subagents, and content_roots) and remember its SHA-256 content hash in ~/.core-agent/trusted_workspaces.json (#1353).")
@@ -246,6 +246,7 @@ func main() {
 	flag.CommandLine.Usage = func() {
 		writeCLIUsage(flag.CommandLine.Output(), flag.CommandLine)
 	}
+	os.Args = append(os.Args[:1], normalizeResumeArgs(os.Args[1:], flag.CommandLine)...)
 	flag.Parse()
 
 	// Install --log-file tee BEFORE run() so any config-load / mcp
@@ -263,7 +264,15 @@ func main() {
 		os.Exit(runner.ExitConfigError)
 	}
 
-	code := run(*prompt, *initialPrompt, *cfgPath, *agentsDirFlag, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *compactionThreshold,
+	code := run(*prompt, *initialPrompt, *cfgPath, *agentsDirFlag, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask,
+		sessionOpts{
+			sessionDB:       *sessionDB,
+			sessionDBSet:    flagWasSet(flag.CommandLine, "session-db"),
+			sessionDBPath:   *sessionDBPath,
+			continueSession: *continueSession,
+			resumeSession:   *resumeSession,
+		},
+		*yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *compactionThreshold,
 		checkpointOpts{
 			mode:         *checkpointMode,
 			noCheckpoint: *noCheckpoint,
@@ -498,7 +507,7 @@ func validatePromptCacheTTL(ttl string) error {
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact bool, compactionThreshold float64, checkpointCfg checkpointOpts, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCacheTTL string, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessCfg sessionOpts, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact bool, compactionThreshold float64, checkpointCfg checkpointOpts, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCacheTTL string, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -2085,72 +2094,18 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			send(fmt.Sprintf("mcp digest store: bound EventlogStore for session %s (retrieve_raw enabled)", a.SessionID()))
 		}
 	}))
-	attaching := attachCfg.Listen != "" || attachCfg.UnixSocket != ""
-	sessionDB, impliedSessionDB, sessionDBConflict := resolveSessionDB(
-		sessionDB, flagWasSet(flag.CommandLine, "session-db"),
-		sessionDBPath, attachCfg.Listen, attachCfg.UnixSocket, cfg.TranscriptIsExternal())
-	if sessionDBConflict {
-		fmt.Fprintln(os.Stderr, "core-agent: "+sessionDBConflictMessage(cfg))
-		fmt.Fprintln(os.Stderr, "core-agent:   drop --session-db=false, or pass --session-db-path=PATH to choose where it lands")
+	handle, _, _, updatedOpts, err := openCLISessionAndEventlog(
+		ctx, cfg, projectRoot, sessCfg, attachCfg, prompt, scriptPath,
+		tracker, cfg.Model.Name, pricingRate, opts, stop, send,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
-	if sessionDB || sessionDBPath != "" {
-		path, err := resolveSessionDBPath(sessionDBPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: --session-db-path: %v\n", err)
-			return runner.ExitConfigError
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			// The implied case needs its own message. An operator who
-			// never asked for a session DB should not have to work out
-			// why one is being created in a home directory a container
-			// may not even have — the fix (name a writable path) has
-			// to be in the error.
-			if impliedSessionDB {
-				fmt.Fprintf(os.Stderr, "core-agent: %s needs a local session db, and %s is not writable: %v\n", sessionDBImplier(cfg, attaching), filepath.Dir(path), err)
-				fmt.Fprintln(os.Stderr, "core-agent:   pass --session-db-path=/some/writable/path/sessions.db")
-				return runner.ExitConfigError
-			}
-			fmt.Fprintf(os.Stderr, "core-agent: session db dir: %v\n", err)
-			return runner.ExitConfigError
-		}
-		handle, storeLine, err := openSessionStore(ctx, cfg, path, stop)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
-			return runner.ExitConfigError
-		}
+	opts = updatedOpts
+	if handle != nil {
 		defer func() { _ = handle.Close() }()
-		// On Gemini/Vertex, wrap the session.Service with the
-		// GoogleSearch grounding projection so queries + grounded
-		// sources land as queryable rows in the eventlog
-		// (Author="gemini/google_search") alongside the original
-		// model event that carried the grounding metadata.
-		switch cfg.Model.Provider {
-		case config.ProviderGemini, config.ProviderVertex:
-			handle.Service = adkv2.GroundingProjection(handle.Service)
-		}
-		opts = append(opts, agent.WithEventLog(handle))
 		eventlogHandle = handle
-		printSessionStoreLines(send, path, impliedSessionDB, sessionDBImplier(cfg, attaching), storeLine)
-
-		// digestStore is bound below, after agent.New — the
-		// EventlogStore constructor rejects empty session identity
-		// and the session ID isn't known until ADK assigns one
-		// inside agent.New. Deferred to the post-construct hook.
-	} else if prompt == "" && scriptPath == "" {
-		// Say what is off, by name (#973). Durability failing is
-		// invisible until the process dies, and at that point the
-		// session it would have saved is already gone — so the only
-		// moment this is worth saying is startup. Naming the features
-		// rather than the flag is the point: "no --session-db" means
-		// nothing to an operator who never knew resume was a thing.
-		//
-		// Not for one-shot -p or --script runs. Those are ephemeral by
-		// definition, there is no session to lose beyond the turn, and
-		// a line on every CLI invocation is the kind of noise that
-		// teaches people to stop reading startup output — which would
-		// cost more than this warning buys.
-		send("session db: off (in-memory) — no resume, no auto-continue, no guardrail state across restart; this session is gone when the process exits. --session-db to persist.")
 	}
 
 	// Auto-continue config (#539, #558, #559): resolved once here,

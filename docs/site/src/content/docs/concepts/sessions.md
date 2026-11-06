@@ -39,14 +39,24 @@ The `*eventlog.Handle` bundles two things every consumer wants:
 
 ## CLI flags
 
-The bundled CLI (`core-agent`) and any consumer fork opts into durable sessions through two flags:
+The bundled CLI (`core-agent`) and any consumer fork opts into durable sessions and cross-restart resume through four flags:
 
 ```
 --session-db                    persist sessions + audit log to a durable database (default off)
 --session-db-path=PATH          override the database path (default: ~/.<binary>/sessions.db)
+--continue                      resume the most recent session for this project (implies --session-db)
+--resume [id]                   resume a specific session by ID, or pick interactively from project sessions
 ```
 
-Either flag enables. The default path is derived from `os.Executable()`, so `core-agent` and forks each get their own directory automatically — no per-binary configuration needed.
+Either `--session-db`, `--session-db-path`, `--continue`, or `--resume` enables durability. The default database path is derived from `os.Executable()`, so `core-agent` and forks each get their own directory automatically — no per-binary configuration needed.
+
+### Per-project session IDs and `--continue` / `--resume`
+
+When `--session-db` is active in single-session CLI mode, each fresh run mints a project-scoped session ID (`<project-slug>-<path-hash12>-<random8>`, for example `my-repo-8f3c1a904b2e-7d04e91a`) instead of sharing ADK's single `"default"` row. Two checkouts sharing `~/.core-agent/sessions.db` never collide, and every prior run in a checkout remains addressable:
+
+- `core-agent --continue` resumes the newest session recorded for the current `projectRoot` (and restores its prior token/USD spend into the session cost tracker).
+- `core-agent --resume <id>` resumes a specific session by ID.
+- `core-agent --resume` (with no argument on a TTY) lists recent sessions for the current project with their last-updated timestamp and first-prompt preview, and prompts you to pick one.
 
 ### Attach mode implies durability
 

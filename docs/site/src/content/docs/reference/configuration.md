@@ -1843,7 +1843,7 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 | `--allow-path=PATH:MODE` | [Permissions → Path scope](/concepts/permissions/) — grant `r` / `w` / `rw` access to a tree outside project + user-home roots (repeatable). |
 | `--agents-dir=DIR` | [Where `agentsDir` comes from](#where-agentsdir-comes-from-v290-dev-945) — point MCP / skills / plans / content roots at a tree the config does not live in. Deliberately not config-backed. |
 | `--ask=stdin\|auto\|off` | [Library API → Prompter](/embed/api/#prompter) |
-| `--session-db`, `--session-db-path` | [Sessions and event log](/concepts/sessions/#cli-flags) |
+| `--session-db`, `--session-db-path`, `--continue`, `--resume [id]` | [Sessions and event log](/concepts/sessions/#cli-flags) |
 | `--color=auto\|always\|never` | [Library API → Color](/embed/api/#color) |
 | `--output-format=text\|json\|stream-json` | Output format for headless (`-p`) runs: `text` (default; omits the `asst › ` prefix when stdout is not a terminal), `json` (single JSON document on stdout at turn end with `text`, `stop_reason`, `model`, `usage`, `cost_usd`, and optional `error`), or `stream-json` (newline-delimited JSON event stream ending with a `type="result"` object). Rejected without `-p`. |
 | `-q` / `--quiet` | Suppress startup config summary lines and the closing turn summary on stderr; errors and warnings still print. |

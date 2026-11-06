@@ -5,156 +5,149 @@ Internal design notes — the *why* behind the code. The published
 [`site/`](site/); this directory is reference material for
 contributors.
 
-[`DESIGN.md`](DESIGN.md) is the architectural entry point. Everything
-else is per-feature reasoning, per-milestone acceptance criteria,
-research + friction logs, or handover notes.
+[`DESIGN.md`](DESIGN.md) is the architectural entry point. Active
+strategy, compatibility policy, contributor rules, and open (`proposed`)
+design docs live at the top level of `docs/`; shipped, superseded, and
+abandoned design docs, milestone plans, and historical smoke records
+live in [`archive/`](archive/).
 
-> **Registry policy.** Per [`AGENTS.md`](../AGENTS.md), every design
-> doc gets registered here so it stays discoverable. New
-> `docs/<feature>-design.md` files must add a bullet to the relevant
-> section below in the same PR.
+> **Registry & status policy.** Per [`AGENTS.md`](../AGENTS.md) and
+> [#1388](https://github.com/go-steer/core-agent/issues/1388), every
+> design doc carries a `**Status:** shipped | proposed | abandoned | superseded`
+> line near the top and is registered in this file in the same PR. When
+> a design ships or is superseded/abandoned, flip its `Status:` line and
+> `git mv` it to [`docs/archive/`](archive/). Enforced by
+> `dev/tools/docs-lint` (`verify-docs-lint`).
 
-## Architectural + acceptance criteria
+## Architecture, policy & release
 
 - [`DESIGN.md`](DESIGN.md) — package layout, the Anthropic adapter, deliberate non-goals
-- [`compatibility-policy.md`](compatibility-policy.md) — promised vs. unsupported `pkg/` surface (`dev/api-surface.txt`), the `verify-apidiff` CI gate against the latest GA tag, `Deprecated:` removal-version markers, and the v4.0 removal schedule (settled, [#1368](https://github.com/go-steer/core-agent/issues/1368), [#1373](https://github.com/go-steer/core-agent/issues/1373), [#1398](https://github.com/go-steer/core-agent/issues/1398))
-- [`mast-fold-design.md`](mast-fold-design.md) — one harness: folding go-steer/mast's distinctive capabilities (durable write gate + outbox, spend ledger, scheduling lease, apidiff discipline, workload recipes, A2A, the AX task-runner deployment) into core-agent and retiring mast; settled decisions, what moves in what shape, phases, the shipmind cutover (settled, [#1411](https://github.com/go-steer/core-agent/issues/1411))
-- [`durable-write-gate-design.md`](durable-write-gate-design.md) — Phase 2 of the mast fold: two ADK runner plugins (`internal/effects` outbox first, `pkg/approval` write gate second), durable `adk_request_confirmation` parks with `PromptBroker` projection, 3-valued verdicts (`approve`/`reject`/`edit`), change-set grants with precondition re-read, prior-state capture, and the fixes for mast #561 and #562 (settled, [#1399](https://github.com/go-steer/core-agent/issues/1399))
-- [`agent-package-split-design.md`](agent-package-split-design.md) — decomposing the `pkg/agent` god package (autonomous driver / background manager / attach adapter) behind a narrow seam before the v2 surface freezes
-- [`compose-extraction-design.md`](compose-extraction-design.md) — lifting reusable substrate wiring (multi-session construction, grant persistence, agentic/digest assembly) out of `cmd/core-agent` into `pkg/compose` so cogo/scion/ax stop re-implementing it
-- [`north-star.md`](north-star.md) — north-star goals + readiness assessment
-- [`v1-acceptance.md`](v1-acceptance.md) — v1.0 acceptance criteria
-- [`acceptance-m1.md`](acceptance-m1.md) — M1 acceptance plan (library + CLI extraction)
-- [`acceptance-m2.md`](acceptance-m2.md) — M2 acceptance plan (Anthropic via Vertex AI)
+- [`north-star.md`](north-star.md) — **proposed**: north-star goals (`core-agent` runtime + `core-agent` + `core-tui` + `builtin:coder` daily-driver CLI) and open `v3.2+` strategic priorities ([#1388](https://github.com/go-steer/core-agent/issues/1388))
+- [`compatibility-policy.md`](compatibility-policy.md) — **shipped**: promised vs. unsupported `pkg/` surface (`dev/api-surface.txt`), the `verify-apidiff` CI gate against the latest GA tag, `Deprecated:` removal-version markers, and the v4.0 removal schedule ([#1368](https://github.com/go-steer/core-agent/issues/1368), [#1373](https://github.com/go-steer/core-agent/issues/1373), [#1398](https://github.com/go-steer/core-agent/issues/1398))
+- [`persona-library.md`](persona-library.md) — **shipped**: the first-party builtin personas (`@include builtin:core|coder|sre|propose-change`), the identity → equipment → conduct split, and the incident each rule came from ([#656](https://github.com/go-steer/core-agent/issues/656))
+- [`contributor-pitfalls.md`](contributor-pitfalls.md) — mechanics, incident history, and worked examples behind each rule in `AGENTS.md` ([#1384](https://github.com/go-steer/core-agent/issues/1384))
+- [`release-process.md`](release-process.md) — dev/GA tag cutting (`cut-dev-tag.sh` / `cut-ga-tag.sh`) + release conventions
+- [`changelog-archive/pre-v3.0.md`](changelog-archive/pre-v3.0.md) — archived `CHANGELOG.md` sections for `v0.1.0` through `v2.9.0` ([#1387](https://github.com/go-steer/core-agent/issues/1387))
 
-## Feature designs
+## Open (`proposed`) feature designs
 
-### Autonomy, subagents + durable sessions (M3 → v1.x)
+- [`external-state-design.md`](external-state-design.md) — **proposed**: failover without a shared database: pluggable transcript / control / index / memory stores (SQL, Redis, Agent Engine Sessions + Memory Bank, Kubernetes Lease) and single-writer residency leases
+- [`memory-service-design.md`](memory-service-design.md) — **proposed**: stateless agent-specific (`agent`) and shared (`shared:<pool>`) long-term memory with multi-scope `Router` fan-out, Gemini Enterprise Agent Platform Memory Bank, and `--memory-ref` ([#1506](https://github.com/go-steer/core-agent/pull/1506))
+- [`bidirectional-mcp-design.md`](bidirectional-mcp-design.md) — **proposed**: `core-agent` exposing itself as an MCP server (agent-as-tool default; tool-palette opt-in)
+- [`mcp-oauth-design.md`](mcp-oauth-design.md) — **proposed**: MCP Streamable HTTP transport + OAuth 2.0 client authentication ([#190](https://github.com/go-steer/core-agent/issues/190))
+- [`mcp-credential-resolution-design.md`](mcp-credential-resolution-design.md) — **proposed**: per-MCP-server credential resolution (pluggable providers + Auth Manager)
+- [`tiered-tool-integration-design.md`](tiered-tool-integration-design.md) — **proposed**: tiered diagnostics (`k8s-sensors` + LLM-authored Go via `kode-gopher`, [#200](https://github.com/go-steer/core-agent/issues/200))
+- [`kube-agents-scenarios-design.md`](kube-agents-scenarios-design.md) — **proposed**: the six `kube-agents` demo scenarios checked against `core-agent` + `lookout`/`leeway` + `switchboard`
+- [`selfdev-historical-replay-design.md`](selfdev-historical-replay-design.md) — **proposed**: historical replay corpus of past fix/feature tasks scored against behavioural oracles ([#1116](https://github.com/go-steer/core-agent/issues/1116), [#1332](https://github.com/go-steer/core-agent/issues/1332))
+- [`transcript-archival-design.md`](transcript-archival-design.md) — **proposed**: attach-mode transcript archival and export
+- [`purser/docs/DESIGN.md`](https://github.com/go-steer/purser/blob/main/docs/DESIGN.md) — **proposed** (lives in [go-steer/purser](https://github.com/go-steer/purser)): extracting `pkg/auth` into a shared SPIFFE/mTLS/OIDC module
 
-- [`autonomous.md`](autonomous.md), [`autonomous-plan.md`](autonomous-plan.md) — `RunAutonomous` driver
-- [`eventlog-decisions.md`](eventlog-decisions.md), [`eventlog-plan.md`](eventlog-plan.md) — durable session backend + audit log
-- [`subagents-plan.md`](subagents-plan.md) — in-process subagents (`WithSubagents`)
-- [`tools-plan.md`](tools-plan.md) — built-in tool suite (glob + grep)
-- [`m3-followups-decisions.md`](m3-followups-decisions.md), [`m3-followups-plan.md`](m3-followups-plan.md) — M3 follow-up scope
-- [`background-subagents-design.md`](background-subagents-design.md) — runtime-spawned background subagents (in-process) + `RemoteAgentSpawner` seam
-- [`scion-harness-improvements-design.md`](scion-harness-improvements-design.md) — `Agent.Inject` + `AutonomousHandle` + mid-turn REPL interrupt
-- [`gemini-tier1-followup-plan.md`](gemini-tier1-followup-plan.md) — parallelism mandate, tool-description rewrites, `read_many_files`
-- [`scion-research-demo-design.md`](scion-research-demo-design.md) — Scion `RemoteAgentSpawner` reference + parallel-research demo
-- [`subagent-return-contract-design.md`](subagent-return-contract-design.md) — how a subagent hands a value back: `return_result`, terminating loops for bounded delegations, typed stop reasons
-- [`self-development-design.md`](self-development-design.md) — pointing core-agent at core-agent: a committed `/.agents/` recipe, the T0→T3 ladder, and the harness re-parenting the root config causes
+## Research, friction logs & assessments
 
-### Sessions, durability + multi-tenancy
-
-- [`multi-session-design.md`](multi-session-design.md) — one daemon, many sessions: per-user auth + cross-session isolation + ACLs
-- [`session-resume-design.md`](session-resume-design.md) — transparent session resume on daemon restart
-- [`external-state-design.md`](external-state-design.md) — failover without a shared database: pluggable transcript / control / index / memory stores (SQL, Redis, Agent Engine Sessions + Memory Bank, Kubernetes Lease), a residency lease with self-fencing, single writer per session (proposed)
-- [`auto-continue-design.md`](auto-continue-design.md) — auto-continuation of restart-interrupted turns, on by default for daemons since #559 (detection from eventlog tails, crash-loop breaker)
-- [`memory-service-design.md`](memory-service-design.md) — stateless agent-specific (`agent`) and shared (`shared:<pool>`) long-term memory: multi-scope `Router` fan-out, Gemini Enterprise Agent Platform Memory Bank (`DirectMemoriesSource` / `DirectContentsSource`), shared `agent_engine` config + `--memory-ref`, subagent scoping across all six execution paths, and pluggable local/external backends (proposed)
-- [`shared-memory-design.md`](shared-memory-design.md) — **superseded** by [`memory-service-design.md`](memory-service-design.md): earlier daemon-centric `Memory` interface + FTS5-over-eventlog + Redis AMS sketch (audit-trail and permission-gate invariants carried forward)
-- [`purser/docs/DESIGN.md`](https://github.com/go-steer/purser/blob/main/docs/DESIGN.md) — **lives in [go-steer/purser](https://github.com/go-steer/purser)**: extracting `pkg/auth` into a shared module so identity comes from SPIFFE SVIDs, standard-CA client certs, and OIDC instead of the static bearer table (proposed)
-
-### Context, cost + model management
-
-- [`context-management-design.md`](context-management-design.md) — compaction + micro-subagents + checkpoints + memory
-- [`pricing-design.md`](pricing-design.md) — extensible, current, honest per-model pricing
-- [`model-selection-design.md`](model-selection-design.md) — task-class model selection: operator hint + watchdog escalation
-- [`model-support-design.md`](model-support-design.md) — providers beyond Gemini and Claude (OpenAI, Vertex MaaS, vLLM/SGLang/Ollama) are built once in [`go-steer/core-models`](https://github.com/go-steer/core-models) and imported here; what that means for `pkg/models`
-- [`guardrail-reset-design.md`](guardrail-reset-design.md) — operator recovery from a tripped watchdog / cost ceiling: bump-not-wipe, `GET`+`POST /guardrails`, `/guardrail reset`
-- [`vertex-context-caching-design.md`](vertex-context-caching-design.md) — eager system-prompt context cache on Vertex
-- [`digest-design.md`](digest-design.md) — `pkg/digest` local digesting primitives
-- [`backlog-cost-stack-2026-07-14.md`](backlog-cost-stack-2026-07-14.md) — post-v2.7.0-dev.2 cost-reduction plan
-
-### MCP, tools + code mode
-
-- [`fetch-url-design.md`](fetch-url-design.md) — `fetch_url` built-in (HTTP GET, no JS, no POST) + `URLScopeConfig` allow/deny grammar
-- [`wait-and-verify-design.md`](wait-and-verify-design.md) — `wait_and_verify` built-in: bounded, read-only poll-until-condition for closed-loop fix-and-verify without a shell ([#648](https://github.com/go-steer/core-agent/issues/648))
-- [`agentic-mcp-design.md`](agentic-mcp-design.md) — transparent agentic wrapping for MCP tool calls
-- [`bidirectional-mcp-design.md`](bidirectional-mcp-design.md) — core-agent exposes itself as an MCP server (agent-as-tool default; tool-palette opt-in)
-- [`mcp-oauth-design.md`](mcp-oauth-design.md) — MCP Streamable HTTP transport + OAuth 2.0 client authentication
-- [`mcp-credential-resolution-design.md`](mcp-credential-resolution-design.md) — per-MCP-server credential resolution: pluggable providers + Auth Manager
-- [`code-mode-design.md`](code-mode-design.md) — **superseded**: Code Mode shipped out of tree as [gke-demos/kode-gopher](https://github.com/gke-demos/kode-gopher) (MCP + gVisor sandbox), and its Yaegi experiment rejected this doc's in-process interpreter. Kept as the original proposal.
-- [`tiered-tool-integration-design.md`](tiered-tool-integration-design.md) — tiered diagnostics: a small set of pre-built sensors (`k8s-sensors`) + long-tail LLM-authored Go via [kode-gopher](https://github.com/gke-demos/kode-gopher) (proposed, [#200](https://github.com/go-steer/core-agent/issues/200))
-
-### Instructions, skills + discovery
-
-- [`instruction-loader-v2-design.md`](instruction-loader-v2-design.md) — composition + multi-file system instructions (`AGENTS.d/*.md`, `@include`)
-- [`persona-library.md`](persona-library.md) — the first-party builtin personas (`@include builtin:core|coder|sre`), the identity → equipment → conduct split, and the incident each rule came from (*shipped*, [#656](https://github.com/go-steer/core-agent/issues/656))
-- [`agent-card-design.md`](agent-card-design.md) — `/.well-known/agent-card.json` for agent discovery
-
-### Observability, safety + scheduling
-
-- [`metrics-design.md`](metrics-design.md) — OTel MeterProvider (primary) + Prometheus scrape (secondary)
-- [`provider-retry-transcript-design.md`](provider-retry-transcript-design.md) — a provider retry reaches the session transcript: a `provider_retry` stamp on the event a retry recovered with, a `provider retry …` prefix on the error one did not rescue ([#1206](https://github.com/go-steer/core-agent/issues/1206), box A2)
-- [`retry-bare-invalid-argument-design.md`](retry-bare-invalid-argument-design.md) — Vertex's bare `400 INVALID_ARGUMENT` (empty details, generic message) gets one retry under the shared budget, and only on a run that has already been served: a `PriorSuccess` record the agent marks and the retry policy reads ([#1247](https://github.com/go-steer/core-agent/issues/1247))
-- [`durable-turn-failures-design.md`](durable-turn-failures-design.md) — every per-turn guardrail trip and every turn error leaves an eventlog row (`guardrail-turn-trip`, `turn-error`) that replays from `?since=0`; the typed frames name their row with `event_id` (protocol 1.19.0) so an attached client counts each failure once; `a2_count.py` grades on server-side replays ([#1258](https://github.com/go-steer/core-agent/issues/1258), box A2)
-- [`alert-tool-design.md`](alert-tool-design.md) — native `alert` tool for headless escalation (*shipped* in v2.9, with one addition the doc did not anticipate: the `switchboard` destination class alongside `generic`, `slack`, `discord` and `pagerduty_events_v2`)
-- [`auto-mode-unattended-design.md`](auto-mode-unattended-design.md) — auto mode with nobody to ask: `permissions.auto.escalation: "refuse"` refuses at once, with the reason, a call auto would hand to a person; the reason also reaches the agent on an expiry; the turn-refusal memory keys file-tool calls on their full arguments (implemented, after the A7 runs)
-- [`auto-mode-design.md`](auto-mode-design.md) — permission mode `auto`: an approver model allows-once, denies with a reason, or escalates the calls `ask` would prompt for; opt-in eligibility, fails closed, never reads tool output, never decides path-scope or control-plane calls (proposed, [#1175](https://github.com/go-steer/core-agent/issues/1175))
-- [`selfdev-soak-design.md`](selfdev-soak-design.md) — running the self-development rig unattended in permission mode `auto` on GKE, against a private mirror, on a seeded issue queue; the soak that decides whether auto stays experimental and closes v3.0 box A7 (proposed, [#1213](https://github.com/go-steer/core-agent/issues/1213))
-- [`selfdev-soak-dispatcher-design.md`](selfdev-soak-dispatcher-design.md) — the minimal soak dispatcher for A7 (steps 0–3 and 7): decision-6 provenance from issue events, shallow per-issue clones pushed from a dispatcher-private repo by verified SHA, the commit-identity refusal, and where steps 4–6 and 8 attach ([#1213](https://github.com/go-steer/core-agent/issues/1213))
-- [`selfdev-historical-replay-design.md`](selfdev-historical-replay-design.md) — re-implementing what we already merged: a corpus of past fix/feature tasks, each from its own base commit with a problem-only issue and a behavioural oracle, scored in replay mode and run end to end as a rewind soak; fixes task staleness for good (proposed, [#1116](https://github.com/go-steer/core-agent/issues/1116), [#1332](https://github.com/go-steer/core-agent/issues/1332))
-- [`plan-first-design.md`](plan-first-design.md) — gate-level "plan before action" enforcement
-- [`credential-files-design.md`](credential-files-design.md) — keeping the multi-session bearer table out of agent tools (enforced for file tools, a seatbelt for `bash`, warned otherwise) and warning a root daemon whose children would hold `CAP_SYS_PTRACE` ([#1201](https://github.com/go-steer/core-agent/issues/1201) items 4 and 5)
-- [`hashed-bearer-tokens-design.md`](hashed-bearer-tokens-design.md) — the multi-session bearer table stores `token_sha256` digests, so an agent that reads it learns nothing that authenticates; why SHA-256 and not a password hash, plaintext rows kept with a startup warning, `core-agent auth hash-token` (soak prerequisite P2, [#1213](https://github.com/go-steer/core-agent/issues/1213))
-- [`gated-apply-design.md`](gated-apply-design.md) — letting `gke-platform-agent` apply the fix it found: one overlay, two legs (`mode: ask` vs `mode: allow`), and why the RoleBinding is the security argument once the human is gone (design, [#1042](https://github.com/go-steer/core-agent/issues/1042) box A3)
-- [`gitops-vcs-design.md`](gitops-vcs-design.md) — GitOps from the distroless image: a pure-Go `vcs_*` tool suite (go-git working copy + forge-neutral providers for GitHub/GHES, GitLab/self-managed, bare git) borrowing kube-agents' `proposal` vocabulary, publish guards and error taxonomy (no wire compatibility); the agent opens a proposal and never writes the target branch; supersedes the GitHub-MCP W3 shape (shipped P1+P2, [#1490](https://github.com/go-steer/core-agent/issues/1490))
-- [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the K8s fleet-monitor topology
-- [`scheduled-ops-design.md`](scheduled-ops-design.md) — proactive scheduled operations: settled and closed in-process behind the fleet scheduling lease with a durable schedule anchor (`pkg/compose.ScheduledTrigger`, `pkg/eventlog.ScheduleRecord`, `config.Schedule`) rather than a `core-agent-cron` sidecar (*settled*, [#202](https://github.com/go-steer/core-agent/issues/202), [#1405](https://github.com/go-steer/core-agent/issues/1405))
-
-### Attach mode, remote + TUI
-
-- [`attach-mode-design.md`](attach-mode-design.md) — HTTP/SSE + Unix socket; mTLS + bearer; `POST /inject` for live observability of headless agents
-- [`local-listener-auth-design.md`](local-listener-auth-design.md) — a token-less loopback or Unix-socket attach listener is refused when the agent has `bash` (explicit `--attach-allow-unauthenticated-local` opt-out), and `--attach-token-file` / `--token-file` read the token from a file so it never sits in a process environment ([#1201](https://github.com/go-steer/core-agent/issues/1201) items 2–3)
-- [`attach-tui-design.md`](attach-tui-design.md) — bubble-tea TUI consumer for attach-mode (`cmd/core-agent-tui/`)
-- [`core-tui-adapter-design.md`](core-tui-adapter-design.md) — adapter onto `go-steer/core-tui` for the remote TUI client
-- [`operator-input-design.md`](operator-input-design.md) — operator input during turns: queue panel, auto-continue, `/btw`, `/subagent`
-- [`operator-interrupt-design.md`](operator-interrupt-design.md) — the operator hold: interrupt/pause/resume as a state machine rather than a one-way cancel, plus the `/btw` repair (#799)
-- [`remote-tui-observer-mode.md`](remote-tui-observer-mode.md) — read-only observer mode for the remote TUI (PR E, v2.2 target)
-- [`embedded-tui-design-v2.md`](embedded-tui-design-v2.md) — **current** embedded-TUI design: `core-agent-tui --local` spawn-and-attach (single TUI codebase serves local + remote); the code cites this doc
-- [`embedded-tui-design.md`](embedded-tui-design.md) — *superseded* by `embedded-tui-design-v2.md`; kept for history
-- [`peer-registration-design.md`](peer-registration-design.md) — hub-and-spoke peer discovery (`POST /peers` / heartbeat / `GET /peers`) for multi-agent K8s deployments
-
-### Kubernetes + platform integrations
-
-- [`k8s-event-agent-design.md`](k8s-event-agent-design.md) — K8s-event-driven troubleshooting agent (watcher source now lives in [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout))
-- [`kube-agents-platform-fit.md`](kube-agents-platform-fit.md) — running `core-agent` as the `kube-agents` platform agent (*superseded* for the full-replacement scope by `hermes-replacement-design.md`; its "80% reusable" is architectural fit, not deployability)
-- [`kube-agents-scenarios-design.md`](kube-agents-scenarios-design.md) — the six kube-agents demo scenarios checked against core-agent + lookout/leeway + switchboard (and mast): realism fixes, gap matrix, show-now vs planned vs missing (draft)
-- [`scion-core-agent-architecture.md`](scion-core-agent-architecture.md) — layered architecture for Scion-managed agent runtimes
-- [`ax-integration-audit.md`](ax-integration-audit.md) — gap audit for `extras/ax-agent/`; don't build a parallel coordinator
-
-## Research + friction logs
-
-- [`contributor-pitfalls.md`](contributor-pitfalls.md) — the long form behind `AGENTS.md`: mechanics, incident history and worked examples for each rule it points to (#1384)
-- [`library-friction-log.md`](library-friction-log.md) — canonical per-library friction record (ADK Go, Charm, OTel, genai/Vertex, MCP SDK, gorm+sqlite, …)
+- [`library-friction-log.md`](library-friction-log.md) — canonical per-library friction record (ADK Go, Charm, OTel, genai/Vertex, MCP SDK, gorm+sqlite)
 - [`agent-runtime-go-friction-log.md`](agent-runtime-go-friction-log.md) — deploying a Go agent to Google Cloud's Agent Engine / Agent Runtime
 - [`adk-skills-issue.md`](adk-skills-issue.md) — strict YAML unmarshaling of `SKILL.md` frontmatter vs. Claude Skills interop
 - [`compaction.md`](compaction.md) — context-window compaction research (Crush + Antigravity prior art)
-- [`coding-agent-instructions.md`](coding-agent-instructions.md) — Crush + Claude Code system-prompt survey (prior art only; for first-party personas see [`persona-library.md`](persona-library.md))
+- [`coding-agent-instructions.md`](coding-agent-instructions.md) — Crush + Claude Code system-prompt survey
+- [`assessments/`](assessments/) — dated whole-project assessments and the milestones they seeded:
+  - [`assessments/2026-08-12-tri-team-assessment.md`](assessments/2026-08-12-tri-team-assessment.md) — advocate/critic/arbitrator review of v2.8; seeded v2.9 and v3.0
+  - [`assessments/2026-10-27-v3-good-bad-ugly.md`](assessments/2026-10-27-v3-good-bad-ugly.md) — five-lane post-GA review of v3.0.0; seeded v3.1 and v3.2
+  - [`assessments/2026-10-27-innovations.md`](assessments/2026-10-27-innovations.md) — what `core-agent` does that peer harnesses don't document
 
-## Audits, strategy + handover notes
+## Archived design docs, plans & smoke records (`docs/archive/`)
 
-- [`assessments/`](assessments/) — dated whole-project assessments (strengths, gaps, premise-vs-shipped-reality) and the milestones they seeded
-  - [`assessments/2026-08-12-tri-team-assessment.md`](assessments/2026-08-12-tri-team-assessment.md) — advocate/critic/arbitrator review of code quality, subagents, autonomy, SRE fitness + coding ability; seeded the v2.9 and v3.0 milestones
-  - [`assessments/2026-10-27-v3-good-bad-ugly.md`](assessments/2026-10-27-v3-good-bad-ugly.md) — five-lane post-GA review of v3.0.0 (architecture, reliability, security, tests/process, product/DX); prior-finding ledger + v3.1 recommendations
-  - [`assessments/2026-10-27-innovations.md`](assessments/2026-10-27-innovations.md) — what core-agent does that Claude Code, Antigravity, Codex, OpenHands et al. don't document, where the field converged, and where it is ahead
-- [`cogo-core-agent-integration.md`](cogo-core-agent-integration.md) — cogo + core-agent integration strategy (Option C, sequenced through A)
-- [`cogo-flip-readiness-audit.md`](cogo-flip-readiness-audit.md) — cogo → core-agent flip readiness audit (2026-05-26)
-- [`pkg-reorg-option-1.md`](pkg-reorg-option-1.md) — lifting public packages into `pkg/`
-- [`docsy-migration-notes.md`](docsy-migration-notes.md) — historical: lessons from an earlier Hugo/Docsy site (the site has since moved to Astro Starlight)
+### Shipped designs & milestone plans (`Status: shipped`)
 
-## Smoke tests + UAT records
+- [`archive/acceptance-m1.md`](archive/acceptance-m1.md) — **shipped**: M1 acceptance plan (library + CLI extraction)
+- [`archive/acceptance-m2.md`](archive/acceptance-m2.md) — **shipped**: M2 acceptance plan (Anthropic via Vertex AI)
+- [`archive/v1-acceptance.md`](archive/v1-acceptance.md) — **shipped**: v1.0 acceptance criteria
+- [`archive/agent-card-design.md`](archive/agent-card-design.md) — **shipped**: `/.well-known/agent-card.json` discovery endpoint
+- [`archive/agent-content-distribution-design.md`](archive/agent-content-distribution-design.md) — **shipped**: OCI image volume + initContainer content distribution ([#611](https://github.com/go-steer/core-agent/issues/611))
+- [`archive/agent-package-split-design.md`](archive/agent-package-split-design.md) — **shipped**: decomposing `pkg/agent` into `pkg/agent/autonomous`, `pkg/agent/background`, and `pkg/attachadapter`
+- [`archive/agentic-mcp-design.md`](archive/agentic-mcp-design.md) — **shipped**: transparent agentic wrapping for MCP tool calls
+- [`archive/alert-tool-design.md`](archive/alert-tool-design.md) — **shipped**: native `alert` tool (`generic`, `slack`, `discord`, `pagerduty_events_v2`, `switchboard`)
+- [`archive/anthropic-prompt-caching-design.md`](archive/anthropic-prompt-caching-design.md) — **shipped**: Anthropic prompt caching ([#714](https://github.com/go-steer/core-agent/issues/714))
+- [`archive/attach-mode-design.md`](archive/attach-mode-design.md) — **shipped**: HTTP/SSE + Unix socket remote-attach server
+- [`archive/attach-tui-design.md`](archive/attach-tui-design.md) — **shipped**: standalone attach TUI (`cmd/core-agent-tui`)
+- [`archive/auto-continue-design.md`](archive/auto-continue-design.md) — **shipped**: auto-continuation of restart-interrupted turns
+- [`archive/auto-mode-design.md`](archive/auto-mode-design.md) — **shipped**: permission mode `auto` (`pkg/approver`, [#1175](https://github.com/go-steer/core-agent/issues/1175))
+- [`archive/auto-mode-unattended-design.md`](archive/auto-mode-unattended-design.md) — **shipped**: unattended `auto` mode (`permissions.auto.escalation: "refuse"`)
+- [`archive/autonomous.md`](archive/autonomous.md), [`archive/autonomous-plan.md`](archive/autonomous-plan.md) — **shipped**: autonomous loop driver (`pkg/agent/autonomous`)
+- [`archive/background-subagents-design.md`](archive/background-subagents-design.md) — **shipped**: runtime-spawned background subagents + `RemoteAgentSpawner`
+- [`archive/backlog-cost-stack-2026-07-14.md`](archive/backlog-cost-stack-2026-07-14.md) — **shipped**: v2.7 cost-reduction stack
+- [`archive/cleanup-execution-plan.md`](archive/cleanup-execution-plan.md) — **shipped**: pre-v2.7 structural cleanup waves
+- [`archive/compose-extraction-design.md`](archive/compose-extraction-design.md) — **shipped**: lifting reusable substrate wiring into `pkg/compose`
+- [`archive/context-management-design.md`](archive/context-management-design.md) — **shipped**: compaction + `agentic_*` subtasks + task-boundary checkpoints
+- [`archive/core-tui-adapter-design.md`](archive/core-tui-adapter-design.md) — **shipped**: `go-steer/core-tui` remote adapter
+- [`archive/credential-files-design.md`](archive/credential-files-design.md) — **shipped**: keeping the multi-session bearer table out of agent tools ([#1201](https://github.com/go-steer/core-agent/issues/1201))
+- [`archive/declarative-subagents-design.md`](archive/declarative-subagents-design.md) — **shipped**: declarative `subagents[]` and per-subagent content roots ([#599](https://github.com/go-steer/core-agent/issues/599))
+- [`archive/digest-design.md`](archive/digest-design.md) — **shipped**: `pkg/digest` structural JSON pruning and `retrieve_raw`
+- [`archive/durable-turn-failures-design.md`](archive/durable-turn-failures-design.md) — **shipped**: durable `guardrail-turn-trip` and `turn-error` eventlog rows ([#1258](https://github.com/go-steer/core-agent/issues/1258))
+- [`archive/durable-write-gate-design.md`](archive/durable-write-gate-design.md) — **shipped**: `pkg/approval` durable write gate + `internal/effects` recorded-effect outbox ([#1399](https://github.com/go-steer/core-agent/issues/1399))
+- [`archive/embedded-tui-design-v2.md`](archive/embedded-tui-design-v2.md) — **shipped**: in-process and spawn-and-attach `core-tui` integration
+- [`archive/eventlog-decisions.md`](archive/eventlog-decisions.md), [`archive/eventlog-plan.md`](archive/eventlog-plan.md) — **shipped**: SQLite/Postgres/MySQL durable session backend (`pkg/eventlog`)
+- [`archive/external-content-root-design.md`](archive/external-content-root-design.md) — **shipped**: operator-declared external content roots (`content_roots`, [#600](https://github.com/go-steer/core-agent/issues/600))
+- [`archive/fetch-url-design.md`](archive/fetch-url-design.md) — **shipped**: `fetch_url` built-in + `url_scope` allow/deny rules
+- [`archive/gated-apply-design.md`](archive/gated-apply-design.md) — **shipped**: `gke-platform-agent` two-leg gated apply (`mode: ask` vs `mode: allow`, [#1042](https://github.com/go-steer/core-agent/issues/1042))
+- [`archive/gemini-tier1-followup-plan.md`](archive/gemini-tier1-followup-plan.md) — **shipped**: parallelism mandate, tool-description rewrites, `read_many_files`
+- [`archive/gitops-vcs-design.md`](archive/gitops-vcs-design.md) — **shipped**: pure-Go `vcs_*` tool suite (`pkg/tools/vcs` over `core-vcs`) and `config.vcs` ([#1490](https://github.com/go-steer/core-agent/issues/1490))
+- [`archive/guardrail-reset-design.md`](archive/guardrail-reset-design.md) — **shipped**: operator recovery from a tripped watchdog / cost ceiling (`GET`/`POST /guardrails`, `/guardrail reset`)
+- [`archive/hashed-bearer-tokens-design.md`](archive/hashed-bearer-tokens-design.md) — **shipped**: `token_sha256` digests in the multi-session bearer table ([#1213](https://github.com/go-steer/core-agent/issues/1213))
+- [`archive/hermes-replacement-design.md`](archive/hermes-replacement-design.md) — **shipped**: `kube-platform-agent` coordinator + specialist architecture ([#589](https://github.com/go-steer/core-agent/issues/589))
+- [`archive/instruction-loader-v2-design.md`](archive/instruction-loader-v2-design.md) — **shipped**: `AGENTS.d/*.md` overlay and `@include` composition
+- [`archive/k8s-event-agent-design.md`](archive/k8s-event-agent-design.md) — **shipped**: Kubernetes event-driven troubleshooting agent ([#186](https://github.com/go-steer/core-agent/issues/186))
+- [`archive/local-listener-auth-design.md`](archive/local-listener-auth-design.md) — **shipped**: loopback/Unix-socket listener authentication and `--attach-token-file` ([#1201](https://github.com/go-steer/core-agent/issues/1201))
+- [`archive/m3-followups-decisions.md`](archive/m3-followups-decisions.md), [`archive/m3-followups-plan.md`](archive/m3-followups-plan.md) — **shipped**: M3 follow-up scope
+- [`archive/mast-fold-design.md`](archive/mast-fold-design.md) — **shipped**: folding `go-steer/mast` into `core-agent` v3.1 ([#1411](https://github.com/go-steer/core-agent/issues/1411))
+- [`archive/metrics-design.md`](archive/metrics-design.md) — **shipped**: OTel MeterProvider + Prometheus `/metrics`
+- [`archive/model-selection-design.md`](archive/model-selection-design.md) — **shipped**: task-class model selection + watchdog escalation
+- [`archive/model-support-design.md`](archive/model-support-design.md) — **shipped**: multi-provider adapters and profiles via `go-steer/core-models`
+- [`archive/multi-session-design.md`](archive/multi-session-design.md) — **shipped**: multi-session daemon, per-caller auth, and session ACLs
+- [`archive/operator-input-design.md`](archive/operator-input-design.md) — **shipped**: mid-turn queue panel, auto-continue, `/btw`, `/subagent`
+- [`archive/operator-interrupt-design.md`](archive/operator-interrupt-design.md) — **shipped**: operator hold/pause/resume state machine ([#799](https://github.com/go-steer/core-agent/issues/799))
+- [`archive/peer-registration-design.md`](archive/peer-registration-design.md) — **shipped**: hub-and-spoke peer registration (`POST /peers`, `GET /peers`)
+- [`archive/pkg-reorg-option-1.md`](archive/pkg-reorg-option-1.md) — **shipped**: lifting public packages into `pkg/`
+- [`archive/plan-first-design.md`](archive/plan-first-design.md) — **shipped**: gate-level `plan_mode` (`record_plan`) enforcement
+- [`archive/pricing-design.md`](archive/pricing-design.md) — **shipped**: layered per-model pricing (now in `go-steer/core-models`)
+- [`archive/provider-retry-transcript-design.md`](archive/provider-retry-transcript-design.md) — **shipped**: `provider_retry` transcript stamps ([#1206](https://github.com/go-steer/core-agent/issues/1206))
+- [`archive/remote-tui-observer-mode.md`](archive/remote-tui-observer-mode.md) — **shipped**: read-only observer mode for `cmd/core-agent-tui`
+- [`archive/retry-bare-invalid-argument-design.md`](archive/retry-bare-invalid-argument-design.md) — **shipped**: single retry on mid-session Vertex bare `400 INVALID_ARGUMENT` ([#1247](https://github.com/go-steer/core-agent/issues/1247))
+- [`archive/scheduled-monitoring-design.md`](archive/scheduled-monitoring-design.md) — **shipped**: `schedule_next_turn` autonomous pacing primitive
+- [`archive/scheduled-ops-design.md`](archive/scheduled-ops-design.md) — **shipped**: in-process `compose.ScheduledTrigger` + fleet scheduling lease ([#202](https://github.com/go-steer/core-agent/issues/202), [#1405](https://github.com/go-steer/core-agent/issues/1405))
+- [`archive/scion-core-agent-architecture.md`](archive/scion-core-agent-architecture.md) — **shipped**: layered architecture for Scion-managed agent runtimes
+- [`archive/scion-harness-improvements-design.md`](archive/scion-harness-improvements-design.md) — **shipped**: `Agent.Inject` + `AutonomousHandle` + mid-turn interrupt
+- [`archive/scion-research-demo-design.md`](archive/scion-research-demo-design.md) — **shipped**: Scion `RemoteAgentSpawner` reference + parallel-research demo
+- [`archive/self-development-design.md`](archive/self-development-design.md) — **shipped**: committed `/.agents/` self-development recipe and skills ([#1116](https://github.com/go-steer/core-agent/issues/1116))
+- [`archive/selfdev-soak-design.md`](archive/selfdev-soak-design.md) — **shipped**: unattended `auto`-mode self-development soak on GKE ([#1213](https://github.com/go-steer/core-agent/issues/1213))
+- [`archive/selfdev-soak-dispatcher-design.md`](archive/selfdev-soak-dispatcher-design.md) — **shipped**: A7 soak dispatcher (`dev/uat/selfdev-soak/dispatcher`, [#1213](https://github.com/go-steer/core-agent/issues/1213))
+- [`archive/session-resume-design.md`](archive/session-resume-design.md) — **shipped**: transparent lazy session resume on daemon restart ([#178](https://github.com/go-steer/core-agent/issues/178))
+- [`archive/subagent-return-contract-design.md`](archive/subagent-return-contract-design.md) — **shipped**: `return_result` / `finish_task`, bounded subagent termination, typed stop reasons ([#727](https://github.com/go-steer/core-agent/issues/727))
+- [`archive/system-prompt-layering-design.md`](archive/system-prompt-layering-design.md) — **shipped**: layered system-prompt assembly ([#459](https://github.com/go-steer/core-agent/issues/459))
+- [`archive/tools-plan.md`](archive/tools-plan.md) — **shipped**: built-in file, search (`glob`/`grep`), shell, and todo tool suite
+- [`archive/unified-subagent-invocation-design.md`](archive/unified-subagent-invocation-design.md) — **shipped**: unified sync tool + `spawn_agent` by-reference invocation
+- [`archive/vertex-context-caching-design.md`](archive/vertex-context-caching-design.md) — **shipped**: Vertex explicit `CachedContent` prefix caching
+- [`archive/wait-and-verify-design.md`](archive/wait-and-verify-design.md) — **shipped**: `wait_and_verify` read-only poll-until-condition tool ([#648](https://github.com/go-steer/core-agent/issues/648))
 
-- [`compaction-smoke-2026-05-27.md`](compaction-smoke-2026-05-27.md) — compaction (Mechanism A) smoke sweep
-- [`subtasks-checkpoints-smoke-2026-05-27.md`](subtasks-checkpoints-smoke-2026-05-27.md) — subtasks (B) + checkpoints (C) smoke sweep
-- [`core-tui-smoke-2026-05-26.md`](core-tui-smoke-2026-05-26.md) — core-tui adapter smoke sweep
-- [`remote-tui-smoketest.md`](remote-tui-smoketest.md), [`remote-tui-smoketest-v2.2.md`](remote-tui-smoketest-v2.2.md) — remote-TUI smoke tests
-- [`v2.3-smoketest.md`](v2.3-smoketest.md) — v2.3 smoke test
-- [`operator-hold-smoke-2026-08-31.md`](operator-hold-smoke-2026-08-31.md) — operator hold + `/btw` sweep across HTTP, both TUIs, and tenant sessions (#799 definition of done)
+### Historical smoke records (`Status: shipped`)
 
-## Release
+- [`archive/compaction-smoke-2026-05-27.md`](archive/compaction-smoke-2026-05-27.md) — **shipped**: compaction (Mechanism A) smoke sweep
+- [`archive/core-tui-smoke-2026-05-26.md`](archive/core-tui-smoke-2026-05-26.md) — **shipped**: `core-tui` adapter smoke sweep
+- [`archive/operator-hold-smoke-2026-08-31.md`](archive/operator-hold-smoke-2026-08-31.md) — **shipped**: operator hold + `/btw` sweep ([#799](https://github.com/go-steer/core-agent/issues/799))
+- [`archive/remote-tui-smoketest.md`](archive/remote-tui-smoketest.md), [`archive/remote-tui-smoketest-v2.2.md`](archive/remote-tui-smoketest-v2.2.md) — **shipped**: remote-TUI smoke sweeps
+- [`archive/subtasks-checkpoints-smoke-2026-05-27.md`](archive/subtasks-checkpoints-smoke-2026-05-27.md) — **shipped**: subtasks (B) + checkpoints (C) smoke sweep
+- [`archive/v2.3-smoketest.md`](archive/v2.3-smoketest.md) — **shipped**: v2.3 smoke sweep
 
-- [`release-process.md`](release-process.md) — dev/GA tag cutting (`cut-dev-tag.sh` / `cut-ga-tag.sh`) + release conventions
-- [`changelog-archive/pre-v3.0.md`](changelog-archive/pre-v3.0.md) — archived `CHANGELOG.md` sections for `v0.1.0` through `v2.9.0` ([#1387](https://github.com/go-steer/core-agent/issues/1387))
+### Superseded or abandoned designs (`Status: superseded | abandoned`)
+
+- [`archive/ax-integration-audit.md`](archive/ax-integration-audit.md) — **superseded**: replaced by the v3.1 AX task-runner deployment (`archive/mast-fold-design.md`)
+- [`archive/code-mode-design.md`](archive/code-mode-design.md) — **superseded**: Code Mode shipped out of tree as [gke-demos/kode-gopher](https://github.com/gke-demos/kode-gopher)
+- [`archive/cogo-core-agent-integration.md`](archive/cogo-core-agent-integration.md) — **abandoned**: Goal 2 runs directly on `core-agent` + `core-tui` + `builtin:coder` (`north-star.md`)
+- [`archive/cogo-flip-readiness-audit.md`](archive/cogo-flip-readiness-audit.md) — **abandoned**: `go-steer/cogo` was not flipped (`north-star.md`)
+- [`archive/docsy-migration-notes.md`](archive/docsy-migration-notes.md) — **superseded**: site migrated from Hugo/Docsy to Astro Starlight
+- [`archive/embedded-tui-design.md`](archive/embedded-tui-design.md) — **superseded**: replaced by `archive/embedded-tui-design-v2.md`
+- [`archive/kube-agents-platform-fit.md`](archive/kube-agents-platform-fit.md) — **superseded**: replaced by `archive/hermes-replacement-design.md` and `archive/mast-fold-design.md`
+- [`archive/shared-memory-design.md`](archive/shared-memory-design.md) — **superseded**: replaced by `memory-service-design.md` ([#1506](https://github.com/go-steer/core-agent/pull/1506))
+- [`archive/subagents-plan.md`](archive/subagents-plan.md) — **superseded**: replaced by `archive/declarative-subagents-design.md` and `archive/background-subagents-design.md`
 
 ## Published site
 

@@ -1,6 +1,6 @@
 # kube-agents scenarios: can the go-steer stack run them?
 
-Status: design, draft (2026-10-02). Not filed. Nothing here is built; this
+**Status:** proposed — design, draft (2026-10-02). Not filed. Nothing here is built; this
 doc is the gap analysis and the proposal, so we can decide what to build
 before anyone builds it.
 

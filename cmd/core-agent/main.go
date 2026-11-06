@@ -2075,6 +2075,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 
 	opts = append(opts, agent.WithPostConstruct(func(a *agent.Agent) {
 		agentRef = a
+		acquirePrimaryResidency(eventlogHandle, a, stop)
 		// Stamp the primary session's identity into the metrics
 		// observer so cumulative counters get session.id + app.name +
 		// user.id attributes from the first turn onward. Before this
@@ -2136,7 +2137,7 @@ func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerO
 			fmt.Fprintf(os.Stderr, "core-agent: session db dir: %v\n", err)
 			return runner.ExitConfigError
 		}
-		handle, storeLine, err := openSessionStore(ctx, cfg, path)
+		handle, storeLine, err := openSessionStore(ctx, cfg, path, stop)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 			return runner.ExitConfigError

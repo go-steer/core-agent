@@ -299,6 +299,22 @@ func (t *Transcript) ensureTree(ctx context.Context, k treeKey) (*tree, error) {
 	return tr, nil
 }
 
+// Invalidate implements eventlog.TranscriptInvalidator: every tree under
+// root (root itself and roots derived from it, "<root>:digest" and the
+// like) is reloaded from the store on its next touch. A lease-holding
+// Handle calls it when it takes a session's lease, because another
+// instance may have appended while this one did not hold it; serving
+// the old cache would resume on a truncated history and reuse a seq.
+func (t *Transcript) Invalidate(appName, userID, root string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k, tr := range t.trees {
+		if k.app == appName && k.user == userID && (k.root == root || strings.HasPrefix(k.root, root+":")) {
+			tr.loaded = false
+		}
+	}
+}
+
 // invalidate forgets what this process knows about a tree so the next
 // touch reloads it from the store. Used when an AppendEvent RPC failed
 // in a way that may still have written (F3 in the review of #1192

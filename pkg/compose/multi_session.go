@@ -587,8 +587,9 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// Customize has settled the model + tools, and before agent.New so
 	// its replacement spawn tools are the ones the agent registers.
 	var (
-		bgClose func()
-		bgOpts  []agent.Option
+		bgClose          func()
+		bgOpts           []agent.Option
+		releaseResidency func()
 	)
 	if deps.SessionBackground != nil {
 		sub, err := deps.SessionBackground(SessionScope{
@@ -760,11 +761,16 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 
 	ag, err := agent.New(cust.Model, opts...)
 	if err != nil {
+		err = fmt.Errorf("agent.New: %w", err)
+	} else {
+		releaseResidency, err = holdResidency(deps, ag)
+	}
+	if err != nil {
 		broker.Close()
 		if bgClose != nil {
 			bgClose()
 		}
-		return nil, nil, fmt.Errorf("agent.New: %w", err)
+		return nil, nil, err
 	}
 	// /replan, against this session's own sub-gate (#763). The hub left
 	// this closure unwired, so every session-created /replan answered
@@ -839,18 +845,7 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 			},
 		})
 	}()
-	if bgClose == nil {
-		return ad, cancelOnEvict, nil
-	}
-	// Eviction must also tear down the session's subagents: their
-	// goroutines run under context.WithoutCancel, so cancelling the wake
-	// loop leaves them running against a session nobody can reach. The
-	// wait runs off the caller's goroutine so one wedged subagent can't
-	// stall the registry's eviction sweep across every other tenant.
-	return ad, func() {
-		cancelOnEvict()
-		go bgClose()
-	}, nil
+	return ad, evictFunc(cancelOnEvict, bgClose, releaseResidency), nil
 }
 
 // BuildSessionResumer wires the attach server's SessionResumer.

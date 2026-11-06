@@ -110,12 +110,14 @@ A session whose only copy is a SQLite file lives and dies with the machine (or p
 
 **What you need.** One Agent Engine instance (a *reasoning engine*) per deployment, created without deploying any code; its full resource name goes in `reasoning_engine`. The principal running core-agent needs `roles/aiplatform.user` on the project (or a narrower role that grants `aiplatform.sessions.*` and `aiplatform.sessionEvents.*`), and egress to `{location}-aiplatform.googleapis.com`.
 
-**The local database stays.** `state.transcript.backend` other than `sql` *implies* `--session-db` exactly as attach mode does: the run lock, continuation claims, boot log, guardrail state, spend ledger, approval decisions, pause tokens and session ACLs still live in the SQLite file. Pass `--session-db-path` to say where. The startup log names both:
+**The local database stays.** `state.transcript.backend` other than `sql` *implies* `--session-db` exactly as attach mode does: the run lock, continuation claims, boot log, guardrail state, spend ledger, approval decisions, pause tokens, session ACLs and residency leases still live in the SQLite file. Pass `--session-db-path` to say where. The startup log names both:
 
 ```
 core-agent: session db: /workspace/.core-agent/sessions.db [implied by state.transcript.backend=agentengine; --session-db-path to relocate]
-core-agent: session store: agentengine projects/…/reasoningEngines/1234567890 (transcript); local db holds control and state
+core-agent: session store: agentengine projects/…/reasoningEngines/1234567890 (transcript); local db holds control, state and residency leases
 ```
+
+**One writer per session, enforced.** With an external transcript the daemon holds a *residency lease* on every session it writes to — taken when it creates the session, resumes it as a multi-session tenant, or first writes to it, and never just for reading it — and releases it when the session is evicted or the daemon exits. It refuses to write to a session whose lease it cannot show it still holds, on its own clock, before the store could tell it otherwise, because Agent Engine cannot reject a stale writer; an evicted session's late writes are refused too. A daemon that is not a session's writer can still read it, but may see a cached view until it becomes the writer. If a lease is lost, the session stops: a multi-session tenant is evicted; a single-session process stops, so a restart competes for the lease again. While the lease lives in the local SQLite file (until [#1192](https://github.com/go-steer/core-agent/issues/1192) phase 4 moves control off it) it excludes only processes sharing that file, so **across machines, single-writer still has to come from the deployment** — one pod, one Agent Engine session, as an ax task per session gives you.
 
 **What survives the loss of the machine, and what does not (v3.2).**
 
@@ -135,7 +137,7 @@ What this phase delivers, then, is a transcript that outlives the machine and a 
 
 **`seq` after a restore.** Sequence numbers are per root session tree and continue where the store left off, so an attached client's `?since=` cursor from before the restart stays valid.
 
-**Quota and failure.** The project default is 300 `appendEvent` calls per minute; twelve tool-heavy agents will exceed it, so request an increase before a fleet goes live. An append the service refuses fails the turn's event with the status intact (a 429 is `ResourceExhausted`); nothing is written anywhere else — there is no fall-back to local. An append whose outcome is unknown (the reply was lost) makes the process re-read the tree from the store before assigning the next `seq`, so a lost reply cannot leave a duplicate behind.
+**Quota and failure.** The project default is 300 `appendEvent` calls per minute; twelve tool-heavy agents will exceed it, so request an increase before a fleet goes live. A quota rejection (`ResourceExhausted`) is retried once after 2 seconds, from a small shared budget, as model calls are; if that does not rescue it, the turn's event fails with the status intact and nothing is written anywhere else — there is no fall-back to local. An append whose outcome is unknown (the reply was lost) is not retried; the process re-reads the tree from the store before assigning the next `seq`, so a lost reply cannot leave a duplicate behind.
 
 **TTL.** Every session is created with `session_ttl` (default 30 days, service minimum 24 hours) and the expiry is refreshed on append once less than half of it remains.
 

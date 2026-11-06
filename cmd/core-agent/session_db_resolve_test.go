@@ -209,3 +209,16 @@ func TestResolveSessionDBAttachAlwaysDurable(t *testing.T) {
 		})
 	}
 }
+
+func TestResidencyLostFallback(t *testing.T) {
+	t.Parallel()
+	var stopped bool
+	residencyLostFallback(true, func() { stopped = true })("app", "u", "tree", true)
+	if stopped {
+		t.Fatal("a multi-session daemon stopped on an unclaimed tree's loss; it must only fence it")
+	}
+	residencyLostFallback(false, func() { stopped = true })("app", "u", "primary", false)
+	if !stopped {
+		t.Fatal("a single-session process did not stop when its session's lease was lost")
+	}
+}

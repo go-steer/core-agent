@@ -19,11 +19,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"cloud.google.com/go/aiplatform/apiv1beta1/aiplatformpb"
+	"github.com/glebarez/sqlite"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 	"google.golang.org/grpc/codes"
@@ -625,5 +627,84 @@ func mustAppend(t *testing.T, tr eventlog.Transcript, sess session.Session, e *s
 	t.Helper()
 	if err := tr.Service().AppendEvent(context.Background(), sess, e); err != nil {
 		t.Fatalf("AppendEvent %s: %v", e.ID, err)
+	}
+}
+
+// Decision 1 + F1 of the residency review: a tree handed from instance
+// A to B and back must not be served from A's stale cache. Taking the
+// lease invalidates the transcript's view, so A resumes on B's events
+// and continues the seq instead of reusing one.
+func TestAgentEngine_HandoffDoesNotServeAStaleTree(t *testing.T) {
+	t.Parallel()
+	f := newFakeServer()
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "control.db")
+	openInstance := func() *eventlog.Handle {
+		tr, err := agentengine.Open(ctx, agentengine.Config{ReasoningEngine: testEngine, ClientOptions: f.start(t), AppendRetryBackoff: time.Millisecond})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		h, err := eventlog.OpenTranscript(ctx, tr, sqlite.Open(dsn), eventlog.WithResidencyLease())
+		if err != nil {
+			t.Fatalf("OpenTranscript: %v", err)
+		}
+		t.Cleanup(func() { _ = h.Close() })
+		return h
+	}
+	a, b := openInstance(), openInstance()
+	acquire := func(h *eventlog.Handle) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := h.AcquireResidency(ctx, "app", "u", "ho")
+			if err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("AcquireResidency: %v", err)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	appendVia := func(h *eventlog.Handle, id string) {
+		t.Helper()
+		resp, err := h.Service.Get(ctx, &session.GetRequest{AppName: "app", UserID: "u", SessionID: "ho"})
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if err := h.Service.AppendEvent(ctx, resp.Session, ev(id, "model", "")); err != nil {
+			t.Fatalf("AppendEvent %s: %v", id, err)
+		}
+	}
+
+	if _, err := a.Service.Create(ctx, &session.CreateRequest{AppName: "app", UserID: "u", SessionID: "ho"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	appendVia(a, "e1") // A's cache now holds [e1]
+	a.ReleaseResidency("app", "u", "ho")
+
+	acquire(b)
+	appendVia(b, "e2")
+	b.ReleaseResidency("app", "u", "ho")
+
+	acquire(a)
+	resp, err := a.Service.Get(ctx, &session.GetRequest{AppName: "app", UserID: "u", SessionID: "ho"})
+	if err != nil {
+		t.Fatalf("Get after handback: %v", err)
+	}
+	if n := resp.Session.Events().Len(); n != 2 {
+		t.Fatalf("A resumed on %d events, want 2 (its cache was stale)", n)
+	}
+	appendVia(a, "e3")
+
+	var got []string
+	for e, err := range a.Stream.Since(ctx, 0, eventlog.ForSession("app", "u", "ho")) {
+		if err != nil {
+			t.Fatalf("Since: %v", err)
+		}
+		got = append(got, fmt.Sprintf("%d:%s", e.Seq, e.Event.ID))
+	}
+	if want := "1:e1 2:e2 3:e3"; strings.Join(got, " ") != want {
+		t.Fatalf("after handoff and back: %q, want %q", strings.Join(got, " "), want)
 	}
 }

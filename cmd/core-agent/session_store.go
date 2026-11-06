@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/glebarez/sqlite"
 
@@ -38,7 +39,13 @@ import (
 // single-user mode the extractor returns nil maps (no Caller on
 // context), so no sidecar is written; multi-session deployments get
 // per-event identity threading in the audit log automatically.
-func openSessionStore(ctx context.Context, cfg *config.Config, path string) (*eventlog.Handle, string, error) {
+//
+// With an external transcript the Handle also holds a residency lease on
+// every session tree it writes and fences every write on it (#1192
+// decisions 1–3; the compatibility table gates the lease on a `state`
+// block). Losing a tenant's lease evicts that tenant (pkg/compose); see
+// residencyLostFallback for every other tree.
+func openSessionStore(ctx context.Context, cfg *config.Config, path string, stop func()) (*eventlog.Handle, string, error) {
 	extractor := eventlog.WithMetadataExtractor(agent.EventlogMetadataExtractor())
 	switch cfg.TranscriptBackend() {
 	case config.TranscriptBackendSQL:
@@ -56,15 +63,55 @@ func openSessionStore(ctx context.Context, cfg *config.Config, path string) (*ev
 		if err != nil {
 			return nil, "", fmt.Errorf("session store: %w", err)
 		}
-		h, err := eventlog.OpenTranscript(ctx, transcript, sqlite.Open(path), extractor)
+		h, err := eventlog.OpenTranscript(ctx, transcript, sqlite.Open(path), extractor,
+			eventlog.WithResidencyLease(),
+			eventlog.WithResidencyLost(residencyLostFallback(cfg.Attach.MultiSession.Enabled, stop)))
 		if err != nil {
 			_ = transcript.Close()
 			return nil, "", fmt.Errorf("open session db %s for the local stores: %w", path, err)
 		}
-		return h, "session store: agentengine " + ae.ReasoningEngine + " (transcript); local db holds control and state", nil
+		return h, "session store: agentengine " + ae.ReasoningEngine + " (transcript); local db holds control, state and residency leases", nil
 	default:
 		// config.Validate refuses anything else before we get here.
 		return nil, "", fmt.Errorf("state.transcript.backend %q is not supported", cfg.TranscriptBackend())
+	}
+}
+
+// residencyLostFallback handles a lost residency lease that no tenant
+// watcher claimed. In a single-session process that is the process's
+// own session, so it stops (a restart competes for the lease again, as
+// autonomous.Resume does). In a multi-session daemon every tenant is
+// watched and evicted by pkg/compose, so an unclaimed tree is a
+// daemon-level one; stopping would take every tenant down with it, so
+// the tree is only fenced and the loss logged.
+func residencyLostFallback(multiSession bool, stop func()) func(app, user, root string, stolen bool) {
+	return func(_, _, root string, stolen bool) {
+		if multiSession {
+			fmt.Fprintf(os.Stderr, "core-agent: %s lost its residency lease (stolen=%v); writes to it are refused, other sessions continue\n", root, stolen)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "core-agent: session %s lost its residency lease (stolen=%v); stopping without further writes\n", root, stolen)
+		if stop != nil {
+			stop()
+		}
+	}
+}
+
+// acquirePrimaryResidency makes this process's own session resident as
+// soon as its ID is known (decision 1: on create or resume, not on the
+// first write), so a session another instance holds is refused at
+// startup rather than failing every turn. It runs from the agent's
+// post-construct hook; a refusal stops the process. No-op without an
+// external transcript.
+func acquirePrimaryResidency(h *eventlog.Handle, a *agent.Agent, stop func()) {
+	if h == nil || a == nil {
+		return
+	}
+	if err := h.AcquireResidency(context.Background(), a.AppName(), a.UserID(), a.SessionID()); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s is not available to this process: %v; stopping\n", a.SessionID(), err)
+		if stop != nil {
+			stop()
+		}
 	}
 }
 

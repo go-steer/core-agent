@@ -77,6 +77,14 @@ func TestIsSessionNotFoundDoesNotSwallowRealFailures(t *testing.T) {
 		},
 		{name: "handle closed", err: ErrClosed, want: false},
 		{
+			// ADK's backend-neutral sentinel: what the in-memory and
+			// Vertex services return, and what a non-SQL Transcript
+			// backend will return (#1192).
+			name: "ADK sentinel wrapped",
+			err:  fmt.Errorf("get: %w", session.ErrNotFound),
+			want: true,
+		},
+		{
 			name: "sentinel wrapped once",
 			err:  fmt.Errorf("database error while fetching session: %w", gorm.ErrRecordNotFound),
 			want: true,

@@ -75,6 +75,7 @@ Per the user's earlier choice. Keeps `CGO_ENABLED=0` builds working; ~10MB binar
 ADK already handles the events / sessions / app_states / user_states tables with multi-driver `AutoMigrate`. Reimplementing would duplicate ~500 lines of state-management plumbing for no gain. Cost: we open a second `*gorm.DB` connection for our overlay table since ADK doesn't expose its connection. SQLite handles concurrent connections cleanly with WAL; other drivers similarly tolerate it.
 
 **Two-write consistency, not single-transaction atomicity.**
+*Superseded:* #976 made the two rows one transaction via a GORM after-create callback (`atomic.go`), and with ADK's `NewSessionServiceFromDB` (#1192 hygiene) the overlay and ADK share one `*gorm.DB`, so neither the second connection above nor the reflection below exists any more. Kept as the record of the Phase 2 decision.
 Spanning a transaction across ADK's connection and ours would require reflection into ADK's private `*gorm.DB` or rebuilding the entire service. We accept eventual consistency: ADK writes first; if the overlay write fails after, the caller sees an error and can retry. The overlay's unique index on `event_id` makes the retry safe (idempotent insert). A reconciliation helper that finds events without overlay rows is a follow-up if a consumer reports drift.
 
 **WAL mode by default for SQLite (`PRAGMA journal_mode=WAL`).**

@@ -791,11 +791,15 @@ func TestWatch_AdvancesPastUnhydratableRow(t *testing.T) {
 	}
 }
 
-// TestClose_ClosesADKConnectionPool is the regression test for #360:
-// Open creates two gorm.DBs (ADK's inside NewSessionService plus our
-// overlay), and Close must shut down both. Before the fix Close closed
-// only the overlay pool, leaking ADK's pool every Open/Close cycle.
-func TestClose_ClosesADKConnectionPool(t *testing.T) {
+// TestOpen_SharesOneConnectionPool pins that ADK's session service and
+// the overlay run on the one *gorm.DB Open creates (via
+// adkdatabase.NewSessionServiceFromDB). Before this, Open held two
+// pools against the same DSN — ADK's own, reached by reflection so
+// Close could shut it down (#360) and so the #976 callback could be
+// registered on it. The proof is Close: once the shared pool is shut,
+// a write through the ADK service must fail too. A service on a pool
+// of its own would carry on, which is exactly the leak #360 fixed.
+func TestOpen_SharesOneConnectionPool(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	dsn := filepath.Join(dir, "eventlog.db")
@@ -803,25 +807,31 @@ func TestClose_ClosesADKConnectionPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if h.adkDB == nil {
-		t.Fatal("Open did not retain the ADK connection pool")
+	if h.DB == nil {
+		t.Fatal("Open did not expose the connection pool")
 	}
-	adkSQL, err := h.adkDB.DB()
+	sqlDB, err := h.DB.DB()
 	if err != nil {
-		t.Fatalf("ADK pool DB(): %v", err)
+		t.Fatalf("DB(): %v", err)
 	}
-	if err := adkSQL.Ping(); err != nil {
-		t.Fatalf("ADK pool should be live before Close: %v", err)
+	if err := sqlDB.Ping(); err != nil {
+		t.Fatalf("pool should be live before Close: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{AppName: "app", UserID: "user", SessionID: "s-pool"}); err != nil {
+		t.Fatalf("Create before Close: %v", err)
 	}
 
 	if err := h.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// After Close the ADK pool must be shut down; Ping on a closed
-	// *sql.DB returns an error. Before the fix it stayed open (leak).
-	if err := adkSQL.Ping(); err == nil {
-		t.Error("ADK connection pool is still open after Handle.Close — leaked")
+	if err := sqlDB.Ping(); err == nil {
+		t.Error("connection pool is still open after Handle.Close — leaked")
+	}
+	// The ADK service writes through the same pool, so it is closed too.
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{AppName: "app", UserID: "user", SessionID: "s-pool-2"}); err == nil {
+		t.Error("ADK session service still writes after Handle.Close — it is on a pool of its own")
 	}
 }
 

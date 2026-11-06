@@ -391,7 +391,7 @@ ADK ships `google.golang.org/adk/session/database` — a full GORM-backed `sessi
 
 ### Two tables, eventually consistent
 
-`AppendEvent` writes to ADK's events table first (so the event has its assigned ID), then to our overlay so it picks up a seq. The overlay has a unique index on `event_id`, so a retry after a transient overlay-write failure is a no-op rather than a duplicate. Spanning a single transaction across both layers is not done in v1 — it would require either reflection into ADK's private `*gorm.DB` or rebuilding the wrapping service. The unique-index + retry pattern handles the realistic failure modes.
+`AppendEvent` writes to ADK's events table first (so the event has its assigned ID), then to our overlay so it picks up a seq. The overlay has a unique index on `event_id`, so a retry after a transient overlay-write failure is a no-op rather than a duplicate. Since #976 the two rows commit in one transaction: a GORM after-create callback runs the overlay insert inside ADK's own `AppendEvent` transaction (`pkg/eventlog/atomic.go`), on the one `*gorm.DB` both layers share via ADK's `NewSessionServiceFromDB`. The unique index still makes a retry on the fallback path idempotent.
 
 ### Why pure-Go SQLite (`glebarez/sqlite`)
 

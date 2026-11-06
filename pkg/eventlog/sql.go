@@ -24,7 +24,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"google.golang.org/adk/v2/session"
 	adkdatabase "google.golang.org/adk/v2/session/database"
@@ -72,11 +71,13 @@ func (agentEventRow) TableName() string { return "agent_eventlog" }
 //
 // Open does several things:
 //
-//   - Constructs ADK's database.SessionService against the dialector
-//     and runs its AutoMigrate so the events / sessions / state
-//     tables exist.
-//   - Opens a second GORM connection for our overlay table and
-//     AutoMigrates agent_eventlog.
+//   - Opens one GORM connection pool against the dialector. ADK's
+//     database.SessionService and our overlay tables share it
+//     (adkdatabase.NewSessionServiceFromDB), so the #976 overlay
+//     callback runs on the very handle ADK's AppendEvent transaction
+//     uses, and Close has one pool to shut down.
+//   - Runs ADK's AutoMigrate so the events / sessions / state tables
+//     exist, then AutoMigrates agent_eventlog and the state stores.
 //   - For SQLite (detected via the dialector's Name()), enables WAL
 //     journal mode so concurrent readers can run alongside the
 //     writer. Disable with WithSkipWAL.
@@ -87,9 +88,8 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		opt(&o)
 	}
 
-	// 0) For SQLite, tune the DSN before any connection is opened.
-	// Both settings apply to every connection in the ADK and overlay
-	// pools (each opens its own gorm.DB against this dialector).
+	// 0) For SQLite, tune the DSN before the connection is opened.
+	// Both settings apply to every connection in the shared pool.
 	//
 	//   - busy_timeout(N): a writer that finds the write lock held
 	//     waits up to N ms instead of failing immediately with
@@ -105,35 +105,26 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	//     lock, because busy_timeout deliberately never retries a
 	//     snapshot upgrade (doing so could deadlock two upgraders). So
 	//     busy_timeout alone does nothing for the case that actually
-	//     bites us: the boot-scan/lock/bootlog writes on the overlay
-	//     pool holding the write lock while a continuation turn's
-	//     AppendEvent on the ADK pool tries to commit (#575), and the
-	//     parent-checkpoint vs. subagent-create race (#230). IMMEDIATE
-	//     turns both into an ordinary busy_timeout wait. Reads (Get,
-	//     List) use no explicit transaction, so they stay lock-free
-	//     under WAL — IMMEDIATE only affects read-write transactions.
+	//     bites us: a boot-scan/lock/bootlog write on one pooled
+	//     connection holding the write lock while a continuation
+	//     turn's AppendEvent on another connection of the same pool
+	//     tries to commit (#575), and the parent-checkpoint vs.
+	//     subagent-create race (#230). IMMEDIATE turns both into an
+	//     ordinary busy_timeout wait. Reads (Get, List) use no explicit
+	//     transaction, so they stay lock-free under WAL — IMMEDIATE
+	//     only affects read-write transactions.
 	// No-op for non-SQLite drivers, which carry their own semantics.
 	if isSQLite(dialector) {
 		injectSQLitePragma(dialector, fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMs))
 		injectSQLiteDSNParam(dialector, "_txlock", "immediate")
 	}
 
-	// 1) ADK's session service does the heavy schema lifting (events,
-	// sessions, app/user state).
-	adkSvc, err := adkdatabase.NewSessionService(dialector, defaultGormOpts(o)...)
-	if err != nil {
-		return nil, fmt.Errorf("eventlog: open ADK session service: %w", err)
-	}
-	if err := adkdatabase.AutoMigrate(adkSvc); err != nil {
-		return nil, fmt.Errorf("eventlog: ADK AutoMigrate: %w", err)
-	}
-
-	// 2) Our overlay connection. We open a fresh dialector instance
-	// rather than trying to share ADK's connection — GORM's API
-	// doesn't expose a *gorm.DB from session/database, and we'd
-	// rather not depend on reflection. SQLite handles concurrent
-	// connections cleanly (especially in WAL); other drivers
-	// likewise tolerate multiple connections to the same DSN.
+	// 1) The one connection pool. ADK's session service and every
+	// overlay/state table share it: ADK's AppendEvent transaction and
+	// the overlay callback that joins it (atomic.go) run on the same
+	// *gorm.DB, and Close has one pool to shut down. Before ADK exposed
+	// NewSessionServiceFromDB this needed a second pool and reflection
+	// into ADK's unexported handle; neither is needed now.
 	gormCfg := o.gormConfig
 	if gormCfg == nil {
 		gormCfg = &gorm.Config{
@@ -142,7 +133,17 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	}
 	db, err := gorm.Open(dialector, gormCfg)
 	if err != nil {
-		return nil, fmt.Errorf("eventlog: open overlay db: %w", err)
+		return nil, fmt.Errorf("eventlog: open db: %w", err)
+	}
+
+	// 2) ADK's session service does the heavy schema lifting (events,
+	// sessions, app/user state).
+	adkSvc, err := adkdatabase.NewSessionServiceFromDB(db)
+	if err != nil {
+		return nil, fmt.Errorf("eventlog: open ADK session service: %w", err)
+	}
+	if err := adkdatabase.AutoMigrate(adkSvc); err != nil {
+		return nil, fmt.Errorf("eventlog: ADK AutoMigrate: %w", err)
 	}
 
 	// 3) WAL for SQLite. Best-effort: a failure here is logged via
@@ -182,13 +183,12 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	}
 
 	// 5) Make the event row and its overlay row one transaction (#976).
-	// Registered on ADK's own *gorm.DB, because that is the connection
-	// its AppendEvent transaction runs on; see atomic.go. Best-effort by
-	// design — if the reflection that reaches ADK's handle ever stops
-	// working, AppendEvent keeps the two-write path rather than Open
-	// failing over a durability improvement.
-	adkDB := adkGormDB(adkSvc)
-	stream.overlayInTx = stream.registerOverlayCallback(adkDB)
+	// Registered on the shared *gorm.DB, which is the handle ADK's
+	// AppendEvent transaction runs on; see atomic.go. Registration can
+	// only fail if GORM rejects the callback name, in which case
+	// AppendEvent keeps the two-write path rather than Open failing over
+	// a durability improvement.
+	stream.overlayInTx = stream.registerOverlayCallback(db)
 
 	svc := &service{inner: adkSvc, stream: stream, guardrail: guardrailStore, spend: spendStore, decisions: decisionStore}
 	return &Handle{
@@ -199,55 +199,9 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		Decisions:             decisionStore,
 		db:                    db,
 		DB:                    db,
-		adkDB:                 adkDB,
 		lockHeartbeatInterval: o.lockHeartbeatInterval,
 		lockStaleAfter:        o.lockStaleAfter,
 	}, nil
-}
-
-// adkGormDB reaches the *gorm.DB that adkdatabase.NewSessionService
-// opens internally so Handle.Close can shut down its connection pool.
-// ADK's databaseService keeps the handle in an unexported `db` field
-// with no accessor, so we read it reflectively (mirroring the reflection
-// injectSQLitePragma already relies on for the dialector's DSN field).
-// Returns nil if the service isn't the shape we expect — Close then
-// simply skips it, preserving today's behavior rather than panicking.
-func adkGormDB(svc session.Service) *gorm.DB {
-	if svc == nil {
-		return nil
-	}
-	v := reflect.ValueOf(svc)
-	if v.Kind() == reflect.Pointer {
-		v = v.Elem()
-	}
-	if v.Kind() != reflect.Struct {
-		return nil
-	}
-	f := v.FieldByName("db")
-	if !f.IsValid() || f.Kind() != reflect.Pointer || !f.CanAddr() {
-		return nil
-	}
-	// The field is unexported, so read it through its address. The
-	// value is only ever read (never mutated) and lives for the
-	// lifetime of the Handle.
-	// #nosec G103 -- unexported-field read of ADK's own *gorm.DB; the only way to close its pool.
-	f = reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
-	db, ok := f.Interface().(*gorm.DB)
-	if !ok {
-		return nil
-	}
-	return db
-}
-
-// defaultGormOpts returns the gorm.Option list passed to ADK's
-// NewSessionService. We mirror our own logger setting so ADK doesn't
-// dump SQL to stderr in tests; if the caller supplied a gormConfig
-// via WithGORMConfig we honor its logger choice instead.
-func defaultGormOpts(o openOpts) []gorm.Option {
-	if o.gormConfig != nil && o.gormConfig.Logger != nil {
-		return []gorm.Option{&gorm.Config{Logger: o.gormConfig.Logger}}
-	}
-	return []gorm.Option{&gorm.Config{Logger: logger.Default.LogMode(logger.Silent)}}
 }
 
 // isSQLite recognizes glebarez/sqlite (dialector.Name() == "sqlite")

@@ -100,7 +100,7 @@ func TestADKEventsTableName_IsStillWhatTheCallbackFiltersOn(t *testing.T) {
 	}
 
 	var n int64
-	if err := h.adkDB.Table(adkEventsTable).Count(&n).Error; err != nil {
+	if err := h.DB.Table(adkEventsTable).Count(&n).Error; err != nil {
 		t.Fatalf("counting %q: %v — if ADK renamed its events table, update adkEventsTable "+
 			"in atomic.go or the overlay write silently stops being transactional", adkEventsTable, err)
 	}

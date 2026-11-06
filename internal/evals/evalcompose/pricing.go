@@ -362,9 +362,10 @@ func hasToolDeclared(req *model.LLMRequest, name string) bool {
 }
 
 // CloseSessionService shuts down the underlying *sql.DB connection pool
-// held inside an ADK database.NewSessionService instance, mirroring
-// pkg/eventlog's adkGormDB cleanup so per-scenario SQLite stores do not leak
-// file descriptors.
+// held inside an ADK database.NewSessionService instance, so per-scenario
+// SQLite stores do not leak file descriptors. pkg/eventlog used the same
+// reflection until ADK exposed NewSessionServiceFromDB; the evals rigs
+// still construct ADK's service directly, so they still need it.
 func CloseSessionService(svc session.Service) error {
 	if svc == nil {
 		return nil

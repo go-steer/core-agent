@@ -25,21 +25,21 @@
 // running for hours on a cluster that evicts pods, which is precisely
 // the case `--session-db` exists to survive.
 //
-// The two writes could not simply be wrapped, because they are on two
-// different connection pools: ADK's databaseService opens its own
-// gorm.DB and exposes neither it nor a transaction hook, and Open
-// deliberately opens a second pool against the same DSN rather than
-// depending on reflection to share one. Two SQLite connections cannot
-// share a transaction.
+// The two writes cannot simply be wrapped from outside: ADK's
+// databaseService exposes no transaction hook, and its AppendEvent
+// opens and commits its own transaction. (When this shipped, ADK also
+// opened its own connection pool; it now shares ours via
+// NewSessionServiceFromDB, which is what lets the callback below be
+// registered on a handle we own rather than one reached by reflection.)
 //
 // So we do not try to join ADK's transaction from outside — we get
 // invited in. ADK's applyEvent runs `s.db.WithContext(ctx).Transaction`,
 // and inside it `tx.Create(storageEv)`. GORM runs registered create
-// callbacks on that same `tx`, so a callback registered on ADK's
+// callbacks on that same `tx`, so a callback registered on the shared
 // *gorm.DB fires with the transaction in hand. The overlay row is
-// inserted there, on ADK's connection, inside ADK's transaction: the
-// two rows now commit together or not at all, and an error from the
-// overlay insert aborts the event write rather than orphaning it.
+// inserted there, inside ADK's transaction: the two rows now commit
+// together or not at all, and an error from the overlay insert aborts
+// the event write rather than orphaning it.
 //
 // Three things make this less clever than it sounds:
 //
@@ -49,15 +49,15 @@
 //     Transaction and GORM hangs it on tx.Statement.Context. No
 //     reflection over ADK's row struct, no assumption about its
 //     columns.
-//   - It degrades rather than fails. Open reaches ADK's *gorm.DB with
-//     the same reflection Close already uses to shut its pool down; if
-//     a future ADK changes shape, registration is skipped and
-//     AppendEvent falls back to the two-write path it has always used.
-//     A missing atomicity guarantee is the old behaviour, and the old
-//     behaviour is not a crash.
-//   - It cannot recurse. The callback fires for every create on ADK's
-//     pool, including its own overlay insert; the table filter stops
-//     the second pass, and the pending record is consumed once.
+//   - It degrades rather than fails. If GORM ever refuses the callback
+//     registration, AppendEvent falls back to the two-write path it
+//     has always used. A missing atomicity guarantee is the old
+//     behaviour, and the old behaviour is not a crash.
+//   - It cannot recurse. The callback fires for every create on the
+//     shared pool — ADK's rows, our own overlay and state-store
+//     inserts, and the overlay insert it makes itself; the table
+//     filter stops everything but the ADK events row, and the pending
+//     record is consumed once.
 //
 // Not in scope here: overlay rows orphaned by a crash *before* this
 // change. Backfilling them at Open would hand each a fresh seq at the
@@ -122,14 +122,15 @@ func overlayPendingFrom(ctx context.Context) *overlayPending {
 	return p
 }
 
-// registerOverlayCallback wires the after-create hook onto ADK's own
-// *gorm.DB. Returns false when there is no DB to register on — the
-// caller then keeps the two-write path.
-func (s *gormStream) registerOverlayCallback(adkDB *gorm.DB) bool {
-	if adkDB == nil {
+// registerOverlayCallback wires the after-create hook onto the shared
+// *gorm.DB that ADK's AppendEvent transaction runs on. Returns false
+// when there is no DB to register on or GORM rejects the registration
+// — the caller then keeps the two-write path.
+func (s *gormStream) registerOverlayCallback(db *gorm.DB) bool {
+	if db == nil {
 		return false
 	}
-	if err := adkDB.Callback().Create().After("gorm:create").
+	if err := db.Callback().Create().After("gorm:create").
 		Register(overlayCallbackName, s.overlayAfterCreate); err != nil {
 		return false
 	}

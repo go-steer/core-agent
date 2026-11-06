@@ -1,6 +1,6 @@
 # External state: pluggable session, control and memory stores for failover
 
-**Status:** in progress. Phase 1 is shipping as the transcript seam
+**Status:** proposed, partly implemented. Phase 1 is shipping as the transcript seam
 only — `eventlog.Transcript`, `eventlog.OpenTranscript`,
 `pkg/statestore/{memory,conformance}` — with control, index and the
 per-session state stores still on the local SQL database (see

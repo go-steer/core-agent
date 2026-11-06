@@ -111,6 +111,8 @@ var cliFlagGroups = []cliFlagGroup{
 			{Names: []string{"no-repl"}, Spec: "--no-repl", Summary: "Run without a stdin REPL until SIGTERM/SIGINT (requires --attach-listen or --attach-unix-socket)"},
 			{Names: []string{"session-db"}, Spec: "--session-db", Summary: "Persist sessions and audit log to SQLite"},
 			{Names: []string{"session-db-path"}, Spec: "--session-db-path <path>", Summary: "Database file path when --session-db or attach mode is enabled"},
+			{Names: []string{"continue"}, Spec: "--continue", Summary: "Continue the most recent session for this project (implies --session-db)"},
+			{Names: []string{"resume"}, Spec: "--resume [id]", Summary: "Resume a specific session by ID, or pick interactively from project sessions"},
 			{Names: []string{"append-system-prompt"}, Spec: "--append-system-prompt <text|@file>", Summary: "Append operator instructions to the assembled system prompt"},
 			{Names: []string{"system-prompt-file"}, Spec: "--system-prompt-file <path>", Summary: "Replace the assembled system prompt wholesale with file contents"},
 			{Names: nil, Spec: "--version", Summary: "Print build version and exit"},

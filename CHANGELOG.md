@@ -18,6 +18,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 #### Feature
 
+- **Per-project CLI session IDs and `--continue` / `--resume [id]`.** Mints `<project>-<hash>-<rand>` session IDs under `--session-db` and adds `--continue` and `--resume [id]` (with interactive TTY picker and spend restore). ([#1374](https://github.com/go-steer/core-agent/issues/1374))
 - **Add `--permission-mode <mode>`, grouped `--help`, and subcommands.** Adds `--permission-mode` (`ask|auto|acceptEdits|plan|allow|yolo`, `--yolo` alias), groups `--help` into 6 sections plus subcommands, and deprecates `--plan-first`. ([#1380](https://github.com/go-steer/core-agent/issues/1380))
 - **Graduate permission mode `auto` and `pkg/approver` out of experimental.** Places `permissions.Approver` / `ApproverRequest` / `ApproverContext` / `Verdict`, `PermissionsConfig.Auto`, and `pkg/approver` under the SemVer promise. ([#1213](https://github.com/go-steer/core-agent/issues/1213))
 - **Per-subagent `git worktree` isolation (`safety.parallel_subagent_writes: "worktree"`).** Provisions an isolated git worktree per write-capable background subagent and scopes relative paths, `bash` cwd, and file writes to it. ([#653](https://github.com/go-steer/core-agent/issues/653))

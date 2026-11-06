@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "servers": {
+    "kode_gopher": {
+      "transport": "stdio",
+      "command": "kode-gopher",
+      "args": ["serve"],
+      "tools": [
+        "execute_go_code",
+        "lookup_package_docs",
+        "gcp_auth_status"
+      ],
+      "tool_notes": {
+        "execute_go_code": "Snippet contract: define `func run(ctx context.Context) (any, error)` (or `func run(ctx) (any, error)` in shorthand). The returned `any` value is marshaled to JSON in the tool response, and compile or type-check failures are returned with `phase=build` so you can fix imports or types before any cluster or cloud call executes."
+      }
+    }
+  }
+}

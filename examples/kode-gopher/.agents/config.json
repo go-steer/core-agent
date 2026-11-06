@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "gemini",
+    "name": "gemini-3.1-pro-preview-customtools"
+  },
+  "permissions": {
+    "mode": "ask",
+    "allow": [
+      "mcp:kode_gopher_lookup_package_docs*",
+      "mcp:kode_gopher_gcp_auth_status*"
+    ]
+  },
+  "agent": {
+    "display_name": "kode-gopher",
+    "max_steps": 50
+  }
+}

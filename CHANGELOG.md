@@ -14,6 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
+_No unreleased changes since [3.2.0-rc.1]._
+
+## [3.2.0-rc.1] — 2026-11-06
+
 ### Changes by Kind
 
 #### Feature

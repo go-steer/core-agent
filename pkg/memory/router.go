@@ -52,6 +52,7 @@ func WithStrictRecall(strict bool) RouterOption {
 // Remember, Forget, or ConsolidateSession mutation.
 func WithAuditRecorder(rec AuditRecorder) RouterOption {
 	return func(r *Router) {
+		r.baseAudit = rec
 		r.audit = rec
 	}
 }
@@ -171,6 +172,7 @@ type Router struct {
 	sharedGlobalMax string
 	defaultTopK     int
 	strictRecall    bool
+	baseAudit       AuditRecorder
 	audit           AuditRecorder
 	userResolver    func(context.Context) string
 }

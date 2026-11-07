@@ -36,6 +36,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/instruction"
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/skills"
@@ -62,6 +63,8 @@ type subagentOpts struct {
 	// decide. Kept as the raw string so the parse error can name the
 	// flag that carried the bad value.
 	syncWait string
+	// memory carries the --memory-* and --agent-engine CLI flags (#948).
+	memory memoryFlags
 }
 
 // resolveSyncWaitTimeout picks the synchronous-spawn cap from, in
@@ -335,6 +338,13 @@ type subagentDeps struct {
 	// for the same reason as noPromptCache: a subagent with its own model
 	// resolves its own provider and never sees the parent's CLI flags.
 	promptCacheTTL string
+	// memoryRouter and memorySettings are the parent's resolved memory
+	// router and settings, used to derive each subagent's memory mounts (#948).
+	memoryRouter   *memory.Router
+	memorySettings agent.MemorySettings
+	// onClose registers a cleanup callback when a rooted subagent opens a
+	// standalone memory backend (#948).
+	onClose func(func())
 }
 
 // buildDeclaredSubagents turns the config's declarative subagents[] block
@@ -409,14 +419,6 @@ func buildDeclaredSubagents(
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
 		}
 
-		// Built-ins always resolve against the parent registry — they ship
-		// in the binary, not in any content root. droppedTools is the
-		// spawn-tool carve-out (#748), reported on the boot line below.
-		subTools, droppedTools, err := resolveSubagentTools(spec, surface.builtinTools)
-		if err != nil {
-			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
-		}
-
 		var (
 			subToolsets     subagentToolsets
 			userInstruction string
@@ -457,6 +459,24 @@ func buildDeclaredSubagents(
 			}
 		}
 
+		subMemRouter, subMemSettings, closeSubMem, err := agent.ResolveSubagentMemory(
+			ctx, deps.memoryRouter, deps.memorySettings, spec, rootAbs, os.Getenv,
+		)
+		if closeSubMem != nil && deps.onClose != nil {
+			deps.onClose(closeSubMem)
+		}
+		if err != nil {
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: memory: %w", i, spec.Name, err)
+		}
+
+		// Built-ins always resolve against the parent registry — they ship
+		// in the binary, not in any content root. droppedTools is the
+		// spawn-tool carve-out (#748), reported on the boot line below.
+		subTools, droppedTools, err := resolveSubagentToolsWithMemory(spec, surface.builtinTools, subMemRouter != nil)
+		if err != nil {
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
+		}
+
 		if err := checkSubagentCapability(ctx, spec, cfg.Tools.Policies, subTools, subToolsets.mcpSets); err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
@@ -465,7 +485,7 @@ func buildDeclaredSubagents(
 		// which differs from the parent's when spec.Model names another
 		// provider. Both doors price on it.
 		backend := models.BackendOf(subProvider)
-		sub, err := assembleSubagent(spec, cfg.Agent.FinalReport, llm, backend, userInstruction, subTools, subToolsets.sets, projectRoot, rootAbs, deps.rootBase)
+		sub, err := assembleSubagent(spec, cfg.Agent.FinalReport, llm, backend, userInstruction, subTools, subToolsets.sets, projectRoot, rootAbs, deps.rootBase, deps.gate, subMemRouter, subMemSettings)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
@@ -498,10 +518,14 @@ func buildDeclaredSubagents(
 			// Validated against the accepted set at config load; Mode is
 			// left empty so it derives from this (a scheduler makes a
 			// standing worker).
-			Scheduler:    spec.Scheduler,
-			SubagentMode: sub.SubagentMode(),
-			OutputSchema: sub.OutputSchema(),
-			InheritInput: spec.InheritsInput(),
+			Scheduler:      spec.Scheduler,
+			SubagentMode:   sub.SubagentMode(),
+			OutputSchema:   sub.OutputSchema(),
+			InheritInput:   spec.InheritsInput(),
+			Capability:     spec.Capability,
+			Memory:         spec.Memory,
+			MemoryRouter:   subMemRouter,
+			MemorySettings: subMemSettings,
 		})
 		if spec.Scheduler != "" {
 			scopeDesc += ", scheduler=" + spec.Scheduler
@@ -532,14 +556,15 @@ func buildRemoteSubagentTemplate(spec config.SubagentSpec, send func(string)) (b
 		timeoutSec = spec.Budgets.MaxWallclockSeconds
 	}
 	client, err := background.NewA2AClient(background.A2AConfig{
-		Name:                spec.Name,
-		AgentCardURL:        r.A2A,
-		Endpoint:            r.Endpoint,
-		Skill:               r.Skill,
-		Skills:              r.Skills,
-		Auth:                auth,
-		TimeoutSeconds:      timeoutSec,
-		AllowCardHostChange: r.AllowCardHostChange,
+		Name:                 spec.Name,
+		AgentCardURL:         r.A2A,
+		Endpoint:             r.Endpoint,
+		Skill:                r.Skill,
+		Skills:               r.Skills,
+		Auth:                 auth,
+		TimeoutSeconds:       timeoutSec,
+		AllowCardHostChange:  r.AllowCardHostChange,
+		PropagateMemoryScope: r.PropagateMemoryScope,
 	})
 	if err != nil {
 		return background.SubagentTemplate{}, err
@@ -566,7 +591,7 @@ func buildRemoteSubagentTemplate(spec config.SubagentSpec, send func(string)) (b
 
 // assembleSubagent builds the *agent.Agent from a resolved model, persona,
 // and tool surface — the common tail shared by the inline and rooted paths.
-func assembleSubagent(spec config.SubagentSpec, finalReport bool, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset, projectRoot, rootAbs, rootBase string) (*agent.Agent, error) {
+func assembleSubagent(spec config.SubagentSpec, finalReport bool, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset, projectRoot, rootAbs, rootBase string, gate *permissions.Gate, memRouter *memory.Router, memSettings agent.MemorySettings) (*agent.Agent, error) {
 	returnContract := agent.SubagentReturnContract("")
 	if spec.EffectiveMode() == config.SubagentModeTask {
 		returnContract = agent.SubagentReturnContract(agent.FinishTaskToolName)
@@ -586,6 +611,12 @@ func assembleSubagent(spec config.SubagentSpec, finalReport bool, llm adkmodel.L
 		// tool (its last message IS the value); a task subagent reports
 		// through ADK's finish_task tool (#1401).
 		agent.WithExtraInstruction(returnContract),
+	}
+	if gate != nil {
+		opts = append(opts, agent.WithGate(gate))
+	}
+	if memRouter != nil {
+		opts = append(opts, agent.WithMemory(memRouter, memSettings))
 	}
 	if spec.Mode != "" {
 		opts = append(opts, agent.WithSubagentMode(agent.SubagentMode(spec.Mode)))
@@ -909,6 +940,10 @@ var spawnToolCarveOut = func() map[string]struct{} {
 // the caller say so in the startup summary, since a carve-out invisible
 // at boot is one an operator rediscovers from a live run.
 func resolveSubagentTools(spec config.SubagentSpec, parent []adktool.Tool) (tools []adktool.Tool, dropped []string, err error) {
+	return resolveSubagentToolsWithMemory(spec, parent, false)
+}
+
+func resolveSubagentToolsWithMemory(spec config.SubagentSpec, parent []adktool.Tool, hasMemory bool) (tools []adktool.Tool, dropped []string, err error) {
 	if spec.Mode == "single_turn" && len(spec.Tools) == 0 {
 		return nil, nil, nil
 	}
@@ -931,6 +966,9 @@ func resolveSubagentTools(spec config.SubagentSpec, parent []adktool.Tool) (tool
 	for _, name := range spec.Tools {
 		t, ok := byName[name]
 		if !ok {
+			if hasMemory && agent.IsMemoryToolName(name) {
+				continue
+			}
 			return nil, nil, fmt.Errorf("unknown tool %q (not among the %d built-in tools)", name, len(parent))
 		}
 		out = append(out, t)

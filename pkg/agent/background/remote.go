@@ -26,7 +26,9 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 )
 
 // RemoteAgentSpawner is implemented by consumers who want the parent
@@ -64,6 +66,9 @@ type RemoteAgentSpec struct {
 	Tools        []string
 	Extras       []string
 	Budgets      Budgets
+	// Memory carries the derived memory BindingSpec for this remote
+	// subagent when the parent agent has a MemoryRouter (#948).
+	Memory *memory.BindingSpec
 }
 
 // RemoteAgentHandle is the contract for a running remote subagent.
@@ -209,6 +214,24 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 				Error:  err.Error(),
 			}, nil
 		}
+		var memSpec *memory.BindingSpec
+		if mgr != nil {
+			mgr.mu.Lock()
+			parent := mgr.parent
+			mgr.mu.Unlock()
+			var err error
+			memSpec, err = resolveRemoteMemorySpec(parent, resolvedSpawn{
+				specName: args.Name,
+				adHoc:    true,
+			})
+			if err != nil {
+				return spawnRemoteAgentResult{
+					Name:   args.Name,
+					Status: "error: " + err.Error(),
+					Error:  err.Error(),
+				}, nil
+			}
+		}
 		spec := RemoteAgentSpec{
 			ID:           args.Name,
 			Name:         args.Name,
@@ -221,6 +244,7 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 				MaxCost:      args.MaxCostUSD,
 				MaxWallclock: time.Duration(args.MaxWallclockSeconds) * time.Second,
 			},
+			Memory: memSpec,
 		}
 		h, err := spawner.Spawn(toolCtx, spec)
 		if err != nil {
@@ -509,4 +533,13 @@ func nowOr(t time.Time) time.Time {
 		return time.Now()
 	}
 	return t
+}
+
+func resolveRemoteMemorySpec(parent *agent.Agent, rs resolvedSpawn) (*memory.BindingSpec, error) {
+	r, _, err := resolveSpawnMemory(parent, rs)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	spec := r.BindingSpec("", "")
+	return &spec, nil
 }

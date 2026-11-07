@@ -46,6 +46,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/hooks"
 	"github.com/go-steer/core-agent/v3/pkg/instruction"
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/models/profiles"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
@@ -207,6 +208,8 @@ type runState struct {
 
 	appendPrompt      string
 	replacePrompt     string
+	memRouter         *memory.Router
+	memSettings       agent.MemorySettings
 	declaredSubagents []*agent.Agent
 	subagentTemplates []background.SubagentTemplate
 	subagentServers   []*mcp.Server
@@ -1145,6 +1148,19 @@ func stepBuildDeclarativeSubagentsAndPromptLayers(s *runState) int {
 		}
 		mcpNamed = append(mcpNamed, namedToolset{name: srv.Name, toolset: srv.Toolset(), infos: srv.ToolInfos})
 	}
+	memRouter, memSettings, closeMem, memErr := openDaemonMemory(
+		s.ctx, s.cfg, s.opts.subagent.memory, s.projectRoot,
+		s.opts.toolCatalog.noBuiltinTools,
+		append(splitList(s.opts.toolCatalog.disableTools), s.profileDisables...),
+		s.send,
+	)
+	if memErr != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: memory: %v\n", memErr)
+		return runner.ExitConfigError
+	}
+	s.addCleanup(closeMem)
+	s.memRouter = memRouter
+	s.memSettings = memSettings
 	declaredSubagents, subagentTemplates, subagentServers, err := buildDeclaredSubagents(s.ctx, s.cfg, s.provider, s.projectRoot, parentSurface{
 		builtinTools: s.builtinTools,
 		mcpToolsets:  mcpNamed,
@@ -1158,6 +1174,9 @@ func stepBuildDeclarativeSubagentsAndPromptLayers(s *runState) int {
 		rootBase:       s.contentRootBase,
 		noPromptCache:  s.opts.model.noPromptCache,
 		promptCacheTTL: s.opts.model.promptCacheTTL,
+		memoryRouter:   s.memRouter,
+		memorySettings: s.memSettings,
+		onClose:        s.addCleanup,
 	})
 	s.subagentServers = subagentServers
 	s.addCleanup(func() { mcp.CloseAll(s.subagentServers) })
@@ -1207,6 +1226,9 @@ func stepAssembleAgentAndEventlog(s *runState) int {
 	}
 	if len(s.declaredSubagents) > 0 {
 		opts = append(opts, agent.WithSubagents(s.declaredSubagents))
+	}
+	if s.memRouter != nil {
+		opts = append(opts, agent.WithMemory(s.memRouter, s.memSettings))
 	}
 	switch {
 	case s.cfg.Agent.SessionTitle != nil && !*s.cfg.Agent.SessionTitle:
@@ -1717,6 +1739,8 @@ func (s *runState) wireMultiSessionFactory(attachReg *attach.SessionRegistry, ac
 		BuiltinTools:           s.builtinTools,
 		Toolsets:               s.allToolsets,
 		Subagents:              s.declaredSubagents,
+		MemoryRouter:           s.memRouter,
+		MemorySettings:         s.memSettings,
 		EventlogHandle:         s.eventlogHandle,
 		ProjectRoot:            s.projectRoot,
 		UserRoot:               s.coreHome,

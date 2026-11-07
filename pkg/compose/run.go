@@ -319,6 +319,12 @@ func mergeComposeConfig(base, override *config.Config) *config.Config {
 	if override.Monitor != nil {
 		cp.Monitor = override.Monitor
 	}
+	if override.AgentEngine != nil {
+		cp.AgentEngine = override.AgentEngine
+	}
+	if override.Memory != nil {
+		cp.Memory = override.Memory
+	}
 	cp.VCS.MergeFrom(override.VCS)
 	return &cp
 }

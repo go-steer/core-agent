@@ -164,6 +164,7 @@ func WakeLoop(ctx context.Context, a *agent.Agent, opts WakeLoopOptions) {
 	// source, instead of being acknowledged and silently dropped into a
 	// mailbox nobody will drain (#566).
 	defer a.CloseInbox()
+	defer func() { _ = a.EndSession(context.Background()) }()
 	opts.Health.setSession(a.SessionID())
 	defer opts.Health.setState(LoopStopped)
 	debugf("wake loop starting (session=%s model=%s)", a.SessionID(), opts.Model)

@@ -30,6 +30,8 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
@@ -120,6 +122,20 @@ type SubagentTemplate struct {
 	// InheritInput automatically appends the parent turn's triggering
 	// message verbatim to the spawn's goal (#1499).
 	InheritInput bool
+	// MemoryRouter is an optional pre-resolved memory router for this
+	// template (for example when the template is a rooted subagent with
+	// its own memory config, or already derived from the parent router).
+	// When nil and the parent agent has a MemoryRouter, the manager
+	// derives one per spawn using Memory and Capability (#948).
+	MemoryRouter *memory.Router
+	// MemorySettings configures preload and consolidation when
+	// MemoryRouter (or a router derived from the parent) is active (#948).
+	MemorySettings agent.MemorySettings
+	// Memory narrows the parent's memory router when MemoryRouter is nil (#948).
+	Memory *config.SubagentMemoryConfig
+	// Capability is the subagent's capability preset used as the default
+	// when deriving shared memory scopes (#948).
+	Capability string
 }
 
 // WithSubagentTemplates registers the declarative-subagent roster at
@@ -403,6 +419,10 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 		budgets:         tightenBudgets(mergeBudgets(m.defaultBudgets, tmpl.Budgets), ov.Budgets),
 		scheduler:       sched,
 		mode:            tmpl.Mode,
+		memoryRouter:    tmpl.MemoryRouter,
+		memorySettings:  tmpl.MemorySettings,
+		memoryCfg:       tmpl.Memory,
+		capability:      tmpl.Capability,
 	})
 }
 
@@ -413,7 +433,8 @@ func (m *Manager) launchRemote(ctx context.Context, parentBranch string, tmpl Su
 		m.mu.Unlock()
 		return nil, ErrManagerClosed
 	}
-	if m.parent == nil {
+	parent := m.parent
+	if parent == nil {
 		m.mu.Unlock()
 		return nil, ErrNoParent
 	}
@@ -456,12 +477,25 @@ func (m *Manager) launchRemote(ctx context.Context, parentBranch string, tmpl Su
 	m.agents[instanceName] = bh
 	m.mu.Unlock()
 
+	memSpec, err := resolveRemoteMemorySpec(parent, resolvedSpawn{
+		specName:       tmpl.Name,
+		subagentMode:   tmpl.SubagentMode,
+		memoryRouter:   tmpl.MemoryRouter,
+		memorySettings: tmpl.MemorySettings,
+		memoryCfg:      tmpl.Memory,
+		capability:     tmpl.Capability,
+	})
+	if err != nil {
+		m.abortSpawn(instanceName, bh, cancel)
+		return nil, err
+	}
 	budgets := tightenBudgets(mergeBudgets(m.defaultBudgets, tmpl.Budgets), ov.Budgets)
 	rh, err := tmpl.Remote.Spawn(spawnCtx, RemoteAgentSpec{
 		ID:      instanceName,
 		Name:    instanceName,
 		Goal:    goal,
 		Budgets: budgets,
+		Memory:  memSpec,
 	})
 	if err != nil {
 		m.abortSpawn(instanceName, bh, cancel)

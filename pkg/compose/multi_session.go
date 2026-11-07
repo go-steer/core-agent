@@ -38,6 +38,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/instruction"
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/runner"
 	"github.com/go-steer/core-agent/v3/pkg/skills"
@@ -250,6 +251,8 @@ type SessionFactoryDeps struct {
 	//     the session-gate stamp agent.Run put on the parent's turn
 	//     context is still the one resolveSessionGate reads (#825).
 	Subagents      []*agent.Agent
+	MemoryRouter   *memory.Router
+	MemorySettings agent.MemorySettings
 	EventlogHandle *eventlog.Handle
 	PricingRate    usage.Pricing
 	ProjectRoot    string
@@ -618,6 +621,7 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		agent.WithUserInstruction(instr.Instruction), // layer 4 since #459 — memory AFTER the core, the intended precedence flip
 		agent.WithGate(sessionGate),
 		agent.WithSession(caller.Identity, sid),
+		agent.WithMemory(deps.MemoryRouter, deps.MemorySettings),
 	}
 	// The synchronous half of the declarative-subagent surface (#741).
 	// Placed in the option list rather than assembled by hand so the

@@ -66,6 +66,7 @@ func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr
 	if err != nil {
 		return ExitAgentError, err
 	}
+	defer func() { _ = a.EndSession(context.Background()) }()
 
 	// Default the `asst › ` prefix to TTY-detection on stdout so piped
 	// `-p` invocations receive raw assistant text without a chat sigil

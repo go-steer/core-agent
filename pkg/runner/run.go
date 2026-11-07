@@ -96,6 +96,7 @@ func Run(ctx context.Context, opts RunOptions) (int, error) {
 			return ExitAgentError, err
 		}
 	}
+	defer func() { _ = a.EndSession(context.Background()) }()
 	stdin := opts.Stdin
 	if stdin == nil {
 		stdin = os.Stdin

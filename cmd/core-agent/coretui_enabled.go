@@ -250,6 +250,11 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	// agent usually dies with the process here; the discipline matters
 	// for the hosts that keep one alive past a detach.
 	defer wrapped.closeWake()
+	defer func() {
+		if wrapped != nil && wrapped.inner != nil {
+			_ = wrapped.inner.EndSession(context.Background())
+		}
+	}()
 	// Subscribe now rather than waiting for core-tui's first re-arm.
 	// buildAttachedAgent has already registered the session with the
 	// attach registry, so `POST /sessions/<id>/wake` and `/inject` are

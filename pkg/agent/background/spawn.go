@@ -31,6 +31,8 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
+	"github.com/go-steer/core-agent/v3/pkg/config"
+	"github.com/go-steer/core-agent/v3/pkg/memory"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
@@ -145,7 +147,12 @@ type resolvedSpawn struct {
 	scheduler coretools.Scheduler
 	// mode is the termination contract, already resolved past
 	// ModeAuto by the time launch reads it.
-	mode Mode
+	mode           Mode
+	memoryRouter   *memory.Router
+	memorySettings agent.MemorySettings
+	memoryCfg      *config.SubagentMemoryConfig
+	capability     string
+	adHoc          bool
 }
 
 // Spawn launches a new background subagent under spec. parentBranch
@@ -223,6 +230,9 @@ func (m *Manager) spawn(ctx context.Context, parentBranch string, maxCostExplici
 		budgets:         mergeBudgets(m.defaultBudgets, spec.Budgets),
 		scheduler:       sched,
 		mode:            spec.Mode,
+		memoryCfg:       spec.Memory,
+		capability:      spec.Capability,
+		adHoc:           strings.TrimSpace(spec.Ref) == "",
 	})
 }
 
@@ -834,8 +844,12 @@ func (m *Manager) newSpawnAgentBuilder(parent *agent.Agent, subModel adkmodel.LL
 	subagentMode := rs.subagentMode
 	maxDepth := rs.maxDepth
 	return func(extraTools []tool.Tool) (*agent.Agent, error) {
+		memRouter, memSettings, err := resolveSpawnMemory(parent, rs)
+		if err != nil {
+			return nil, fmt.Errorf("background: derive subagent memory: %w", err)
+		}
 		all := buildSpawnTools(subagentMode, baseTools, extraTools, newReportAlertTool(m, name, handle.noteAlert))
-		opts := make([]agent.Option, 0, len(instrOpts)+9)
+		opts := make([]agent.Option, 0, len(instrOpts)+11)
 		opts = append(opts,
 			agent.WithAppName(parent.AppName()),
 			agent.WithName(name),
@@ -845,7 +859,11 @@ func (m *Manager) newSpawnAgentBuilder(parent *agent.Agent, subModel adkmodel.LL
 			agent.WithSession(parent.UserID(), subSessionID),
 			agent.WithTools(all),
 			agent.WithSessionService(wrappedSvc),
+			agent.WithGate(m.gate),
 		)
+		if memRouter != nil {
+			opts = append(opts, agent.WithMemory(memRouter, memSettings))
+		}
 		if mp := parent.MeterProvider(); mp != nil {
 			opts = append(opts, agent.WithMeterProvider(mp))
 		}
@@ -859,6 +877,31 @@ func (m *Manager) newSpawnAgentBuilder(parent *agent.Agent, subModel adkmodel.LL
 		}
 		return agent.New(subModel, opts...)
 	}
+}
+
+func resolveSpawnMemory(parent *agent.Agent, rs resolvedSpawn) (*memory.Router, agent.MemorySettings, error) {
+	if rs.memoryRouter != nil {
+		s := rs.memorySettings
+		if rs.subagentMode == agent.SubagentModeSingleTurn {
+			s.DisableTools = true
+		}
+		if !agent.CanConsolidateMount(rs.memoryRouter, s.ConsolidateMount) {
+			s.Consolidate = agent.MemoryConsolidateOff
+		}
+		return rs.memoryRouter, s, nil
+	}
+	if parent == nil || parent.MemoryRouter() == nil {
+		return nil, agent.MemorySettings{}, nil
+	}
+	return agent.DeriveSubagentMemory(
+		parent.MemoryRouter(),
+		parent.MemorySettings(),
+		rs.specName,
+		string(rs.subagentMode),
+		rs.capability,
+		rs.adHoc,
+		rs.memoryCfg,
+	)
 }
 
 func (m *Manager) abortSpawn(name string, handle *Handle, cancel context.CancelFunc) {

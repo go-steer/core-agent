@@ -99,6 +99,11 @@ type A2AConfig struct {
 	// elsewhere is refused rather than trusted (#1435). A downgrade from
 	// https to http is refused regardless of this setting.
 	AllowCardHostChange bool `json:"allow_card_host_change,omitempty"`
+
+	// PropagateMemoryScope opts in to forwarding logical memory scope
+	// metadata (core_agent.memory_scope: namespace, user_id, and shared
+	// pool names, never raw backend URIs) in A2A message metadata (#948).
+	PropagateMemoryScope bool `json:"propagate_memory_scope,omitempty"`
 }
 
 // Timeout returns the effective invocation bound.

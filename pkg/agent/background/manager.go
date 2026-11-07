@@ -32,6 +32,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v3/pkg/attach/wire"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/models"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
@@ -585,6 +586,11 @@ type Spec struct {
 	// InheritInput automatically appends the parent turn's triggering
 	// message verbatim to Goal before launching (#1499).
 	InheritInput bool
+	// Memory narrows the parent's memory router for this subagent (#948).
+	Memory *config.SubagentMemoryConfig
+	// Capability is the subagent's capability preset used as the default
+	// when deriving shared memory scopes (#948).
+	Capability string
 	// Ref is the predefined-spec name this spec was resolved from, set
 	// by the reference path (resolvePredefinedSpec) and empty for an
 	// ad-hoc, inline-authored one. Name is rewritten to a per-instance

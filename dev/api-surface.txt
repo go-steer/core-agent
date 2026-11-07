@@ -84,10 +84,14 @@ unsupported pkg/statestore/memory
 unsupported pkg/digest
 # Lifecycle hook runner for CLI/daemon turns.
 unsupported pkg/hooks
+# Vertex AI Agent Engine Memory Bank backend for pkg/memory (#948).
+unsupported pkg/memory/memorybank
 # Backend conformance suite for pkg/memory implementations and extras/.
 unsupported pkg/memory/memtest
 # Model-facing recall_memory / persist_memory / forget_memory tools (#948).
 unsupported pkg/memory/memtools
+# Pure-Go SQLite FTS5 backend for pkg/memory (#948).
+unsupported pkg/memory/sqlfts
 # Model-tier routing table used by watchdog escalation and task routing.
 unsupported pkg/modeltier
 # Deprecated forwarding alias for pkg/transcript (removed in v4.0).

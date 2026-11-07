@@ -53,3 +53,33 @@ env_output=$(
 echo "${env_output}"
 assert_contains "memory: ref=inmemory://smoke-14-env namespace=env-smoke preload=session_start consolidate=off" "${env_output}"
 pass "CORE_AGENT_MEMORY_* env vars wired memory router on inmemory://"
+
+log_step "14-memory-stateless-cli: sqlite:// FTS5 backend persists consolidated memories across CLI runs"
+SMOKE_DIR=$(mktemp -d /tmp/core-agent-smoke-14.XXXXXX)
+trap 'rm -rf "${SMOKE_DIR}"' EXIT
+SQLITE_DB="${SMOKE_DIR}/smoke-14-memory.db"
+sqlite_run1=$(
+    "${CORE_AGENT}" -c "${SMOKE_CONFIG}" \
+        --provider=echo \
+        --memory-ref="sqlite://${SQLITE_DB}" \
+        --memory-namespace="sqlite-smoke" \
+        --memory-agent="sqlite-bot:rw" \
+        --memory-consolidate="session_end" \
+        -p "Always drain Envoy traffic before restarting payments pods" 2>&1
+)
+echo "${sqlite_run1}"
+assert_contains "memory: ref=sqlite://${SQLITE_DB} namespace=sqlite-smoke preload=off consolidate=session_end" "${sqlite_run1}"
+
+sqlite_run2=$(
+    "${CORE_AGENT}" -c "${SMOKE_CONFIG}" \
+        --provider=echo \
+        --memory-ref="sqlite://${SQLITE_DB}" \
+        --memory-namespace="sqlite-smoke" \
+        --memory-agent="sqlite-bot:ro" \
+        --memory-preload="session_start" \
+        -p "Envoy traffic" 2>&1
+)
+echo "${sqlite_run2}"
+assert_contains "<memory_context>" "${sqlite_run2}"
+assert_contains "Always drain Envoy traffic before restarting payments pods" "${sqlite_run2}"
+pass "sqlite:// FTS5 backend consolidated on run 1 and preloaded on stateless run 2"

@@ -23,7 +23,9 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/memory"
+	_ "github.com/go-steer/core-agent/v3/pkg/memory/memorybank"
 	"github.com/go-steer/core-agent/v3/pkg/memory/memtools"
+	_ "github.com/go-steer/core-agent/v3/pkg/memory/sqlfts"
 )
 
 // memoryFlags carries the stateless --memory-* and --agent-engine CLI flags

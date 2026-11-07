@@ -63,8 +63,10 @@ Packages marked `unsupported` in `dev/api-surface.txt` live under `pkg/` so `cmd
 - `pkg/digest` — local digesting primitives backing `pkg/tools/agentic`
 - `pkg/statestore`, `pkg/statestore/agentengine`, `pkg/statestore/conformance`, `pkg/statestore/memory` — pluggable session-state backends and their conformance suite (`docs/external-state-design.md`); the `Transcript` seam itself is in `pkg/eventlog`
 - `pkg/hooks` — lifecycle hook runner
+- `pkg/memory/memorybank` — Vertex AI Agent Engine Memory Bank backend for `pkg/memory` (`#948`)
 - `pkg/memory/memtest` — shared conformance suite for `pkg/memory.Backend` implementations
 - `pkg/memory/memtools` — model-facing `recall_memory` / `persist_memory` / `forget_memory` tools over a `pkg/memory.Router`
+- `pkg/memory/sqlfts` — pure-Go SQLite FTS5 backend for `pkg/memory` (`#948`)
 - `pkg/modeltier` — model-tier routing table
 - `pkg/session` — deprecated forwarding alias for `pkg/transcript` (removed in v4.0)
 - `pkg/taskclass` — task-classification heuristics

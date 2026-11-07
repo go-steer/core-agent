@@ -32,6 +32,8 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/instruction"
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
+	_ "github.com/go-steer/core-agent/v3/pkg/memory/memorybank"
+	_ "github.com/go-steer/core-agent/v3/pkg/memory/sqlfts"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
 	"github.com/go-steer/core-agent/v3/pkg/skills"
 	"github.com/go-steer/core-agent/v3/pkg/tools"

@@ -220,7 +220,10 @@ func testConsolidateVsVerbatim(t *testing.T, newBackend Factory) {
 		t.Fatalf("after WriteVerbatim, got %d items, want 2", len(itemsAfterVerbatim))
 	}
 
-	filtered, err := b.Retrieve(ctx, scope, memory.RetrieveRequest{Topics: []string{"verbatim-copy"}, TopK: 10})
+	filtered, err := b.Retrieve(ctx, scope, memory.RetrieveRequest{
+		Topics: []string{"verbatim-copy", "other-unmatched-topic"},
+		TopK:   10,
+	})
 	if err != nil {
 		t.Fatalf("Retrieve filtered: %v", err)
 	}

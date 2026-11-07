@@ -77,7 +77,7 @@ DENYLIST=(
   # Heavy or daemon-only pkg/ subsystems outside the slim library slice
   # (pkg/attach/wire is the protocol vocabulary leaf; pkg/attach is the HTTP/SSE server).
   '^github\.com/go-steer/core-agent(/v[0-9]+)?/pkg/attach$'
-  '^github\.com/go-steer/core-agent(/v[0-9]+)?/pkg/(approver|attachadapter|compose|instruction|mcp|runner|skills|telemetry|tools/vcs)(/|$)'
+  '^github\.com/go-steer/core-agent(/v[0-9]+)?/pkg/(approver|attachadapter|compose|instruction|mcp|memory/memorybank|memory/sqlfts|runner|skills|telemetry|tools/vcs)(/|$)'
   # VCS / go-git subsystem (pulled in by pkg/tools/vcs and pkg/compose, not by pkg/agent or pkg/tools).
   '^github\.com/go-steer/core-vcs(/|$)'
   '^github\.com/go-git/'
@@ -122,6 +122,8 @@ self_test() {
     "${mod_path}/pkg/attach"
     "${mod_path}/pkg/compose"
     "${mod_path}/pkg/mcp"
+    "${mod_path}/pkg/memory/memorybank"
+    "${mod_path}/pkg/memory/sqlfts"
     "${mod_path}/pkg/telemetry"
     "${mod_path}/pkg/tools/vcs"
     "github.com/go-steer/core-vcs/vcs"

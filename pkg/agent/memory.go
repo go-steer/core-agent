@@ -689,10 +689,18 @@ func OpenConfigMemoryRouter(
 	if err != nil {
 		return nil, MemorySettings{}, noop, err
 	}
+	preload := m.Preload
+	if preload == "" {
+		preload = MemoryPreloadOff
+	}
+	consolidate := m.Consolidate
+	if consolidate == "" {
+		consolidate = MemoryConsolidateOff
+	}
 	settings := MemorySettings{
-		Preload:          m.Preload,
+		Preload:          preload,
 		PreloadTopK:      m.TopK,
-		Consolidate:      m.Consolidate,
+		Consolidate:      consolidate,
 		ConsolidateMount: m.ConsolidateMount,
 		DisabledTools:    slices.Clone(cfg.Tools.Disable),
 	}

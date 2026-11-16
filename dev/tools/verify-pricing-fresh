@@ -31,9 +31,20 @@ set -euo pipefail
 cd "$(repo_root)"
 mod=github.com/go-steer/core-models
 version="$(go list -m -f '{{.Version}}' "$mod")"
-dir="$(go list -m -f '{{.Dir}}' "$mod")"
-if [[ -z "$version" || -z "$dir" ]]; then
+if [[ -z "$version" ]]; then
   echo "verify-pricing-fresh: cannot resolve $mod from go.mod" >&2
+  exit 2
+fi
+dir="$(go list -m -f '{{.Dir}}' "$mod")"
+if [[ -z "$dir" ]]; then
+  # go list -m does not download missing module archives; on a cold runner
+  # (or when actions/setup-go restores a .mod-only cache saved by `go mod
+  # tidy`), .Dir is empty until the module is downloaded.
+  go mod download "$mod"
+  dir="$(go list -m -f '{{.Dir}}' "$mod")"
+fi
+if [[ -z "$dir" ]]; then
+  echo "verify-pricing-fresh: cannot resolve $mod@$version directory from go.mod" >&2
   exit 2
 fi
 exec go run "$mod/dev/regen-builtin-pricing@$version" --check --out "$dir/pricing/builtin.go"

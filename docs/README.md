@@ -31,6 +31,8 @@ live in [`archive/`](archive/).
 
 ## Open (`proposed`) feature designs
 
+- [`subagent-roster-design.md`](subagent-roster-design.md) — **proposed**: opt-in builtin subagents (`extends: builtin:explore|plan|general`) resolved to plain `SubagentSpec`s at config load, measured on the self-dev T1 replay rig before the recipe adopts them ([#1116](https://github.com/go-steer/core-agent/issues/1116), [#952](https://github.com/go-steer/core-agent/issues/952))
+- [`subagent-coordination-design.md`](subagent-coordination-design.md) — **proposed**: deterministic fan-out with join (`spawn_agents`), non-serializing `wait`, configurable caps, parent → child steering (`send_message`, `list_agents`), reports routed to the spawner, and limits carried across the A2A hop ([#1220](https://github.com/go-steer/core-agent/issues/1220))
 - [`external-state-design.md`](external-state-design.md) — **proposed**: failover without a shared database: pluggable transcript / control / index / memory stores (SQL, Redis, Agent Engine Sessions + Memory Bank, Kubernetes Lease) and single-writer residency leases
 - [`memory-service-design.md`](memory-service-design.md) — **proposed**: stateless agent-specific (`agent`) and shared (`shared:<pool>`) long-term memory with multi-scope `Router` fan-out, Gemini Enterprise Agent Platform Memory Bank, and `--memory-ref` ([#1506](https://github.com/go-steer/core-agent/pull/1506))
 - [`bidirectional-mcp-design.md`](bidirectional-mcp-design.md) — **proposed**: `core-agent` exposing itself as an MCP server (agent-as-tool default; tool-palette opt-in)

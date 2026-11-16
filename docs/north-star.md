@@ -61,10 +61,10 @@ software engineering and cluster operations every day.
 ## Open strategic priorities (`v3.2+`)
 
 1. **Multi-tenant & parallel-subagent isolation.**
-   - Non-admin permission-mode ceiling (`attach.multi_session.max_mode`, [#1353](https://github.com/go-steer/core-agent/issues/1353))
+   - Non-admin permission-mode ceiling (`attach.multi_session.max_mode`, [#1355](https://github.com/go-steer/core-agent/issues/1355))
      and honest documentation of shared-cwd tenancy boundaries.
    - Per-subagent `git worktree` isolation for concurrent write-capable
-     background subagents ([#653](https://github.com/go-steer/core-agent/issues/653)).
+     background subagents ([#653](https://github.com/go-steer/core-agent/issues/653), shipped).
    - Optional OS-level workspace sandboxing (Seatbelt on macOS, Landlock/bwrap
      on Linux) for `bash` and MCP stdio children ([#651](https://github.com/go-steer/core-agent/issues/651)).
 
@@ -82,7 +82,13 @@ software engineering and cluster operations every day.
      behavioural oracles ([`selfdev-historical-replay-design.md`](selfdev-historical-replay-design.md),
      [#1116](https://github.com/go-steer/core-agent/issues/1116)).
 
-4. **Daily-driver CLI ergonomics & editor integration.**
+4. **Subagent roster & coordination.**
+   - Opt-in builtin subagents (`explore`, `plan`, `general`) for the self-development recipe and the daily-driver CLI
+     ([`subagent-roster-design.md`](subagent-roster-design.md)).
+   - Deterministic fan-out with join, parent → child steering, and limits that travel across the A2A hop
+     ([`subagent-coordination-design.md`](subagent-coordination-design.md)).
+
+5. **Daily-driver CLI ergonomics & editor integration.**
    - Per-project default sessions with `--resume` / `--continue` ([#1374](https://github.com/go-steer/core-agent/issues/1374)),
      `--output-format json` and clean piped stdout ([#1379](https://github.com/go-steer/core-agent/issues/1379)),
      and `--permission-mode` + grouped `--help` ([#1380](https://github.com/go-steer/core-agent/issues/1380)).

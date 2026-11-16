@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.2.0-rc.1]._
+### Changes by Kind
+
+#### Security
+
+- **Builds on Go 1.26.11, for GO-2026-6859.** A `net/http` server crash in go1.26.10 is reachable through the attach server; the `toolchain` line, Dockerfiles and release images move to go1.26.11, the `go 1.26.10` floor is unchanged. ([#1547](https://github.com/go-steer/core-agent/issues/1547))
 
 ## [3.2.0-rc.1] — 2026-11-06
 

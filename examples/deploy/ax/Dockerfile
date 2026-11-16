@@ -32,7 +32,7 @@
 # out of core-agent's go.mod.
 
 # Tracks go.mod's toolchain directive; kept in sync by dev/tools/verify-go-toolchain.
-ARG GO_VERSION=1.26.10
+ARG GO_VERSION=1.26.11
 # AX's go.mod needs a newer toolchain than core-agent's, hence separate stages.
 ARG AX_GO_VERSION=1.27.1
 

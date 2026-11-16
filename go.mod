@@ -2,6 +2,8 @@ module github.com/go-steer/core-agent/v3
 
 go 1.26.10
 
+toolchain go1.26.11
+
 require (
 	charm.land/bubbletea/v2 v2.0.6
 	charm.land/lipgloss/v2 v2.0.3

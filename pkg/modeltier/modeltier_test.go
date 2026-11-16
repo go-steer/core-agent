@@ -27,6 +27,8 @@ func TestClassify(t *testing.T) {
 	}{
 		// Anthropic Claude 5.x.
 		{"claude-fable-5", modeltier.TierFrontier},
+		{"claude-fable-5-2", modeltier.TierFrontier},
+		{"claude-mythos-5-2", modeltier.TierFrontier},
 		{"claude-opus-5", modeltier.TierFrontier},
 		{"claude-sonnet-5", modeltier.TierMid},
 		{"claude-sonnet-5-1m", modeltier.TierMid},
@@ -55,14 +57,18 @@ func TestClassify(t *testing.T) {
 		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
 		{"gemini-3-pro-preview", modeltier.TierFrontier},
-		{"gemini-4-argon", modeltier.TierFrontier},                  // priced, classified, NOT a default
-		{"gemini-4-argon-cyber-permissive", modeltier.TierFrontier}, // access-gated variant
-		{"gemini-3.8-flash", modeltier.TierFrontier},                // priced, not yet the default (#936)
-		{"gemini-3.8-flash-09-2026", modeltier.TierFrontier},        // dated snapshot
-		{"gemini-3.7-flash", modeltier.TierFrontier},                // taskclass frontier default
-		{"gemini-3.7-flash-08-2026", modeltier.TierFrontier},        // dated snapshot
-		{"gemini-3.6-flash", modeltier.TierFrontier},                // previous frontier default
-		{"gemini-3.6-flash-06-2026", modeltier.TierFrontier},        // dated snapshot
+		{"gemini-4-argon", modeltier.TierFrontier},                   // priced, classified, NOT a default
+		{"gemini-4-argon-cyber-permissive", modeltier.TierFrontier},  // access-gated variant
+		{"gemini-4-carbon", modeltier.TierFrontier},                  // priced (v0.15.3), NOT a default
+		{"gemini-4-carbon-cyber-permissive", modeltier.TierFrontier}, // access-gated variant
+		{"gemini-4-hydrogen", modeltier.TierFrontier},                // priced (v0.15.3), NOT a default
+		{"gemini-3.8-flash", modeltier.TierFrontier},                 // priced, not yet the default (#936)
+		{"gemini-3.8-flash-cyber", modeltier.TierFrontier},           // Vertex-only variant (v0.15.3)
+		{"gemini-3.8-flash-09-2026", modeltier.TierFrontier},         // dated snapshot
+		{"gemini-3.7-flash", modeltier.TierFrontier},                 // taskclass frontier default
+		{"gemini-3.7-flash-08-2026", modeltier.TierFrontier},         // dated snapshot
+		{"gemini-3.6-flash", modeltier.TierFrontier},                 // previous frontier default
+		{"gemini-3.6-flash-06-2026", modeltier.TierFrontier},         // dated snapshot
 		{"gemini-3.5-flash", modeltier.TierMid},
 		{"gemini-3.5-flash-05-2026", modeltier.TierMid}, // dated snapshot
 		{"gemini-3.1-flash", modeltier.TierSmall},

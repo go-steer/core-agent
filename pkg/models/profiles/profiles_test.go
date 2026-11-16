@@ -253,3 +253,123 @@ func TestVertexMaaS_InjectedGoogleAuthReachesTheRequest(t *testing.T) {
 		t.Errorf("Authorization = %v, want [Bearer %s]", gotAuth, agentenv.InjectedGooglePlaceholder)
 	}
 }
+
+// TestGeminiProfileHeadersReachRequest verifies that a Gemini-dialect
+// profile declaring custom headers (core-models v0.14.0, #82) sends
+// them on outbound Gemini requests through models.Resolve ->
+// coremodels.Open -> Resolved.HeaderTransport (#1547).
+// Not parallel: t.Setenv.
+func TestGeminiProfileHeadersReachRequest(t *testing.T) {
+	t.Setenv("TEST_GEMINI_PROFILE_KEY", "gem-secret")
+	t.Setenv("TEST_GEMINI_HEADER_VAL", "tenant-42")
+
+	var mu sync.Mutex
+	var gotTenant, gotKey string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotTenant = r.Header.Get("X-Tenant")
+		gotKey = r.Header.Get("x-goog-api-key")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}}`)
+	}))
+	defer ts.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Model.Provider = "corp-gemini"
+	cfg.Model.Name = "gemini-4-carbon"
+	cfg.Providers = []profile.Profile{{
+		Name:    "corp-gemini",
+		Extends: "gemini",
+		BaseURL: ts.URL,
+		Headers: map[string]string{
+			"X-Tenant": "${TEST_GEMINI_HEADER_VAL}",
+		},
+	}}
+	cfg.Providers[0].Auth.Kind = "api_key"
+	cfg.Providers[0].Auth.Env = "TEST_GEMINI_PROFILE_KEY"
+
+	p, err := models.Resolve(cfg)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	m, err := p.Model(context.Background(), cfg.Model.Name)
+	if err != nil {
+		t.Fatalf("Model: %v", err)
+	}
+	req := &model.LLMRequest{Contents: []*genai.Content{genai.NewContentFromText("ping", genai.RoleUser)}}
+	for _, err := range m.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent: %v", err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotTenant != "tenant-42" {
+		t.Errorf("X-Tenant header = %q, want %q", gotTenant, "tenant-42")
+	}
+	if gotKey != "gem-secret" {
+		t.Errorf("x-goog-api-key header = %q, want %q", gotKey, "gem-secret")
+	}
+}
+
+// TestVertexProfileHeadersReachRequest pins the Vertex-extended Gemini
+// profile path (auth.GoogleADC + BearerTransport stacked over
+// Resolved.HeaderTransport) under CORE_AGENT_GOOGLE_AUTH=injected (#1547).
+// Not parallel: t.Setenv.
+func TestVertexProfileHeadersReachRequest(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir()+"/missing.json")
+	t.Setenv(agentenv.EnvGoogleAuth, agentenv.GoogleAuthInjected)
+	t.Setenv("TEST_VERTEX_HEADER_VAL", "tenant-vertex-9")
+
+	var mu sync.Mutex
+	var gotTenant, gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotTenant = r.Header.Get("X-Tenant")
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}}`)
+	}))
+	defer ts.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Model.Provider = "corp-vertex"
+	cfg.Model.Name = "gemini-4-carbon"
+	cfg.Providers = []profile.Profile{{
+		Name:    "corp-vertex",
+		Extends: "vertex",
+		BaseURL: ts.URL,
+		Params:  map[string]string{"project": "test-proj", "location": "us-central1"},
+		Headers: map[string]string{
+			"X-Tenant": "${TEST_VERTEX_HEADER_VAL}",
+		},
+	}}
+
+	p, err := models.Resolve(cfg)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	m, err := p.Model(context.Background(), cfg.Model.Name)
+	if err != nil {
+		t.Fatalf("Model: %v", err)
+	}
+	req := &model.LLMRequest{Contents: []*genai.Content{genai.NewContentFromText("ping", genai.RoleUser)}}
+	for _, err := range m.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent: %v", err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotTenant != "tenant-vertex-9" {
+		t.Errorf("X-Tenant header = %q, want %q", gotTenant, "tenant-vertex-9")
+	}
+	wantAuth := "Bearer " + agentenv.InjectedGooglePlaceholder
+	if gotAuth != wantAuth {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, wantAuth)
+	}
+}

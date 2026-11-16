@@ -16,6 +16,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ### Changes by Kind
 
+#### Feature
+
+- **Bump `core-models` and `core-models/adkv2` to v0.15.3.** Adds Gemini 4 Carbon/Hydrogen, Gemini 3.8 Flash Cyber, and Claude 5.2 pricing, classifies the new Gemini 4 models as `frontier`, and verifies Gemini profile headers. ([#1547](https://github.com/go-steer/core-agent/issues/1547))
+
 #### Security
 
 - **Builds on Go 1.26.11, for GO-2026-6859.** A `net/http` server crash in go1.26.10 is reachable through the attach server; the `toolchain` line, Dockerfiles and release images move to go1.26.11, the `go 1.26.10` floor is unchanged. ([#1547](https://github.com/go-steer/core-agent/issues/1547))

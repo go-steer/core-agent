@@ -2,7 +2,7 @@
 
 Design doc for a v2.7 addition: a tiered model where a small set of highest-value cluster sensors ship pre-built (for latency + always-on semantics) and the long tail of specialized diagnostic tools is authored on-the-fly by the LLM and executed via [kode-gopher](https://github.com/gke-demos/kode-gopher) — its sandbox pod compiles the agent-authored Go against real GCP SDKs + `client-go` and returns structured JSON.
 
-**Status:** proposed (2026-07-10). Awaiting approval before implementation. v2.7 candidate. Tracking issue: [#200](https://github.com/go-steer/core-agent/issues/200).
+**Status:** superseded (2026-11-16). Tier 2 shipped out of tree as kode-gopher plus the `examples/kode-gopher` recipe (#1391); Tier 1 (`k8s-sensors`) was never started, and that edge distillation is now k8s-lookout's job. Tracking issue #200 is closed.
 
 ## Motivation
 

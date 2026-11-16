@@ -1,8 +1,11 @@
 # kube-agents scenarios: can the go-steer stack run them?
 
-**Status:** proposed — design, draft (2026-10-02). Not filed. Nothing here is built; this
-doc is the gap analysis and the proposal, so we can decide what to build
-before anyone builds it.
+**Status:** superseded (2026-11-16). The demo epic #1223 and its scenario issues
+(#1215–#1218) were closed in the 2026-11-16 backlog triage: shipmind (AX on Agent
+Substrate) became where core-agent is proven in production, and the recipe work moved
+to #1555 (refine, update and prune the Kubernetes/GKE recipes). The gap analysis below
+is kept as the reference for anyone who picks a scenario up later. Several of its gaps
+have since closed (`vcs_*` #1490, A2A #1396/#1407, durable write gate #1400).
 
 Evidence base: read-only passes over these trees on 2026-10-02. **Several
 local main checkouts are stale**, so the newest worktree was used and is

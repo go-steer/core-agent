@@ -38,8 +38,6 @@ live in [`archive/`](archive/).
 - [`bidirectional-mcp-design.md`](bidirectional-mcp-design.md) — **proposed**: `core-agent` exposing itself as an MCP server (agent-as-tool default; tool-palette opt-in)
 - [`mcp-oauth-design.md`](mcp-oauth-design.md) — **proposed**: MCP Streamable HTTP transport + OAuth 2.0 client authentication ([#190](https://github.com/go-steer/core-agent/issues/190))
 - [`mcp-credential-resolution-design.md`](mcp-credential-resolution-design.md) — **proposed**: per-MCP-server credential resolution (pluggable providers + Auth Manager)
-- [`tiered-tool-integration-design.md`](tiered-tool-integration-design.md) — **proposed**: tiered diagnostics (`k8s-sensors` + LLM-authored Go via `kode-gopher`, [#200](https://github.com/go-steer/core-agent/issues/200))
-- [`kube-agents-scenarios-design.md`](kube-agents-scenarios-design.md) — **proposed**: the six `kube-agents` demo scenarios checked against `core-agent` + `lookout`/`leeway` + `switchboard`
 - [`selfdev-historical-replay-design.md`](selfdev-historical-replay-design.md) — **proposed**: historical replay corpus of past fix/feature tasks scored against behavioural oracles ([#1116](https://github.com/go-steer/core-agent/issues/1116), [#1332](https://github.com/go-steer/core-agent/issues/1332))
 - [`transcript-archival-design.md`](transcript-archival-design.md) — **proposed**: attach-mode transcript archival and export
 - [`purser/docs/DESIGN.md`](https://github.com/go-steer/purser/blob/main/docs/DESIGN.md) — **proposed** (lives in [go-steer/purser](https://github.com/go-steer/purser)): extracting `pkg/auth` into a shared SPIFFE/mTLS/OIDC module
@@ -55,6 +53,7 @@ live in [`archive/`](archive/).
   - [`assessments/2026-08-12-tri-team-assessment.md`](assessments/2026-08-12-tri-team-assessment.md) — advocate/critic/arbitrator review of v2.8; seeded v2.9 and v3.0
   - [`assessments/2026-10-27-v3-good-bad-ugly.md`](assessments/2026-10-27-v3-good-bad-ugly.md) — five-lane post-GA review of v3.0.0; seeded v3.1 and v3.2
   - [`assessments/2026-10-27-innovations.md`](assessments/2026-10-27-innovations.md) — what `core-agent` does that peer harnesses don't document
+  - [`assessments/2026-11-16-issue-triage.md`](assessments/2026-11-16-issue-triage.md) — open-issue triage at v3.2.0-rc.1: closed 29, seeded v3.3, v3.4 and Backlog
 
 ## Archived design docs, plans & smoke records (`docs/archive/`)
 
@@ -147,9 +146,11 @@ live in [`archive/`](archive/).
 - [`archive/cogo-flip-readiness-audit.md`](archive/cogo-flip-readiness-audit.md) — **abandoned**: `go-steer/cogo` was not flipped (`north-star.md`)
 - [`archive/docsy-migration-notes.md`](archive/docsy-migration-notes.md) — **superseded**: site migrated from Hugo/Docsy to Astro Starlight
 - [`archive/embedded-tui-design.md`](archive/embedded-tui-design.md) — **superseded**: replaced by `archive/embedded-tui-design-v2.md`
+- [`archive/kube-agents-scenarios-design.md`](archive/kube-agents-scenarios-design.md) — **superseded**: demo epic #1223 closed; recipe work moved to [#1555](https://github.com/go-steer/core-agent/issues/1555)
 - [`archive/kube-agents-platform-fit.md`](archive/kube-agents-platform-fit.md) — **superseded**: replaced by `archive/hermes-replacement-design.md` and `archive/mast-fold-design.md`
 - [`archive/shared-memory-design.md`](archive/shared-memory-design.md) — **superseded**: replaced by `memory-service-design.md` ([#1506](https://github.com/go-steer/core-agent/pull/1506))
 - [`archive/subagents-plan.md`](archive/subagents-plan.md) — **superseded**: replaced by `archive/declarative-subagents-design.md` and `archive/background-subagents-design.md`
+- [`archive/tiered-tool-integration-design.md`](archive/tiered-tool-integration-design.md) — **superseded**: kode-gopher half shipped (#1391); `k8s-sensors` half moved to k8s-lookout ([#200](https://github.com/go-steer/core-agent/issues/200))
 
 ## Published site
 

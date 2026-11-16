@@ -33,20 +33,20 @@ docker pull ghcr.io/go-steer/core-agent-tui:@VERSION@    # remote TUI client onl
 
 ## Verify (Sigstore keyless)
 
-**Binaries** — the checksum file signs every archive transitively:
+**Binaries** — the checksum file signs every archive transitively. The signature is a Sigstore bundle (`checksums.txt.sigstore.json`), which needs cosign v3 or newer to verify:
 
 ```bash
 gh release download "@TAG@" --repo go-steer/core-agent \
-  --pattern checksums.txt --pattern 'checksums.txt.*'
+  --pattern checksums.txt --pattern checksums.txt.sigstore.json
 cosign verify-blob \
-  --signature checksums.txt.sig --certificate checksums.txt.pem \
+  --bundle checksums.txt.sigstore.json \
   --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 ```
 
-**Container images:**
+**Container images** (cosign v3 or newer). The signature is a Sigstore bundle attached to the image digest as an OCI referrer, beside the SLSA provenance below, so `cosign verify` lists both:
 
 ```bash
 cosign verify ghcr.io/go-steer/core-agent:@VERSION@ \

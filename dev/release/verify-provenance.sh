@@ -29,7 +29,7 @@
 #
 # ## Provenance is not the signature over again
 #
-# `checksums.txt.sig` answers *who signed this*: core-agent's release
+# `checksums.txt.sigstore.json` answers *who signed this*: core-agent's release
 # workflow, at this tag. The provenance answers *what built it* — the
 # source repository and commit, the workflow file and its ref, the runner
 # environment, the invocation. Those are different questions, and the

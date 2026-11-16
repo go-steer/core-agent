@@ -76,16 +76,21 @@ checksum:
 # SHA-256 from checksums.txt and compare, so one signature
 # transitively attests every archive. Same Sigstore keyless setup the
 # image pipeline uses (release-images.yml).
+#
+# The output is a Sigstore bundle (`checksums.txt.sigstore.json`):
+# signature, Fulcio certificate and Rekor inclusion proof in one file.
+# cosign v3 requires `--bundle` for sign-blob and no longer writes the
+# detached `.sig` + `.pem` pair; verifying the bundle needs cosign v3
+# as well (see dev/release/install-verify-footer.md.tmpl).
 signs:
   - cmd: cosign
     artifacts: checksum
     output: true
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.sigstore.json'
     args:
       - sign-blob
       - --yes
-      - --output-certificate=${certificate}
-      - --output-signature=${signature}
+      - --bundle=${signature}
       - ${artifact}
 
 snapshot:

@@ -43,8 +43,8 @@ Both trigger on `push: tags: ['v*.*.*']`.
    **Dry-running the release body requires the tag to already exist.** `compose-release-notes.sh TAG OUT` resolves `LAST_STABLE..$TAG` through git, so on a tag that does not exist yet it **exits 128 having written a full-size file and printed nothing** — the failing `git log` sits inside a `2>/dev/null` command substitution, so there is no error and the half-written output looks like a result. A "dry run" done before tagging therefore proves nothing, and in particular never exercises the 125,000-character shed. Create the tag locally first, compose, read the output, then `git tag -d` it and re-create it on the merge commit. A correct run prints `wrote release notes for … (N characters)` on stderr.
 4. **Bump `internal/version.Version`** to `v<next-minor>.0-dev` (e.g. `v2.4.0` release → main becomes `v2.5.0-dev`) so post-release builds report their next-target version. Commit + push. Enforced by [`dev/ci/presubmits/verify-version-fallback`](../dev/ci/presubmits/verify-version-fallback) — the next PR after a release will fail CI until this bump lands, so drift can't rot silently (this was retroactive after the bump was skipped for v2.5.0 + v2.6.0).
 5. **Verify both workflows went green** on the [Actions tab](https://github.com/go-steer/core-agent/actions):
-   - `Release` → produces 8 archives (`core-agent` + `core-agent-tui`, each in linux/darwin × amd64/arm64), `checksums.txt`, `checksums.txt.sig`, `checksums.txt.pem`. All attached to the GitHub Release.
-   - `Release images` → publishes `:X.Y.Z`, `:X.Y`, `:X`, `:latest` tags for each of the four images plus their cosign signatures.
+   - `Release` → produces 8 archives (`core-agent` + `core-agent-tui`, each in linux/darwin × amd64/arm64), `checksums.txt` and its Sigstore bundle `checksums.txt.sigstore.json`. All attached to the GitHub Release.
+   - `Release images` → publishes `:X.Y.Z`, `:X.Y`, `:X`, `:latest` tags for each of the three images plus their cosign signatures (Sigstore bundles attached to the digest as OCI referrers, beside the SLSA provenance from #1408; `cosign verify` lists both).
 6. **Sanity-check the GitHub Release page** — confirm the body shows the right CHANGELOG content, the assets list looks complete, and the "Latest" badge appears (non-prerelease tags only).
 
 ## Republish (rerun the workflows against an existing tag)
@@ -109,16 +109,17 @@ If the publish-time check reports stdlib advisories, bump `toolchain` in `go.mod
 ## Verify a release locally
 
 ```bash
-# Binaries — checksum file signs every archive transitively.
+# Binaries — checksum file signs every archive transitively. Needs
+# cosign v3+: the signature is a Sigstore bundle, not a .sig/.pem pair.
 gh release download vX.Y.Z --repo go-steer/core-agent --pattern 'checksums.txt*'
 cosign verify-blob \
-  --signature checksums.txt.sig --certificate checksums.txt.pem \
+  --bundle checksums.txt.sigstore.json \
   --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 
-# Container images.
+# Container images (cosign v3+; signatures are OCI referrers).
 cosign verify ghcr.io/go-steer/core-agent:X.Y.Z \
   --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com

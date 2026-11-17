@@ -1886,6 +1886,7 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 			cont := yield(ev, err)
 			inYield = false
 			if !cont {
+				cancel()
 				return
 			}
 		}

@@ -30,6 +30,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 - **Document session DB growth, manual pruning/`VACUUM`, and Agent Engine TTL (`concepts/sessions.md`).** Explains SQL eventlog growth, `sessions export`/`delete`, `DELETE /sessions/{sid}`, SQLite `VACUUM`, and `session_ttl` expiry. ([#889](https://github.com/go-steer/core-agent/issues/889))
 - **Fix `README.md` `pkg/` stability label (`v1` → `v3`).** Replaces the stale `(v1 stability)` comment in the project-layout tree with `(v3 stability; see docs/compatibility-policy.md)`. ([#956](https://github.com/go-steer/core-agent/issues/956))
 
+#### Other (Cleanup)
+
+- **Fix synchronous subagent alert race and CI test flakes (`pkg/agent/background`, `pkg/agent`, `pkg/telemetry`).** Reclaims terminal alerts when a subagent finishes before `awaitResult` claims it and stabilizes port/lock tests. ([#1551](https://github.com/go-steer/core-agent/issues/1551))
+
 ## [3.2.0-rc.3] — 2026-11-17
 
 ### Changes by Kind

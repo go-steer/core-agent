@@ -1046,6 +1046,36 @@ func (m *Manager) pushAlert(a Alert) {
 	}
 }
 
+// reclaimTerminalAlert removes any already-enqueued terminal alert
+// ("completed" | "failed" | "stopped") for name from m.alerts while
+// preserving intermediate "alert" messages and alerts from other
+// subagents in FIFO order (#1551).
+func (m *Manager) reclaimTerminalAlert(name string) {
+	if m == nil || name == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var kept []Alert
+	for {
+		select {
+		case a := <-m.alerts:
+			if a.From == name && a.Kind != "" && a.Kind != "alert" {
+				continue
+			}
+			kept = append(kept, a)
+		default:
+			for _, k := range kept {
+				select {
+				case m.alerts <- k:
+				default:
+				}
+			}
+			return
+		}
+	}
+}
+
 // wakeParent fires the parent agent's wake signal so a driver parked
 // between turns runs one now, which is what gives PrependPendingAlerts
 // something to be called from.

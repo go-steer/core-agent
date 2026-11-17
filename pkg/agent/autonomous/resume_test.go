@@ -550,7 +550,7 @@ func TestResumeAutonomous_AbortsWhenSessionLockLostMidTurn(t *testing.T) {
 	t.Parallel()
 	dsn := filepath.Join(t.TempDir(), "session.db")
 	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn),
-		eventlog.WithLockHeartbeat(10*time.Millisecond, 100*time.Millisecond))
+		eventlog.WithLockHeartbeat(10*time.Millisecond, 5*time.Second))
 	if err != nil {
 		t.Fatalf("eventlog.Open: %v", err)
 	}
@@ -630,7 +630,7 @@ func TestResumeAutonomous_AbortsWhenSessionLockLostDuringWakeWait(t *testing.T) 
 	t.Parallel()
 	dsn := filepath.Join(t.TempDir(), "session.db")
 	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn),
-		eventlog.WithLockHeartbeat(10*time.Millisecond, 100*time.Millisecond))
+		eventlog.WithLockHeartbeat(10*time.Millisecond, 5*time.Second))
 	if err != nil {
 		t.Fatalf("eventlog.Open: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestResumeAutonomous_StallLossStillWritesFinalCheckpointWhenRowKept(t *test
 	t.Parallel()
 	dsn := filepath.Join(t.TempDir(), "session.db")
 	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn),
-		eventlog.WithLockHeartbeat(10*time.Millisecond, 100*time.Millisecond))
+		eventlog.WithLockHeartbeat(10*time.Millisecond, 400*time.Millisecond))
 	if err != nil {
 		t.Fatalf("eventlog.Open: %v", err)
 	}

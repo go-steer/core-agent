@@ -187,7 +187,25 @@ func TestSetupMetrics_Prometheus_BindFailureSurfaces(t *testing.T) {
 // cfg.PrometheusAddr (from config.json). Matches Unix
 // explicit-over-implicit convention.
 func TestSetupMetrics_OptsAddrWinsOverCfg(t *testing.T) {
-	cfgAddr := freeAddr(t)
+	// Hold a TCP listener open on cfgAddr (closing any accepted connection
+	// immediately) so no parallel test can steal the ephemeral port before the
+	// post-SetupMetrics check, and so SetupMetrics would fail with EADDRINUSE
+	// if it ever bound cfg.PrometheusAddr instead of opts.PrometheusAddr (#1551).
+	cfgLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen cfgAddr: %v", err)
+	}
+	t.Cleanup(func() { _ = cfgLn.Close() })
+	go func() {
+		for {
+			conn, aerr := cfgLn.Accept()
+			if aerr != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	cfgAddr := cfgLn.Addr().String()
 	optsAddr := freeAddr(t)
 	shutdown, err := SetupMetrics(
 		context.Background(),

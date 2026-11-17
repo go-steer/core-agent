@@ -830,3 +830,91 @@ func TestAuto_ApproverReasonIsBoundedAtTheSource(t *testing.T) {
 		t.Errorf("reason was not capped on a rune boundary: %d bytes, %q…", len(got), got[:40])
 	}
 }
+
+func TestAuto_PathPrefixEligiblePatternRejectsTraversalAndSymlink(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	toolsDir := filepath.Join(root, "dev", "tools")
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		t.Fatalf("mkdir dev/tools: %v", err)
+	}
+	outsideFile := filepath.Join(root, "outside.sh")
+	if err := os.WriteFile(outsideFile, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write outside.sh: %v", err)
+	}
+	insideFile := filepath.Join(toolsDir, "x.sh")
+	if err := os.WriteFile(insideFile, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write x.sh: %v", err)
+	}
+	escapingLink := filepath.Join(toolsDir, "escape.sh")
+	if err := os.Symlink(outsideFile, escapingLink); err != nil {
+		t.Fatalf("symlink escape.sh: %v", err)
+	}
+
+	scope, err := NewPathScope(root, "", nil)
+	if err != nil {
+		t.Fatalf("NewPathScope: %v", err)
+	}
+	eligible := mustPolicy(t, []string{"bash:dev/tools/*", "bash:go -C /workspace/issues/*"}, nil)
+
+	// 1. Inside-prefix script is eligible and reaches the approver.
+	a := &stubApprover{verdict: allowVerdict}
+	p := &fakePrompter{decision: DecisionAllowOnce}
+	g := autoGate(t, a, p, func(o *Options) {
+		o.Scope = scope
+		o.AutoEligible = eligible
+	})
+	ctx, _ := taskCtx()
+	if err := bashCall(ctx, g, "dev/tools/x.sh", json.RawMessage(`{"command":"dev/tools/x.sh"}`)); err != nil {
+		t.Fatalf("dev/tools/x.sh: %v", err)
+	}
+	if a.n() != 1 || len(p.calls) != 0 {
+		t.Errorf("dev/tools/x.sh: approver=%d prompter=%d, want 1 and 0", a.n(), len(p.calls))
+	}
+
+	// 2. Traversal (`dev/tools/../../x.sh`, `go -C /workspace/issues/../../etc test`) and
+	//    symlink escaping `dev/tools/` must NOT be eligible and must escalate to a person.
+	for _, cmd := range []string{
+		"dev/tools/../../x.sh",
+		"dev/tools/escape.sh",
+		"go -C /workspace/issues/../../etc test ./...",
+	} {
+		a2 := &stubApprover{verdict: allowVerdict}
+		p2 := &fakePrompter{decision: DecisionAllowOnce}
+		g2 := autoGate(t, a2, p2, func(o *Options) {
+			o.Scope = scope
+			o.AutoEligible = eligible
+		})
+		ctx2, _ := taskCtx()
+		rawArgs, _ := json.Marshal(map[string]string{"command": cmd})
+		if err := bashCall(ctx2, g2, cmd, rawArgs); err != nil {
+			t.Fatalf("%s: %v", cmd, err)
+		}
+		if a2.n() != 0 || len(p2.calls) != 1 {
+			t.Errorf("%s: approver=%d prompter=%d, want 0 and 1 (must escalate without asking approver)", cmd, a2.n(), len(p2.calls))
+		}
+	}
+
+	// 3. Plain permissions.allow with the same path-prefix rule also rejects
+	//    `..` traversal and escaping symlinks, and handles `./*` and file paths
+	//    containing spaces before `/..` (#1274 review).
+	allowPolicy := mustPolicy(t, []string{"bash:dev/tools/*", "bash:./*", "write_file:dev/tools/*"}, nil)
+	allowGate := New(Options{
+		Mode:   ModeAllow,
+		Scope:  scope,
+		Policy: allowPolicy,
+	})
+	for _, cmd := range []string{"dev/tools/x.sh", "./dev/tools/x.sh"} {
+		if err := allowGate.CheckBash(WithWorkDir(context.Background(), root), cmd); err != nil {
+			t.Errorf("ModeAllow %s: unexpected error %v", cmd, err)
+		}
+	}
+	for _, cmd := range []string{"dev/tools/../../x.sh", "dev/tools/escape.sh", "./../outside.sh"} {
+		if err := allowGate.CheckBash(WithWorkDir(context.Background(), root), cmd); err == nil {
+			t.Errorf("ModeAllow %s: expected denial when escaping path prefix, got nil", cmd)
+		}
+	}
+	if allowPolicy.Match("write_file", "dev/tools/sub /../../outside.sh") == OutcomeAllow {
+		t.Error("write_file:dev/tools/* matched path with space before /.. traversal")
+	}
+}

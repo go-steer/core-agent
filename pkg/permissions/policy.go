@@ -15,6 +15,7 @@
 package permissions
 
 import (
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -105,12 +106,16 @@ const (
 // for plain file reads. Deny rules stay maximally broad on purpose:
 // weakening a deny would be a security regression.
 func (p *Policy) Match(tool, key string) Outcome {
+	return p.matchInDir(tool, key, "")
+}
+
+func (p *Policy) matchInDir(tool, key, baseDir string) Outcome {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if matchAny(p.deny, tool, key) {
 		return OutcomeDeny
 	}
-	if matchAnyAllow(p.allow, tool, key) {
+	if matchAnyAllowInDir(p.allow, tool, key, baseDir) {
 		return OutcomeAllow
 	}
 	return OutcomeUnmatched
@@ -232,7 +237,7 @@ func matchAny(rules []rule, tool, key string) bool {
 // The safecmd result is computed at most once per Match call and only
 // when an open-prefix bash rule actually matches, so the parser cost
 // is not paid on the hot path for non-bash tools.
-func matchAnyAllow(rules []rule, tool, key string) bool {
+func matchAnyAllowInDir(rules []rule, tool, key, baseDir string) bool {
 	safeComputed, safe := false, false
 	for _, r := range rules {
 		if r.tool != "" && r.tool != tool {
@@ -241,7 +246,7 @@ func matchAnyAllow(rules []rule, tool, key string) bool {
 		if r.pat == key && !hasGlobEscape(r.pat) {
 			return true // exact match: unchanged semantics
 		}
-		if !globMatch(r.pat, key) {
+		if !globMatchAllow(r.pat, key, baseDir, tool == "bash") {
 			continue
 		}
 		if tool != "bash" || !isOpenPrefixPattern(r.pat) {
@@ -332,4 +337,89 @@ func globMatch(pattern, s string) bool {
 		return true
 	}
 	return false
+}
+
+// globMatchAllow is globMatch for allow and auto-eligible rules (#1274).
+// When an open-prefix pattern ends in a path prefix (containing '/'),
+// the matched path token must stay inside that prefix both after
+// lexical cleaning (path.Clean, with no ".." segments) and after
+// symlink resolution (ResolvePath).
+func globMatchAllow(pattern, s, baseDir string, isBash bool) bool {
+	if isOpenPrefixPattern(pattern) {
+		return allowOpenPrefixMatches(pattern[:len(pattern)-1], s, baseDir, isBash)
+	}
+	if ok, _ := filepath.Match(pattern, s); ok {
+		return true
+	}
+	return false
+}
+
+func allowOpenPrefixMatches(prefix, s, baseDir string, isBash bool) bool {
+	if !strings.HasPrefix(s, prefix) {
+		return false
+	}
+	lastSpace := -1
+	if isBash {
+		lastSpace = strings.LastIndexAny(prefix, " \t")
+	}
+	pathPrefix := prefix[lastSpace+1:]
+	if !strings.Contains(pathPrefix, "/") {
+		return true
+	}
+	candToken := s[lastSpace+1:]
+	if isBash {
+		if sp := strings.IndexAny(candToken, " \t"); sp >= 0 {
+			candToken = candToken[:sp]
+		}
+	}
+	if strings.ContainsAny(candToken, "'\"\\") || slices.Contains(strings.Split(candToken, "/"), "..") {
+		return false
+	}
+	return lexicalAndResolvedPathStayInside(pathPrefix, candToken, baseDir)
+}
+
+func lexicalAndResolvedPathStayInside(pathPrefix, candToken, baseDir string) bool {
+	cleanPrefix := path.Clean(pathPrefix)
+	cleanCand := path.Clean(candToken)
+	rootDir := cleanPrefix
+	if strings.HasSuffix(pathPrefix, "/") {
+		if cleanPrefix == "/" {
+			if !strings.HasPrefix(cleanCand, "/") {
+				return false
+			}
+		} else if cleanPrefix != "." && cleanCand != cleanPrefix && !strings.HasPrefix(cleanCand, cleanPrefix+"/") {
+			return false
+		}
+	} else {
+		if !strings.HasPrefix(cleanCand, cleanPrefix) {
+			return false
+		}
+		rootDir = path.Dir(cleanPrefix)
+		if rootDir != "." && cleanCand != rootDir && !strings.HasPrefix(cleanCand, rootDir+"/") {
+			return false
+		}
+	}
+	return resolvedPathStaysInside(rootDir, candToken, baseDir)
+}
+
+func resolvedPathStaysInside(rootDir, candToken, baseDir string) bool {
+	rootPath := filepath.FromSlash(rootDir)
+	candPath := filepath.FromSlash(candToken)
+	if baseDir != "" {
+		if !filepath.IsAbs(rootPath) {
+			rootPath = filepath.Join(baseDir, rootPath)
+		}
+		if !filepath.IsAbs(candPath) {
+			candPath = filepath.Join(baseDir, candPath)
+		}
+	}
+	resolvedRoot, err := ResolvePath(rootPath)
+	if err != nil {
+		return false
+	}
+	resolvedCand, err := ResolvePath(candPath)
+	if err != nil {
+		return false
+	}
+	return isInside(resolvedCand, resolvedRoot)
 }

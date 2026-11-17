@@ -25,16 +25,16 @@ Connect the SPA's first-run modal to `http://localhost:7777` with the bearer tok
 
 ## Where the assets come from
 
-The UI assets ship inside the `core-agent` binary via `//go:embed`. The build pipeline (`dev/tools/fetch-mast-web`) downloads a pinned mast-web release tarball and extracts it into `internal/webui/dist/` before `go build`. The pin lives in the top-level `.mast-web-version` file:
+Published release archives and container images embed the pinned [mast-web](https://github.com/go-steer/mast-web) release inside the `core-agent` binary via `//go:embed`. Both `.goreleaser.yml` and `.github/workflows/release-images.yml` run `dev/tools/fetch-mast-web` before `go build`, downloading the release tarball and verifying its SHA-256 against the sidecar before extracting into `internal/webui/dist/`. The pin lives in the top-level `.mast-web-version` file:
 
 ```
 # .mast-web-version
-version=v0.1.0
+version=v0.7.0
 ```
 
 Bumping mast-web is a one-line PR + rebuild.
 
-If the embedded bundle is empty (no `fetch-mast-web` was run), `core-agent --ui` refuses to start with a clear error pointing at the fetch step. The fetch script tolerates a blank version pin (logs a skip; useful in CI when the agent build doesn't need the UI).
+When building from a fresh git checkout (`go build ./cmd/core-agent` or `go install`), `internal/webui/dist/` contains only the `.gitkeep` placeholder because the compiled SPA assets are not tracked in git. Run `./dev/tools/fetch-mast-web` before `go build` to populate `internal/webui/dist/`, or pass `--ui-dir <path>` to serve from a local checkout. If the embedded bundle is empty, `core-agent --ui` refuses to start with a clear error pointing at `dev/tools/fetch-mast-web` and `--ui-dir`.
 
 ## `--ui-dir` for local development
 

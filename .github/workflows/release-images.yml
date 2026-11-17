@@ -110,6 +110,10 @@ jobs:
       - uses: ./.github/actions/go-toolchain
         id: go-version
 
+      - name: Fetch embedded mast-web assets
+        if: matrix.variant == 'core-agent'
+        run: ./dev/tools/fetch-mast-web
+
       # QEMU enables building linux/arm64 images on the linux/amd64
       # runner. Without this, buildx --platform fails for non-native
       # architectures.

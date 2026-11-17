@@ -17,6 +17,7 @@ project_name: core-agent
 before:
   hooks:
     - go mod tidy
+    - ./dev/tools/fetch-mast-web
 
 builds:
   - id: core-agent

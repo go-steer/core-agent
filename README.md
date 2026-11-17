@@ -197,7 +197,7 @@ The site is built with [Astro](https://astro.build) and [Starlight](https://star
 
 ```
 core-agent/
-├── pkg/                    # public library surface (v1 stability)
+├── pkg/                    # public library surface (v3 stability; see docs/compatibility-policy.md)
 │   ├── agent/              # ADK llmagent + runner wrapper; Option pattern
 │   ├── attach/             # HTTP + SSE + auth + multi-session daemon
 │   ├── config/             # .agents/config.json schema + discovery

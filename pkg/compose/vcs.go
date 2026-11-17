@@ -24,8 +24,8 @@ import (
 
 	"google.golang.org/adk/v2/session"
 	adktool "google.golang.org/adk/v2/tool"
-	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/eventlog"
 	"github.com/go-steer/core-agent/v3/pkg/permissions"
@@ -109,9 +109,16 @@ func FormatVCSStartupLine(cfg *config.Config) string {
 		prefix)
 }
 
-// VCSEventSink returns a vcs.EventSink that appends typed vcs.published and
-// vcs.proposed audit events to the active session in the durable eventlog when
-// getHandle returns a non-nil *eventlog.Handle (#1490).
+// VCSEventSink returns a vcs.EventSink that records typed vcs.published and
+// vcs.proposed audit events on the active session in the durable eventlog when
+// getHandle returns a non-nil *eventlog.Handle (#1490, #1571).
+//
+// Events emitted from inside an in-flight (*agent.Agent).Run or synchronous
+// subagent turn are queued via agent.EnqueueOrAppendSessionEvent so an inline
+// AppendEvent cannot advance the database session's update_time behind ADK's
+// Runner and trip its stale-session optimistic-concurrency check. Rows are
+// content-less (payload in CustomMetadata) so ADK's contents processor never
+// injects synthetic "[system] said: ..." turns into model history.
 func VCSEventSink(getHandle func() *eventlog.Handle) vcs.EventSink {
 	return func(ctx context.Context, ev vcs.Event) {
 		if getHandle == nil {
@@ -123,7 +130,7 @@ func VCSEventSink(getHandle func() *eventlog.Handle) vcs.EventSink {
 		}
 		appName := ev.AppName
 		if appName == "" {
-			appName = "core-agent"
+			appName = agent.DefaultAppName
 		}
 		userID := ev.UserID
 		if userID == "" {
@@ -136,27 +143,17 @@ func VCSEventSink(getHandle func() *eventlog.Handle) vcs.EventSink {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		getResp, err := h.Service.Get(ctx, &session.GetRequest{
-			AppName:         appName,
-			UserID:          userID,
-			SessionID:       sessionID,
-			NumRecentEvents: 1,
-		})
-		if err != nil || getResp == nil || getResp.Session == nil {
-			return
-		}
-		var text string
+		var summary string
 		switch ev.Kind {
 		case vcs.EventKindPublished:
-			text = fmt.Sprintf("vcs.published %s/%s branch=%s revision=%s", ev.Forge, ev.Repository, ev.Branch, ev.Revision)
+			summary = fmt.Sprintf("vcs.published %s/%s branch=%s revision=%s", ev.Forge, ev.Repository, ev.Branch, ev.Revision)
 		case vcs.EventKindProposed:
-			text = fmt.Sprintf("vcs.proposed %s/%s #%d %s", ev.Forge, ev.Repository, ev.Number, ev.URL)
+			summary = fmt.Sprintf("vcs.proposed %s/%s #%d %s", ev.Forge, ev.Repository, ev.Number, ev.URL)
 		default:
-			text = fmt.Sprintf("%s %s/%s", ev.Kind, ev.Forge, ev.Repository)
+			summary = fmt.Sprintf("%s %s/%s", ev.Kind, ev.Forge, ev.Repository)
 		}
 		adkEv := session.NewEvent(ctx, "vcs")
 		adkEv.Author = "system"
-		adkEv.Content = genai.NewContentFromText(text, genai.RoleUser)
 		adkEv.CustomMetadata = map[string]any{
 			"core_agent_event_kind": ev.Kind,
 			"vcs_event": map[string]any{
@@ -167,8 +164,9 @@ func VCSEventSink(getHandle func() *eventlog.Handle) vcs.EventSink {
 				"revision":   ev.Revision,
 				"number":     ev.Number,
 				"url":        ev.URL,
+				"summary":    summary,
 			},
 		}
-		_ = h.Service.AppendEvent(ctx, getResp.Session, adkEv)
+		_ = agent.EnqueueOrAppendSessionEvent(ctx, h.Service, appName, userID, sessionID, adkEv)
 	}
 }

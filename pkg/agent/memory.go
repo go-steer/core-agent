@@ -519,9 +519,7 @@ func appendSessionAudit(ctx context.Context, svc session.Service, appName, userI
 	if resp == nil || resp.Session == nil {
 		return session.ErrNotFound
 	}
-	if last := resp.Session.LastUpdateTime(); !last.IsZero() && ev.Timestamp.Before(last) {
-		ev.Timestamp = last
-	}
+	advanceEventTimestampAfter(ev, resp.Session.LastUpdateTime())
 	return svc.AppendEvent(ctx, resp.Session, ev)
 }
 

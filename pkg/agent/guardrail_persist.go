@@ -72,6 +72,7 @@ import (
 const maxOutOfBandEventAttempts = 3
 
 type queuedOutOfBandEvent struct {
+	ctx      context.Context
 	ev       *session.Event
 	attempts int
 }
@@ -91,11 +92,18 @@ type queuedOutOfBandEvent struct {
 // is "append a row without racing the runner's session handle", and the
 // guardrail rows were only its first callers.
 func (a *Agent) queueOutOfBandEvent(ev *session.Event) {
+	a.queueOutOfBandEventWithContext(context.Background(), ev)
+}
+
+func (a *Agent) queueOutOfBandEventWithContext(ctx context.Context, ev *session.Event) {
 	if a == nil || ev == nil || a.eventLog == nil {
 		return
 	}
 	a.mu.Lock()
-	a.pendingOutOfBandEvents = append(a.pendingOutOfBandEvents, queuedOutOfBandEvent{ev: ev})
+	a.pendingOutOfBandEvents = append(a.pendingOutOfBandEvents, queuedOutOfBandEvent{
+		ctx: detachWriteContext(ctx),
+		ev:  ev,
+	})
 	a.mu.Unlock()
 	if !a.turnInFlight() {
 		a.drainOutOfBandEvents()
@@ -112,17 +120,22 @@ func (a *Agent) queueOutOfBandEvent(ev *session.Event) {
 // maxOutOfBandEventAttempts times is logged with slog.Error and dropped
 // so later guardrail and audit rows still drain (#1438).
 //
-// Uses context.Background rather than a turn context: the post-turn
-// cleanup runs with runCtx already cancelled, and a reset arrives on an
-// HTTP request context whose client may hang up before the write lands.
-// A row this one is written FOR must not be droppable by the caller it
-// records.
+// Detaches cancellation (context.Background, or context.WithoutCancel
+// when queued with caller/entry metadata via EnqueueOrAppendSessionEvent):
+// the post-turn cleanup runs with runCtx already cancelled, and a reset
+// arrives on an HTTP request context whose client may hang up before the
+// write lands. A row this one is written FOR must not be droppable by the
+// caller it records.
 //
 // Serialized by outOfBandDrainMu across the take AND the writes: with
 // only the take under a.mu, two concurrent drains could each take a
 // batch and append them in the reverse of the order they were queued.
 func (a *Agent) drainOutOfBandEvents() {
-	if a == nil || a.eventLog == nil || a.eventLog.Service == nil {
+	if a == nil {
+		return
+	}
+	a.drainServiceEvents()
+	if a.eventLog == nil || a.eventLog.Service == nil {
 		return
 	}
 	a.outOfBandDrainMu.Lock()
@@ -142,10 +155,8 @@ func (a *Agent) drainOutOfBandEvents() {
 		return
 	}
 	for i := range pending {
-		if pending[i].ev != nil && !sess.LastUpdateTime().IsZero() && pending[i].ev.Timestamp.Before(sess.LastUpdateTime()) {
-			pending[i].ev.Timestamp = sess.LastUpdateTime()
-		}
-		err := a.eventLog.Service.AppendEvent(ctx, sess, pending[i].ev)
+		advanceEventTimestampAfter(pending[i].ev, sess.LastUpdateTime())
+		err := a.eventLog.Service.AppendEvent(detachWriteContext(pending[i].ctx), sess, pending[i].ev)
 		if err == nil || isDuplicateADKEventError(err) {
 			continue
 		}

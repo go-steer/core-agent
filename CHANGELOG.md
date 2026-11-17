@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.2.0-rc.2]._
+### Changes by Kind
+
+#### Bug or Regression
+
+- **Defer `VCSEventSink` audit writes past in-flight turns (`pkg/compose`, `pkg/agent`).** Queues `vcs.published`/`vcs.proposed` events until ADK `Runner` unwinds (fixing DB stale-session errors) and omits `Content` from model history. ([#1571](https://github.com/go-steer/core-agent/issues/1571))
 
 ## [3.2.0-rc.2] — 2026-11-16
 

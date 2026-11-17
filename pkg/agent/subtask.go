@@ -416,15 +416,8 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		ctx = models.WithoutPromptCache(ctx)
 	}
 
-	// Wall-clock budget via context; turn budget tracked in the
-	// loop below since ADK's runner doesn't expose a turn cap.
-	subCtx, cancel := context.WithTimeout(ctx, maxWallclock)
-	defer cancel()
-	// The parent's served calls say nothing about this subtask's own
-	// instruction and tools, so it gets a record of its own, marked
-	// from the loop below (#1247; prior_success.go).
-	served := models.NewPriorSuccess()
-	subCtx = models.WithPriorSuccess(subCtx, served)
+	subCtx, served, finishSubtask := prepareSubtaskContext(ctx, maxWallclock, branch, a.appName, a.userID, subSessionID)
+	defer finishSubtask()
 
 	msg := genai.NewContentFromText(spec.UserMessage, genai.RoleUser)
 	start := time.Now()

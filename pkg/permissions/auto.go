@@ -255,7 +255,7 @@ func (g *Gate) approverIneligible(ctx context.Context, req PromptRequest) (strin
 	if !hasArgs(req.Args) {
 		return "the gate does not hold this call's full arguments", nil
 	}
-	if g.autoEligible == nil || g.autoEligible.Match(req.ToolName, req.Detail) != OutcomeAllow {
+	if g.autoEligible == nil || g.autoEligible.matchInDir(req.ToolName, req.Detail, g.effectiveWorkDir(ctx)) != OutcomeAllow {
 		if req.ToolName == "bash" {
 			// The shapes a prefix pattern never matches whatever the list
 			// holds (safecmd.go) get their own reasons, because they are

@@ -1094,15 +1094,33 @@ func (g *Gate) runtimePolicy() *Policy {
 	return g.policy
 }
 
+func (g *Gate) effectiveWorkDir(ctx context.Context) string {
+	if wd := WorkDirFromContext(ctx); wd != "" {
+		return wd
+	}
+	if g != nil && g.scope != nil && len(g.scope.rwRoots) > 0 {
+		return g.scope.rwRoots[0]
+	}
+	return ""
+}
+
 // matchPolicy is Policy.Match over the shared policy and this
 // session's own patterns together. A deny in either wins, so a
 // session-level deny narrows a shared allow; then an allow in either.
 func (g *Gate) matchPolicy(tool, key string) Outcome {
-	shared := g.policy.Match(tool, key)
+	return g.matchPolicyInDir(tool, key, "")
+}
+
+func (g *Gate) matchPolicyInCtx(ctx context.Context, tool, key string) Outcome {
+	return g.matchPolicyInDir(tool, key, g.effectiveWorkDir(ctx))
+}
+
+func (g *Gate) matchPolicyInDir(tool, key, baseDir string) Outcome {
+	shared := g.policy.matchInDir(tool, key, baseDir)
 	if g.sessionPolicy == nil || shared == OutcomeDeny {
 		return shared
 	}
-	switch g.sessionPolicy.Match(tool, key) {
+	switch g.sessionPolicy.matchInDir(tool, key, baseDir) {
 	case OutcomeDeny:
 		return OutcomeDeny
 	case OutcomeAllow:
@@ -1551,7 +1569,7 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 		return err
 	}
 	preAuth := !readOnly && g.consumeMutationAuth(ctx, false)
-	switch g.matchPolicy(toolName, key) {
+	switch g.matchPolicyInCtx(ctx, toolName, key) {
 	case OutcomeDeny:
 		return fmt.Errorf("%s denied by config policy: %q", toolName, key)
 	case OutcomeAllow:

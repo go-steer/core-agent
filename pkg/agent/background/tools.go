@@ -178,10 +178,11 @@ func spawnResult(h *Handle, fallbackName string, err error) (spawnAgentResult, e
 // that gives up (timeout or cancellation) releases the claim so the alert is
 // pushed as it would be for a fire-and-continue spawn.
 func (m *Manager) awaitResult(ctx context.Context, h *Handle) spawnAgentResult {
-	// Claim before blocking. A false return means the subagent was already
-	// terminal — its alert is already in flight and can't be suppressed, so
-	// the result is delivered inline AND as a report. That window is the
-	// microseconds between Spawn returning a handle and this call.
+	// Claim before blocking. A false return means the subagent finished in the
+	// microseconds between Spawn returning the handle and this call; once
+	// <-h.Done() has fired (after pushAlert), reclaim any terminal alert it
+	// already pushed into m.alerts so a synchronous waiter still delivers the
+	// result once (#1551).
 	claimed := h.claimSync()
 	var timeout <-chan time.Time
 	if m.syncWaitTimeout > 0 {
@@ -191,6 +192,9 @@ func (m *Manager) awaitResult(ctx context.Context, h *Handle) spawnAgentResult {
 	}
 	select {
 	case <-h.Done():
+		if !claimed {
+			m.reclaimTerminalAlert(h.Name)
+		}
 		return completionResult(h)
 	case <-timeout:
 		if res, ok := m.abandonWait(h, claimed); !ok {
@@ -236,6 +240,9 @@ func (m *Manager) abandonWait(h *Handle, claimed bool) (spawnAgentResult, bool) 
 	// promise nothing keeps.
 	select {
 	case <-h.Done():
+		if !claimed {
+			m.reclaimTerminalAlert(h.Name)
+		}
 		return completionResult(h), false
 	default:
 	}

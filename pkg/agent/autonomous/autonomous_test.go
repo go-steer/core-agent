@@ -60,8 +60,12 @@ type stubResp struct {
 func (l *stubLLM) Name() string { return "stub" }
 
 func (l *stubLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
-	atomic.AddInt32(&l.calls, 1)
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if err := ctx.Err(); err != nil {
+			yield(nil, err)
+			return
+		}
+		atomic.AddInt32(&l.calls, 1)
 		l.mu.Lock()
 		if l.cursor >= len(l.scenarios) {
 			n := l.cursor

@@ -779,10 +779,14 @@ func TestSpawnAgentTool_RemoteA2ATemplate_SyncAndAsync(t *testing.T) {
 	}
 
 	// 1. Synchronous delegation via SpawnTemplate + awaitResult (wait: true).
+	// Wait for hSync to finish before calling awaitResult so this test
+	// deterministically exercises the fast-completion window where
+	// fanInRemote pushes the terminal alert before claimSync runs (#1551).
 	hSync, err := mgr.SpawnTemplate(context.Background(), "", "incident-triage", RefOverrides{Goal: "checkout latency"}, "")
 	if err != nil {
 		t.Fatalf("SpawnTemplate (sync): %v", err)
 	}
+	waitDone(t, hSync)
 	resSync := mgr.awaitResult(context.Background(), hSync)
 	if resSync.Status != "completed" || resSync.Output != "remote diagnosis for: checkout latency" || resSync.StopReason != StopNatural {
 		t.Errorf("awaitResult = %+v", resSync)

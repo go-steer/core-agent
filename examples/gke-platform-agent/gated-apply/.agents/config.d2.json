@@ -2,7 +2,10 @@
   "version": 1,
   "model": {
     "provider": "vertex",
-    "name": "gemini-3.7-flash"
+    "name": "gemini-3.7-flash",
+    "builtin_tools": {
+      "web_search": false
+    }
   },
   "permissions": {
     "mode": "allow",

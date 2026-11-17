@@ -174,6 +174,44 @@ func TestConfigEnforcesProposeOnly(t *testing.T) {
 				"the #644 failure (have %v)", want, cfg.Tools.Disable)
 		}
 	}
+
+	if cfg.Model.BuiltinTools == nil || cfg.Model.BuiltinTools.WebSearch == nil || *cfg.Model.BuiltinTools.WebSearch {
+		t.Errorf("model.builtin_tools.web_search is not false (%+v); Gemini enables GoogleSearch "+
+			"by default, which lets a denied cluster read spiral into public web searches (#696)",
+			cfg.Model.BuiltinTools)
+	}
+}
+
+// TestDaemonSADocumentsNoSecretsAndTroubleshootingStatesSufficiency pins #695
+// and #696: the daemon SA's IAM comment must state that roles/container.viewer
+// carries zero container.secrets.* permissions, and both cluster/AGENTS.md and
+// gke-workload-troubleshooting/SKILL.md must state the Event+manifest
+// sufficiency rule and forbid substituting web search for a denied cluster read.
+func TestDaemonSADocumentsNoSecretsAndTroubleshootingStatesSufficiency(t *testing.T) {
+	saBody, err := os.ReadFile(filepath.Join("deploy", "base", "10-serviceaccount-daemon.yaml"))
+	if err != nil {
+		t.Fatalf("read 10-serviceaccount-daemon.yaml: %v", err)
+	}
+	if !strings.Contains(string(saBody), "container.secrets.*") {
+		t.Error("deploy/base/10-serviceaccount-daemon.yaml does not document that roles/container.viewer excludes container.secrets.* (#695)")
+	}
+
+	for _, path := range []string{
+		filepath.Join(clusterRoot, "AGENTS.md"),
+		filepath.Join(clusterRoot, "skills", "gke-workload-troubleshooting", "SKILL.md"),
+	} {
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", path, readErr)
+		}
+		text := strings.ToLower(string(body))
+		if !strings.Contains(text, "substitute web search for a denied cluster read") {
+			t.Errorf("%s does not forbid substituting web search for a denied cluster read (#696)", path)
+		}
+		if !strings.Contains(text, "container.secrets.") {
+			t.Errorf("%s does not note that container.secrets.* reads are denied on the daemon SA (#695, #696)", path)
+		}
+	}
 }
 
 // TestMCPSurfaceIsReadOnly asserts the transport half, for both scopes

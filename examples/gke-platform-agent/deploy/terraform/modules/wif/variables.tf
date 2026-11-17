@@ -40,7 +40,9 @@ variable "write_scope" {
     Where core-agent's authority to CHANGE a cluster comes from.
 
     "namespaced" (default) binds roles/container.viewer plus custom role
-    gkeAgentClusterViewer (container.pods.getLogs) and leaves writes to
+    gkeAgentClusterViewer (container.pods.getLogs) — read-only cluster state
+    excluding Secrets (neither role carries container.secrets.*, #695) — and
+    leaves writes to
     the Kubernetes RBAC the release module (or deploy/components/gated-apply)
     renders — the boundary an operator can see and audit per namespace.
 

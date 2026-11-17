@@ -135,8 +135,13 @@ or the replicaset if pods churn too fast to catch).
   does not match any node pool. On Autopilot, an invalid compute class or an
   accelerator selector that fails validation shows up here.
 - **`FailedMount`** — the message names exactly what is absent: a `PersistentVolumeClaim`,
-  a `Secret`, or a `ConfigMap`. Confirm the referenced object is genuinely missing
-  before proposing it be created.
+  a `Secret`, or a `ConfigMap`. When the `FailedMount` event names the missing
+  object and the workload manifest confirms the reference, that is sufficient to
+  report the root cause. For a `Secret`, note that `gkeAgentClusterViewer` (built on
+  `roles/container.viewer`) carries no `container.secrets.*` permissions — a 403 /
+  `Forbidden` on `gke_get_k8s_resource` for `secret` is expected and is evidence to
+  record alongside the event, never a reason to keep searching or fall back to web
+  search.
 
 ## Step 5 — connectivity
 
@@ -182,8 +187,13 @@ you ruled out — a documented dead end is a real result, a confident guess is n
 Stop and report, rather than continuing, when any of these is true:
 
 - Current state is healthy and the failure is not reproducible.
+- A Kubernetes Event and the workload manifest already establish the root cause
+  (for example, a `FailedMount` event naming a missing `Secret` or `ConfigMap` that
+  the pod spec references) — do not seek external corroboration for cluster-local
+  facts, and never substitute web search for a denied cluster read.
 - The root cause lies in a different workload or namespace than the one you were
   given (say which, and that it is a separate incident).
 - You have spent the budget.
-- A read has failed twice for the same reason — report the failure as your
-  finding; do not retry it a third time hoping for a different answer.
+- A read has failed twice for the same reason, or failed once with `Forbidden` /
+  permission denied — report the failure as your finding; do not retry it hoping
+  for a different answer or route around it with web search.

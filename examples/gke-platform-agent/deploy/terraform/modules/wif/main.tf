@@ -46,6 +46,9 @@ locals {
   # defines custom role gkeAgentClusterViewer for container.pods.getLogs; here
   # we provision that custom role with container.pods.getLogs and bind it
   # alongside roles/container.viewer when write_scope = "namespaced".
+  # Neither role carries any container.secrets.* permissions (roles/container.viewer
+  # has none and roles/container.developer also grants create/delete/update), so
+  # Secrets remain unreadable by design on the namespaced/read-only path (#695).
   custom_role_id    = "gkeAgentClusterViewer"
   custom_role       = "projects/${var.project_id}/roles/${local.custom_role_id}"
   custom_role_extra = "container.pods.getLogs"

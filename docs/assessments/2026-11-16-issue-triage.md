@@ -254,4 +254,4 @@ Could move to v3.3 if the multi-tenant track pulls them: #1313, #590.
 
 - Filed: #1554 (run `dev/smoke/*` in CI; smoke scripts rotted unnoticed, #1270/#1293).
 - Filed: #1555 includes bumping the recipe image pins and adding a pin-tracks-release check (from #1097).
-- Not done (kept out of this docs-only change): `pkg/models/anthropic/anthropic.go:239` has a comment that still points at `docs/kube-agents-scenarios-design.md`, now under `docs/archive/`. Fix it in the next Go PR that touches the file.
+- Done in a follow-up PR: the comment at `pkg/models/anthropic/anthropic.go:239` now points at `docs/archive/kube-agents-scenarios-design.md`.

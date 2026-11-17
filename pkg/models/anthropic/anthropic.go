@@ -236,9 +236,10 @@ func (p *Provider) init(ctx context.Context, opts []Option) (*Provider, error) {
 	if base := os.Getenv(EnvBaseURL); base != "" && p.prof.Platform != profile.PlatformVertex {
 		// The SDK honoured ANTHROPIC_BASE_URL before the library took
 		// over, and a masking proxy in front of the first-party API
-		// relies on it (docs/kube-agents-scenarios-design.md). The
-		// library reads no environment behind a profile, so the facade
-		// carries it into the profile's base_url.
+		// would rely on it (an option floated in
+		// docs/archive/kube-agents-scenarios-design.md). The library
+		// reads no environment behind a profile, so the facade carries
+		// it into the profile's base_url.
 		p.prof.BaseURL = base
 	}
 	if _, err := profile.Resolve(ctx, p.prof, models.ResolveProfileOptions(profile.Options{Getenv: p.getenv})); err != nil {

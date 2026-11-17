@@ -59,6 +59,7 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/tools"
 	"github.com/go-steer/core-agent/v3/pkg/tools/alert"
 	"github.com/go-steer/core-agent/v3/pkg/tools/vcs"
+	"github.com/go-steer/core-agent/v3/pkg/transcript"
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
@@ -1808,17 +1809,7 @@ func (s *runState) executeDriver() int {
 	}
 
 	if s.opts.driver.prompt != "" {
-		code, err := runner.Headless(s.ctx, s.model, s.opts.driver.prompt, os.Stdout, os.Stderr, s.tracker, s.pricingRate, s.agentOpts, eventsOpts...)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
-		}
-		if code == runner.ExitOK {
-			if !s.opts.prompt.quiet {
-				runner.WriteSummary(os.Stderr, s.tracker, s.model.Name())
-			}
-			persistTranscript(s.agentsDir, s.model.Name(), s.opts.driver.prompt, s.tracker)
-		}
-		return code
+		return s.runHeadlessPrompt(eventsOpts)
 	}
 
 	if s.opts.driver.noREPL {
@@ -1880,6 +1871,24 @@ func (s *runState) executeDriver() int {
 	}
 	if code == runner.ExitOK && !s.opts.prompt.quiet {
 		runner.WriteSummary(os.Stderr, s.tracker, s.model.Name())
+	}
+	return code
+}
+
+func (s *runState) runHeadlessPrompt(eventsOpts []runner.EventsOption) int {
+	var turnMessages []transcript.Message
+	eventsOpts = append(eventsOpts, runner.WithMessageCollector(func(role, text string) {
+		turnMessages = append(turnMessages, transcript.Message{Role: role, Text: text})
+	}))
+	code, err := runner.Headless(s.ctx, s.model, s.opts.driver.prompt, os.Stdout, os.Stderr, s.tracker, s.pricingRate, s.agentOpts, eventsOpts...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+	}
+	if code == runner.ExitOK {
+		if !s.opts.prompt.quiet {
+			runner.WriteSummary(os.Stderr, s.tracker, s.model.Name())
+		}
+		persistTranscript(s.agentsDir, s.model.Name(), s.opts.driver.prompt, turnMessages, s.tracker, os.Stderr)
 	}
 	return code
 }

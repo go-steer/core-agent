@@ -15,15 +15,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-steer/core-agent/v3/pkg/config"
 	"github.com/go-steer/core-agent/v3/pkg/runner"
+	"github.com/go-steer/core-agent/v3/pkg/transcript"
 )
 
 func TestStartupSteps_CanonicalOrderValidates(t *testing.T) {
@@ -173,5 +177,93 @@ func TestStartupSteps_IndividualStepsWithoutFullBinaryBoot(t *testing.T) {
 	s2.close()
 	if !slices.Equal(order, []int{3, 2, 1}) {
 		t.Errorf("cleanup order = %v, want [3 2 1]", order)
+	}
+}
+
+func TestHeadlessOneShot_PersistsAnswerAndSurfacesSaveError(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	agentsDir := filepath.Join(tmp, ".agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir .agents: %v", err)
+	}
+	cfgPath := filepath.Join(agentsDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"model":{"provider":"echo","name":"echo-test"}}`), 0o644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := newRunState(ctx, cancel, runOptions{
+		driver: driverOpts{
+			prompt: "what is the status?",
+			color:  "never",
+			yolo:   true,
+		},
+		workspace: workspaceOpts{
+			cfgPath:       cfgPath,
+			agentsDirFlag: agentsDir,
+		},
+		model: modelOpts{
+			noPricingRefresh: true,
+		},
+		toolCatalog: toolCatalogOpts{
+			noBuiltinTools:     true,
+			noBackgroundAgents: true,
+			noMCPDigest:        true,
+		},
+		guardrails: guardrailOpts{
+			trust: true,
+		},
+		prompt: promptOpts{
+			quiet: true,
+		},
+	})
+	s.flagSet = flag.NewFlagSet("test", flag.ContinueOnError)
+	defer s.close()
+
+	if code := runStartupSteps(s, startupSteps); code != runner.ExitOK {
+		t.Fatalf("runStartupSteps exited with %d, want %d", code, runner.ExitOK)
+	}
+	if code := s.executeDriver(); code != runner.ExitOK {
+		t.Fatalf("executeDriver exited with %d, want %d", code, runner.ExitOK)
+	}
+
+	sessDir := filepath.Join(agentsDir, transcript.SessionsDirName)
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d session transcript files, want 1", len(entries))
+	}
+	raw, err := os.ReadFile(filepath.Join(sessDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read transcript file: %v", err)
+	}
+	var tr transcript.Transcript
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		t.Fatalf("unmarshal transcript: %v\n%s", err, raw)
+	}
+	if len(tr.Messages) < 2 {
+		t.Fatalf("saved transcript has %d message(s) %+v; want both user prompt and assistant answer (#1553)", len(tr.Messages), tr.Messages)
+	}
+	if tr.Messages[0].Role != "user" || tr.Messages[0].Text != "what is the status?" {
+		t.Errorf("messages[0] = %+v, want user prompt", tr.Messages[0])
+	}
+	if tr.Messages[len(tr.Messages)-1].Role != "assistant" || tr.Messages[len(tr.Messages)-1].Text != "what is the status?" {
+		t.Errorf("final message = %+v, want assistant answer %q", tr.Messages[len(tr.Messages)-1], "what is the status?")
+	}
+
+	// Verify a save failure is surfaced on stderr as `core-agent: ...`.
+	badAgentsDir := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(badAgentsDir, []byte("file"), 0o644); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	var stderr bytes.Buffer
+	persistTranscript(badAgentsDir, "echo-test", "prompt", []transcript.Message{{Role: "assistant", Text: "answer"}}, s.tracker, &stderr)
+	if !strings.Contains(stderr.String(), "core-agent: save transcript:") {
+		t.Errorf("stderr = %q, want `core-agent: save transcript: ...` error line (#1553)", stderr.String())
 	}
 }

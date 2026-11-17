@@ -149,7 +149,7 @@ What this phase delivers, then, is a transcript that outlives the machine and a 
 
 **Quota and failure.** The project default is 300 `appendEvent` calls per minute; twelve tool-heavy agents will exceed it, so request an increase before a fleet goes live. A quota rejection (`ResourceExhausted`) is retried once after 2 seconds, from a small shared budget, as model calls are; if that does not rescue it, the turn's event fails with the status intact and nothing is written anywhere else — there is no fall-back to local. An append whose outcome is unknown (the reply was lost) is not retried; the process re-reads the tree from the store before assigning the next `seq`, so a lost reply cannot leave a duplicate behind.
 
-**TTL.** Every session is created with `session_ttl` (default 30 days, service minimum 24 hours) and the expiry is refreshed on append once less than half of it remains.
+**TTL and irreversible expiry.** Every session is created with `session_ttl` (default `720h` / 30 days, service minimum `24h`) and the expiry is refreshed on append once less than half of it remains. When a session stays idle past `session_ttl`, Vertex AI Agent Engine **deletes the session and all of its events permanently**, and there is no automatic export or archival path before expiry ([#889](https://github.com/go-steer/core-agent/issues/889)). Size `session_ttl` for your audit window, or export sessions you need to keep before they go idle (see [Storage growth, retention, and pruning](#storage-growth-retention-and-pruning)).
 
 Library callers reach the same backend directly: `agentengine.Open` returns an `eventlog.Transcript`, and `eventlog.OpenTranscript(ctx, transcript, sqlite.Open(path))` builds the `Handle`. `pkg/statestore/conformance` is the contract every transcript backend passes.
 
@@ -287,10 +287,60 @@ The CLIs add the `glebarez/sqlite` driver — pure-Go, ~10 MB binary growth. CGO
 
 ---
 
+## Storage growth, retention, and pruning
+
+The two transcript backends have opposite retention defaults, and operators running unattended daemons need to plan for whichever one they deploy:
+
+- **SQL backend (`state.transcript.backend: "sql"`, the default) grows without bound.** Neither ADK's `events` table nor `agent_eventlog` has a TTL, retention sweep, or background vacuum. Because `events` stores full serialized event payloads — including tool-call arguments and tool results (and `mcp_digest_raw` stores un-digested MCP responses when digesting is on) — storage growth tracks **tool-call volume and payload size**, not turn count. A laptop REPL will never notice; a month-old pod running an autonomous or multi-session GKE triage daemon is the case to plan for.
+- **Agent Engine backend (`state.transcript.backend: "agentengine"`) expires idle sessions after `session_ttl` (default `720h` / 30 days).** The TTL is refreshed on append once less than half of it remains, but a session that stays idle past `session_ttl` is deleted by Vertex AI Agent Engine with **no automatic export or archive path**. Even with `agentengine`, the local SQLite database still accumulates control, state, spend, and overlay rows across sessions.
+
+### Sizing the database
+
+Check the on-disk SQLite footprint (including the WAL file) and per-session event volume:
+
+```bash
+ls -lh ~/.core-agent/sessions.db*
+
+sqlite3 ~/.core-agent/sessions.db '
+  SELECT session_id,
+         count(*) AS events,
+         round(sum(length(content)) / 1024.0, 1) AS content_kb
+  FROM events
+  GROUP BY session_id
+  ORDER BY content_kb DESC;
+'
+```
+
+From the CLI, `core-agent sessions list` (or `core-agent sessions list --all`) lists stored sessions with their timestamps and prompt previews.
+
+### Pruning sessions by hand
+
+Deleting a session **hard-deletes** its rows — nothing archives or exports it automatically ([#881](https://github.com/go-steer/core-agent/issues/881)). If you need to keep a record, export the session first:
+
+```bash
+# Optional: archive the session JSON before deleting it.
+core-agent sessions export <session-id> > /path/to/archive/<session-id>.json
+
+# Hard-delete from the CLI:
+core-agent sessions delete <session-id>
+```
+
+On a running attach or multi-session daemon, `DELETE /sessions/{app}/{sid}` (or `DELETE /sessions/{sid}` on the single-app route; requires `session:admin` when multi-session auth is enabled) performs the same hard delete over HTTP while refusing to delete a session that currently has a turn in flight (`409 Conflict`).
+
+### Reclaiming disk space with `VACUUM`
+
+SQLite marks deleted pages as free for future inserts inside the `.db` file, but does **not** return freed pages to the filesystem on its own. After pruning large sessions, compact the file during a maintenance window (with the daemon stopped so no writer holds the database):
+
+```bash
+sqlite3 ~/.core-agent/sessions.db 'VACUUM;'
+```
+
+---
+
 ## What's deferred
 
 - **Native push for `Watch`** (Postgres `LISTEN/NOTIFY`, SQLite `update_hook`). Polling is good enough for v1; native push lands when a consumer reports actual latency pain.
-- **Compaction / pruning.** Auditors typically want full retention; if storage growth becomes an issue we'll ship `eventlog.Prune(olderThan time.Time)`.
+- **Automatic retention and archival.** Today the SQL store keeps every event until deleted by hand, and the Agent Engine transcript backend expires idle sessions after `session_ttl` with no pre-expiry export (see [Storage growth, retention, and pruning](#storage-growth-retention-and-pruning)); automated retention sweeps and pre-delete export are tracked in [#883](https://github.com/go-steer/core-agent/issues/883) and [#887](https://github.com/go-steer/core-agent/issues/887).
 - **Cross-session app/user state mutations in the overlay.** The state tables are owned by ADK; their changes don't get seq numbers today. Add when a consumer needs cross-session audit trails.
 - **Encrypted-at-rest event log.** Defer to filesystem/DB-level encryption.
 - **Streaming subscribers over the network.** No gRPC/HTTP bridge in v1; an `extras/eventlog-server/` adapter would land if a consumer wants AX-style remote tail.

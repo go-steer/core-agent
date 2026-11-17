@@ -523,7 +523,7 @@ func runSubagentInvocation(
 	}
 
 	childCtx, served := buildSubagentChildContext(toolCtx, name, args.Request)
-	childCtx, reqText, finishMem := opts.Inner.prepareSubagentMemory(childCtx, wrapped, innerAppName, innerUserID, subagentSessionID, args.Request, opts.Gate)
+	childCtx, reqText, finishTurn := opts.Inner.prepareSubagentTurn(childCtx, wrapped, fullBranch, innerAppName, innerUserID, subagentSessionID, args.Request, opts.Gate)
 
 	msg := genai.NewContentFromText(reqText, genai.RoleUser)
 	var sb strings.Builder
@@ -540,7 +540,7 @@ func runSubagentInvocation(
 	started := time.Now()
 	var turnErr error
 	defer func() {
-		finishMem(turnErr)
+		finishTurn(turnErr)
 		opts.Inner.recordInvocation(time.Since(started).Seconds(), turnErr)
 	}()
 	// Bill the delegated turns to the parent (see

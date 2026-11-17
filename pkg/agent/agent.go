@@ -1715,7 +1715,7 @@ func (a *Agent) runTurn(ctx context.Context, prompt string, msg *genai.Content) 
 	// pkg/compose.BuildMCPDigestLLMFallback) can resolve the running
 	// session's agent from tool.Context rather than a daemon-global
 	// pointer (#1362).
-	runCtx = WithRunningAgent(runCtx, a)
+	runCtx = withTurnAgent(runCtx, a)
 	runCtx = a.memoryUser(runCtx, drained.originator.Identity)
 	// Stamp this turn's triggering message onto runCtx so delegated
 	// subagents can attach it verbatim without the parent model
@@ -2034,8 +2034,9 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		a.snapshotTurnStartCost()
 		preflight, endPreflight := a.turnPreflight()
 		defer endPreflight()
-		runCtx = withCostPreflight(runCtx, preflight)
-		runCtx = withTurnStepGate(runCtx, a.agentName, a.maxSteps, a.finalReport)
+		var flushSessionEvents func()
+		runCtx, flushSessionEvents = a.prepareRunWithContentsContext(runCtx, preflight, sessionID)
+		defer flushSessionEvents()
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {

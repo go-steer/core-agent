@@ -78,8 +78,9 @@ type guardrailState struct {
 	preflightOwner             *preflightOwner
 	unpricedWarned             map[string]bool
 
-	// Durable guardrail and out-of-band event state (#643, #1258, #1439).
+	// Durable guardrail and out-of-band event state (#643, #1258, #1439, #1571).
 	pendingOutOfBandEvents []queuedOutOfBandEvent
+	pendingServiceEvents   []queuedServiceEvent
 	guardrailRestored      bool
 	guardrailRestoreMu     sync.Mutex
 	outOfBandDrainMu       sync.Mutex

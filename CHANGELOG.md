@@ -16,6 +16,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ### Changes by Kind
 
+#### Feature
+
+- **Pin `mast-web` `v0.7.0` for `--ui` and wire `fetch-mast-web` into release builds (`.mast-web-version`, `internal/webui`).** Embeds `mast-web` `v0.7.0` in release binaries and container images and updates `reference/web-ui.md`. ([#348](https://github.com/go-steer/core-agent/issues/348))
+
 #### Documentation
 
 - **Document session DB growth, manual pruning/`VACUUM`, and Agent Engine TTL (`concepts/sessions.md`).** Explains SQL eventlog growth, `sessions export`/`delete`, `DELETE /sessions/{sid}`, SQLite `VACUUM`, and `session_ttl` expiry. ([#889](https://github.com/go-steer/core-agent/issues/889))

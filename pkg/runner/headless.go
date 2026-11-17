@@ -93,7 +93,7 @@ func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt stri
 	// REPL wake turn arrives here with an empty prompt and adds none.
 	events := tapTracker(a.Run(agent.WithOperatorTask(ctx, prompt), prompt), effectiveTracker, m.Name(), pricing)
 	if cfg.format == OutputFormatJSON || cfg.format == OutputFormatStreamJSON {
-		if err := writeJSONTurn(events, stdout, effectiveTracker, m.Name(), cfg.format); err != nil {
+		if err := writeJSONTurn(tapMessages(events, cfg.onMessage()), stdout, effectiveTracker, m.Name(), cfg.format); err != nil {
 			return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
 		}
 		return ExitOK, nil

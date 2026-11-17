@@ -30,10 +30,22 @@ import (
 // EventsOption configures WriteEvents. Use the With* helpers below.
 type EventsOption func(*eventsConfig)
 
+type messageCollector struct {
+	fn func(role, text string)
+}
+
 type eventsConfig struct {
-	color  bool
-	prefix bool
-	format OutputFormat
+	color     bool
+	prefix    bool
+	format    OutputFormat
+	collector *messageCollector
+}
+
+func (c eventsConfig) onMessage() func(role, text string) {
+	if c.collector == nil {
+		return nil
+	}
+	return c.collector.fn
 }
 
 // eventsConfigFromOpts resolves the eventsConfig from a slice of
@@ -72,6 +84,88 @@ func WithPrefix(on bool) EventsOption {
 // OutputFormatText (default), OutputFormatJSON, or OutputFormatStreamJSON (#1379).
 func WithOutputFormat(format OutputFormat) EventsOption {
 	return func(c *eventsConfig) { c.format = format }
+}
+
+// WithMessageCollector registers fn to receive each completed message
+// segment observed during a turn: tool calls and tool responses
+// (role="system", formatted as "→ name(...)" / "← name(...)") and the
+// assistant's text (role="assistant") (#1553).
+func WithMessageCollector(fn func(role, text string)) EventsOption {
+	if fn == nil {
+		return func(c *eventsConfig) { c.collector = nil }
+	}
+	mc := &messageCollector{fn: fn}
+	return func(c *eventsConfig) { c.collector = mc }
+}
+
+// tapMessages wraps events so completed assistant text segments and
+// aggregated tool call/response lines are forwarded to onMessage in turn
+// order (#1553). When onMessage is nil, events is returned unchanged.
+func tapMessages(events iter.Seq2[*session.Event, error], onMessage func(role, text string)) iter.Seq2[*session.Event, error] {
+	if onMessage == nil {
+		return events
+	}
+	return func(yield func(*session.Event, error) bool) {
+		var partialBuf, fallbackBuf strings.Builder
+		sawPartial := false
+		flushAsst := func() {
+			text := partialBuf.String()
+			if !sawPartial {
+				text = fallbackBuf.String()
+			}
+			partialBuf.Reset()
+			fallbackBuf.Reset()
+			sawPartial = false
+			if text != "" {
+				onMessage("assistant", text)
+			}
+		}
+		for ev, err := range events {
+			if ev != nil && ev.Content != nil && err == nil {
+				recordEventMessages(ev, &partialBuf, &fallbackBuf, &sawPartial, flushAsst, onMessage)
+			}
+			if !yield(ev, err) {
+				flushAsst()
+				return
+			}
+		}
+		flushAsst()
+	}
+}
+
+func recordEventMessages(
+	ev *session.Event,
+	partialBuf, fallbackBuf *strings.Builder,
+	sawPartial *bool,
+	flushAsst func(),
+	onMessage func(role, text string),
+) {
+	if ev.Partial {
+		for _, p := range ev.Content.Parts {
+			if p != nil && p.Text != "" && !p.Thought {
+				*sawPartial = true
+				partialBuf.WriteString(p.Text)
+			}
+		}
+		return
+	}
+	wasStreamed := *sawPartial
+	for _, p := range ev.Content.Parts {
+		if p == nil {
+			continue
+		}
+		switch {
+		case p.FunctionCall != nil:
+			flushAsst()
+			onMessage("system", formatCall("→", p.FunctionCall.Name, p.FunctionCall.Args))
+		case p.FunctionResponse != nil:
+			flushAsst()
+			onMessage("system", formatCall("←", p.FunctionResponse.Name, p.FunctionResponse.Response))
+		case p.Text != "" && !p.Thought && !wasStreamed:
+			fallbackBuf.WriteString(p.Text)
+		}
+	}
+	flushAsst()
 }
 
 // seenLines is a small set used to dedupe ↪ output within one
@@ -141,6 +235,7 @@ func (s seenLines) add(line string) (newLine bool) {
 // trailing newline is written to out if any text was streamed.
 func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, opts ...EventsOption) error {
 	cfg := eventsConfigFromOpts(opts)
+	events = tapMessages(events, cfg.onMessage())
 	wroteText := false
 	// asstStarted tracks whether we've written the `asst › ` sigil
 	// for the current assistant response. We reset it when a

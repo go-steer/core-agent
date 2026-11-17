@@ -822,23 +822,29 @@ func primarySessionID(ref **agent.Agent) func() string {
 	}
 }
 
-func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) {
+func persistTranscript(agentsDir, model, prompt string, turnMessages []transcript.Message, tracker *usage.Tracker, stderr io.Writer) {
 	if agentsDir == "" {
 		return
 	}
-	tot := tracker.Totals()
-	_, _ = transcript.Save(agentsDir, transcript.Transcript{
-		Model: model,
-		Messages: []transcript.Message{
-			{Role: "user", Text: prompt},
-		},
+	msgs := make([]transcript.Message, 0, 1+len(turnMessages))
+	msgs = append(msgs, transcript.Message{Role: "user", Text: prompt})
+	msgs = append(msgs, turnMessages...)
+	var tot usage.Totals
+	if tracker != nil {
+		tot = tracker.Totals()
+	}
+	if _, err := transcript.Save(agentsDir, transcript.Transcript{
+		Model:    model,
+		Messages: msgs,
 		Usage: transcript.Usage{
 			Turns:        tot.Turns,
 			InputTokens:  tot.InputTokens,
 			OutputTokens: tot.OutputTokens,
 			CostUSD:      tot.CostUSD,
 		},
-	})
+	}); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "core-agent: save transcript: %v\n", err)
+	}
 }
 
 // resolveAgenticTools resolves the small-tier model for the agentic_*

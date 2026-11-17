@@ -22,6 +22,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 #### Bug or Regression
 
+- **Record assistant reply in one-shot transcripts and report save errors (`cmd/core-agent`, `pkg/runner`).** Adds `runner.WithMessageCollector` so `.agents/sessions/` records the answer and prints `transcript.Save` errors to stderr. ([#1553](https://github.com/go-steer/core-agent/issues/1553))
 - **Reject `..` traversal and escaping symlinks on path-prefix allow and auto-eligible rules (`pkg/permissions`).** Path-prefix patterns (e.g. `bash:dev/tools/*`) require the cleaned and symlink-resolved target to stay under the prefix. ([#1274](https://github.com/go-steer/core-agent/issues/1274))
 - **Disable `web_search` and add sufficiency rules in GKE recipes (`examples/gke-platform-agent`).** Turns off provider web search, adds Event+manifest sufficiency rules (#696), and documents `container.viewer`'s `secrets` gap (#695). ([#696](https://github.com/go-steer/core-agent/issues/696))
 

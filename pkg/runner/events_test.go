@@ -527,3 +527,48 @@ func TestIsTerminal_FalseForPipe(t *testing.T) {
 		t.Errorf("pipe write-end is not a terminal")
 	}
 }
+
+func TestWithMessageCollector_RecordsAssistantAndToolTraffic(t *testing.T) {
+	t.Parallel()
+	type msg struct{ role, text string }
+	var got []msg
+	var out, info bytes.Buffer
+	// Simulate ADK's streaming aggregator: partial text chunks followed by a
+	// consolidated non-partial event carrying both the aggregated text and the
+	// FunctionCall, then a FunctionResponse, then a non-streaming final text event.
+	consolidatedCall := &session.Event{LLMResponse: adkmodel.LLMResponse{
+		Content: &genai.Content{
+			Role: genai.RoleModel,
+			Parts: []*genai.Part{
+				{Text: "Checking pods."},
+				{FunctionCall: &genai.FunctionCall{Name: "kubectl", Args: map[string]any{"get": "pods"}}},
+			},
+		},
+	}}
+	err := WriteEvents(eventSeq([]*session.Event{
+		partialText("Checking "),
+		partialText("pods."),
+		consolidatedCall,
+		toolResult("kubectl", map[string]any{"status": "Ready"}),
+		turnComplete("All pods healthy."),
+	}, nil), &out, &info, WithMessageCollector(func(role, text string) {
+		got = append(got, msg{role, text})
+	}))
+	if err != nil {
+		t.Fatalf("WriteEvents: %v", err)
+	}
+	want := []msg{
+		{"assistant", "Checking pods."},
+		{"system", `→ kubectl(get="pods")`},
+		{"system", `← kubectl(status="Ready")`},
+		{"assistant", "All pods healthy."},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d messages %+v, want %d %+v", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("msg[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

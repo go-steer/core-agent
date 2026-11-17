@@ -16,13 +16,13 @@ Investigating that surfaced four gaps, only one of which is about the TUI.
 
 | # | Artifact | Where | Written by | Contains |
 |---|---|---|---|---|
-| 1 | `pkg/transcript.Transcript`, schema **v1** | `.agents/sessions/<RFC3339>.json` | `cmd/core-agent` headless one-shot | The prompt and usage totals. Nothing else. |
+| 1 | `pkg/transcript.Transcript`, schema **v1** | `.agents/sessions/<RFC3339>.json` | `cmd/core-agent` headless one-shot | Prompt, assistant reply, tool traffic (#1553), and usage totals. |
 | 2 | `coretui.Transcript`, schema **v2** | `.agents/sessions/<RFC3339>.json` | core-tui on TUI exit | Role + text + tool name/args/preview/call-ID |
 | 3 | ADK `events` + `agent_eventlog` | the session DB | every turn, always | Everything. The source of truth. |
 
 Artifacts 1 and 2 are different Go types with different schema versions writing the **byte-identical filename convention into the same directory** (`strings.ReplaceAll(started.UTC().Format(time.RFC3339), ":", "-") + ".json"`, independently defined in both), and only one of them can be read back: core-tui has `ListTranscripts` / `LoadTranscript`, `pkg/transcript` has `Save` and nothing else.
 
-Artifact 1 is also close to empty. `persistTranscript` in `cmd/core-agent/main.go` builds its `Messages` slice from a single literal — `{Role: "user", Text: prompt}` — so a headless run records that a prompt was issued and what it cost, and discards the model's answer entirely. The save error is dropped on the floor too (`_, _ =`).
+*(Update #1553: `persistTranscript` in `cmd/core-agent/main.go` now records the assistant reply and tool traffic alongside the prompt and surfaces `transcript.Save` errors on stderr; previously it recorded only `{Role: "user", Text: prompt}` and dropped the save error.)*
 
 A `.agents/sessions/` populated by both runs is therefore a mixed-schema pile that `/transcripts` lists uniformly and loads misleadingly: the v2 files are real conversations, and the v1 files open as a one-message chat that looks like a session where the agent never replied.
 

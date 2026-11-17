@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.2.0-rc.3]._
+### Changes by Kind
+
+#### Documentation
+
+- **Fix `README.md` `pkg/` stability label (`v1` → `v3`).** Replaces the stale `(v1 stability)` comment in the project-layout tree with `(v3 stability; see docs/compatibility-policy.md)`. ([#956](https://github.com/go-steer/core-agent/issues/956))
 
 ## [3.2.0-rc.3] — 2026-11-17
 

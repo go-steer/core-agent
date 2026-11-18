@@ -48,6 +48,7 @@ var skippedDirs = map[string]bool{
 	".git":         true,
 	".svn":         true,
 	".hg":          true,
+	".cache":       true,
 	"node_modules": true,
 	"vendor":       true,
 }

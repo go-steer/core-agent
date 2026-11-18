@@ -504,7 +504,7 @@ func TestCallPeer_TimesOutWhenThePeerNeverFinishes(t *testing.T) {
 	p.script = func(string) []sseFrame { return []sseFrame{toolCallFrame(1, "kubectl_get")} }
 	h := mustHandler(t, yoloGate(), cfgCallPeer(config.CallPeerConfig{Enabled: true}),
 		roster(Peer{Name: "ops", Endpoint: p.srv.URL}), nil)
-	h.timeout = 150 * time.Millisecond
+	h.timeout = 400 * time.Millisecond
 
 	start := time.Now()
 	_, err := h.run(adkagent.Context(nil), Args{Peer: "ops", Prompt: "hi"})

@@ -14,10 +14,10 @@ require (
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/go-logr/stdr v1.2.2
-	github.com/go-steer/core-models v0.15.3
+	github.com/go-steer/core-models v0.15.4
 	github.com/go-steer/core-models/adkv2 v0.15.3
 	github.com/go-steer/core-tui v0.31.0
-	github.com/go-steer/core-vcs v1.1.0
+	github.com/go-steer/core-vcs v1.2.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/itchyny/gojq v0.12.19

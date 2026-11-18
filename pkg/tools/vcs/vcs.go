@@ -166,13 +166,15 @@ func BuildSuite(cfg *config.Config, gate *permissions.Gate, cwd string, opts ...
 		return nil, nil, fmt.Errorf("vcs: catalog: %w", err)
 	}
 
+	wsDir := cfg.VCS.EffectiveWorkspaceDir(cwd)
 	suite := &Suite{
 		catalog:      cat,
 		gate:         gate,
-		workspaceDir: cfg.VCS.EffectiveWorkspaceDir(cwd),
+		workspaceDir: wsDir,
 		policy: corevcs.Policy{
 			MaxCloneBytes: cfg.VCS.MaxCloneBytes,
 			BranchPrefix:  cfg.VCS.BranchPrefix,
+			CacheDir:      filepath.Join(wsDir, ".cache"),
 		},
 		identities: identities,
 		eventSink:  bo.eventSink,

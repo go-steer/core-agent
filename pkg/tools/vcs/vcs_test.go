@@ -852,3 +852,45 @@ func TestSuite_ApproverReceivesDiffSummary(t *testing.T) {
 	}
 	probe.RequireArgs(t, "vcs_commit", "+replicas: 9")
 }
+
+func TestBuildSuite_SetsSharedObjectCacheDir(t *testing.T) {
+	t.Parallel()
+	srv := newTestGHServer(t, "acme/infra", map[string]string{"README.md": "# infra\n"})
+	cwd := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.VCS = config.VCSConfig{
+		WorkspaceDir: filepath.Join(cwd, ".vcs"),
+		BranchPrefix: "agent/",
+		Forges: []config.VCSForgeConfig{{
+			Name:     "ghes",
+			Provider: config.VCSProviderGitHub,
+			Host:     srv.Host,
+			Scheme:   "http",
+			Port:     srv.Port,
+			TokenEnv: "GH_TOKEN",
+		}},
+		Repositories: []config.VCSRepositoryConfig{{
+			Forge:      "ghes",
+			Repository: "acme/infra",
+			Role:       config.VCSRoleGitOps,
+			BaseBranch: "main",
+		}},
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	gate.MarkPlanRecordedOnce()
+	suite, built, err := BuildSuite(cfg, gate, cwd, WithGetenv(func(string) string { return srv.token }))
+	if err != nil {
+		t.Fatalf("BuildSuite: %v", err)
+	}
+	wantCache := filepath.Join(cwd, ".vcs", ".cache")
+	if suite.policy.CacheDir != wantCache {
+		t.Fatalf("suite.policy.CacheDir = %q, want %q", suite.policy.CacheDir, wantCache)
+	}
+	byName := indexTools(built)
+	if _, err := invokeTool(t, byName, "vcs_clone", nil); err != nil {
+		t.Fatalf("vcs_clone: %v", err)
+	}
+	if _, err := os.Stat(wantCache); err != nil {
+		t.Errorf("expected shared bare object cache directory %q to be created by vcs_clone: %v", wantCache, err)
+	}
+}

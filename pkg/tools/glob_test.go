@@ -120,6 +120,7 @@ func TestGlob_SkipsHiddenDirs(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "kept.go", "")
 	writeFile(t, dir, ".git/HEAD.go", "")
+	writeFile(t, dir, ".vcs/.cache/repo.git/HEAD.go", "")
 	writeFile(t, dir, "node_modules/lib.go", "")
 	writeFile(t, dir, "vendor/dep.go", "")
 

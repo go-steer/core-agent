@@ -18,6 +18,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 #### Feature
 
+- **Bump `core-vcs` to `v1.2.0` (shared `.vcs/.cache` object cache) and `core-models` to `v0.15.4` (`pkg/tools/vcs`, `go.mod`).** Enables shared git object caching across `vcs_clone` calls and updates the LiteLLM price table. ([#1490](https://github.com/go-steer/core-agent/issues/1490))
 - **Pin `mast-web` `v0.7.0` for `--ui` and wire `fetch-mast-web` into release builds (`.mast-web-version`, `internal/webui`).** Embeds `mast-web` `v0.7.0` in release binaries and container images and updates `reference/web-ui.md`. ([#348](https://github.com/go-steer/core-agent/issues/348))
 
 #### Bug or Regression

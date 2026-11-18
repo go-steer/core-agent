@@ -183,9 +183,9 @@ func plantAbandonedLease(t *testing.T, h *eventlog.Handle, appName string, stale
 
 func TestAcquireSchedulingLease_BootAfterAKillTakesTheAbandonedLease(t *testing.T) {
 	t.Parallel()
-	staleWindow := 1 * time.Second
+	staleWindow := 1500 * time.Millisecond
 	h := openSchedLeaseHandle(t, eventlog.WithLockHeartbeat(200*time.Millisecond, staleWindow))
-	plantAbandonedLease(t, h, "nightly", staleWindow-300*time.Millisecond)
+	plantAbandonedLease(t, h, "nightly", 300*time.Millisecond)
 
 	refusedLog, refusedBuf := capturingLogger()
 	_, refusedActive := acquireNow(context.Background(), h, "nightly", refusedLog)

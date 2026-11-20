@@ -101,12 +101,6 @@ func RegisterProfiles(ps []profile.Profile) {
 	profileRegistry.prices = nil
 }
 
-// DiscoverProviders loads provider profiles declared in the nearest
-// .agents/config.json if present.
-func DiscoverProviders() ([]profile.Profile, error) {
-	return DiscoverProvidersFrom("")
-}
-
 // DiscoverProvidersFrom loads provider profiles from configPath when non-empty
 // (accepting either an .agents directory or a config.json file path), or from
 // the nearest .agents/config.json when configPath is empty.

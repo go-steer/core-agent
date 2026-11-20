@@ -806,13 +806,9 @@ type patchedFile struct {
 // and checked before the first byte is written, and [RewritePlan.Revert]
 // puts the originals back if verification of the finished tree fails.
 type RewritePlan struct {
-	newTag string
-	files  map[string]patchedFile
-	sites  int
+	files map[string]patchedFile
+	sites int
 }
-
-// NewTag is the tag every planned site will be set to.
-func (p *RewritePlan) NewTag() string { return p.newTag }
 
 // Sites is how many individual tags the plan rewrites.
 func (p *RewritePlan) Sites() int { return p.sites }
@@ -838,7 +834,7 @@ func PlanRewrite(repoRoot string, sites []Site, newTag string) (*RewritePlan, er
 	for _, s := range sites {
 		byFile[s.Path] = append(byFile[s.Path], s)
 	}
-	plan := &RewritePlan{newTag: newTag, files: map[string]patchedFile{}, sites: len(sites)}
+	plan := &RewritePlan{files: map[string]patchedFile{}, sites: len(sites)}
 	for _, path := range sortedKeys(byFile) {
 		abs := filepath.Join(repoRoot, filepath.FromSlash(path))
 		info, err := os.Stat(abs)

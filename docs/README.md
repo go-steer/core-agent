@@ -40,6 +40,7 @@ live in [`archive/`](archive/).
 - [`mcp-credential-resolution-design.md`](mcp-credential-resolution-design.md) — **proposed**: per-MCP-server credential resolution (pluggable providers + Auth Manager)
 - [`selfdev-historical-replay-design.md`](selfdev-historical-replay-design.md) — **proposed**: historical replay corpus of past fix/feature tasks scored against behavioural oracles ([#1116](https://github.com/go-steer/core-agent/issues/1116), [#1332](https://github.com/go-steer/core-agent/issues/1332))
 - [`transcript-archival-design.md`](transcript-archival-design.md) — **proposed**: attach-mode transcript archival and export
+- [`code-map-design.md`](code-map-design.md) — **proposed**: a generated package table (`docs/PACKAGES.md`) linked from `DESIGN.md`, CI gates for package comments, doc paths cited in Go comments and written import rules, and human-signed flow walkthroughs (tracking issue: to be filed)
 - [`purser/docs/DESIGN.md`](https://github.com/go-steer/purser/blob/main/docs/DESIGN.md) — **proposed** (lives in [go-steer/purser](https://github.com/go-steer/purser)): extracting `pkg/auth` into a shared SPIFFE/mTLS/OIDC module
 
 ## Research, friction logs & assessments

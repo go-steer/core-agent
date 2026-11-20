@@ -29,6 +29,7 @@ func TestClassify(t *testing.T) {
 		{"claude-fable-5", modeltier.TierFrontier},
 		{"claude-fable-5-2", modeltier.TierFrontier},
 		{"claude-mythos-5-2", modeltier.TierFrontier},
+		{"claude-mythos-preview", modeltier.TierFrontier},
 		{"claude-opus-5", modeltier.TierFrontier},
 		{"claude-sonnet-5", modeltier.TierMid},
 		{"claude-sonnet-5-1m", modeltier.TierMid},
@@ -62,6 +63,7 @@ func TestClassify(t *testing.T) {
 		{"gemini-4-carbon", modeltier.TierFrontier},                  // priced (v0.15.3), NOT a default
 		{"gemini-4-carbon-cyber-permissive", modeltier.TierFrontier}, // access-gated variant
 		{"gemini-4-hydrogen", modeltier.TierFrontier},                // priced (v0.15.3), NOT a default
+		{"gemini-4-neon", modeltier.TierFrontier},                    // priced (v0.15.5), NOT a default
 		{"gemini-3.8-flash", modeltier.TierFrontier},                 // priced, not yet the default (#936)
 		{"gemini-3.8-flash-cyber", modeltier.TierFrontier},           // Vertex-only variant (v0.15.3)
 		{"gemini-3.8-flash-09-2026", modeltier.TierFrontier},         // dated snapshot

@@ -14,59 +14,19 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.2.0-rc.4]._
+_No unreleased changes since [3.2.0]._
 
-## [3.2.0-rc.4] — 2026-11-17
+## [3.2.0] — 2026-11-20
+
+core-agent 3.2 adds multi-scope memory (`pkg/memory`, `agent.WithMemory`, `pkg/memory/memtools` `recall_memory` / `persist_memory` / `forget_memory`, and `--memory-*` CLI/env flags) backed by Vertex AI Memory Bank (`pkg/memory/memorybank`) and SQLite FTS5 (`pkg/memory/sqlfts`), alongside Vertex AI Agent Engine Sessions transcript durability (`state.transcript.backend: "agentengine"`, `pkg/statestore/agentengine`) so sessions outlive local SQLite storage. It introduces built-in execution sandboxing (`safety.sandbox`, `--sandbox` / `--no-sandbox` across `bwrap`, `sandbox-exec`, and `docker`/`podman`), SHA-256 workspace trust gating for repo-supplied `.agents/` (`--trust`, `trusted_workspaces.json`), per-subagent `git worktree` isolation (`safety.parallel_subagent_writes: "worktree"`) and parent-input forwarding, forge-neutral pure-Go `vcs_*` tools (`pkg/tools/vcs` over `core-vcs@v1.2.0` with shared `.vcs/.cache` object caching), embedded `mast-web v0.7.0` for `--ui`, per-project CLI session IDs with `--continue` / `--resume [id]`, and headless `--output-format=text|json|stream-json` + `-q` / `--quiet`. Permission mode `auto` (`pkg/approver`), `pkg/memory`, `pkg/evals` + `pkg/evals/judge`, and `pkg/attach/wire` enter the SemVer-governed `promised` API surface (`--permission-mode` and grouped `--help` ship on the CLI, deprecating `--plan-first`). Release binaries and images now build on Go `1.26.11` (for `GO-2026-6859`) with SHA-pinned GitHub Actions, digest-pinned base images, `core-models v0.15.5` (pricing and `frontier` classification for Gemini 4 Carbon/Hydrogen/Neon and Claude 5.2 / Mythos Preview), and Sigstore bundle signatures (`checksums.txt.sigstore.json` and OCI referrers, requiring `cosign` v3+ to verify). This is a backwards-compatible minor release on `github.com/go-steer/core-agent/v3` with zero breaking changes across the 27 promised packages (all 24 with a `v3.1.0` baseline verified by `verify-apidiff`).
 
 ### Changes by Kind
 
 #### Feature
-
+- **Bump `core-models` to `v0.15.5` and classify `gemini-4-neon` (`pkg/modeltier`, `pkg/usage`, `go.mod`).** Adds `gemini-4-neon` and `claude-mythos-preview` pricing, classifies `gemini-4-neon` as `frontier`, and sizes `gemini-4-*` fallback windows. ([#259](https://github.com/go-steer/core-agent/issues/259))
 - **Bump `core-vcs` to `v1.2.0` (shared `.vcs/.cache` object cache) and `core-models` to `v0.15.4` (`pkg/tools/vcs`, `go.mod`).** Enables shared git object caching across `vcs_clone` calls and updates the LiteLLM price table. ([#1490](https://github.com/go-steer/core-agent/issues/1490))
 - **Pin `mast-web` `v0.7.0` for `--ui` and wire `fetch-mast-web` into release builds (`.mast-web-version`, `internal/webui`).** Embeds `mast-web` `v0.7.0` in release binaries and container images and updates `reference/web-ui.md`. ([#348](https://github.com/go-steer/core-agent/issues/348))
-
-#### Bug or Regression
-
-- **Record assistant reply in one-shot transcripts and report save errors (`cmd/core-agent`, `pkg/runner`).** Adds `runner.WithMessageCollector` so `.agents/sessions/` records the answer and prints `transcript.Save` errors to stderr. ([#1553](https://github.com/go-steer/core-agent/issues/1553))
-- **Reject `..` traversal and escaping symlinks on path-prefix allow and auto-eligible rules (`pkg/permissions`).** Path-prefix patterns (e.g. `bash:dev/tools/*`) require the cleaned and symlink-resolved target to stay under the prefix. ([#1274](https://github.com/go-steer/core-agent/issues/1274))
-- **Disable `web_search` and add sufficiency rules in GKE recipes (`examples/gke-platform-agent`).** Turns off provider web search, adds Event+manifest sufficiency rules (#696), and documents `container.viewer`'s `secrets` gap (#695). ([#696](https://github.com/go-steer/core-agent/issues/696))
-
-#### Documentation
-
-- **Document session DB growth, manual pruning/`VACUUM`, and Agent Engine TTL (`concepts/sessions.md`).** Explains SQL eventlog growth, `sessions export`/`delete`, `DELETE /sessions/{sid}`, SQLite `VACUUM`, and `session_ttl` expiry. ([#889](https://github.com/go-steer/core-agent/issues/889))
-- **Fix `README.md` `pkg/` stability label (`v1` → `v3`).** Replaces the stale `(v1 stability)` comment in the project-layout tree with `(v3 stability; see docs/compatibility-policy.md)`. ([#956](https://github.com/go-steer/core-agent/issues/956))
-
-#### Other (Cleanup)
-
-- **Fix synchronous subagent alert race and CI test flakes (`pkg/agent/background`, `pkg/agent`, `pkg/telemetry`).** Reclaims terminal alerts when a subagent finishes before `awaitResult` claims it and stabilizes port/lock tests. ([#1551](https://github.com/go-steer/core-agent/issues/1551))
-
-## [3.2.0-rc.3] — 2026-11-17
-
-### Changes by Kind
-
-#### Bug or Regression
-
-- **Defer `VCSEventSink` audit writes past in-flight turns (`pkg/compose`, `pkg/agent`).** Queues `vcs.published`/`vcs.proposed` events until ADK `Runner` unwinds (fixing DB stale-session errors) and omits `Content` from model history. ([#1571](https://github.com/go-steer/core-agent/issues/1571))
-
-## [3.2.0-rc.2] — 2026-11-16
-
-### Changes by Kind
-
-#### Feature
-
 - **Bump `core-models` and `core-models/adkv2` to v0.15.3.** Adds Gemini 4 Carbon/Hydrogen, Gemini 3.8 Flash Cyber, and Claude 5.2 pricing, classifies the new Gemini 4 models as `frontier`, and verifies Gemini profile headers. ([#1547](https://github.com/go-steer/core-agent/issues/1547))
-
-#### Security
-
-- **Builds on Go 1.26.11, for GO-2026-6859.** A `net/http` server crash in go1.26.10 is reachable through the attach server; the `toolchain` line, Dockerfiles and release images move to go1.26.11, the `go 1.26.10` floor is unchanged. ([#1547](https://github.com/go-steer/core-agent/issues/1547))
-- **Release signatures are Sigstore bundles (cosign v3).** `checksums.txt.sigstore.json` replaces `checksums.txt.sig` + `.pem`; image signatures are OCI referrers. Scripts fetching the old files must switch; cosign v2 verifies neither. ([#1550](https://github.com/go-steer/core-agent/issues/1550))
-
-## [3.2.0-rc.1] — 2026-11-06
-
-### Changes by Kind
-
-#### Feature
-
 - **Export `pkg/evals` and `pkg/evals/judge` for grading stored sessions.** Promotes `TraceFromEvents`, `EvaluateAll`, `ValidateCalls`, and `judge.Judge` into `promised` packages and adds `trajectory.FromEvents`. ([#1538](https://github.com/go-steer/core-agent/issues/1538))
 - **Per-project CLI session IDs and `--continue` / `--resume [id]`.** Mints `<project>-<hash>-<rand>` session IDs under `--session-db` and adds `--continue` and `--resume [id]` (with interactive TTY picker and spend restore). ([#1374](https://github.com/go-steer/core-agent/issues/1374))
 - **Add `--permission-mode <mode>`, grouped `--help`, and subcommands.** Adds `--permission-mode` (`ask|auto|acceptEdits|plan|allow|yolo`, `--yolo` alias), groups `--help` into 6 sections plus subcommands, and deprecates `--plan-first`. ([#1380](https://github.com/go-steer/core-agent/issues/1380))
@@ -81,23 +41,14 @@ _No unreleased changes since [3.2.0-rc.4]._
 - **Stateless `--memory-*` CLI/env flags, `OneShotConfig` / `compose` memory, and subagent derivation.** Wires `--memory-ref`, `--agent-engine`, `CORE_AGENT_MEMORY_*`, and subagent memory across sync, background, A2A, and `RunOneShot`. ([#948](https://github.com/go-steer/core-agent/issues/948))
 - **Vertex AI Memory Bank (`pkg/memory/memorybank`) and SQLite FTS5 (`pkg/memory/sqlfts`) backends.** Adds `memorybank://` (`MemoryBankClient`, `VertexSessionOrigin` fast path, retries) and `sqlite://` FTS5 backends passing `memtest`. ([#948](https://github.com/go-steer/core-agent/issues/948))
 
-#### Security
-
-- **Built-in execution sandboxing (`safety.sandbox`, `--sandbox` / `--no-sandbox`).** Enforces workspace write scope in `yolo`/`acceptEdits`, blocks protected host paths, and wraps `bash` in `bwrap`, `sandbox-exec`, or `docker`/`podman`. ([#651](https://github.com/go-steer/core-agent/issues/651))
-- **Workspace trust gate for `.agents/` (`--trust`, `trusted_workspaces.json`).** Prompts or clamps untrusted `.agents/` (`stdio` MCP, `hooks`, mode above `ask`, external roots), persisting SHA-256 hashes that revoke on edit. ([#1353](https://github.com/go-steer/core-agent/issues/1353))
-- **SHA-pin third-party GitHub Actions and digest-pin Dockerfile base images.** Pins all workflow `uses:` refs to 40-hex commit SHAs, digest-pins `Dockerfile` base images, adds `.github/dependabot.yml`, and enforces pins in CI. ([#1357](https://github.com/go-steer/core-agent/issues/1357))
-
-#### Documentation
-
-- **`examples/kode-gopher` recipe and site reference for Code Mode over MCP.** Adds a config-only `kode-gopher` recipe (`stdio` and Streamable HTTP `/mcp`), gated `execute_go_code` with `tool_notes`, and `/reference/kode-gopher/`. ([#1391](https://github.com/go-steer/core-agent/issues/1391))
-- **Add `internal/evals/costbench` benchmark and qualify `5–10×` cost projections.** Benchmarks 4 configs via `pkg/pricing` and qualifies `5–10×` savings claims in docs. ([#1378](https://github.com/go-steer/core-agent/issues/1378))
-- **Archive shipped/abandoned design docs to `docs/archive/` and rewrite `docs/north-star.md`.** Moves 88 non-proposed design docs to `docs/archive/`, records Goal 2 on `core-agent` + `core-tui`, and enforces `Status:` in `docs-lint`. ([#1388](https://github.com/go-steer/core-agent/issues/1388))
-- **Clarify OTel/pricing outbound calls, prompt-cache read rates (`5–10%`), and CLI flag docs.** Updates `README.md`, `cmd/core-agent`, and `docs/site/` for `--no-pricing-refresh`, 5% cache reads, and `--config` / `--attach-register-*`. ([#1381](https://github.com/go-steer/core-agent/issues/1381))
-- **The `stacked-pr-order` and `presubmit-sweep` skills cover two late surprises:** a stacked PR gets no full CI until it targets `main`, and a new package, config key or harness script trips a registry test with a one-line fix. ([#1192](https://github.com/go-steer/core-agent/issues/1192))
-- **`.worktrees/` worktree convention in `AGENTS.md` and `.gitignore`.** Documents isolating feature branches in `.worktrees/<name>` git worktrees and ignores `/.worktrees/` so parallel worktrees do not dirty the root checkout. ([#1116](https://github.com/go-steer/core-agent/issues/1116))
+#### Bug or Regression
+- **Record assistant reply in one-shot transcripts and report save errors (`cmd/core-agent`, `pkg/runner`).** Adds `runner.WithMessageCollector` so `.agents/sessions/` records the answer and prints `transcript.Save` errors to stderr. ([#1553](https://github.com/go-steer/core-agent/issues/1553))
+- **Reject `..` traversal and escaping symlinks on path-prefix allow and auto-eligible rules (`pkg/permissions`).** Path-prefix patterns (e.g. `bash:dev/tools/*`) require the cleaned and symlink-resolved target to stay under the prefix. ([#1274](https://github.com/go-steer/core-agent/issues/1274))
+- **Disable `web_search` and add sufficiency rules in GKE recipes (`examples/gke-platform-agent`).** Turns off provider web search, adds Event+manifest sufficiency rules (#696), and documents `container.viewer`'s `secrets` gap (#695). ([#696](https://github.com/go-steer/core-agent/issues/696))
+- **Defer `VCSEventSink` audit writes past in-flight turns (`pkg/compose`, `pkg/agent`).** Queues `vcs.published`/`vcs.proposed` events until ADK `Runner` unwinds (fixing DB stale-session errors) and omits `Content` from model history. ([#1571](https://github.com/go-steer/core-agent/issues/1571))
 
 #### Other (Cleanup)
-
+- **Fix synchronous subagent alert race and CI test flakes (`pkg/agent/background`, `pkg/agent`, `pkg/telemetry`).** Reclaims terminal alerts when a subagent finishes before `awaitResult` claims it and stabilizes port/lock tests. ([#1551](https://github.com/go-steer/core-agent/issues/1551))
 - **`cmd/core-agent`: decompose `run()` into `runOptions` and ordered `startupSteps`.** Replaces `run()`'s 43 positional args with option structs, extracts 14 order-checked startup steps, and removes the `.golangci.yml` `run` exemption. ([#685](https://github.com/go-steer/core-agent/issues/685))
 - **`pkg/compose`: move unattended guardrail, `auto_continue`, and unpriced-model policy out of `main`.** Exports `ResolveGuardrailsFromConfig`, `AppendWatchdogOpts`, `CeilingPricing`, and `ResolveAutoContinue` for library hosts. ([#1369](https://github.com/go-steer/core-agent/issues/1369))
 - **`pkg/agent`: fold guardrail latches into `guardrailState` reducer and `postTurnSteps`.** Unifies cost, watchdog, refusal, and context-budget signals via `applyTurnSignal` and replaces the post-turn `defer` stack. ([#1389](https://github.com/go-steer/core-agent/issues/1389))
@@ -105,6 +56,25 @@ _No unreleased changes since [3.2.0-rc.4]._
 - **Tighten complexity ratchet (`dev/tools/.golangci.yml` and `internal/testutil`).** Lowers `funlen.statements` to 142, separates `pkg/` (229) vs `dev/` (254) ceilings, ratchets `pkg/` >150-line count, and caps `cmd/core-agent` `run`. ([#1371](https://github.com/go-steer/core-agent/issues/1371))
 - **Add `dev/tools/harness-ratio` LOC report and release budget.** Reports Harness vs Product non-test LOC in release notes and enforces `harness_added <= product_added` at release time. ([#1383](https://github.com/go-steer/core-agent/issues/1383))
 - **`pkg/agent/autonomous`: extract shared `turnLoop` across `Run` and `Resume`.** Unifies the multi-turn execution, retry, schedule, and checkpoint loop and brings `Resume` into parity on `RunResult.Calls` provenance rollup. ([#1370](https://github.com/go-steer/core-agent/issues/1370))
+
+#### Documentation
+- **Document session DB growth, manual pruning/`VACUUM`, and Agent Engine TTL (`concepts/sessions.md`).** Explains SQL eventlog growth, `sessions export`/`delete`, `DELETE /sessions/{sid}`, SQLite `VACUUM`, and `session_ttl` expiry. ([#889](https://github.com/go-steer/core-agent/issues/889))
+- **Fix `README.md` `pkg/` stability label (`v1` → `v3`).** Replaces the stale `(v1 stability)` comment in the project-layout tree with `(v3 stability; see docs/compatibility-policy.md)`. ([#956](https://github.com/go-steer/core-agent/issues/956))
+- **`examples/kode-gopher` recipe and site reference for Code Mode over MCP.** Adds a config-only `kode-gopher` recipe (`stdio` and Streamable HTTP `/mcp`), gated `execute_go_code` with `tool_notes`, and `/reference/kode-gopher/`. ([#1391](https://github.com/go-steer/core-agent/issues/1391))
+- **Add `internal/evals/costbench` benchmark and qualify `5–10×` cost projections.** Benchmarks 4 configs via `pkg/pricing` and qualifies `5–10×` savings claims in docs. ([#1378](https://github.com/go-steer/core-agent/issues/1378))
+- **Archive shipped/abandoned design docs to `docs/archive/` and rewrite `docs/north-star.md`.** Moves 88 non-proposed design docs to `docs/archive/`, records Goal 2 on `core-agent` + `core-tui`, and enforces `Status:` in `docs-lint`. ([#1388](https://github.com/go-steer/core-agent/issues/1388))
+- **Clarify OTel/pricing outbound calls, prompt-cache read rates (`5–10%`), and CLI flag docs.** Updates `README.md`, `cmd/core-agent`, and `docs/site/` for `--no-pricing-refresh`, 5% cache reads, and `--config` / `--attach-register-*`. ([#1381](https://github.com/go-steer/core-agent/issues/1381))
+- **The `stacked-pr-order` and `presubmit-sweep` skills cover two late surprises:** a stacked PR gets no full CI until it targets `main`, and a new package, config key or harness script trips a registry test with a one-line fix. ([#1192](https://github.com/go-steer/core-agent/issues/1192))
+- **`.worktrees/` worktree convention in `AGENTS.md` and `.gitignore`.** Documents isolating feature branches in `.worktrees/<name>` git worktrees and ignores `/.worktrees/` so parallel worktrees do not dirty the root checkout. ([#1116](https://github.com/go-steer/core-agent/issues/1116))
+
+#### Security
+- **Builds on Go 1.26.11, for GO-2026-6859.** A `net/http` server crash in go1.26.10 is reachable through the attach server; the `toolchain` line, Dockerfiles and release images move to go1.26.11, the `go 1.26.10` floor is unchanged. ([#1547](https://github.com/go-steer/core-agent/issues/1547))
+- **Release signatures are Sigstore bundles (cosign v3).** `checksums.txt.sigstore.json` replaces `checksums.txt.sig` + `.pem`; image signatures are OCI referrers. Scripts fetching the old files must switch; cosign v2 verifies neither. ([#1550](https://github.com/go-steer/core-agent/issues/1550))
+- **Built-in execution sandboxing (`safety.sandbox`, `--sandbox` / `--no-sandbox`).** Enforces workspace write scope in `yolo`/`acceptEdits`, blocks protected host paths, and wraps `bash` in `bwrap`, `sandbox-exec`, or `docker`/`podman`. ([#651](https://github.com/go-steer/core-agent/issues/651))
+- **Workspace trust gate for `.agents/` (`--trust`, `trusted_workspaces.json`).** Prompts or clamps untrusted `.agents/` (`stdio` MCP, `hooks`, mode above `ask`, external roots), persisting SHA-256 hashes that revoke on edit. ([#1353](https://github.com/go-steer/core-agent/issues/1353))
+- **SHA-pin third-party GitHub Actions and digest-pin Dockerfile base images.** Pins all workflow `uses:` refs to 40-hex commit SHAs, digest-pins `Dockerfile` base images, adds `.github/dependabot.yml`, and enforces pins in CI. ([#1357](https://github.com/go-steer/core-agent/issues/1357))
+
+_Pre-release history: cut incrementally as `v3.2.0-rc.4` (2026-11-17), `v3.2.0-rc.3` (2026-11-17), `v3.2.0-rc.2` (2026-11-16), `v3.2.0-rc.1` (2026-11-06). The GitHub Release pages for each pre-release tag retain their historical release notes; this CHANGELOG folds them into the GA entry per Keep a Changelog convention._
 
 ## [3.1.0] — 2026-11-06
 

@@ -44,7 +44,10 @@ func TestContextWindowSizeFor(t *testing.T) {
 		// moment the next regen picks it up, and the case would be
 		// testing the wrong tier.
 		{"publishers/google/models/gemini-3-pro", 1_000_000},
+		{"publishers/google/models/gemini-4-neon", 1_048_576},
+		{"gemini-4-neon-customtools", 1_048_576},
 		// Generated tier: exact 2^20, not the fallback's round number.
+		{"gemini-4-neon", 1_048_576},
 		{"gemini-3.5-flash", 1_048_576},
 		{"gemini-3.8-flash", 1_048_576},      // priced, not yet the default (#936)
 		{"gemini-3.7-flash", 1_048_576},      // taskclass frontier default
@@ -52,6 +55,7 @@ func TestContextWindowSizeFor(t *testing.T) {
 		{"gemini-3.5-flash-lite", 1_048_576}, // taskclass small default
 		{"GEMINI-3.5-FLASH-LITE", 1_048_576}, // case-insensitive like modeltier/pricing
 		{"claude-fable-5", 1_000_000},        // Mythos-class tier; 1M like the rest of the 5 family
+		{"claude-mythos-preview", 1_000_000}, // Mythos preview; 1M in generated + fallback tiers
 		{"gemini-2.5-pro", 1_048_576},
 		{"gemini-2.5-flash", 1_048_576},
 		// Current-gen Opus/Sonnet are 1M with no "-1m" suffix (#369).

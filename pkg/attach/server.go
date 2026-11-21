@@ -16,7 +16,6 @@ package attach
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -809,11 +808,4 @@ func (s *Server) Addr() string {
 func (s *Server) TLSEnabled() bool {
 	_, _ = s.opts.Auth.LoadTLSConfig() // validate already-passed config
 	return s.opts.Auth.TLSCertFile != ""
-}
-
-// peekTLSConfig is a test helper — exported with a lowercase name so
-// only same-package tests can use it.
-func (s *Server) peekTLSConfig() *tls.Config { //nolint:unused
-	cfg, _ := s.opts.Auth.LoadTLSConfig()
-	return cfg
 }

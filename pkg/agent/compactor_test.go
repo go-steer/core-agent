@@ -675,6 +675,57 @@ func TestCompactingService_AppendEvent_UnwrapsSlicedSession(t *testing.T) {
 	}
 }
 
+// TestCompactingService_GetFramesASummaryAtIndexZero covers a session
+// whose stored history begins with its summary, as it does when an
+// embedder keeps only the events from the latest summary on and seeds
+// a fresh session with them. Slicing such a session changes nothing
+// but the summary itself, so Get must still return the sliced view:
+// otherwise the model reads the summary as its own earlier reply,
+// without the user-role rewrite or the handover framing.
+func TestCompactingService_GetFramesASummaryAtIndexZero(t *testing.T) {
+	t.Parallel()
+	inner := session.InMemoryService()
+	ctx := context.Background()
+
+	const appName, userID, sessionID = "test-app", "test-user", "test-session"
+	if _, err := inner.Create(ctx, &session.CreateRequest{AppName: appName, UserID: userID, SessionID: sessionID}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	getResp, err := inner.Get(ctx, &session.GetRequest{AppName: appName, UserID: userID, SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("Get pre-seed: %v", err)
+	}
+	if err := inner.AppendEvent(ctx, getResp.Session, mkSummaryEvent("compacted state")); err != nil {
+		t.Fatalf("AppendEvent summary: %v", err)
+	}
+	if err := inner.AppendEvent(ctx, getResp.Session, mkEvent(genai.RoleUser, "fresh prompt post-compact")); err != nil {
+		t.Fatalf("AppendEvent prompt: %v", err)
+	}
+
+	wrapped := &compactingService{inner: inner}
+	wResp, err := wrapped.Get(ctx, &session.GetRequest{AppName: appName, UserID: userID, SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("wrapped.Get: %v", err)
+	}
+	if _, isSliced := wResp.Session.(*slicedSession); !isSliced {
+		t.Fatalf("wrapped.Get returned %T, want *slicedSession (the summary at index 0 is a boundary)", wResp.Session)
+	}
+	var first *session.Event
+	for ev := range wResp.Session.Events().All() {
+		first = ev
+		break
+	}
+	if first == nil || first.Content == nil {
+		t.Fatalf("sliced view has no first event with content")
+	}
+	if first.Content.Role != genai.RoleUser {
+		t.Errorf("summary role = %q, want %q", first.Content.Role, genai.RoleUser)
+	}
+	if got := contentText(first.Content); !strings.Contains(got, "Conversation compacted") || !strings.Contains(got, "compacted state") {
+		t.Errorf("summary not framed: %q", got)
+	}
+}
+
 // --- test helpers ---
 
 // plantEvent writes a synthetic event to the agent's session so

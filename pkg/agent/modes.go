@@ -669,7 +669,7 @@ func newSubagentDispatcher(name string, sp adkagent.Agent) (adkagent.Agent, erro
 	})
 }
 
-func buildInnerLLMAgent(o *options, model adkmodel.LLM, instruction string) (inner, runnerRoot adkagent.Agent, err error) {
+func buildInnerLLMAgent(o *options, model adkmodel.LLM, instructionProvider llmagent.InstructionProvider, toolsets []tool.Toolset) (inner, runnerRoot adkagent.Agent, err error) {
 	switch o.subagentMode {
 	case "", SubagentModeChat:
 		if o.outputSchema != nil {
@@ -692,7 +692,7 @@ func buildInnerLLMAgent(o *options, model adkmodel.LLM, instruction string) (inn
 		Model:               model,
 		Description:         o.description,
 		Tools:               o.tools,
-		Toolsets:            o.toolsets,
+		Toolsets:            toolsets,
 		OutputSchema:        o.outputSchema,
 		AfterModelCallbacks: o.afterModelCallbacks,
 	}
@@ -731,8 +731,8 @@ func buildInnerLLMAgent(o *options, model adkmodel.LLM, instruction string) (inn
 	// consumer previously got no system instruction at all — reachable
 	// via WithInstruction("") or a whitespace-only --system-prompt-file.
 	// The Anthropic adapter drops empty parts; Gemini forwards them.
-	if instruction != "" {
-		cfg.InstructionProvider = literalInstruction(instruction)
+	if instructionProvider != nil {
+		cfg.InstructionProvider = instructionProvider
 	}
 	inner, err = llmagent.New(cfg)
 	if err != nil {

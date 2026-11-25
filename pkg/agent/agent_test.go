@@ -304,16 +304,21 @@ func TestDefaultOptions_AssemblesLayers(t *testing.T) {
 	if o.instruction != "" || o.instructionExplicit {
 		t.Errorf("defaultOptions() = (instruction=%q, explicit=%v), want empty/false — layers assemble in New", o.instruction, o.instructionExplicit)
 	}
-	// Non-Gemini model, no options: core + interactive, no quirks.
-	if got, want := assembleInstruction("claude-test", ModeInteractive, false, "", nil), CoreInstruction+"\n\n"+InteractiveOverlay; got != want {
+	// Non-Gemini model, even with full built-ins: core + interactive, no quirks.
+	full := quirkSurfaceFromNames("read_file", "grep", "bash", "edit_file")
+	if got, want := assembleInstruction("claude-test", ModeInteractive, false, full, "", nil), CoreInstruction+"\n\n"+InteractiveOverlay; got != want {
 		t.Errorf("default assembly for claude =\n%q\nwant core+interactive", got)
 	}
-	// Gemini model gets the parallelism quirk between core and overlay.
-	if got, want := assembleInstruction("gemini-3.1-pro", ModeInteractive, false, "", nil), CoreInstruction+"\n\n"+GeminiParallelismQuirk+"\n\n"+InteractiveOverlay; got != want {
+	// Gemini model with no tools omits the parallelism quirk altogether (#1608).
+	if got, want := assembleInstruction("gemini-3.1-pro", ModeInteractive, false, quirkToolSurface{}, "", nil), CoreInstruction+"\n\n"+InteractiveOverlay; got != want {
+		t.Errorf("tool-less assembly for gemini =\n%q\nwant core+interactive", got)
+	}
+	// Gemini model with tools gets the tool-gated parallelism quirk between core and overlay.
+	if got, want := assembleInstruction("gemini-3.1-pro", ModeInteractive, false, full, "", nil), CoreInstruction+"\n\n"+geminiParallelismQuirk(full)+"\n\n"+InteractiveOverlay; got != want {
 		t.Errorf("default assembly for gemini =\n%q\nwant core+quirk+interactive", got)
 	}
 	// Quirk suppression + autonomous overlay + user + extras, in order.
-	got := assembleInstruction("gemini-3.1-pro", ModeAutonomous, true, "USER-MEMORY", []string{"EXTRA-1", "EXTRA-2"})
+	got := assembleInstruction("gemini-3.1-pro", ModeAutonomous, true, full, "USER-MEMORY", []string{"EXTRA-1", "EXTRA-2"})
 	want := CoreInstruction + "\n\n" + AutonomousOverlay + "\n\n" + "USER-MEMORY" + "\n\n" + "EXTRA-1" + "\n\n" + "EXTRA-2"
 	if got != want {
 		t.Errorf("full-stack assembly =\n%q\nwant core+autonomous+user+extras (quirks suppressed)", got)

@@ -71,7 +71,7 @@ const DefaultAppName = "core-agent"
 // volatile (docs/system-prompt-layering-design.md, #459):
 //
 //	1. CoreInstruction        — always (harness contract + unenforced safety invariants)
-//	2. provider quirks        — selected from the model identifier; WithoutProviderQuirks suppresses
+//	2. provider quirks        — selected from the model identifier and enabled tool surface; WithoutProviderQuirks suppresses
 //	3. mode overlay           — InteractiveOverlay (default) or AutonomousOverlay via WithMode
 //	4. user memory            — WithUserInstruction (the pkg/instruction loader's output)
 //	5. consumer/operator text — WithExtraInstruction (repeatable), config append_system_prompt, flags
@@ -100,8 +100,16 @@ const CoreInstruction = `Independent tool calls issued in the same response may 
 
 Earlier conversation may have been summarized into context for you in one of two shapes: "[Conversation compacted…]" framing (we hit the context wall mid-task and the prior turns were condensed), or "[The prior task is complete…]" framing (the prior task closed cleanly and a handover record replaces its history). Both arrive wrapped at the start of your context, both are authoritative shared history. Read FROM them when the user references prior work — what was discussed, what files were touched, what was decided — rather than re-running tools to rediscover what's already recorded there. The conversation continues in both cases; treat the framing as picking up an in-progress session, not as a fresh start.`
 
-// GeminiParallelismQuirk is a layer-2 provider quirk applied to
-// Gemini-family models (model identifier containing "gemini").
+// GeminiParallelismQuirk is the full-suite reference text for the
+// layer-2 provider quirk applied to Gemini-family models (model
+// identifier containing "gemini").
+//
+// agent.New and RunSubtask tailor the injected quirk to the agent's
+// enabled tool surface (#1608): file, grep, shell, and edit examples are
+// included only when the corresponding built-in tools are registered,
+// the "When investigating code, " lead-in is dropped for deployment
+// neutrality (#909), non-builtin/MCP-only agents receive generic
+// parallel-call guidance, and tool-less agents omit the quirk altogether.
 //
 // Probe evidence (dev/parallel-probe/): Gemini-3.1-pro-preview-
 // customtools without this mandate never batched across 65 search
@@ -158,11 +166,11 @@ const (
 // mode overlay → user memory → extras, blank-line joined, empty
 // layers omitted. Shared by agent.New and RunSubtask (which builds
 // its llmagent directly).
-func assembleInstruction(modelName string, mode Mode, noQuirks bool, userInstruction string, extras []string) string {
+func assembleInstruction(modelName string, mode Mode, noQuirks bool, surface quirkToolSurface, userInstruction string, extras []string) string {
 	layers := make([]string, 0, 4+len(extras))
 	layers = append(layers, CoreInstruction)
 	if !noQuirks {
-		layers = append(layers, providerQuirks(modelName)...)
+		layers = append(layers, providerQuirks(modelName, surface)...)
 	}
 	switch mode {
 	case ModeAutonomous:
@@ -177,13 +185,16 @@ func assembleInstruction(modelName string, mode Mode, noQuirks bool, userInstruc
 	return joinLayers(layers)
 }
 
-// providerQuirks selects the layer-2 workarounds for a model
-// identifier. Quirk admission requires probe evidence cited on the
-// quirk const, and each quirk names its models so it can be retired
-// when the provider improves. Claude models get no quirks today.
-func providerQuirks(modelName string) []string {
-	if strings.Contains(strings.ToLower(modelName), "gemini") {
-		return []string{GeminiParallelismQuirk}
+// providerQuirks selects the layer-2 workarounds for a model identifier
+// and enabled tool surface (#1608). Quirk admission requires probe
+// evidence cited on the quirk const, and each quirk names its models so
+// it can be retired when the provider improves. Claude models get no
+// quirks today.
+func providerQuirks(modelName string, surface quirkToolSurface) []string {
+	if isGeminiModel(modelName) {
+		if q := geminiParallelismQuirk(surface); q != "" {
+			return []string{q}
+		}
 	}
 	return nil
 }
@@ -1153,22 +1164,12 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		return nil, fmt.Errorf("agent: watchdog alert counter: %w", err)
 	}
 
-	// Layer assembly (#459). WithInstruction / the deprecated prefix
+	// Layer assembly (#459, #1608). WithInstruction / the deprecated prefix
 	// path replace layers 1–3 wholesale; layers 4–5 append in both
 	// arrangements so operator appends compose with a custom base.
-	instruction := o.instruction
-	if o.instructionExplicit {
-		tail := make([]string, 0, 1+len(o.extraInstructions))
-		if o.userInstruction != "" {
-			tail = append(tail, o.userInstruction)
-		}
-		tail = append(tail, o.extraInstructions...)
-		instruction = joinLayers(append([]string{instruction}, tail...))
-	} else {
-		instruction = assembleInstruction(model.Name(), o.mode, o.noQuirks, o.userInstruction, o.extraInstructions)
-	}
+	instructionProvider, llmToolsets := buildInstructionProvider(&o, model.Name(), o.toolsets)
 
-	inner, runnerRoot, err := buildInnerLLMAgent(&o, model, instruction)
+	inner, runnerRoot, err := buildInnerLLMAgent(&o, model, instructionProvider, llmToolsets)
 	if err != nil {
 		return nil, err
 	}

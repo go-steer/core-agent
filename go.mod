@@ -41,7 +41,7 @@ require (
 	golang.org/x/time v0.16.0
 	google.golang.org/adk/v2 v2.6.0
 	google.golang.org/api v0.300.0
-	google.golang.org/genai v1.74.0
+	google.golang.org/genai v1.77.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1

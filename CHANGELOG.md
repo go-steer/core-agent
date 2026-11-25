@@ -14,7 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.2.0]._
+### Changes by Kind
+
+#### Bug or Regression
+- **Raise genai to v1.77.0 so a mid-stream Gemini error fails the call (`go.mod`).** genai before v1.76.0 read an SSE error event as an empty chunk, completing the call with the partial text. ([#1600](https://github.com/go-steer/core-agent/issues/1600))
 
 ## [3.2.0] — 2026-11-20
 

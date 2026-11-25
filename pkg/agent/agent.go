@@ -286,6 +286,7 @@ type Agent struct {
 	eventLog       *eventlog.Handle
 	tools          []tool.Tool
 	streaming      adkagent.StreamingMode
+	thinkingLevel  string
 	appName        string
 	agentName      string
 	// priorSuccess is marked once a model call in this session has
@@ -480,6 +481,7 @@ type options struct {
 	extraInstructions   []string
 	noQuirks            bool
 	streaming           adkagent.StreamingMode
+	thinkingLevel       string
 	userID              string
 	sessionID           string
 	tools               []tool.Tool
@@ -1147,6 +1149,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		eventLog:             o.eventLog,
 		tools:                o.tools,
 		streaming:            o.streaming,
+		thinkingLevel:        o.thinkingLevel,
 		appName:              o.appName,
 		agentName:            o.name,
 		priorSuccess:         models.NewPriorSuccess(),
@@ -1368,6 +1371,15 @@ func (a *Agent) Streaming() adkagent.StreamingMode {
 		return zero
 	}
 	return a.streaming
+}
+
+// ThinkingLevel returns the level WithThinkingLevel gave the agent, or
+// "". Part of the same accessor seam: background subagents inherit it.
+func (a *Agent) ThinkingLevel() string {
+	if a == nil {
+		return ""
+	}
+	return a.thinkingLevel
 }
 
 // Tracker returns the usage.Tracker the agent was constructed with via

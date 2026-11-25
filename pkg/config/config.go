@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -578,6 +579,59 @@ type ModelConfig struct {
 	// axis from `tools.disable` / `--no-builtin-tools`, which govern
 	// core-agent's own function tools.
 	BuiltinTools *BuiltinToolsConfig `json:"builtin_tools,omitempty" yaml:"builtin_tools,omitempty"`
+
+	// ThinkingLevel is how hard the model thinks on the agent's own
+	// turns: "minimal", "low", "medium", "high", "xhigh" or "max"
+	// (case-insensitive). Empty leaves the provider's default. core-models
+	// maps the level onto each model's own setting: Claude's effort and
+	// Gemini 4's thinking level, fitted to what the model accepts (a level
+	// the model lacks becomes the next lower one it has), and OpenAI's
+	// reasoning effort. Gemini models before 4 receive the level as given.
+	// On Claude 4.6 and later any level also turns adaptive thinking on.
+	// Side calls (titles, the approver, compaction, digests) keep their
+	// own settings. A subagent without its own model.thinking_level
+	// inherits this one, including one resolved to a smaller tier model.
+	ThinkingLevel string `json:"thinking_level,omitempty" yaml:"thinking_level,omitempty"`
+}
+
+// SubagentThinkingLevel is the thinking level spec runs at: its own
+// model.thinking_level when set, otherwise the parent's, so a subagent
+// that only changes its model name keeps the parent's level.
+func (c *Config) SubagentThinkingLevel(spec SubagentSpec) string {
+	if spec.Model != nil && strings.TrimSpace(spec.Model.ThinkingLevel) != "" {
+		return spec.Model.ThinkingLevel
+	}
+	return c.Model.ThinkingLevel
+}
+
+// thinkingLevels are the accepted model.thinking_level values, lowest
+// first.
+var thinkingLevels = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+// IsThinkingLevel reports whether level is an accepted
+// model.thinking_level value: one of minimal, low, medium, high, xhigh,
+// max, case-insensitive and ignoring surrounding space. Empty is not a
+// level (it means "unset").
+func IsThinkingLevel(level string) bool {
+	return slices.Contains(thinkingLevels, strings.ToLower(strings.TrimSpace(level)))
+}
+
+// validateThinkingLevel rejects a model.thinking_level core-models would
+// not recognise, which it would otherwise ignore silently.
+func validateThinkingLevel(level, path string) error {
+	if strings.TrimSpace(level) == "" || IsThinkingLevel(level) {
+		return nil
+	}
+	return fmt.Errorf("config: %s.thinking_level %q must be one of %s", path, level, strings.Join(thinkingLevels, ", "))
+}
+
+// validateModelBlock runs the per-model checks shared by the top-level
+// model block and each subagent's.
+func validateModelBlock(m ModelConfig, path string) error {
+	if err := validatePromptCacheTTL(m.Anthropic, path); err != nil {
+		return err
+	}
+	return validateThinkingLevel(m.ThinkingLevel, path)
 }
 
 // BuiltinToolsConfig gates the provider's server-side built-in tools —
@@ -2291,7 +2345,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: model.anthropic.vertex.project and model.anthropic.vertex.location are required when provider is %q (or set ANTHROPIC_VERTEX_PROJECT_ID / CLOUD_ML_REGION)", ProviderAnthropicVertex)
 		}
 	}
-	if err := validatePromptCacheTTL(c.Model.Anthropic, "model"); err != nil {
+	if err := validateModelBlock(c.Model, "model"); err != nil {
 		return err
 	}
 	switch c.Permissions.Mode {
@@ -2727,7 +2781,7 @@ func (c *Config) validateSubagents() error {
 			// parent's does, so it has to reach the same check — a typo
 			// here would downgrade the delegate silently while the
 			// parent's identical typo stopped the run.
-			if err := validatePromptCacheTTL(sa.Model.Anthropic, fmt.Sprintf("subagents[%d].model", i)); err != nil {
+			if err := validateModelBlock(*sa.Model, fmt.Sprintf("subagents[%d].model", i)); err != nil {
 				return err
 			}
 		}

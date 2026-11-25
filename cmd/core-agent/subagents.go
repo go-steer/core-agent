@@ -485,7 +485,7 @@ func buildDeclaredSubagents(
 		// which differs from the parent's when spec.Model names another
 		// provider. Both doors price on it.
 		backend := models.BackendOf(subProvider)
-		sub, err := assembleSubagent(spec, cfg.Agent.FinalReport, llm, backend, userInstruction, subTools, subToolsets.sets, projectRoot, rootAbs, deps.rootBase, deps.gate, subMemRouter, subMemSettings)
+		sub, err := assembleSubagent(spec, cfg.Agent.FinalReport, cfg.SubagentThinkingLevel(spec), llm, backend, userInstruction, subTools, subToolsets.sets, projectRoot, rootAbs, deps.rootBase, deps.gate, subMemRouter, subMemSettings)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
@@ -500,17 +500,18 @@ func buildDeclaredSubagents(
 		// the loop variables.
 		p, mn := subProvider, modelName
 		templates = append(templates, background.SubagentTemplate{
-			Name:         spec.Name,
-			Description:  spec.Description,
-			ModelFactory: func(c context.Context) (adkmodel.LLM, error) { return p.Model(c, mn) },
-			ModelID:      mn,
-			Backend:      backend,
-			Instruction:  userInstruction,
-			Tools:        subTools,
-			Toolsets:     subToolsets.sets,
-			ToolsetTools: subToolsets.infos,
-			MaxDepth:     spec.MaxDepth,
-			Root:         spec.Root,
+			Name:          spec.Name,
+			Description:   spec.Description,
+			ModelFactory:  func(c context.Context) (adkmodel.LLM, error) { return p.Model(c, mn) },
+			ModelID:       mn,
+			Backend:       backend,
+			Instruction:   userInstruction,
+			ThinkingLevel: cfg.SubagentThinkingLevel(spec),
+			Tools:         subTools,
+			Toolsets:      subToolsets.sets,
+			ToolsetTools:  subToolsets.infos,
+			MaxDepth:      spec.MaxDepth,
+			Root:          spec.Root,
 			// The declared cap binds this door too. Zero leaves the
 			// manager's defaults (50 turns / $1 / 10m) in place via
 			// mergeBudgets; a per-spawn override may only tighten.
@@ -591,7 +592,7 @@ func buildRemoteSubagentTemplate(spec config.SubagentSpec, send func(string)) (b
 
 // assembleSubagent builds the *agent.Agent from a resolved model, persona,
 // and tool surface — the common tail shared by the inline and rooted paths.
-func assembleSubagent(spec config.SubagentSpec, finalReport bool, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset, projectRoot, rootAbs, rootBase string, gate *permissions.Gate, memRouter *memory.Router, memSettings agent.MemorySettings) (*agent.Agent, error) {
+func assembleSubagent(spec config.SubagentSpec, finalReport bool, thinkingLevel string, llm adkmodel.LLM, backend, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset, projectRoot, rootAbs, rootBase string, gate *permissions.Gate, memRouter *memory.Router, memSettings agent.MemorySettings) (*agent.Agent, error) {
 	returnContract := agent.SubagentReturnContract("")
 	if spec.EffectiveMode() == config.SubagentModeTask {
 		returnContract = agent.SubagentReturnContract(agent.FinishTaskToolName)
@@ -612,6 +613,7 @@ func assembleSubagent(spec config.SubagentSpec, finalReport bool, llm adkmodel.L
 		// through ADK's finish_task tool (#1401).
 		agent.WithExtraInstruction(returnContract),
 	}
+	opts = append(opts, agent.WithThinkingLevel(thinkingLevel))
 	if gate != nil {
 		opts = append(opts, agent.WithGate(gate))
 	}

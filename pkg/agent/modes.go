@@ -39,6 +39,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent/internal/toolcalls"
+	"github.com/go-steer/core-agent/v3/pkg/config"
 )
 
 // SubagentMode selects the ADK execution contract for a subagent (#1401).
@@ -78,6 +79,47 @@ func WithOutputSchema(s *genai.Schema) Option {
 // underlying llmagent.
 func WithBeforeModelCallbacks(cbs ...llmagent.BeforeModelCallback) Option {
 	return func(o *options) { o.beforeModelCallbacks = append(o.beforeModelCallbacks, cbs...) }
+}
+
+// WithThinkingLevel sets how hard the model thinks on this agent's own
+// turns: "minimal", "low", "medium", "high", "xhigh" or "max",
+// case-insensitive (config.IsThinkingLevel); New rejects anything else.
+// Empty clears it. The last WithThinkingLevel wins. The level travels as
+// genai.ThinkingConfig.ThinkingLevel, which core-models maps onto each
+// model's own setting.
+//
+// It is applied by a BeforeModelCallback installed after every
+// WithBeforeModelCallbacks callback, so it reaches only this agent's
+// turns: side calls that drive the model directly (session titles, the
+// approver, compaction, digests) keep their own settings, and it survives
+// a mid-session model switch. A request that already carries a thinking
+// level or budget, set by an earlier callback, is left alone.
+func WithThinkingLevel(level string) Option {
+	level = strings.TrimSpace(level)
+	return func(o *options) { o.thinkingLevel = level }
+}
+
+func thinkingLevelCallback(level genai.ThinkingLevel) llmagent.BeforeModelCallback {
+	return func(_ adkagent.Context, req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+		if req == nil {
+			return nil, nil
+		}
+		var cfg genai.GenerateContentConfig
+		if req.Config != nil {
+			cfg = *req.Config
+		}
+		var tc genai.ThinkingConfig
+		if cfg.ThinkingConfig != nil {
+			if cfg.ThinkingConfig.ThinkingLevel != "" || cfg.ThinkingConfig.ThinkingBudget != nil {
+				return nil, nil
+			}
+			tc = *cfg.ThinkingConfig
+		}
+		tc.ThinkingLevel = level
+		cfg.ThinkingConfig = &tc
+		req.Config = &cfg
+		return nil, nil
+	}
 }
 
 // WithAfterModelCallbacks registers ADK AfterModelCallbacks on the
@@ -641,6 +683,9 @@ func buildInnerLLMAgent(o *options, model adkmodel.LLM, instruction string) (inn
 	default:
 		return nil, nil, fmt.Errorf("agent: unknown SubagentMode %q", o.subagentMode)
 	}
+	if o.thinkingLevel != "" && !config.IsThinkingLevel(o.thinkingLevel) {
+		return nil, nil, fmt.Errorf("agent: unknown thinking level %q (want minimal, low, medium, high, xhigh or max)", o.thinkingLevel)
+	}
 
 	cfg := llmagent.Config{
 		Name:                o.name,
@@ -672,6 +717,12 @@ func buildInnerLLMAgent(o *options, model adkmodel.LLM, instruction string) (inn
 			cfg.DisallowTransferToParent = o.disallowTransferToParent
 			cfg.DisallowTransferToPeers = o.disallowTransferToPeers
 		}
+	}
+	// Last, after the caller's callbacks: a level fills only what they
+	// left unset (WithThinkingLevel).
+	if o.thinkingLevel != "" {
+		cfg.BeforeModelCallbacks = append(cfg.BeforeModelCallbacks,
+			thinkingLevelCallback(genai.ThinkingLevel(strings.ToUpper(o.thinkingLevel))))
 	}
 	// Left nil when there is no prompt, which is not the same as a
 	// provider that returns "". ADK's Instruction branch skips an empty

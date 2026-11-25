@@ -66,9 +66,12 @@ cd "$(repo_root)"
 #   - github.com/itchyny/gojq: two built-in tools (json_query and
 #     wait_and_verify's predicates) are jq.
 #   - otelhttp: genai.
+#   - genai/interactions/models/decisions and genai/interactions/redact:
+#     genai v1.78+ (the Decisions API), raised 570 -> 571 in #1605 with
+#     the genai v1.79.1 bump (the slim count went from 569 to 571).
 # Raise the ceiling only in the PR that knowingly adds weight, and say
 # what came in.
-SLIM_MAX_PACKAGES="${SLIM_MAX_PACKAGES:-570}"
+SLIM_MAX_PACKAGES="${SLIM_MAX_PACKAGES:-571}"
 
 DENYLIST=(
   # Binary entrypoints and TUI/daemon internal packages.

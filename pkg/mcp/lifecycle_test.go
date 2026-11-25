@@ -17,10 +17,13 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -28,8 +31,12 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
+	adkagent "google.golang.org/adk/v2/agent"
 
 	"github.com/go-steer/core-agent/v3/pkg/agentenv"
+	"github.com/go-steer/core-agent/v3/pkg/digest"
+	"github.com/go-steer/core-agent/v3/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v3/pkg/tools"
 )
 
 func TestServer_Close_NilSafe(t *testing.T) {
@@ -268,5 +275,180 @@ func TestTransportFor_RejectsMistypedGoogleAuthEnv(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "default credentials") {
 		t.Fatalf("error %q is about ADC; the variable check must run first", err)
+	}
+}
+
+func TestServer_UndigestedToolset_NilSafeAndFallback(t *testing.T) {
+	t.Parallel()
+	if got := (*Server)(nil).UndigestedToolset(); got != nil {
+		t.Errorf("(*Server)(nil).UndigestedToolset() = %v, want nil", got)
+	}
+	if got := (&Server{}).UndigestedToolset(); got != nil {
+		t.Errorf("(&Server{}).UndigestedToolset() = %v, want nil", got)
+	}
+	inner := newInMemoryToolset(t)
+	srv := &Server{toolset: inner}
+	if got := srv.UndigestedToolset(); got != inner {
+		t.Errorf("fallback UndigestedToolset() = %v, want Toolset()", got)
+	}
+}
+
+func TestWrapServerToolsets_UndigestedSkipsDigestAndPreservesGateAndHints(t *testing.T) {
+	t.Parallel()
+	store := &spyStore{}
+	yoloGate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	spec := ServerSpec{
+		Transport: "http",
+		URL:       "http://127.0.0.1:1",
+		ReadOnly:  true,
+		ToolNotes: map[string]string{"echo": "echo operator note"},
+	}
+	digested, undigested, _ := wrapServerToolsets(
+		newInMemoryToolset(t), "demo", spec,
+		&DigestOptions{Threshold: 100, Store: store},
+		yoloGate,
+	)
+	if digested == undigested {
+		t.Fatal("expected distinct undigested toolset when digesting is active")
+	}
+
+	// Both preserve ReadOnlyHint and ToolNotes.
+	digTools := toolsOf(t, digested)
+	rawTools := toolsOf(t, undigested)
+	digEcho := digTools["demo_echo"]
+	rawEcho := rawTools["demo_echo"]
+	if digEcho == nil || rawEcho == nil {
+		t.Fatalf("missing demo_echo: digested=%v undigested=%v", digEcho != nil, rawEcho != nil)
+	}
+	if !coretools.IsReadOnlyTool(rawEcho) {
+		t.Error("undigested MCP tool lost ReadOnlyHint classification")
+	}
+	if !strings.Contains(rawEcho.Description(), "echo operator note") {
+		t.Errorf("undigested MCP tool description = %q, want operator note", rawEcho.Description())
+	}
+
+	bigMsg := "HEAD_" + strings.Repeat("payload-", 400) + "_TAIL_MARKER"
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-1604"}
+
+	digRes, err := digEcho.(runnable).Run(callCtx, map[string]any{"msg": bigMsg})
+	if err != nil {
+		t.Fatalf("digested Run: %v", err)
+	}
+	if got, _ := digRes["method"].(string); got != digest.MethodStructuralJSON {
+		t.Errorf("digested method = %q, want %q", got, digest.MethodStructuralJSON)
+	}
+	if got, _ := digRes["call_id"].(string); got != "call-1604" {
+		t.Errorf("digested call_id = %q, want call-1604", got)
+	}
+
+	rawRes, err := rawEcho.(runnable).Run(callCtx, map[string]any{"msg": bigMsg})
+	if err != nil {
+		t.Fatalf("undigested Run: %v", err)
+	}
+	if _, hasDigest := rawRes["digest"]; hasDigest {
+		t.Errorf("undigested response unexpectedly carried digest key: %+v", rawRes)
+	}
+	if _, hasCallID := rawRes["call_id"]; hasCallID {
+		t.Errorf("undigested response unexpectedly carried call_id key: %+v", rawRes)
+	}
+	if !strings.Contains(fmt.Sprint(rawRes), "_TAIL_MARKER") {
+		t.Errorf("undigested response truncated payload: %+v", rawRes)
+	}
+
+	// Permission gate must still bind the undigested toolset.
+	denyPolicy, err := permissions.NewPolicy(nil, []string{"mcp:*"})
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	denyGate := permissions.New(permissions.Options{Mode: permissions.ModeAllow, Policy: denyPolicy})
+	_, gatedUndigested, _ := wrapServerToolsets(
+		newInMemoryToolset(t), "demo", spec,
+		&DigestOptions{Threshold: 100, Store: store},
+		denyGate,
+	)
+	deniedEcho := toolsOf(t, gatedUndigested)["demo_echo"]
+	if _, err := deniedEcho.(runnable).Run(callCtx, map[string]any{"msg": "hi"}); err == nil {
+		t.Error("undigested toolset bypassed permissions.Gate deny rule")
+	}
+
+	// When digesting is off (nil opts, AgenticNever, or NeverServers), no duplicate wrapper is allocated.
+	specNever := spec
+	specNever.AgenticNever = true
+	w1, u1, _ := wrapServerToolsets(newInMemoryToolset(t), "demo", specNever, &DigestOptions{Threshold: 100}, yoloGate)
+	if w1 != u1 {
+		t.Error("AgenticNever server should reuse the single toolset for UndigestedToolset")
+	}
+	w2, u2, _ := wrapServerToolsets(newInMemoryToolset(t), "demo", spec, nil, yoloGate)
+	if w2 != u2 {
+		t.Error("nil DigestOptions server should reuse the single toolset for UndigestedToolset")
+	}
+	w3, u3, _ := wrapServerToolsets(newInMemoryToolset(t), "demo", spec, &DigestOptions{
+		Threshold:    100,
+		NeverServers: map[string]bool{"demo": true},
+	}, yoloGate)
+	if w3 != u3 {
+		t.Error("NeverServers server should reuse the single toolset for UndigestedToolset")
+	}
+}
+
+func TestBuild_DoesNotMutateCallerDigestOptionsThreshold(t *testing.T) {
+	t.Parallel()
+	mcpSrv := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "test", Version: "v1"}, nil)
+	type in struct{}
+	type out struct {
+		Body string `json:"body"`
+	}
+	// ~2000 bytes: strictly above mcp.json's 1234 threshold and strictly below
+	// DefaultAgenticWrapThreshold (8000), proving the per-project threshold was
+	// actually enforced without mutating the caller's DigestOptions.
+	mcpsdk.AddTool(mcpSrv, &mcpsdk.Tool{
+		Name:        "payload",
+		Description: "Returns a ~2000-byte payload",
+	}, func(_ context.Context, _ *mcpsdk.CallToolRequest, _ in) (*mcpsdk.CallToolResult, out, error) {
+		return nil, out{Body: strings.Repeat("x", 2000)}, nil
+	})
+	httpSrv := httptest.NewServer(mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
+		return mcpSrv
+	}, &mcpsdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
+	defer func() {
+		httpSrv.CloseClientConnections()
+		httpSrv.Close()
+	}()
+
+	dir := t.TempDir()
+	cfgJSON := fmt.Sprintf(`{
+		"version": 1,
+		"agentic_wrap": true,
+		"agentic_wrap_threshold": 1234,
+		"servers": {
+			"demo": {"transport": "http", "url": %q}
+		}
+	}`, httpSrv.URL)
+	if err := os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(cfgJSON), 0o600); err != nil {
+		t.Fatalf("write mcp.json: %v", err)
+	}
+	opts := &DigestOptions{Store: &spyStore{}}
+	servers, _, err := Build(WithTrustedAgentsDir(context.Background(), dir), dir, "", nil, nil, nil, opts)
+	defer CloseAll(servers)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if opts.Threshold != 0 {
+		t.Errorf("Build mutated caller DigestOptions.Threshold to %d, want 0", opts.Threshold)
+	}
+	if len(servers) != 1 || servers[0].Toolset() == nil {
+		t.Fatalf("unexpected servers: %+v", servers)
+	}
+	pl := toolsOf(t, servers[0].Toolset())["demo_payload"]
+	if pl == nil {
+		t.Fatal("missing demo_payload tool")
+	}
+	callCtx := &stubToolCtx{StrictContextMock: adkagent.NewStrictContextMock(context.Background()), callID: "call-thr"}
+	res, err := pl.(runnable).Run(callCtx, map[string]any{})
+	if err != nil {
+		t.Fatalf("demo_payload Run: %v", err)
+	}
+	if got, _ := res["method"].(string); got != digest.MethodStructuralJSON {
+		t.Errorf("method = %q, want %q (mcp.json threshold 1234 was not applied to 2000-byte payload)", got, digest.MethodStructuralJSON)
 	}
 }

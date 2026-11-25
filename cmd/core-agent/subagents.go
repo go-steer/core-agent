@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -145,9 +146,66 @@ type sessionBackgroundRecipe struct {
 	// pkg/agent/background/session_gate_test.go — which reproduce all
 	// four of #825's predicted symptoms the moment that chain is cut.
 	templates []background.SubagentTemplate
+	// undigestedCatalog pairs each daemon digest-wrapped built-in survey
+	// tool with its pre-digest counterpart so per-session background
+	// managers hand ad-hoc spawns undigested survey tools (matching the
+	// single-session daemon manager, whose catalog was snapshotted before
+	// tools.NewDigester ran) without clobbering SessionCustomizer tools
+	// (#1604).
+	undigestedCatalog []undigestedToolPair
 	// live tracks the managers currently handed out, so daemon shutdown
 	// can drain them alongside the daemon's own.
 	live *sessionManagerSet
+}
+
+// undigestedToolPair maps one digest-wrapped built-in tool instance back to
+// its pre-digest counterpart. Matching by exact comparable tool identity keeps
+// SessionCustomizer-replaced tools of the same name intact.
+type undigestedToolPair struct {
+	digested adktool.Tool
+	raw      adktool.Tool
+}
+
+func buildUndigestedToolPairs(digested, undigested []adktool.Tool) []undigestedToolPair {
+	n := min(len(digested), len(undigested))
+	var pairs []undigestedToolPair
+	for i := 0; i < n; i++ {
+		d, raw := digested[i], undigested[i]
+		if d == nil || raw == nil {
+			continue
+		}
+		if !reflect.TypeOf(d).Comparable() {
+			continue
+		}
+		if reflect.TypeOf(raw).Comparable() && d == raw {
+			continue
+		}
+		pairs = append(pairs, undigestedToolPair{digested: d, raw: raw})
+	}
+	return pairs
+}
+
+func undigestCatalog(base []adktool.Tool, pairs []undigestedToolPair) []adktool.Tool {
+	if len(base) == 0 || len(pairs) == 0 {
+		return base
+	}
+	out := make([]adktool.Tool, len(base))
+	for i, t := range base {
+		out[i] = t
+		if t == nil {
+			continue
+		}
+		for _, p := range pairs {
+			// p.digested is guaranteed comparable by buildUndigestedToolPairs,
+			// so Go interface equality cannot panic even if t's dynamic type is
+			// uncomparable (different dynamic types compare false).
+			if t == p.digested {
+				out[i] = p.raw
+				break
+			}
+		}
+	}
+	return out
 }
 
 // sessionManagerSet tracks the live per-session managers so daemon
@@ -235,12 +293,17 @@ func (r sessionBackgroundRecipe) factory() compose.SessionBackgroundFactory {
 			}
 			base = append(base, t)
 		}
+		// Keep base (digested) on the session parent's own tool surface
+		// (which holds retrieve_raw), while handing the background manager
+		// an undigested catalog so ad-hoc spawns that omit retrieve_raw do
+		// not receive dead call_ids (#1604).
+		catalog := undigestCatalog(base, r.undigestedCatalog)
 		mgr, err := background.NewManager(
 			background.WithProvider(r.provider, scope.ModelName),
 			// THIS session's sub-gate, so its subagents inherit its mode,
 			// approvals and plan-first state instead of the daemon's.
 			background.WithGate(scope.Gate),
-			background.WithCatalog(base),
+			background.WithCatalog(catalog),
 			background.WithAllowAdhoc(r.allowAdhoc),
 			background.WithSmallModelID(r.smallModelID),
 			background.WithSpawnPricingCheck(r.spawnPricing),
@@ -275,6 +338,10 @@ func (r sessionBackgroundRecipe) factory() compose.SessionBackgroundFactory {
 	}
 }
 
+// retrieveRawToolName is the built-in tool name models call to recover raw
+// payloads from a digest call_id (pkg/tools/retrieve.go).
+const retrieveRawToolName = "retrieve_raw"
+
 // namedToolset pairs an MCP server's name with its already-started
 // toolset, so a scoped subagent can select servers by name. Built from
 // the parent's []*mcp.Server at the call site; a server that failed to
@@ -283,6 +350,12 @@ func (r sessionBackgroundRecipe) factory() compose.SessionBackgroundFactory {
 type namedToolset struct {
 	name    string
 	toolset adktool.Toolset
+	// undigestedToolset is the same gated, namespaced MCP server without
+	// the response-digest wrapper (mcp.Server.UndigestedToolset). Selected
+	// for inline subagents whose resolved built-in tool list omits
+	// retrieve_raw so they never receive an uncallable call_id (#1604).
+	// Nil falls back to toolset.
+	undigestedToolset adktool.Toolset
 	// infos is the server's startup tool snapshot (mcp.Server.ToolInfos),
 	// carried alongside so a subagent's operator catalog can name the
 	// tools it inherited and which server they came from (#768) without
@@ -299,6 +372,11 @@ type parentSurface struct {
 	// builtinTools is the parent's built-in registry (read_file, bash,
 	// spawn tools, agentic wrappers, …) after all disable/append passes.
 	builtinTools []adktool.Tool
+	// undigestedBuiltinTools holds the pre-digest built-in instances
+	// corresponding to builtinTools. Substituted for subagents whose
+	// resolved tool list omits retrieve_raw so survey built-ins (grep,
+	// glob, list_dir, read_many_files) never emit a dead call_id (#1604).
+	undigestedBuiltinTools []adktool.Tool
 	// mcpToolsets is the parent's already-started MCP servers as (name,
 	// toolset) pairs; a scoped subagent selects among them by name and
 	// reuses each server's existing toolset (no second mcp.Build, no
@@ -312,14 +390,17 @@ type parentSurface struct {
 // subagentDeps bundles the process-scoped collaborators buildDeclaredSubagents
 // needs beyond the parent surface — chiefly to stand up a rooted subagent's
 // OWN mcp.json + skills/ + persona from a dedicated content root. They are the
-// same instances the parent used (one permission gate, one elicitor, one digest
-// config), so a rooted subagent's servers and skills are gated and digested
-// identically; it gains its own scope, never its own privileges.
+// same instances the parent used (one permission gate, one elicitor, and — when
+// the subagent's resolved built-in tools include retrieve_raw — one digest
+// config), so a rooted subagent's servers and skills are gated identically and
+// digested only when the subagent can recover raw payloads; it gains its own
+// scope, never its own privileges.
 type subagentDeps struct {
 	// gate is the shared permission gate every subagent's tools run behind.
 	gate *permissions.Gate
-	// elicitor + digestOpts are handed to mcp.Build for a rooted subagent's
-	// own servers, matching the parent's MCP behavior exactly.
+	// elicitor is handed to mcp.Build for a rooted subagent's own servers,
+	// and digestOpts is forwarded only when the subagent's resolved
+	// built-in toolset includes retrieve_raw (#1604).
 	elicitor   mcp.ElicitorFn
 	digestOpts *mcp.DigestOptions
 	// interp substitutes ${env:VAR} in loaded instruction + skill bodies.
@@ -392,13 +473,20 @@ func buildDeclaredSubagents(
 	projectRoot string,
 	surface parentSurface,
 	deps subagentDeps,
-) ([]*agent.Agent, []background.SubagentTemplate, []*mcp.Server, error) {
+) (subs []*agent.Agent, templates []background.SubagentTemplate, rootedServers []*mcp.Server, retErr error) {
 	if len(cfg.Subagents) == 0 {
 		return nil, nil, nil, nil
 	}
-	subs := make([]*agent.Agent, 0, len(cfg.Subagents))
-	templates := make([]background.SubagentTemplate, 0, len(cfg.Subagents))
-	var rootedServers []*mcp.Server
+	subs = make([]*agent.Agent, 0, len(cfg.Subagents))
+	templates = make([]background.SubagentTemplate, 0, len(cfg.Subagents))
+	var unownedClosers []func()
+	defer func() {
+		if retErr != nil {
+			for _, fn := range unownedClosers {
+				fn()
+			}
+		}
+	}()
 	for i, spec := range cfg.Subagents {
 		if spec.Remote != nil {
 			tmpl, err := buildRemoteSubagentTemplate(spec, deps.send)
@@ -419,16 +507,51 @@ func buildDeclaredSubagents(
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
 		}
 
+		var rootAbs string
+		if spec.Root != "" {
+			rootAbs, err = resolveSubagentRootPath(spec.Root, deps.rootBase)
+			if err != nil {
+				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+			}
+		}
+
+		subMemRouter, subMemSettings, closeSubMem, err := agent.ResolveSubagentMemory(
+			ctx, deps.memoryRouter, deps.memorySettings, spec, rootAbs, os.Getenv,
+		)
+		if closeSubMem != nil {
+			if deps.onClose != nil {
+				deps.onClose(closeSubMem)
+			} else {
+				unownedClosers = append(unownedClosers, closeSubMem)
+			}
+		}
+		if err != nil {
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: memory: %w", i, spec.Name, err)
+		}
+
+		// Resolve built-ins BEFORE standing up MCP servers so digest wrapping
+		// is gated on whether this subagent actually holds retrieve_raw (#1604).
+		// Built-ins always resolve against the parent registry — they ship
+		// in the binary, not in any content root. droppedTools is the
+		// spawn-tool carve-out (#748), reported on the boot line below.
+		subTools, droppedTools, err := resolveSubagentToolsWithMemory(spec, surface.builtinTools, subMemRouter != nil)
+		if err != nil {
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
+		}
+		canRetrieveRaw := hasToolNamed(subTools, retrieveRawToolName)
+		if !canRetrieveRaw && len(surface.undigestedBuiltinTools) > 0 {
+			subTools = replaceWithUndigestedTools(subTools, surface.undigestedBuiltinTools)
+		}
+
 		var (
 			subToolsets     subagentToolsets
 			userInstruction string
 			scopeDesc       string
-			rootAbs         string
 		)
 		if spec.Root != "" {
 			var rootSurface parentSurface
 			var servers []*mcp.Server
-			rootAbs, rootSurface, servers, err = loadSubagentRoot(ctx, spec, deps)
+			rootSurface, servers, err = loadSubagentRootDir(ctx, spec, rootAbs, subagentDepsForTools(deps, subTools))
 			// servers may be non-nil even on a later error (skills load fails
 			// after mcp.Build succeeded) — collect them for shutdown either way.
 			rootedServers = append(rootedServers, servers...)
@@ -446,7 +569,11 @@ func buildDeclaredSubagents(
 			}
 			scopeDesc = fmt.Sprintf("root=%s (%s), %s", rootAbs, rootInventory(rootSurface), scopeDesc)
 		} else {
-			subToolsets, err = resolveSubagentToolsets(ctx, spec, surface)
+			inlineSurface := surface
+			if !canRetrieveRaw {
+				inlineSurface = surfaceWithoutMCPDigest(surface)
+			}
+			subToolsets, err = resolveSubagentToolsets(ctx, spec, inlineSurface)
 			if err != nil {
 				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 			}
@@ -457,24 +584,6 @@ func buildDeclaredSubagents(
 					return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
 				}
 			}
-		}
-
-		subMemRouter, subMemSettings, closeSubMem, err := agent.ResolveSubagentMemory(
-			ctx, deps.memoryRouter, deps.memorySettings, spec, rootAbs, os.Getenv,
-		)
-		if closeSubMem != nil && deps.onClose != nil {
-			deps.onClose(closeSubMem)
-		}
-		if err != nil {
-			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: memory: %w", i, spec.Name, err)
-		}
-
-		// Built-ins always resolve against the parent registry — they ship
-		// in the binary, not in any content root. droppedTools is the
-		// spawn-tool carve-out (#748), reported on the boot line below.
-		subTools, droppedTools, err := resolveSubagentToolsWithMemory(spec, surface.builtinTools, subMemRouter != nil)
-		if err != nil {
-			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
 		}
 
 		if err := checkSubagentCapability(ctx, spec, cfg.Tools.Policies, subTools, subToolsets.mcpSets); err != nil {
@@ -757,6 +866,78 @@ func asyncBudgets(b *config.SubagentBudgets) background.Budgets {
 	}
 }
 
+// subagentDepsForTools disables MCP digest wrapping when a subagent's resolved
+// built-in toolset does not include retrieve_raw (#1604). Passing nil
+// DigestOptions turns off digestingTool completely while keeping namespacing,
+// read-only hints, and permission gating intact — unlike passing Store: nil,
+// which still prunes responses with no recovery path.
+func subagentDepsForTools(deps subagentDeps, subTools []adktool.Tool) subagentDeps {
+	if deps.digestOpts == nil || hasToolNamed(subTools, retrieveRawToolName) {
+		return deps
+	}
+	deps.digestOpts = nil
+	return deps
+}
+
+// surfaceWithoutMCPDigest returns a shallow copy of surface whose parent MCP
+// entries point to their undigested (still gated and namespaced) toolsets,
+// for inline subagents without retrieve_raw (#1604).
+func surfaceWithoutMCPDigest(surface parentSurface) parentSurface {
+	if len(surface.mcpToolsets) == 0 {
+		return surface
+	}
+	out := surface
+	out.mcpToolsets = make([]namedToolset, len(surface.mcpToolsets))
+	for i, s := range surface.mcpToolsets {
+		if s.undigestedToolset != nil {
+			s.toolset = s.undigestedToolset
+		}
+		out.mcpToolsets[i] = s
+	}
+	return out
+}
+
+// replaceWithUndigestedTools swaps resolved built-in tools for their pre-digest
+// equivalents by name when a subagent lacks retrieve_raw (#1604).
+func replaceWithUndigestedTools(resolved, undigested []adktool.Tool) []adktool.Tool {
+	if len(resolved) == 0 || len(undigested) == 0 {
+		return resolved
+	}
+	byName := make(map[string]adktool.Tool, len(undigested))
+	for _, t := range undigested {
+		if t != nil {
+			byName[t.Name()] = t
+		}
+	}
+	out := make([]adktool.Tool, len(resolved))
+	for i, t := range resolved {
+		if t != nil {
+			if raw, ok := byName[t.Name()]; ok {
+				out[i] = raw
+				continue
+			}
+		}
+		out[i] = t
+	}
+	return out
+}
+
+func resolveSubagentRootPath(root, rootBase string) (string, error) {
+	rootAbs := root
+	if !filepath.IsAbs(rootAbs) {
+		rootAbs = filepath.Join(rootBase, rootAbs)
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	info, err := os.Stat(rootAbs)
+	if err != nil {
+		return "", fmt.Errorf("root: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("root %q is not a directory", rootAbs)
+	}
+	return rootAbs, nil
+}
+
 // loadSubagentRoot stands up a rooted subagent's OWN scope from a dedicated
 // content root: its mcp.json servers and skills/ tree, returned as a
 // parentSurface the shared resolveSubagentToolsets can scope exactly as it
@@ -771,19 +952,18 @@ func asyncBudgets(b *config.SubagentBudgets) background.Budgets {
 // non-fatal, matching the parent: a down server surfaces as StatusError with
 // a nil toolset and is skipped by name selection.
 func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subagentDeps) (string, parentSurface, []*mcp.Server, error) {
-	rootAbs := spec.Root
-	if !filepath.IsAbs(rootAbs) {
-		rootAbs = filepath.Join(deps.rootBase, rootAbs)
-	}
-	rootAbs = filepath.Clean(rootAbs)
-	info, err := os.Stat(rootAbs)
+	rootAbs, err := resolveSubagentRootPath(spec.Root, deps.rootBase)
 	if err != nil {
-		return "", parentSurface{}, nil, fmt.Errorf("root: %w", err)
+		return "", parentSurface{}, nil, err
 	}
-	if !info.IsDir() {
-		return "", parentSurface{}, nil, fmt.Errorf("root %q is not a directory", rootAbs)
+	rootSurface, servers, err := loadSubagentRootDir(ctx, spec, rootAbs, deps)
+	if err != nil {
+		return "", parentSurface{}, servers, err
 	}
+	return rootAbs, rootSurface, servers, nil
+}
 
+func loadSubagentRootDir(ctx context.Context, spec config.SubagentSpec, rootAbs string, deps subagentDeps) (parentSurface, []*mcp.Server, error) {
 	// Own MCP servers from <root>/mcp.json (no home-agents overlay — the
 	// root is self-contained, which is the point of an independent scope).
 	servers, _, mcpErr := mcp.Build(mcp.WithTrustedAgentsDir(ctx, rootAbs), rootAbs, "", deps.send, deps.gate, deps.elicitor, deps.digestOpts)
@@ -802,13 +982,18 @@ func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subage
 		if s == nil {
 			continue
 		}
-		named = append(named, namedToolset{name: s.Name, toolset: s.Toolset(), infos: s.ToolInfos})
+		named = append(named, namedToolset{
+			name:              s.Name,
+			toolset:           s.Toolset(),
+			undigestedToolset: s.UndigestedToolset(),
+			infos:             s.ToolInfos,
+		})
 	}
 
 	// Own skills from <root>/skills/ (again no home/user overlay).
 	rootSkills, err := skills.LoadAll(ctx, rootAbs, "", deps.gate, skills.WithInterpolator(deps.interp))
 	if err != nil {
-		return "", parentSurface{}, servers, fmt.Errorf("skills: %w", err)
+		return parentSurface{}, servers, fmt.Errorf("skills: %w", err)
 	}
 	// Named in full, one per line — rootInventory only counts them, and a
 	// count doesn't tell the author which binary to install (#962). Same
@@ -821,7 +1006,7 @@ func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subage
 	// builtinTools intentionally nil: resolveSubagentTools already resolved
 	// built-ins against the parent registry; resolveSubagentToolsets reads
 	// only mcpToolsets + skills from the surface.
-	return rootAbs, parentSurface{mcpToolsets: named, skills: rootSkills}, servers, nil
+	return parentSurface{mcpToolsets: named, skills: rootSkills}, servers, nil
 }
 
 // rootInventory reports what a content root actually yielded — server and

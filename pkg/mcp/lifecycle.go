@@ -68,9 +68,10 @@ type Server struct {
 	// that reason: Status stays StatusOK and the toolset is live, so a
 	// consumer that only checks Err would miss these — which is why
 	// every renderer of a server list prints them (#1016).
-	Warnings []string
-	toolset  tool.Toolset
-	cmd      *exec.Cmd // stdio child; nil for http transports
+	Warnings          []string
+	toolset           tool.Toolset
+	undigestedToolset tool.Toolset
+	cmd               *exec.Cmd // stdio child; nil for http transports
 }
 
 // ToolInfo is a name + description pair for one exposed MCP tool.
@@ -85,6 +86,21 @@ type ToolInfo struct {
 
 // Toolset returns the MCP toolset, or nil for failed servers.
 func (s *Server) Toolset() tool.Toolset { return s.toolset }
+
+// UndigestedToolset returns the server's gated, namespaced MCP toolset without
+// the response-digest wrapper, or nil for failed servers. It shares the same
+// underlying MCP client, allowlist, tool notes, and permission gate as Toolset,
+// and returns Toolset directly when digest wrapping is disabled for this server
+// (#1604).
+func (s *Server) UndigestedToolset() tool.Toolset {
+	if s == nil {
+		return nil
+	}
+	if s.undigestedToolset != nil {
+		return s.undigestedToolset
+	}
+	return s.toolset
+}
 
 // Close terminates any child process this server owns. For HTTP
 // transports there's no process to kill — Close is a no-op.
@@ -170,8 +186,12 @@ func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(strin
 	// Merge the per-project threshold into DigestOptions when the
 	// caller didn't pin one explicitly. Preserves precedence: CLI /
 	// caller-supplied threshold wins; mcp.json fills the default.
+	// Copy before writing so callers sharing one DigestOptions across
+	// parent and rooted subagents do not leak thresholds between them.
 	if digestOpts != nil && digestOpts.Threshold <= 0 {
-		digestOpts.Threshold = cfg.AgenticWrapThresholdBytes()
+		optsCopy := *digestOpts
+		optsCopy.Threshold = cfg.AgenticWrapThresholdBytes()
+		digestOpts = &optsCopy
 	}
 
 	out := make([]*Server, 0, len(cfg.Servers))
@@ -235,6 +255,15 @@ func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(strin
 // compare the allowlist against what the server exposed before the
 // filter ran, and that list does not survive the composition.
 func wrapServerToolset(ts tool.Toolset, name string, spec ServerSpec, digestOpts *DigestOptions, gate *permissions.Gate) (tool.Toolset, *allowlistToolset) {
+	wrapped, _, allow := wrapServerToolsets(ts, name, spec, digestOpts, gate)
+	return wrapped, allow
+}
+
+// wrapServerToolsets composes both the primary (possibly digest-wrapped)
+// toolset and an undigested sibling over the same allowlist + transport +
+// permission gate, so subagents without retrieve_raw can share the parent's
+// started MCP server without receiving unrecoverable digest call_ids (#1604).
+func wrapServerToolsets(ts tool.Toolset, name string, spec ServerSpec, digestOpts *DigestOptions, gate *permissions.Gate) (tool.Toolset, tool.Toolset, *allowlistToolset) {
 	optsForServer := digestOpts
 	if optsForServer != nil && spec.AgenticNever {
 		optsForServer = nil
@@ -247,7 +276,14 @@ func wrapServerToolset(ts tool.Toolset, name string, spec ServerSpec, digestOpts
 	if gate != nil {
 		wrapped = coretools.GateToolset(wrapped, gate, "mcp")
 	}
-	return wrapped, allow
+	if optsForServer == nil || optsForServer.NeverServers[name] {
+		return wrapped, wrapped, allow
+	}
+	undigested := withNamespace(filtered, name, spec.ReadOnly, spec.ToolNotes)
+	if gate != nil {
+		undigested = coretools.GateToolset(undigested, gate, "mcp")
+	}
+	return wrapped, undigested, allow
 }
 
 // startOne instantiates one server. Errors are stored on the Server
@@ -278,8 +314,9 @@ func startOne(ctx context.Context, name string, spec ServerSpec, gate *permissio
 		srv.Err = fmt.Errorf("toolset: %w", err)
 		return srv
 	}
-	wrapped, allow := wrapServerToolset(ts, name, spec, digestOpts, gate)
+	wrapped, undigested, allow := wrapServerToolsets(ts, name, spec, digestOpts, gate)
 	srv.toolset = wrapped
+	srv.undigestedToolset = undigested
 	srv.Status = StatusOK
 	if tools, err := wrapped.Tools(asReadonly(ctx)); err == nil {
 		infos := make([]ToolInfo, 0, len(tools))

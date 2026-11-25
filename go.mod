@@ -9,7 +9,6 @@ require (
 	charm.land/lipgloss/v2 v2.0.3
 	cloud.google.com/go/aiplatform v1.127.0
 	cloud.google.com/go/longrunning v1.3.0
-	github.com/anthropics/anthropic-sdk-go v1.43.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
@@ -62,6 +61,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
+	github.com/anthropics/anthropic-sdk-go v1.43.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-udiff v0.4.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect

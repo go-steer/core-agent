@@ -25,11 +25,14 @@
 // a broken measurement of mast.
 //
 // The asymmetry that hid this is worth stating, because it is invisible
-// from mast's side of the interface: anthropic-sdk-go retries 429s and
+// from mast's side of the interface: anthropic-sdk-go retried 429s and
 // 5xxs twice of its own accord, and google.golang.org/genai returns
 // APIError{Code: 429} straight out of api_client.go with no retry at
 // all. So the same corpus, on the same night, was measuring two
 // different amounts of resilience depending on which model it named.
+// (Today core-models turns the SDK's retries off and retries non-2xx
+// responses in its own transport for every provider; an error event
+// after a stream has opened is retried by nobody but this package.)
 // Retrying at model.LLM — the one interface both providers arrive
 // through — is what makes the two boards comparable.
 //
@@ -62,7 +65,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"google.golang.org/genai"
 
 	adkmodel "google.golang.org/adk/v2/model"
@@ -519,10 +521,18 @@ func (p *Policy) emit(ev Event) {
 
 // isRetryable reports whether err is the provider saying "not now".
 //
-// Typed, for every provider mast can be pointed at:
-// google.golang.org/genai returns APIError by value and ADK's Gemini
-// path wraps it with %w; anthropic-sdk-go returns *anthropic.Error.
-// Either way errors.As reaches the status code without reading English.
+// Typed, for every provider: google.golang.org/genai returns APIError by
+// value and ADK's Gemini path wraps it with %w; every core-models adapter
+// (Claude included) returns an error with an HTTPStatus method. Either
+// way errors.As reaches the status code without reading English.
+//
+// Claude is classified by HTTPStatus, never by the SDK's *anthropic.Error
+// that core-models' error wraps. An error event that arrives after the
+// stream has answered 200 carries a StatusCode of 200 on the SDK error;
+// HTTPStatus reports the status its type stands for (rate_limit_error is
+// 429). Reading the SDK error first called a rate limit that hit before
+// anything was yielded "not retryable", and kept a direct
+// anthropic-sdk-go dependency in core-agent for no other reason.
 //
 // There is no string fallback on purpose. Matching "429" or "resource
 // exhausted" in a message would also match a model *describing* one —
@@ -539,15 +549,13 @@ func isRetryable(err error) bool {
 	if errors.As(err, &geminiErr) {
 		return retryableCodes[geminiErr.Code]
 	}
-	var anthropicErr *anthropic.Error
-	if errors.As(err, &anthropicErr) {
-		return retryableCodes[anthropicErr.StatusCode]
-	}
-	// core-models' adapters (provider profiles) return errors that state
-	// their HTTP status. Still typed, still no string matching. Those
-	// adapters have already retried at the HTTP layer, honoring the
-	// provider's Retry-After; this is the one outer retry every model
-	// gets.
+	// core-models' adapters (Claude and the provider profiles) return
+	// errors that state their HTTP status. Still typed, still no string
+	// matching. Those adapters have already retried a non-2xx response at
+	// the HTTP layer, honoring the provider's Retry-After. An error event
+	// after the stream opened (core-models' APIError.MidStream) was
+	// retried by nobody; this is its only retry, and the one outer retry
+	// every model gets.
 	var status interface{ HTTPStatus() int }
 	if errors.As(err, &status) {
 		return retryableCodes[status.HTTPStatus()]

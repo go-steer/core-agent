@@ -18,14 +18,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/go-steer/core-models/auth"
+	cmanthropic "github.com/go-steer/core-models/dialect/anthropic"
 	"github.com/go-steer/core-models/dialect/openaichat"
+	"github.com/go-steer/core-models/llm"
+	cmretry "github.com/go-steer/core-models/retry"
 	"google.golang.org/genai"
 
 	adkmodel "google.golang.org/adk/v2/model"
@@ -300,19 +305,22 @@ func TestBothProvidersAre429AwareThroughTheirOwnErrorType(t *testing.T) {
 	}{
 		{"gemini 429", vertex429(), true},
 		{"gemini 400", genai.APIError{Code: 400}, false},
-		{"anthropic 429", fmt.Errorf("wrapped: %w", anthropicErr(429)), true},
-		{"anthropic 503", anthropicErr(503), true},
-		{"anthropic 401", anthropicErr(401), false},
+		{"claude 429", fmt.Errorf("wrapped: %w", claudeErr(t, http.StatusTooManyRequests, claudeErrorBody("rate_limit_error"))), true},
+		{"claude 503", claudeErr(t, http.StatusServiceUnavailable, claudeErrorBody("api_error")), true},
+		{"claude 401", claudeErr(t, http.StatusUnauthorized, claudeErrorBody("authentication_error")), false},
+		// The stream answered 200, then failed before yielding anything:
+		// a rate limit, so retryable. The SDK error inside says 200.
+		{"claude rate limit right after the stream opened", claudeErr(t, http.StatusOK, claudeStreamError("rate_limit_error")), true},
+		// 529 is not in retryableCodes; this pins today's policy.
+		{"claude overload right after the stream opened", claudeErr(t, http.StatusOK, claudeStreamError("overloaded_error")), false},
 		{"provider profile 429", fmt.Errorf("wrapped: %w", &openaichat.APIError{StatusCode: 429}), true},
 		{"provider profile 503", &openaichat.APIError{StatusCode: 503}, true},
 		{"provider profile 400", &openaichat.APIError{StatusCode: 400}, false},
 		{"provider profile in-stream error", &openaichat.APIError{Message: "out of memory"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Reports tc.name rather than the error: *anthropic.Error's
-			// Error() dereferences the http.Request and Response it was
-			// built from, so formatting a hand-made one turns a failing
-			// assertion into a panic in the assertion.
+			// Reports tc.name rather than the error: names are stable,
+			// and the Claude errors' text embeds a random httptest port.
 			if got := isRetryable(tc.err); got != tc.want {
 				t.Errorf("isRetryable(%s) = %v, want %v", tc.name, got, tc.want)
 			}
@@ -320,18 +328,57 @@ func TestBothProvidersAre429AwareThroughTheirOwnErrorType(t *testing.T) {
 	}
 }
 
-// anthropicErr builds the SDK's error with the request and response it
-// would carry in the wild, because Error() reads both.
-func anthropicErr(status int) error {
-	req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+// claudeErr is the error core-models' Claude adapter reports for a server
+// that answers status with body: in production, core-models'
+// dialect/anthropic.APIError wrapping the SDK's error. It is produced by
+// the real adapter rather than built by hand, so the test follows whatever
+// core-models returns, and this package needs no anthropic-sdk-go import
+// of its own.
+func claudeErr(t *testing.T, status int, body string) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if status == http.StatusOK {
+			w.Header().Set("Content-Type", "text/event-stream")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	cred, err := auth.Config{Kind: auth.APIKey, Env: "TEST_ANTHROPIC_KEY"}.Resolve(context.Background(),
+		auth.Options{Getenv: func(string) string { return "test-key-not-real" }})
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
-	return &anthropic.Error{
-		StatusCode: status,
-		Request:    req,
-		Response:   &http.Response{StatusCode: status},
+	noRetry := cmretry.Default()
+	noRetry.MaxRetries = 0 // one request: the error under test, not the transport's retries
+	c, err := cmanthropic.New(cmanthropic.Options{BaseURL: srv.URL, Credential: cred, Retry: &noRetry, Backend: "anthropic"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	req := &llm.Request{Contents: []*genai.Content{genai.NewContentFromText("hello", genai.RoleUser)}}
+	for _, err := range c.Model("claude-test").GenerateContent(context.Background(), req, true) {
+		if err != nil {
+			return err
+		}
+	}
+	t.Fatalf("server answered %d but the adapter reported no error", status)
+	return nil
+}
+
+// claudeErrorBody is an Anthropic error response body of the given type.
+func claudeErrorBody(errType string) string {
+	return `{"type":"error","error":{"type":"` + errType + `","message":"test"}}`
+}
+
+// claudeStreamError is a stream that opens and then fails with an error
+// event of the given type before any content.
+func claudeStreamError(errType string) string {
+	return "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}}` + "\n\n" +
+		"event: error\n" +
+		`data: {"type":"error","error":{"type":"` + errType + `","message":"test"}}` + "\n\n"
 }
 
 // TestTheClassifierCannotBeFooledByThePayloadItIsGrading. The judge

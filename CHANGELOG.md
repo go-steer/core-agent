@@ -21,6 +21,7 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 - **Bump `core-models` and `core-models/adkv2` to `v0.16.0` and `genai` to `v1.79.1`.** Claude 5.5 request rules, Gemini 4 thinking levels, and the otel/trace fix for GO-2026-6974; anthropic-sdk-go becomes indirect. ([#1605](https://github.com/go-steer/core-agent/issues/1605))
 
 #### Bug or Regression
+- **Keep subagent descriptions out of child ADK identity prompts (`pkg/agent`, `cmd/core-agent`).** Adds `agent.WithSubagentDescription` so `spec.Description` stays on parent tools without ADK echoing routing prose to the child. ([#1607](https://github.com/go-steer/core-agent/issues/1607))
 - **Skip digest wrap on subagents without `retrieve_raw` (`cmd/core-agent`, `pkg/mcp`).** Disables MCP and survey digesting when a subagent omits `retrieve_raw`, preserving `tools: []` and avoiding dead `call_id`s. ([#1604](https://github.com/go-steer/core-agent/issues/1604))
 - **Omit MCP elicitation in non-TUI runs (`cmd/core-agent`, `pkg/mcp`).** `--no-repl`, `-p`, `--no-tui`, and non-TTY runs pass a `nil` elicitor so clients omit elicitation instead of hanging on an undrained TUI channel. ([#1606](https://github.com/go-steer/core-agent/issues/1606))
 

@@ -1564,3 +1564,105 @@ func TestRunOneShot_MemoryPreloadSubagentAndConsolidate(t *testing.T) {
 		t.Errorf("mem_helper private items = %+v, want item with 'subagent private fact'", items)
 	}
 }
+
+// TestRunOneShot_DeclarativeSubagentOmitsRouterDescriptionFromChildPrompt is
+// the #1607 regression check for buildSingleFacadeSubagent (used by RunOneShot
+// and compose.Run): the parent tool declaration keeps spec.Description while
+// the child's ADK system instruction does not echo router-facing prose.
+func TestRunOneShot_DeclarativeSubagentOmitsRouterDescriptionFromChildPrompt(t *testing.T) {
+	t.Parallel()
+	const routerDesc = "Delegate here whenever a person asks for a posture review. Hand it the whole question."
+
+	for _, mode := range []string{config.SubagentModeChat, config.SubagentModeTask} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			var parentToolDesc, childSys string
+			llm := &scriptedFacadeLLM{
+				steps: []func(*adkmodel.LLMRequest) (*adkmodel.LLMResponse, error){
+					// Root turn 1: record tool decl and delegate to posture-audit.
+					func(req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+						if fd := findToolDecl(req, "posture-audit"); fd != nil {
+							parentToolDesc = fd.Description
+						}
+						return &adkmodel.LLMResponse{
+							Content: &genai.Content{
+								Role: genai.RoleModel,
+								Parts: []*genai.Part{{
+									FunctionCall: &genai.FunctionCall{
+										Name: "posture-audit",
+										Args: map[string]any{"request": "check cluster posture"},
+									},
+								}},
+							},
+							TurnComplete: true,
+						}, nil
+					},
+					// Child turn 1: record child system instruction and finish.
+					func(req *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+						childSys = systemInstructionFromReq(req)
+						if mode == config.SubagentModeTask {
+							return &adkmodel.LLMResponse{
+								Content: &genai.Content{
+									Role: genai.RoleModel,
+									Parts: []*genai.Part{{
+										FunctionCall: &genai.FunctionCall{
+											Name: FinishTaskToolName,
+											Args: map[string]any{"result": "posture ok"},
+										},
+									}},
+								},
+								TurnComplete: true,
+							}, nil
+						}
+						return &adkmodel.LLMResponse{
+							Content:      genai.NewContentFromText("posture ok", genai.RoleModel),
+							TurnComplete: true,
+						}, nil
+					},
+					// Root turn 2: final answer.
+					func(_ *adkmodel.LLMRequest) (*adkmodel.LLMResponse, error) {
+						return &adkmodel.LLMResponse{
+							Content:      genai.NewContentFromText("done", genai.RoleModel),
+							TurnComplete: true,
+						}, nil
+					},
+				},
+			}
+
+			cfg := config.DefaultConfig()
+			cfg.Permissions.Mode = config.PermissionModeYolo
+			cfg.Subagents = []config.SubagentSpec{{
+				Name:         "posture-audit",
+				Description:  routerDesc,
+				Mode:         mode,
+				Tools:        []string{},
+				MCP:          []string{},
+				Skills:       []string{},
+				Instructions: "Inspect cluster posture directly.",
+			}}
+
+			res, err := RunOneShot(context.Background(), OneShotConfig{
+				Dir:    t.TempDir(),
+				Config: cfg,
+				Model:  llm,
+			}, "run posture review")
+			if err != nil {
+				t.Fatalf("RunOneShot: %v", err)
+			}
+			if res.Text != "done" {
+				t.Errorf("res.Text = %q, want \"done\"", res.Text)
+			}
+			if parentToolDesc != routerDesc {
+				t.Errorf("parent tool description = %q, want %q", parentToolDesc, routerDesc)
+			}
+			if !strings.Contains(childSys, `Your internal name is "posture-audit".`) {
+				t.Errorf("child system instruction missing ADK identity name:\n%s", childSys)
+			}
+			for _, banned := range []string{"The description about you is", "Delegate here", "core-agent conversational agent"} {
+				if strings.Contains(childSys, banned) {
+					t.Errorf("child system instruction unexpectedly echoed %q:\n%s", banned, childSys)
+				}
+			}
+		})
+	}
+}

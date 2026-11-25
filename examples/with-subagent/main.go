@@ -107,7 +107,7 @@ func run() error {
 	// tool-construction time.
 	research, err := agent.New(researchLLM,
 		agent.WithName("research"),
-		agent.WithDescription("a focused research subagent"),
+		agent.WithSubagentDescription("a focused research subagent"),
 		agent.WithEventLog(handle),
 		agent.WithSession("u", "research-session"),
 		agent.WithInstruction("you are a researcher; answer concisely"),

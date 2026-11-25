@@ -709,7 +709,12 @@ func assembleSubagent(spec config.SubagentSpec, finalReport bool, thinkingLevel 
 	opts := []agent.Option{
 		agent.WithName(spec.Name),
 		agent.WithBillingBackend(backend),
-		agent.WithDescription(spec.Description),
+		// #1607: spec.Description is router-facing prose written for the
+		// parent ("Delegate here whenever..."). Keep it on the parent's
+		// subagent tool declaration without passing it to ADK's
+		// llmagent.Config.Description, which ADK's identity processor
+		// would echo into the child's own system instruction.
+		agent.WithSubagentDescription(spec.Description),
 		// A declarative subagent is invoked as a tool with no human
 		// reading its output in real time — run it headless, like
 		// the other in-tree spawn paths.

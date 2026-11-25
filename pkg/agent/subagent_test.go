@@ -412,3 +412,270 @@ func TestSubagentInvocationID(t *testing.T) {
 		t.Errorf("fallback ids collided (%q); concurrent invocations would share a row", a)
 	}
 }
+
+// reqCapturingLLM records every LLMRequest passed by ADK (including
+// SystemInstruction and Config.Tools) and replies with a scripted step list.
+type reqCapturingLLM struct {
+	name  string
+	mu    sync.Mutex
+	reqs  []*adkmodel.LLMRequest
+	reply func(call int, req *adkmodel.LLMRequest) *genai.Content
+}
+
+func (l *reqCapturingLLM) Name() string { return l.name }
+
+func (l *reqCapturingLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	l.mu.Lock()
+	l.reqs = append(l.reqs, req)
+	call := len(l.reqs)
+	l.mu.Unlock()
+	content := l.reply(call, req)
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:      content,
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+func findToolDecl(req *adkmodel.LLMRequest, name string) *genai.FunctionDeclaration {
+	if req == nil || req.Config == nil {
+		return nil
+	}
+	for _, gt := range req.Config.Tools {
+		if gt == nil {
+			continue
+		}
+		for _, fd := range gt.FunctionDeclarations {
+			if fd != nil && fd.Name == name {
+				return fd
+			}
+		}
+	}
+	return nil
+}
+
+// TestWithSubagentDescription_OmitsChildIdentityEchoKeepsParentToolDecl is the
+// #1607 regression gate: router-facing delegation prose supplied via
+// WithSubagentDescription must reach the parent's subagent tool declaration
+// without ADK's identityRequestProcessor echoing it into the child's own
+// system instruction (in both chat and task modes).
+func TestWithSubagentDescription_OmitsChildIdentityEchoKeepsParentToolDecl(t *testing.T) {
+	t.Parallel()
+	const routerDesc = "Delegate here whenever a person asks for a posture review. Hand it the whole question."
+
+	for _, mode := range []SubagentMode{SubagentModeChat, SubagentModeTask} {
+		modeName := string(mode)
+		t.Run(modeName, func(t *testing.T) {
+			t.Parallel()
+			h, cleanup := openTestEventLog(t)
+			defer cleanup()
+
+			childLLM := &reqCapturingLLM{
+				name: "child-llm",
+				reply: func(_ int, _ *adkmodel.LLMRequest) *genai.Content {
+					if mode == SubagentModeTask {
+						return &genai.Content{
+							Role: genai.RoleModel,
+							Parts: []*genai.Part{{
+								FunctionCall: &genai.FunctionCall{
+									Name: FinishTaskToolName,
+									Args: map[string]any{"result": "posture clean"},
+								},
+							}},
+						}
+					}
+					return genai.NewContentFromText("posture clean", genai.RoleModel)
+				},
+			}
+			childOpts := []Option{
+				WithName("posture-audit"),
+				WithSubagentDescription(routerDesc),
+				WithUserInstruction("Audit the cluster posture directly."),
+				WithEventLog(h),
+				WithSession("u", "c"),
+			}
+			if mode != SubagentModeChat {
+				childOpts = append(childOpts, WithSubagentMode(mode))
+			}
+			child, err := New(childLLM, childOpts...)
+			if err != nil {
+				t.Fatalf("New child: %v", err)
+			}
+			if got := child.SubagentDescription(); got != routerDesc {
+				t.Errorf("child.SubagentDescription() = %q, want %q", got, routerDesc)
+			}
+			if got := child.Description(); got != "" {
+				t.Errorf("child.Description() = %q, want empty", got)
+			}
+			if got := child.Inner().Description(); got != "" {
+				t.Errorf("child.Inner().Description() = %q, want empty (would trigger ADK identity echo)", got)
+			}
+
+			// Direct NewSubagentTool without explicit Description also inherits SubagentDescription.
+			directTool, err := NewSubagentTool(SubagentOptions{Inner: child})
+			if err != nil {
+				t.Fatalf("NewSubagentTool: %v", err)
+			}
+			if got := directTool.Description(); got != routerDesc {
+				t.Errorf("direct NewSubagentTool Description = %q, want %q", got, routerDesc)
+			}
+
+			parentLLM := &reqCapturingLLM{
+				name: "parent-llm",
+				reply: func(call int, _ *adkmodel.LLMRequest) *genai.Content {
+					if call == 1 {
+						return &genai.Content{
+							Role: genai.RoleModel,
+							Parts: []*genai.Part{{
+								FunctionCall: &genai.FunctionCall{
+									Name: "posture-audit",
+									Args: map[string]any{"request": "review posture"},
+								},
+							}},
+						}
+					}
+					return genai.NewContentFromText("all good", genai.RoleModel)
+				},
+			}
+			parent, err := New(parentLLM,
+				WithName("parent"),
+				WithEventLog(h),
+				WithSession("u", "p"),
+				WithSubagents([]*Agent{child}),
+			)
+			if err != nil {
+				t.Fatalf("New parent: %v", err)
+			}
+			for _, err := range parent.Run(context.Background(), "run posture review") {
+				if err != nil {
+					t.Fatalf("parent.Run: %v", err)
+				}
+			}
+
+			if len(parentLLM.reqs) == 0 {
+				t.Fatal("parent LLM received no requests")
+			}
+			fd := findToolDecl(parentLLM.reqs[0], "posture-audit")
+			if fd == nil {
+				t.Fatal("parent LLM request missing posture-audit tool declaration")
+			}
+			if fd.Description != routerDesc {
+				t.Errorf("parent tool declaration Description = %q, want %q", fd.Description, routerDesc)
+			}
+
+			if len(childLLM.reqs) == 0 {
+				t.Fatal("child LLM received no requests")
+			}
+			childSys := systemInstructionFromReq(childLLM.reqs[0])
+			if !strings.Contains(childSys, `Your internal name is "posture-audit".`) {
+				t.Errorf("child system instruction missing ADK identity name (test would be vacuous):\n%s", childSys)
+			}
+			for _, banned := range []string{"The description about you is", "Delegate here", "core-agent conversational agent"} {
+				if strings.Contains(childSys, banned) {
+					t.Errorf("child system instruction unexpectedly echoed %q:\n%s", banned, childSys)
+				}
+			}
+		})
+	}
+}
+
+func TestWithSubagentDescription_PrecedenceAndExplicitChildDescription(t *testing.T) {
+	t.Parallel()
+	if got := (*Agent)(nil).SubagentDescription(); got != "" {
+		t.Errorf("nil SubagentDescription() = %q, want empty", got)
+	}
+
+	// Both option orders keep routerDesc on the parent tool and childDesc on the child ADK identity.
+	const routerDesc = "Delegate posture reviews here."
+	const childDesc = "Cluster posture auditor."
+	orders := []struct {
+		name string
+		opts []Option
+	}{
+		{"subagent_then_desc", []Option{WithName("auditor"), WithSubagentDescription(routerDesc), WithDescription(childDesc)}},
+		{"desc_then_subagent", []Option{WithName("auditor"), WithDescription(childDesc), WithSubagentDescription(routerDesc)}},
+	}
+	for _, tc := range orders {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, err := New(minimalLLM{}, tc.opts...)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if got := a.Description(); got != childDesc {
+				t.Errorf("Description() = %q, want %q", got, childDesc)
+			}
+			if got := a.Inner().Description(); got != childDesc {
+				t.Errorf("Inner().Description() = %q, want %q", got, childDesc)
+			}
+			tl, err := NewSubagentTool(SubagentOptions{Inner: a})
+			if err != nil {
+				t.Fatalf("NewSubagentTool: %v", err)
+			}
+			if got := tl.Description(); got != routerDesc {
+				t.Errorf("tool Description = %q, want %q", got, routerDesc)
+			}
+			override, err := NewSubagentTool(SubagentOptions{Inner: a, Description: "explicit override"})
+			if err != nil {
+				t.Fatalf("NewSubagentTool(override): %v", err)
+			}
+			if got := override.Description(); got != "explicit override" {
+				t.Errorf("override Description = %q, want %q", got, "explicit override")
+			}
+		})
+	}
+
+	// Empty / whitespace WithSubagentDescription and explicit WithDescription edge cases.
+	edgeCases := []struct {
+		name         string
+		opts         []Option
+		wantInner    string
+		wantToolDesc string
+	}{
+		{
+			name:         "empty_subagent_clears_default",
+			opts:         []Option{WithName("bare"), WithSubagentDescription("")},
+			wantInner:    "",
+			wantToolDesc: defaultSubagentDesc,
+		},
+		{
+			name:         "whitespace_subagent_clears_default",
+			opts:         []Option{WithName("ws"), WithSubagentDescription("   \t\n ")},
+			wantInner:    "",
+			wantToolDesc: defaultSubagentDesc,
+		},
+		{
+			name:         "empty_subagent_falls_back_to_explicit_child_desc",
+			opts:         []Option{WithName("fb"), WithSubagentDescription(""), WithDescription(childDesc)},
+			wantInner:    childDesc,
+			wantToolDesc: childDesc,
+		},
+		{
+			name:         "subagent_with_explicit_empty_child_desc",
+			opts:         []Option{WithName("quiet"), WithSubagentDescription(routerDesc), WithDescription("")},
+			wantInner:    "",
+			wantToolDesc: routerDesc,
+		},
+	}
+	for _, tc := range edgeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, err := New(minimalLLM{}, tc.opts...)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if got := a.Inner().Description(); got != tc.wantInner {
+				t.Errorf("Inner().Description() = %q, want %q", got, tc.wantInner)
+			}
+			tl, err := NewSubagentTool(SubagentOptions{Inner: a})
+			if err != nil {
+				t.Fatalf("NewSubagentTool: %v", err)
+			}
+			if got := tl.Description(); got != tc.wantToolDesc {
+				t.Errorf("tool Description = %q, want %q", got, tc.wantToolDesc)
+			}
+		})
+	}
+}

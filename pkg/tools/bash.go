@@ -198,8 +198,12 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		stderr.maxBytes = caps.bytes
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
+		group := startInOwnGroup(cmd)
 
 		runErr := cmd.Run()
+		if execCtx.Err() != nil {
+			group.finishCancel()
+		}
 		timedOut := execCtx.Err() == context.DeadlineExceeded
 
 		exit := 0

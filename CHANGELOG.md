@@ -14,7 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.2.0]._
+### Changes by Kind
+
+#### Bug or Regression
+- **A cancelled `bash` call now ends the processes it started in its process group.** On timeout or interrupt the group gets SIGTERM; once the shell has exited, what is left gets 2s, then SIGKILL. Unix only. ([#1597](https://github.com/go-steer/core-agent/issues/1597))
 
 ## [3.2.0] — 2026-11-20
 

@@ -972,8 +972,11 @@ func (s *compactingService) Get(ctx context.Context, req *session.GetRequest) (*
 	if err != nil || resp == nil || resp.Session == nil {
 		return resp, err
 	}
-	all := collectEvents(resp.Session)
-	if sliced := sliceFromBoundary(all); len(sliced) == len(all) {
+	// Wrap whenever a boundary is present, including one at index 0:
+	// a session whose history begins with its summary slices to the
+	// same length, but its summary still needs the user-role rewrite
+	// and framing.
+	if idx, _, _ := findLatestBoundary(collectEvents(resp.Session)); idx < 0 {
 		// No boundary marker; pass through unchanged.
 		return resp, nil
 	}

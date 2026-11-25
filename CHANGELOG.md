@@ -14,7 +14,10 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.2.0]._
+### Changes by Kind
+
+#### Bug or Regression
+- **`pkg/agent` frames a summary that opens the session.** A session whose history starts with its compaction summary or checkpoint now gets the user-role rewrite and handover framing instead of the bare summary. ([#1598](https://github.com/go-steer/core-agent/issues/1598))
 
 ## [3.2.0] — 2026-11-20
 

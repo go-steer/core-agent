@@ -36,11 +36,14 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
 )
 
-// makeMCPElicitor returns nil in the slim build — there's no TUI
-// to attach to, so MCP elicitation requests fail with the standard
-// "no elicitor" decline (the SDK surfaces this as a server-side
-// cancel).
-func makeMCPElicitor() mcp.ElicitorFn { return nil }
+// tuiElicitorHandle is an empty placeholder in the slim build;
+// makeMCPElicitor always returns nil.
+type tuiElicitorHandle struct{}
+
+// makeMCPElicitor returns (nil, nil) in the slim build — there's no TUI
+// to attach to, so MCP clients omit the elicitation capability during
+// initialize and reject any unsolicited elicitation immediately.
+func makeMCPElicitor(_ bool) (mcp.ElicitorFn, *tuiElicitorHandle) { return nil, nil }
 
 // launchTUIv2 is a no-op in the slim build: prints one stderr line
 // explaining why no TUI launched, returns didRun=false so main.go

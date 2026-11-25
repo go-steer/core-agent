@@ -23,29 +23,34 @@ import (
 
 // ElicitorFn is the host-supplied bridge that turns a server's
 // elicitation request into a user response. Interactive hosts plug in
-// a function that opens a prompt and blocks; the headless path leaves
-// it nil and falls back to DeclineHandler.
+// a function that opens a prompt and blocks; headless callers pass nil
+// so the MCP client omits the elicitation capability during initialize
+// instead of advertising interactive prompting it cannot serve.
 //
 // The implementation must respect ctx — if it returns ctx.Err the SDK
 // translates that into a protocol-level cancel.
 type ElicitorFn func(ctx context.Context, serverName string, req *mcp.ElicitRequest) (*mcp.ElicitResult, error)
 
-// handlerFor picks the right elicitation handler for a server. When
-// elicitor is non-nil we route through it (the interactive host);
-// otherwise fall back to the decline-with-notice stub for headless
-// runs and tests.
-func handlerFor(serverName string, send func(string), elicitor ElicitorFn) func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
-	if elicitor != nil {
-		return func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
-			return elicitor(ctx, serverName, req)
-		}
+// handlerFor wraps a non-nil host elicitor into the SDK's
+// ElicitationHandler shape. When elicitor is nil it returns nil so the
+// MCP client omits the elicitation capability in its initialize
+// handshake and rejects any unsolicited server elicitation immediately
+// instead of blocking on an interactive prompt.
+func handlerFor(serverName string, elicitor ElicitorFn) func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+	if elicitor == nil {
+		return nil
 	}
-	return DeclineHandler(serverName, send)
+	return func(ctx context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		return elicitor(ctx, serverName, req)
+	}
 }
 
 // DeclineHandler returns an MCP elicitation handler that declines every
-// request and emits a one-line notice through send. Used as the
-// fallback when no interactive elicitor is wired.
+// request and emits a one-line notice through send. Hosts that
+// deliberately want to advertise elicitation and decline every request
+// with a notice can wrap this into an ElicitorFn; headless callers
+// normally pass a nil elicitor to Build so elicitation is not advertised
+// at all.
 func DeclineHandler(serverName string, send func(string)) func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 	return func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 		message := elicitationMessage(req)

@@ -131,12 +131,13 @@ type runOptions struct {
 
 // runState holds the resolved state assembled across startupSteps (#685).
 type runState struct {
-	ctx      context.Context
-	stop     context.CancelFunc
-	opts     runOptions
-	send     func(string)
-	flagSet  *flag.FlagSet
-	cleanups []func()
+	ctx        context.Context
+	stop       context.CancelFunc
+	opts       runOptions
+	send       func(string)
+	flagSet    *flag.FlagSet
+	stdinIsTTY func() bool // optional test seam; nil checks term.IsTerminal(os.Stdin)
+	cleanups   []func()
 
 	// Step ordering latches verified by downstream steps so transposing
 	// order-dependent steps fails deterministically.
@@ -191,6 +192,7 @@ type runState struct {
 	digestStore    *digest.LazyStore
 	digestOpts     *mcp.DigestOptions
 	mcpElicitor    mcp.ElicitorFn
+	tuiElicitor    *tuiElicitorHandle
 	mcpServers     []*mcp.Server
 	mcpToolsets    []adktool.Toolset
 
@@ -255,6 +257,24 @@ func (s *runState) close() {
 	for i := len(s.cleanups) - 1; i >= 0; i-- {
 		s.cleanups[i]()
 	}
+}
+
+// isStdinTTY reports whether stdin is a terminal. Tests may override
+// stdinIsTTY to exercise interactive vs non-TTY startup paths without
+// allocating a pty.
+func (s *runState) isStdinTTY() bool {
+	if s.stdinIsTTY != nil {
+		return s.stdinIsTTY()
+	}
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// willLaunchTUI reports whether executeDriver will launch the in-process
+// TUI (in a default !no_tui build). Both stepRegisterCoreMetricsAndBuildMCP
+// and executeDriver consult this single predicate so the TUI MCP elicitor
+// is wired if and only if the in-process TUI will start to drain it (#1606).
+func (s *runState) willLaunchTUI() bool {
+	return s.opts.driver.prompt == "" && !s.opts.driver.noREPL && !s.opts.driver.noTUI && s.isStdinTTY()
 }
 
 // startupStep is one named, order-checked phase of CLI startup (#685).
@@ -394,7 +414,7 @@ func stepValidateInteractiveAndOutputFlags(s *runState) int {
 		return runner.ExitConfigError
 	}
 	s.outFormat = outFormat
-	s.unattended = s.opts.driver.prompt != "" || s.opts.driver.noREPL || !term.IsTerminal(int(os.Stdin.Fd()))
+	s.unattended = s.opts.driver.prompt != "" || s.opts.driver.noREPL || !s.isStdinTTY()
 	s.flagsValidated = true
 	return runner.ExitOK
 }
@@ -809,7 +829,7 @@ func stepRegisterCoreMetricsAndBuildMCP(s *runState) int {
 			}
 		}
 	}
-	s.mcpElicitor = makeMCPElicitor()
+	s.mcpElicitor, s.tuiElicitor = makeMCPElicitor(s.willLaunchTUI())
 	mcpServers, mcpToolsets, mcpErr := mcp.Build(s.ctx, s.agentsDir, s.homeAgDir, s.send, s.gate, s.mcpElicitor, s.digestOpts)
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
@@ -1817,7 +1837,7 @@ func (s *runState) executeDriver() int {
 		return s.runNoREPLDaemon()
 	}
 
-	if !s.opts.driver.noTUI && term.IsTerminal(int(os.Stdin.Fd())) {
+	if s.willLaunchTUI() {
 		didRun, code, err := launchTUIv2(s.ctx, tuiDeps{
 			Cfg:         s.cfg,
 			Model:       s.model,
@@ -1840,6 +1860,7 @@ func (s *runState) executeDriver() int {
 			ContentRoots:  s.contentRoots,
 			EnvInterp:     s.envInterp,
 			InitialPrompt: s.opts.driver.initialPrompt,
+			Elicitor:      s.tuiElicitor,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)

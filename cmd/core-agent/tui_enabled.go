@@ -28,16 +28,34 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/mcp"
 )
 
-// makeMCPElicitor constructs the core-tui elicitor and returns its
-// elicit binding for mcp.Build. The constructed handle is stashed
-// in pkgCoreElicitor so launchTUIv2 (coretui_enabled.go) can attach
-// the same handle to the bubble-tea program.
+// tuiElicitorHandle carries the core-tui elicitor instance between
+// makeMCPElicitor (which wires its mcp.ElicitorFn binding into
+// mcp.Build) and launchTUIv2 (which passes the same handle into
+// coretui.Options). Wrapping it in a package-local struct keeps
+// tui_deps.go and run_steps.go free of core-tui imports so -tags no_tui
+// builds stay slim while avoiding package-global mutable state across
+// runs and parallel tests.
+type tuiElicitorHandle struct {
+	inner coretui.Elicitor
+}
+
+// makeMCPElicitor constructs the core-tui elicitor and returns both its
+// mcp.ElicitorFn binding for mcp.Build and the matching handle for
+// launchTUIv2. When interactive is false (headless -p, --no-repl daemon,
+// --no-tui, or non-TTY stdin), it returns (nil, nil) so MCP clients omit
+// the elicitation capability and never park on an undrained TUI channel
+// (#1606).
 //
-// In the no_tui build (tui_disabled.go) this returns nil; MCP
-// elicit requests then decline with the SDK's standard "no
-// elicitor" cancel.
-func makeMCPElicitor() mcp.ElicitorFn {
-	pkgCoreElicitor = coretui.NewElicitor()
-	w := &coreMCPElicitor{inner: pkgCoreElicitor}
-	return w.elicit
+// In the no_tui build (tui_disabled.go) this always returns (nil, nil).
+func makeMCPElicitor(interactive bool) (mcp.ElicitorFn, *tuiElicitorHandle) {
+	return newMCPElicitor(interactive, coretui.NewElicitor)
+}
+
+func newMCPElicitor(interactive bool, factory func() coretui.Elicitor) (mcp.ElicitorFn, *tuiElicitorHandle) {
+	if !interactive {
+		return nil, nil
+	}
+	el := factory()
+	w := &coreMCPElicitor{inner: el}
+	return w.elicit, &tuiElicitorHandle{inner: el}
 }

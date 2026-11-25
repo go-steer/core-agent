@@ -1258,7 +1258,7 @@ type ElicitorFn func(
 ) (*mcp.ElicitResult, error)
 ```
 
-Pass nil for `mcp.Build`'s elicitor argument to use the bundled `DeclineHandler`, which auto-declines every request and emits a one-line notice. For interactive hosts:
+Pass `nil` for `mcp.Build`'s elicitor argument in headless hosts so the MCP client omits the `elicitation` capability during `initialize` (and rejects any unsolicited elicitation immediately instead of blocking). Hosts that explicitly want to advertise elicitation and decline every request with a notice can wrap `mcp.DeclineHandler` into an `ElicitorFn`. For interactive hosts:
 
 ```go
 elicitor := func(ctx context.Context, server string, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {

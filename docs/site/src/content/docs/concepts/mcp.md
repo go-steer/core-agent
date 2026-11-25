@@ -303,10 +303,11 @@ The host (your binary or the bundled `cmd/core-agent`) is responsible for surfac
 
 ## Elicitation
 
-If an MCP server tries to elicit input from the user (the protocol's `elicit` request), `core-agent` needs an `ElicitorFn` to bridge that into your UI. The bundled CLI doesn't currently wire one up, so:
+If an MCP server needs structured input from the user (the protocol's `elicitation/create` request or SEP-2322 `inputRequests`), `core-agent` routes it through an `ElicitorFn`:
 
-- **Headless mode (default)** — every elicitation request is automatically declined with a one-line notice on stderr. Calls that depend on elicitation will fail gracefully rather than hang forever.
-- **Custom hosts** — pass an `ElicitorFn` to `mcp.Build()` that opens a prompt and blocks on user input. See [Library API](/embed/api/#mcp-elicitation).
+- **Interactive TUI** — default (`!no_tui`) builds running on a TTY stdin wire the in-process TUI's elicitation modal and advertise the MCP `elicitation` capability during `initialize`.
+- **Headless and non-TUI modes (`-p`, `--no-repl`, `--no-tui`, non-TTY stdin, or `-tags no_tui`)** — `core-agent` passes a `nil` elicitor to `mcp.Build()`. The MCP client omits the `elicitation` capability during `initialize` and rejects any unsolicited elicitation immediately instead of hanging on an undrained UI channel.
+- **Custom hosts** — pass an `ElicitorFn` to `mcp.Build()` that opens a prompt and blocks on user input, or pass `nil` for headless callers. See [Library API](/embed/api/#mcp-elicitation).
 
 ---
 

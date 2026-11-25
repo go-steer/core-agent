@@ -623,6 +623,11 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		agent.WithSession(caller.Identity, sid),
 		agent.WithMemory(deps.MemoryRouter, deps.MemorySettings),
 	}
+	if deps.Cfg != nil {
+		// Every session a daemon creates runs at the configured level,
+		// not just the primary one (#1605).
+		opts = append(opts, agent.WithThinkingLevel(deps.Cfg.Model.ThinkingLevel))
+	}
 	// The synchronous half of the declarative-subagent surface (#741).
 	// Placed in the option list rather than assembled by hand so the
 	// tools pick up the gate, triple, service and tracker set above and

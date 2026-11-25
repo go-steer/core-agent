@@ -59,6 +59,7 @@ live in [`archive/`](archive/).
 
 ### Shipped designs & milestone plans (`Status: shipped`)
 
+- [`archive/thinking-level-design.md`](archive/thinking-level-design.md) — **shipped**: `model.thinking_level`, one thinking setting across providers via core-models' `ThinkingLevel`, applied to the agent's own turns ([#1605](https://github.com/go-steer/core-agent/issues/1605))
 - [`archive/acceptance-m1.md`](archive/acceptance-m1.md) — **shipped**: M1 acceptance plan (library + CLI extraction)
 - [`archive/acceptance-m2.md`](archive/acceptance-m2.md) — **shipped**: M2 acceptance plan (Anthropic via Vertex AI)
 - [`archive/v1-acceptance.md`](archive/v1-acceptance.md) — **shipped**: v1.0 acceptance criteria

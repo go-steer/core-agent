@@ -14,7 +14,11 @@ Remaining packages under `pkg/` (`agentenv`, `approval`, `attach`, `attachadapte
 
 ## [Unreleased]
 
-_No unreleased changes since [3.2.0]._
+### Changes by Kind
+
+#### Feature
+- **`model.thinking_level` sets how hard the model thinks (`pkg/config`, `agent.WithThinkingLevel`).** `minimal` to `max`, mapped per model by core-models; subagents inherit it unless they set their own, side calls keep theirs. ([#1605](https://github.com/go-steer/core-agent/issues/1605))
+- **Bump `core-models` and `core-models/adkv2` to `v0.16.0` and `genai` to `v1.79.1`.** Claude 5.5 request rules, Gemini 4 thinking levels, and the otel/trace fix for GO-2026-6974; anthropic-sdk-go becomes indirect. ([#1605](https://github.com/go-steer/core-agent/issues/1605))
 
 ## [3.2.0] — 2026-11-20
 

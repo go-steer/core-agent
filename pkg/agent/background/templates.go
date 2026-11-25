@@ -89,6 +89,9 @@ type SubagentTemplate struct {
 	// Instruction is the fully-resolved persona, installed as layer 4
 	// (user memory) exactly like the synchronous declarative path.
 	Instruction string
+	// ThinkingLevel is the subagent's own model.thinking_level. Empty
+	// inherits the spawning agent's (Agent.ThinkingLevel).
+	ThinkingLevel string
 	// Tools are the built-in tools (already resolved to instances) the
 	// subagent runs with. Shared, stateless — safe across instances.
 	Tools []tool.Tool
@@ -395,6 +398,10 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 	}
 	if tmpl.SubagentMode != "" {
 		instrOpts = append(instrOpts, agent.WithSubagentMode(tmpl.SubagentMode))
+	}
+	if tmpl.ThinkingLevel != "" {
+		// Applied after the parent's inherited level, so it wins.
+		instrOpts = append(instrOpts, agent.WithThinkingLevel(tmpl.ThinkingLevel))
 	}
 	if tmpl.OutputSchema != nil {
 		instrOpts = append(instrOpts, agent.WithOutputSchema(tmpl.OutputSchema))

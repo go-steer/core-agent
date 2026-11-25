@@ -141,6 +141,7 @@ model.pricing{}.cached_input_per_mtok
 model.pricing{}.input_per_mtok
 model.pricing{}.output_per_mtok
 model.provider
+model.thinking_level
 model.vertex.context_cache.enabled
 model.vertex.context_cache.refresh
 model.vertex.context_cache.ttl
@@ -293,6 +294,7 @@ subagents[].model.pricing{}.cached_input_per_mtok
 subagents[].model.pricing{}.input_per_mtok
 subagents[].model.pricing{}.output_per_mtok
 subagents[].model.provider
+subagents[].model.thinking_level
 subagents[].model.vertex.context_cache.enabled
 subagents[].model.vertex.context_cache.refresh
 subagents[].model.vertex.context_cache.ttl

@@ -931,6 +931,7 @@ func buildSingleFacadeSubagent(
 			MaxTurnUSD:    maxTurnUSD,
 			MaxSessionUSD: derefFloat64(loadedCfg.Agent.MaxSessionCostUSD),
 		}),
+		WithThinkingLevel(loadedCfg.SubagentThinkingLevel(spec)),
 	}
 	if spec.OutputSchema != "" {
 		schema, err := loadFacadeOutputSchema(
@@ -1444,6 +1445,7 @@ func buildFacadeAgentOptions(
 		}),
 		WithCompactor(buildFacadeCompactor(loadedCfg.Compaction)),
 		WithMemory(memRouter, memSettings),
+		WithThinkingLevel(loadedCfg.Model.ThinkingLevel),
 	}
 	opts = appendFacadeGuardrailOptions(opts, loadedCfg)
 	if loadedCfg.Agent.MaxWallclockSeconds > 0 {

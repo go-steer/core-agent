@@ -856,6 +856,7 @@ func (m *Manager) newSpawnAgentBuilder(parent *agent.Agent, subModel adkmodel.LL
 			agent.WithMetricAgentName("background_subagent"),
 			agent.WithMode(agent.ModeAutonomous),
 			agent.WithStreaming(parent.Streaming()),
+			agent.WithThinkingLevel(parent.ThinkingLevel()),
 			agent.WithSession(parent.UserID(), subSessionID),
 			agent.WithTools(all),
 			agent.WithSessionService(wrappedSvc),

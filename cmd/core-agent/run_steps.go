@@ -1225,6 +1225,7 @@ func stepAssembleAgentAndEventlog(s *runState) int {
 		agent.WithDescription(s.cfg.Agent.Description),
 		agent.WithUsageTracker(s.tracker),
 	}
+	opts = append(opts, agent.WithThinkingLevel(s.cfg.Model.ThinkingLevel))
 	if len(s.declaredSubagents) > 0 {
 		opts = append(opts, agent.WithSubagents(s.declaredSubagents))
 	}

@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -196,12 +197,13 @@ type runState struct {
 	mcpServers     []*mcp.Server
 	mcpToolsets    []adktool.Toolset
 
-	builtinSelection tools.BuiltinTools
-	loadedSkills     skills.Skills
-	allToolsets      []adktool.Toolset
-	eventlogHandle   *eventlog.Handle
-	builtinTools     []adktool.Tool
-	peerReg          *attach.PeerRegistry
+	builtinSelection       tools.BuiltinTools
+	loadedSkills           skills.Skills
+	allToolsets            []adktool.Toolset
+	eventlogHandle         *eventlog.Handle
+	builtinTools           []adktool.Tool
+	undigestedBuiltinTools []adktool.Tool
+	peerReg                *attach.PeerRegistry
 
 	pricingRate       usage.Pricing
 	bgMgr             *background.Manager
@@ -1056,9 +1058,15 @@ func stepSetupPricingAndSubagentTools(s *runState) int {
 		}
 		s.builtinTools = append(s.builtinTools, agTools...)
 	}
+	// Snapshot the pre-digest built-ins so declarative subagents without
+	// retrieve_raw do not inherit digest-wrapped survey tools (#1604).
+	s.undigestedBuiltinTools = slices.Clone(s.builtinTools)
 	// Applied AFTER BuildAgenticTools so subtasks capture unwrapped inner tools (#706).
 	if s.digestStore != nil {
 		s.builtinTools = tools.NewDigester(&tools.DigestOptions{Store: s.digestStore}).Wrap(s.builtinTools)
+		if s.bgRecipe.provider != nil {
+			s.bgRecipe.undigestedCatalog = buildUndigestedToolPairs(s.builtinTools, s.undigestedBuiltinTools)
+		}
 	}
 	return runner.ExitOK
 }
@@ -1167,7 +1175,12 @@ func stepBuildDeclarativeSubagentsAndPromptLayers(s *runState) int {
 		if srv == nil {
 			continue
 		}
-		mcpNamed = append(mcpNamed, namedToolset{name: srv.Name, toolset: srv.Toolset(), infos: srv.ToolInfos})
+		mcpNamed = append(mcpNamed, namedToolset{
+			name:              srv.Name,
+			toolset:           srv.Toolset(),
+			undigestedToolset: srv.UndigestedToolset(),
+			infos:             srv.ToolInfos,
+		})
 	}
 	memRouter, memSettings, closeMem, memErr := openDaemonMemory(
 		s.ctx, s.cfg, s.opts.subagent.memory, s.projectRoot,
@@ -1183,9 +1196,10 @@ func stepBuildDeclarativeSubagentsAndPromptLayers(s *runState) int {
 	s.memRouter = memRouter
 	s.memSettings = memSettings
 	declaredSubagents, subagentTemplates, subagentServers, err := buildDeclaredSubagents(s.ctx, s.cfg, s.provider, s.projectRoot, parentSurface{
-		builtinTools: s.builtinTools,
-		mcpToolsets:  mcpNamed,
-		skills:       s.loadedSkills,
+		builtinTools:           s.builtinTools,
+		undigestedBuiltinTools: s.undigestedBuiltinTools,
+		mcpToolsets:            mcpNamed,
+		skills:                 s.loadedSkills,
 	}, subagentDeps{
 		gate:           s.gate,
 		elicitor:       s.mcpElicitor,

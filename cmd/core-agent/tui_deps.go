@@ -76,4 +76,8 @@ type tuiDeps struct {
 	// prompt renders as a normal user row on startup and the operator
 	// lands on the input line once the turn completes.
 	InitialPrompt string
+	// Elicitor is the core-tui elicitor handle created alongside the
+	// MCP elicitor callback in makeMCPElicitor when the in-process TUI
+	// will launch (#1606). Nil in non-TUI modes and -tags no_tui builds.
+	Elicitor *tuiElicitorHandle
 }

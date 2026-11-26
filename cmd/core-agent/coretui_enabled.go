@@ -51,14 +51,6 @@ import (
 	"github.com/go-steer/core-agent/v3/pkg/usage"
 )
 
-// pkgCoreElicitor is the core-tui elicitor handle shared between
-// makeMCPElicitor (which constructs it before mcp.Build hands its
-// elicit binding to each server) and launchTUIv2 (which threads
-// the same handle into tui.Options so the bubble-tea program can
-// attach it after construction). Set in makeMCPElicitor; consumed
-// in launchTUIv2.
-var pkgCoreElicitor coretui.Elicitor
-
 // pickerHead names the model IDs pinned to the top of the /model
 // picker, in this order, ahead of the derived remainder.
 //
@@ -222,15 +214,17 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	// interface) while the TUI drains a coretui.PermissionPrompter.
 	deps.Gate.SetPrompter(&gatePrompterBridge{inner: prompter})
 
-	// pkgCoreElicitor should have been set by makeMCPElicitor
-	// (called earlier in main.go before mcp.Build). If it's nil
+	// deps.Elicitor should have been constructed by makeMCPElicitor
+	// before mcp.Build when willLaunchTUI() is true. If it's nil
 	// someone refactored the wiring — warn loudly and fall through
-	// with a fresh elicitor so the TUI still starts; MCP-originated
-	// elicits will be declined server-side rather than reach a
-	// silent dead channel.
-	elicitor := pkgCoreElicitor
+	// with a fresh elicitor so the TUI still starts; MCP servers will
+	// have omitted elicitation rather than blocking on a dead channel.
+	var elicitor coretui.Elicitor
+	if deps.Elicitor != nil {
+		elicitor = deps.Elicitor.inner
+	}
 	if elicitor == nil {
-		fmt.Fprintln(os.Stderr, "core-agent: warning — pkgCoreElicitor was nil at launchTUIv2; MCP elicit requests will be declined (check makeMCPElicitor wiring)")
+		fmt.Fprintln(os.Stderr, "core-agent: warning — tuiDeps.Elicitor was nil at launchTUIv2; MCP elicitation will not reach the TUI (check makeMCPElicitor wiring)")
 		elicitor = coretui.NewElicitor()
 	}
 

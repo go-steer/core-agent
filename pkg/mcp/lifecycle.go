@@ -133,9 +133,8 @@ func CloseAll(servers []*Server) {
 // Build reads mcp.json from the project agents dir plus (optionally)
 // the user's home-agents dir, merges the resulting server maps
 // (project wins on name collision), and starts every declared server
-// in parallel. The send callback is plumbed into each server's
-// elicitation handler (when no interactive elicitor is provided) so
-// the host can surface elicitation requests in the right place.
+// in parallel. The send callback receives non-fatal startup notices
+// (such as skipped untrusted stdio servers).
 //
 // homeAgentsDir is the portable user-scope root (typically
 // $HOME/.agents/); pass "" to skip. See LoadAll for the merge rules.
@@ -145,8 +144,9 @@ func CloseAll(servers []*Server) {
 // as built-in tools. Pass nil to skip gating.
 //
 // elicitor (optional) is the interactive bridge for elicitation
-// requests. Headless callers leave it nil and fall back to the
-// decline-with-notice stub.
+// requests. Headless callers leave it nil so the MCP client does not
+// advertise elicitation capability during initialize and rejects any
+// unsolicited elicitation immediately instead of blocking.
 //
 // Servers that fail to start come back with Status==StatusError so
 // they're visible without breaking the rest of the agent.
@@ -181,7 +181,7 @@ func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(strin
 		wg.Add(1)
 		go func(name string, spec ServerSpec) {
 			defer wg.Done()
-			srv := startOne(ctx, name, spec, send, gate, elicitor, digestOpts)
+			srv := startOne(ctx, name, spec, gate, elicitor, digestOpts)
 			mu.Lock()
 			out = append(out, srv)
 			mu.Unlock()
@@ -253,7 +253,7 @@ func wrapServerToolset(ts tool.Toolset, name string, spec ServerSpec, digestOpts
 // startOne instantiates one server. Errors are stored on the Server
 // rather than returned so a single broken server doesn't prevent the
 // rest of the registry from coming up.
-func startOne(ctx context.Context, name string, spec ServerSpec, send func(string), gate *permissions.Gate, elicitor ElicitorFn, digestOpts *DigestOptions) *Server {
+func startOne(ctx context.Context, name string, spec ServerSpec, gate *permissions.Gate, elicitor ElicitorFn, digestOpts *DigestOptions) *Server {
 	srv := &Server{Name: name}
 
 	transport, cmd, err := transportFor(ctx, name, spec)
@@ -264,9 +264,13 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 	}
 	srv.cmd = cmd
 
+	var clientOpts *mcpsdk.ClientOptions
+	if h := handlerFor(name, elicitor); h != nil {
+		clientOpts = &mcpsdk.ClientOptions{ElicitationHandler: h}
+	}
 	client := mcpsdk.NewClient(
 		&mcpsdk.Implementation{Name: implementationName, Version: "0.1.0"},
-		&mcpsdk.ClientOptions{ElicitationHandler: handlerFor(name, send, elicitor)},
+		clientOpts,
 	)
 	ts, err := mcpToolsetWithHints(client, transport)
 	if err != nil {

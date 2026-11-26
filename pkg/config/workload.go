@@ -1031,7 +1031,7 @@ func writeSubagentMarkdownFile(path string, spec SubagentSpec) error {
 		Budgets:      spec.Budgets,
 	}
 	if spec.Model != nil {
-		if spec.Model.Provider == "" && spec.Model.APIKey == "" && spec.Model.Vertex == nil && spec.Model.Anthropic == nil && len(spec.Model.Pricing) == 0 && spec.Model.BuiltinTools == nil {
+		if spec.Model.Provider == "" && spec.Model.APIKey == "" && spec.Model.Vertex == nil && spec.Model.Anthropic == nil && len(spec.Model.Pricing) == 0 && spec.Model.BuiltinTools == nil && strings.TrimSpace(spec.Model.ThinkingLevel) == "" {
 			fm.Model = spec.Model.Name
 		} else {
 			fm.Model = spec.Model

@@ -914,7 +914,10 @@ func buildSingleFacadeSubagent(
 
 	subOpts := []Option{
 		WithName(spec.Name),
-		WithDescription(spec.Description),
+		// #1607: keep router-facing spec.Description on the parent tool
+		// declaration rather than forwarding it into ADK's child identity
+		// prompt.
+		WithSubagentDescription(spec.Description),
 		WithSubagentMode(mode),
 		WithSubagentInheritInput(spec.InheritsInput()),
 		WithSubagentMaxDepth(spec.MaxDepth),

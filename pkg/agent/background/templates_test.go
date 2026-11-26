@@ -699,3 +699,80 @@ func TestSpawnTemplate_TaskModeStallReportsNoReturn(t *testing.T) {
 		t.Errorf("stalled task subagent FinalText = %q, want StallMarker prefix", res.FinalText)
 	}
 }
+
+type sysPromptRecordingLLM struct {
+	mu     sync.Mutex
+	sysOut []string
+}
+
+func (*sysPromptRecordingLLM) Name() string { return "sys-rec" }
+
+func (l *sysPromptRecordingLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	var parts []string
+	if req != nil && req.Config != nil && req.Config.SystemInstruction != nil {
+		for _, p := range req.Config.SystemInstruction.Parts {
+			if p != nil && p.Text != "" {
+				parts = append(parts, p.Text)
+			}
+		}
+	}
+	l.mu.Lock()
+	l.sysOut = append(l.sysOut, strings.Join(parts, "\n"))
+	l.mu.Unlock()
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:      genai.NewContentFromText("done", genai.RoleModel),
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+// TestSpawnTemplate_OmitsRouterAndDefaultDescriptionFromChildPrompt verifies
+// #1607 on the async spawn_agent door: router-facing template Description stays
+// on the roster and catalog while the spawned child's ADK identity block omits
+// both the router description and the top-level default description.
+func TestSpawnTemplate_OmitsRouterAndDefaultDescriptionFromChildPrompt(t *testing.T) {
+	t.Parallel()
+	const routerDesc = "Delegate here whenever a person asks for a posture review. Hand it the whole question."
+	rec := &sysPromptRecordingLLM{}
+	prov := &recordingProvider{llm: rec}
+	mgr := newTemplateManager(t, prov, []SubagentTemplate{{
+		Name:         "posture-audit",
+		Description:  routerDesc,
+		Instruction:  "Audit posture directly.",
+		ModelFactory: tmplFactory(prov, "audit-model"),
+		ModelID:      "audit-model",
+	}}, WithDefaultBudgets(Budgets{MaxTurns: 1}))
+	attachEchoParent(t, mgr)
+	defer mgr.Close()
+
+	if doc := spawnDocFromTools(t, NewSpawnTools(mgr)); !strings.Contains(doc, routerDesc) {
+		t.Errorf("spawn_agent declaration missing template Description:\n%s", doc)
+	}
+	cat := mgr.Catalog()
+	if len(cat) != 1 || cat[0].Description != routerDesc {
+		t.Fatalf("mgr.Catalog() = %+v, want Description %q", cat, routerDesc)
+	}
+
+	h, err := mgr.SpawnTemplate(context.Background(), "", "posture-audit", RefOverrides{Goal: "review posture"}, "")
+	if err != nil {
+		t.Fatalf("SpawnTemplate: %v", err)
+	}
+	waitDone(t, h)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.sysOut) == 0 {
+		t.Fatal("spawned subagent LLM received no requests")
+	}
+	sys := rec.sysOut[0]
+	if !strings.Contains(sys, `Your internal name is "posture-audit-1".`) {
+		t.Errorf("spawned subagent system instruction missing ADK identity name:\n%s", sys)
+	}
+	for _, banned := range []string{"The description about you is", "Delegate here", "core-agent conversational agent"} {
+		if strings.Contains(sys, banned) {
+			t.Errorf("spawned subagent system instruction unexpectedly echoed %q:\n%s", banned, sys)
+		}
+	}
+}

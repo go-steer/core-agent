@@ -853,6 +853,10 @@ func (m *Manager) newSpawnAgentBuilder(parent *agent.Agent, subModel adkmodel.LL
 		opts = append(opts,
 			agent.WithAppName(parent.AppName()),
 			agent.WithName(name),
+			// Clear the default top-level description so ADK's identity
+			// processor does not tell a headless background subagent it is
+			// "core-agent conversational agent" (#1607).
+			agent.WithDescription(""),
 			agent.WithMetricAgentName("background_subagent"),
 			agent.WithMode(agent.ModeAutonomous),
 			agent.WithStreaming(parent.Streaming()),

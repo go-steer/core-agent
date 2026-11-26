@@ -16,10 +16,12 @@ package main
 
 import (
 	"context"
+	"iter"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	adkmodel "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
 	"github.com/go-steer/core-agent/v3/pkg/agent/background"
@@ -127,8 +130,20 @@ func TestBuildDeclaredSubagents_OwnModelAndIdentity(t *testing.T) {
 	if got := sub.Inner().Name(); got != "cluster" {
 		t.Errorf("subagent name = %q, want %q", got, "cluster")
 	}
-	if got := sub.Description(); got != "read-only cluster investigator" {
-		t.Errorf("subagent description = %q, want %q", got, "read-only cluster investigator")
+	if got := sub.SubagentDescription(); got != "read-only cluster investigator" {
+		t.Errorf("subagent tool description = %q, want %q", got, "read-only cluster investigator")
+	}
+	// #1607: router-facing spec.Description must not be set on ADK's inner
+	// llmagent Description, where ADK's identity processor would inject it
+	// into the subagent's own system instruction.
+	if got := sub.Description(); got != "" {
+		t.Errorf("subagent ADK description = %q, want empty", got)
+	}
+	if got := sub.Inner().Description(); got != "" {
+		t.Errorf("subagent inner ADK description = %q, want empty", got)
+	}
+	if len(templates) != 1 || templates[0].Description != "read-only cluster investigator" {
+		t.Errorf("async template description = %+v, want %q", templates, "read-only cluster investigator")
 	}
 	// Own model: scripted, NOT the parent's echo.
 	if got := sub.Model().Name(); got != "scripted" {
@@ -1657,4 +1672,201 @@ func TestSubagentsHardening_1450(t *testing.T) {
 			t.Fatalf("loadSubagentOutputSchema(../../outside.json) = %v, want scope escape error", err)
 		}
 	})
+}
+
+type subagentIdentityCaptureLLM struct {
+	name  string
+	mu    sync.Mutex
+	reqs  []*adkmodel.LLMRequest
+	reply func(call int, req *adkmodel.LLMRequest) *genai.Content
+}
+
+func (l *subagentIdentityCaptureLLM) Name() string { return l.name }
+
+func (l *subagentIdentityCaptureLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	l.mu.Lock()
+	l.reqs = append(l.reqs, req)
+	call := len(l.reqs)
+	l.mu.Unlock()
+	content := l.reply(call, req)
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:      content,
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+type captureLLMProvider struct {
+	llm adkmodel.LLM
+}
+
+func (p captureLLMProvider) Name() string { return "capture" }
+func (p captureLLMProvider) Model(context.Context, string) (adkmodel.LLM, error) {
+	return p.llm, nil
+}
+
+func extractSystemInstruction(req *adkmodel.LLMRequest) string {
+	if req == nil || req.Config == nil || req.Config.SystemInstruction == nil {
+		return ""
+	}
+	var parts []string
+	for _, p := range req.Config.SystemInstruction.Parts {
+		if p != nil && p.Text != "" {
+			parts = append(parts, p.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func findDeclDescription(req *adkmodel.LLMRequest, toolName string) (string, bool) {
+	if req == nil || req.Config == nil {
+		return "", false
+	}
+	for _, gt := range req.Config.Tools {
+		if gt == nil {
+			continue
+		}
+		for _, fd := range gt.FunctionDeclarations {
+			if fd != nil && fd.Name == toolName {
+				return fd.Description, true
+			}
+		}
+	}
+	return "", false
+}
+
+// TestBuildDeclaredSubagents_RouterDescriptionNotInjectedIntoChildPrompt is the
+// end-to-end #1607 regression test through buildDeclaredSubagents ->
+// assembleSubagent -> agent.WithSubagents + background.Manager:
+//   - the child's actual ADK LLMRequest.Config.SystemInstruction never echoes
+//     router-facing prose from spec.Description;
+//   - the parent's sync subagent tool declaration, spawn_agent roster
+//     declaration, and operator catalog all retain spec.Description.
+func TestBuildDeclaredSubagents_RouterDescriptionNotInjectedIntoChildPrompt(t *testing.T) {
+	t.Parallel()
+	const routerDesc = "Delegate here whenever a person asks for a posture review. Hand it the whole question."
+
+	for _, mode := range []string{"", config.SubagentModeTask} {
+		label := mode
+		if label == "" {
+			label = "chat-default"
+		}
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			childLLM := &subagentIdentityCaptureLLM{
+				name: "child-capture",
+				reply: func(_ int, _ *adkmodel.LLMRequest) *genai.Content {
+					if mode == config.SubagentModeTask {
+						return &genai.Content{
+							Role: genai.RoleModel,
+							Parts: []*genai.Part{{
+								FunctionCall: &genai.FunctionCall{
+									Name: agent.FinishTaskToolName,
+									Args: map[string]any{"result": "posture clean"},
+								},
+							}},
+						}
+					}
+					return genai.NewContentFromText("posture clean", genai.RoleModel)
+				},
+			}
+			cfg := &config.Config{
+				Model: config.ModelConfig{Provider: "capture", Name: "capture"},
+				Subagents: []config.SubagentSpec{{
+					Name:         "posture-audit",
+					Description:  routerDesc,
+					Mode:         mode,
+					Tools:        []string{},
+					MCP:          []string{},
+					Skills:       []string{},
+					Instructions: "Audit the cluster posture directly.",
+				}},
+			}
+			subs, templates, _, err := buildDeclaredSubagents(
+				context.Background(), cfg, captureLLMProvider{llm: childLLM}, t.TempDir(),
+				parentSurface{}, testDeps(),
+			)
+			if err != nil {
+				t.Fatalf("buildDeclaredSubagents: %v", err)
+			}
+
+			mgr, err := background.NewManager(background.WithProvider(captureLLMProvider{llm: childLLM}, "capture"))
+			if err != nil {
+				t.Fatalf("background.NewManager: %v", err)
+			}
+			defer mgr.Close()
+			if err := mgr.SetSubagentTemplates(templates); err != nil {
+				t.Fatalf("SetSubagentTemplates: %v", err)
+			}
+
+			parentLLM := &subagentIdentityCaptureLLM{
+				name: "parent-capture",
+				reply: func(call int, _ *adkmodel.LLMRequest) *genai.Content {
+					if call == 1 {
+						return &genai.Content{
+							Role: genai.RoleModel,
+							Parts: []*genai.Part{{
+								FunctionCall: &genai.FunctionCall{
+									Name: "posture-audit",
+									Args: map[string]any{"request": "audit posture"},
+								},
+							}},
+						}
+					}
+					return genai.NewContentFromText("complete", genai.RoleModel)
+				},
+			}
+			parent, err := agent.New(parentLLM,
+				agent.WithName("platform"),
+				agent.WithTools(background.NewSpawnTools(mgr)),
+				agent.WithBackgroundManager(mgr),
+				agent.WithSubagents(subs),
+			)
+			if err != nil {
+				t.Fatalf("agent.New(parent): %v", err)
+			}
+			for _, err := range parent.Run(context.Background(), "please do a posture review") {
+				if err != nil {
+					t.Fatalf("parent.Run: %v", err)
+				}
+			}
+
+			if len(parentLLM.reqs) == 0 {
+				t.Fatal("parent LLM received no requests")
+			}
+			syncDesc, ok := findDeclDescription(parentLLM.reqs[0], "posture-audit")
+			if !ok {
+				t.Fatal("parent LLM request missing sync posture-audit declaration")
+			}
+			if syncDesc != routerDesc {
+				t.Errorf("parent sync tool description = %q, want %q", syncDesc, routerDesc)
+			}
+			spawnDesc, ok := findDeclDescription(parentLLM.reqs[0], "spawn_agent")
+			if !ok {
+				t.Fatal("parent LLM request missing spawn_agent declaration")
+			}
+			if !strings.Contains(spawnDesc, routerDesc) {
+				t.Errorf("spawn_agent roster description missing spec.Description:\n%s", spawnDesc)
+			}
+			cat := mgr.Catalog()
+			if len(cat) != 1 || cat[0].Description != routerDesc {
+				t.Errorf("mgr.Catalog() = %+v, want Description %q", cat, routerDesc)
+			}
+
+			if len(childLLM.reqs) == 0 {
+				t.Fatal("child LLM received no requests")
+			}
+			childSys := extractSystemInstruction(childLLM.reqs[0])
+			if !strings.Contains(childSys, `Your internal name is "posture-audit".`) {
+				t.Errorf("child system instruction missing ADK identity name:\n%s", childSys)
+			}
+			for _, banned := range []string{"The description about you is", "Delegate here", "core-agent conversational agent"} {
+				if strings.Contains(childSys, banned) {
+					t.Errorf("child system instruction unexpectedly echoed %q:\n%s", banned, childSys)
+				}
+			}
+		})
+	}
 }

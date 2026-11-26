@@ -42,8 +42,10 @@ type SubagentOptions struct {
 	// Inner is the *agent.Agent to expose as a tool the parent's
 	// model can call. The tool's function name comes from
 	// Inner.AgentName() (set via agent.WithName), unless overridden
-	// via Name. The tool's description comes from Inner's
-	// llmagent.Description, unless overridden via Description.
+	// via Name. The tool's description comes from
+	// Inner.SubagentDescription() (set via agent.WithSubagentDescription),
+	// falling back to Inner's llmagent.Description (set via
+	// agent.WithDescription), unless overridden via Description.
 	Inner *Agent
 
 	// Name overrides the function name shown to the parent's model.
@@ -51,8 +53,9 @@ type SubagentOptions struct {
 	Name string
 
 	// Description overrides the function description shown to the
-	// parent's model. Empty falls back to Inner's Description (or a
-	// generic fallback when that's also empty).
+	// parent's model. Empty falls back to Inner.SubagentDescription(),
+	// then Inner's Description (or a generic fallback when both are
+	// empty).
 	Description string
 
 	// MaxDepth caps recursion depth. A subagent at depth >= MaxDepth
@@ -290,13 +293,7 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		return nil, errors.New("agent: NewSubagentTool: subagent has no name (set via agent.WithName or SubagentOptions.Name)")
 	}
 
-	desc := strings.TrimSpace(opts.Description)
-	if desc == "" {
-		desc = opts.Inner.inner.Description()
-	}
-	if desc == "" {
-		desc = defaultSubagentDesc
-	}
+	desc := subagentToolDescription(opts)
 
 	maxDepth := opts.MaxDepth
 	if maxDepth <= 0 {
@@ -445,6 +442,19 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		Name:        name,
 		Description: desc,
 	}, handler)
+}
+
+func subagentToolDescription(opts SubagentOptions) string {
+	if desc := strings.TrimSpace(opts.Description); desc != "" {
+		return desc
+	}
+	if desc := strings.TrimSpace(opts.Inner.subagentDescription); desc != "" {
+		return desc
+	}
+	if desc := strings.TrimSpace(opts.Inner.inner.Description()); desc != "" {
+		return desc
+	}
+	return defaultSubagentDesc
 }
 
 func runSubagentInvocation(

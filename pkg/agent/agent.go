@@ -349,6 +349,13 @@ type Agent struct {
 	// subagent tool (set via WithSubagentMaxDepth). Read by a parent's
 	// WithSubagents resolution; 0 = substrate default.
 	subagentMaxDepth int
+	// subagentDescription is the parent-facing tool description used when
+	// this agent is exposed as a subagent tool (set via
+	// WithSubagentDescription). Kept separate from description (which feeds
+	// ADK's llmagent.Config.Description and therefore identityRequestProcessor)
+	// so parent routing prose is never echoed into the child's own system
+	// instruction (#1607).
+	subagentDescription string
 	// subagentBudgets bounds one delegation to this agent when it is
 	// wrapped as a subagent tool (set via WithSubagentBudgets). Read by
 	// a parent's WithSubagents resolution; zero = unbounded.
@@ -468,10 +475,13 @@ type Agent struct {
 type Option func(*options)
 
 type options struct {
-	appName     string
-	name        string
-	description string
-	instruction string
+	appName                string
+	name                   string
+	description            string
+	descriptionSet         bool
+	subagentDescription    string
+	subagentDescriptionSet bool
+	instruction            string
 	// instructionExplicit records that WithInstruction (or the
 	// deprecated prefix path) supplied a full replacement — layers
 	// 1–3 are skipped; layers 4–5 still append (#459).
@@ -560,6 +570,23 @@ func defaultOptions() options {
 	}
 }
 
+func applyOptions(opts []Option) options {
+	o := defaultOptions()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	// When configured as a subagent with WithSubagentDescription and no
+	// explicit WithDescription, clear the default top-level description so
+	// ADK's identity processor omits "The description about you is ..." from
+	// the child's own system prompt (#1607).
+	if o.subagentDescriptionSet && !o.descriptionSet {
+		o.description = ""
+	}
+	return o
+}
+
 // WithAppName overrides the AppName handed to the ADK runner. Useful
 // when embedding so telemetry and session stores can distinguish
 // multiple agents inside one binary.
@@ -568,8 +595,42 @@ func WithAppName(s string) Option { return func(o *options) { o.appName = s } }
 // WithName overrides the agent's display name (visible in OTEL spans).
 func WithName(s string) Option { return func(o *options) { o.name = s } }
 
-// WithDescription overrides the agent's description.
-func WithDescription(s string) Option { return func(o *options) { o.description = s } }
+// WithDescription overrides the agent's description (fed to ADK's
+// llmagent.Config.Description and Agent.Description / agent cards).
+// For router-facing prose shown to a parent model when this agent is
+// exposed as a subagent tool, use WithSubagentDescription instead so
+// ADK's identity processor does not inject parent delegation guidance
+// into the subagent's own system prompt (#1607).
+func WithDescription(s string) Option {
+	return func(o *options) {
+		o.description = s
+		o.descriptionSet = true
+	}
+}
+
+// WithSubagentDescription sets the parent-facing tool description used
+// when THIS agent is exposed as a subagent tool via WithSubagents or
+// NewSubagentTool, without forwarding it to ADK's llmagent.Config.Description
+// (#1607).
+//
+// ADK's identityRequestProcessor appends llmagent.Config.Description to the
+// agent's own system instruction ("The description about you is ...").
+// Subagent descriptions are written for the parent router ("Delegate here
+// whenever..."), so passing them via WithDescription causes the child model
+// to read instructions telling it to delegate to itself.
+//
+// When WithSubagentDescription is set without an explicit WithDescription,
+// the underlying ADK llmagent receives an empty Description (instead of the
+// default top-level description) so ADK omits the description clause from
+// the child's identity block while keeping its name. Pass both
+// WithSubagentDescription and WithDescription to supply a distinct
+// child-facing identity description alongside the parent tool description.
+func WithSubagentDescription(s string) Option {
+	return func(o *options) {
+		o.subagentDescription = s
+		o.subagentDescriptionSet = true
+	}
+}
 
 // WithInstruction replaces the assembled system instruction wholesale
 // — the full-replace escape hatch. Layers 1–3 (core, provider quirks,
@@ -723,10 +784,12 @@ func WithEventLog(h *eventlog.Handle) Option {
 // into the parent's next-turn LLM request, which preserves context
 // isolation while keeping the audit log unified.
 //
-// Each subagent's tool name comes from its own WithName value, and its
-// recursion depth cap from its own WithSubagentMaxDepth value (default 2).
-// Use NewSubagentTool directly for the remaining per-subagent overrides
-// (custom tool name, description, branch label).
+// Each subagent's tool name comes from its own WithName value, its tool
+// description from its WithSubagentDescription value (falling back to
+// WithDescription), and its recursion depth cap from its own
+// WithSubagentMaxDepth value (default 2). Use NewSubagentTool directly
+// for the remaining per-subagent overrides (custom tool name,
+// description, branch label).
 //
 // Resolved at the end of New() so that the parent's session.Service
 // and session triple — set by other With* options — are captured
@@ -986,10 +1049,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	if model == nil {
 		return nil, fmt.Errorf("agent: model is required")
 	}
-	o := defaultOptions()
-	for _, opt := range opts {
-		opt(&o)
-	}
+	o := applyOptions(opts)
 	// Strip role-less / invalid-role Content from every request before it
 	// reaches the provider (#614). Wrapped here so the ONE model value is
 	// sanitized on both the main-turn runner (llmagent below) and the
@@ -1161,6 +1221,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		mode:                 o.mode,
 		subagentToolNames:    o.subagentToolNames,
 		subagentMaxDepth:     o.subagentMaxDepth,
+		subagentDescription:  o.subagentDescription,
 		subagentBudgets:      o.subagentBudgets,
 		subagentMode:         o.subagentMode,
 		subagentInheritInput: o.subagentInheritInput,
@@ -1216,6 +1277,7 @@ func wireSubagentTools(o *options, parentSvc session.Service) error {
 		}
 		st, err := NewSubagentTool(SubagentOptions{
 			Inner:           sa,
+			Description:     sa.subagentDescription,
 			Mode:            sa.subagentMode,
 			InheritInput:    sa.subagentInheritInput,
 			MaxDepth:        sa.subagentMaxDepth, // 0 → NewSubagentTool default
@@ -1333,6 +1395,15 @@ func (a *Agent) AppName() string { return a.appName }
 // /.well-known/agent-card.json handler falls back to this when no
 // explicit AgentCardConfig.Description override is supplied.
 func (a *Agent) Description() string { return a.description }
+
+// SubagentDescription returns the parent-facing tool description set via
+// WithSubagentDescription. Empty when unset. Nil-safe.
+func (a *Agent) SubagentDescription() string {
+	if a == nil {
+		return ""
+	}
+	return a.subagentDescription
+}
 
 // Compile-time check: *Agent satisfies wire.DescriptionProvider.
 // If this assertion ever fails, the card endpoint's automatic

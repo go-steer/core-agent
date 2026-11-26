@@ -135,7 +135,8 @@ a2, _ := agent.New(m, agent.WithSession("bob",   "session-2"))
 ```go
 agent.WithAppName(s string)            // identity used by ADK runner; default "core-agent"
 agent.WithName(s string)               // agent display name (visible in OTEL spans)
-agent.WithDescription(s string)        // agent description
+agent.WithDescription(s string)        // agent identity description (ADK prompt + agent card)
+agent.WithSubagentDescription(s)       // parent-facing tool description when exposed via WithSubagents (omitted from child ADK prompt)
 agent.WithMode(m Mode)                 // layer-3 overlay: ModeInteractive (default) | ModeAutonomous (v2.8, #459)
 agent.WithExtraInstruction(s string)   // layer-5 append (repeatable) — the encouraged customization path (v2.8)
 agent.WithUserInstruction(s string)    // layer-4 user memory (the instruction loader's output) (v2.8)
@@ -765,7 +766,7 @@ For cancel-and-hold rather than cancel-and-exit — the operator case, where the
 ```go
 research, _ := agent.New(researchModel,
     agent.WithName("research"),
-    agent.WithDescription("a focused research subagent"),
+    agent.WithSubagentDescription("Delegate here for focused research."),
     agent.WithEventLog(handle),
     agent.WithSession("u", "research"),
     agent.WithInstruction("you are a researcher; answer concisely"),

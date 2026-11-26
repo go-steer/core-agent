@@ -327,7 +327,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		// Layered baseline + the task-specific role (#459) — subtasks
 		// are autonomous by construction (nobody reads their output
 		// mid-flight; the parent consumes the result).
-		subInstruction = assembleInstruction(subModel.Name(), ModeAutonomous, false, "", []string{spec.SystemPrompt})
+		subInstruction = assembleInstruction(subModel.Name(), ModeAutonomous, false, quirkSurfaceFromTools(spec.Tools), "", []string{spec.SystemPrompt})
 	}
 	// Mutating-tool serialization (#460), same guarantee the parent
 	// gets from agent.New — subtasks usually run read-only subsets,

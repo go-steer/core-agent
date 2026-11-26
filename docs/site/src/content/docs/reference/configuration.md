@@ -860,7 +860,7 @@ Since #459 the system prompt is assembled from ordered layers, stable → volati
 | # | Layer | Source | Changes when |
 |---|-------|--------|--------------|
 | 1 | Core contract | `agent.CoreInstruction` (compaction/handover framing, tool-dispatch rules) | core-agent release |
-| 2 | Provider quirks | selected from the model identifier (Gemini: parallelism mandate; Claude: none) | model changes |
+| 2 | Provider quirks | selected from the model identifier and enabled tool surface (Gemini: tool-gated parallelism mandate, omitted when tool-less; Claude: none) | model or enabled tools change |
 | 3 | Mode overlay | interactive (default) or autonomous via `agent.WithMode` | mode changes |
 | 4 | User memory | the instruction loader (AGENTS.md and friends, user → project → per-caller) | project/session |
 | 5 | Operator append | `append_system_prompt` / `--append-system-prompt` / `agent.WithExtraInstruction` | deployment |

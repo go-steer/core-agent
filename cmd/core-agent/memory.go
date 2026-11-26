@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/go-steer/core-agent/v3/pkg/agent"
@@ -253,4 +254,21 @@ func openDaemonMemory(
 			ref, router.Namespace(), settings.Preload, settings.Consolidate))
 	}
 	return router, settings, closeFn, nil
+}
+
+// hasEnabledMemoryTools reports whether agent.New's wireMemory will register
+// at least one model-facing memory tool for (r, s), mirroring pkg/agent's
+// wireMemory and pkg/memory/memtools.New.
+func hasEnabledMemoryTools(r *memory.Router, s agent.MemorySettings) bool {
+	if r == nil || s.DisableTools || len(r.Mounts()) == 0 {
+		return false
+	}
+	if !slices.Contains(s.DisabledTools, memtools.RecallToolName) {
+		return true
+	}
+	if !r.HasWritableMount() {
+		return false
+	}
+	return !slices.Contains(s.DisabledTools, memtools.PersistToolName) ||
+		!slices.Contains(s.DisabledTools, memtools.ForgetToolName)
 }

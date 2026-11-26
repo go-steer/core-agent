@@ -114,8 +114,11 @@ func TestAgentBakedModelFacingProseIsDeploymentNeutral(t *testing.T) {
 		"subagent partial header":          subagentPartial("findings", "research", "turn budget of 4"),
 		"subagent contract (return tool)":  SubagentReturnContract("return_result"),
 		"subagent contract (no done tool)": SubagentReturnContract(""),
+		"gemini quirk (full builtins)":     geminiParallelismQuirk(quirkSurfaceFromNames("read_file", "grep", "bash", "edit_file")),
+		"gemini quirk (mcp only)":          geminiParallelismQuirk(quirkSurfaceFromNames("gke_list_pods")),
+		"gemini quirk (read_file only)":    geminiParallelismQuirk(quirkSurfaceFromNames("read_file")),
 	}
-	if len(texts) < 6 {
+	if len(texts) < 9 {
 		t.Fatalf("swept %d strings: the sweep would pass vacuously", len(texts))
 	}
 	for what, text := range texts {

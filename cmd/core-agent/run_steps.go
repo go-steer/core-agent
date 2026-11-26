@@ -1454,10 +1454,21 @@ func buildAttachAdapterOpts(s *runState) []attachadapter.Option {
 	}
 }
 
+func (s *runState) hasModelTools() bool {
+	if s.agentRef != nil {
+		return len(s.agentRef.Tools()) > 0 || len(s.allToolsets) > 0
+	}
+	return len(s.builtinTools) > 0 ||
+		len(s.allToolsets) > 0 ||
+		len(s.declaredSubagents) > 0 ||
+		s.ckpt.Mode == config.CheckpointModeModel ||
+		hasEnabledMemoryTools(s.memRouter, s.memSettings)
+}
+
 func (s *runState) snapshotMemorySources() []attach.MemorySource {
 	fresh, _ := instruction.Load(s.projectRoot, s.coreHome, instruction.WithHomeAgentsRoot(s.homeAgDir), instruction.WithContentRoots(s.contentRoots))
 	out := make([]attach.MemorySource, 0, len(fresh.Sources)+1)
-	out = append(out, attach.MemorySource{Scope: "system-prompt", Path: describePromptLayers(s.cfg.Model.Name, s.replacePrompt != "", s.appendPrompt != "", len(fresh.Sources))})
+	out = append(out, attach.MemorySource{Scope: "system-prompt", Path: describePromptLayers(s.cfg.Model.Name, s.replacePrompt != "", s.appendPrompt != "", s.hasModelTools(), len(fresh.Sources))})
 	for _, src := range fresh.Sources {
 		out = append(out, attach.MemorySource{Scope: src.Scope, Path: src.Path, Size: src.Bytes})
 	}

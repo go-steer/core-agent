@@ -22,11 +22,14 @@ import (
 )
 
 // describePromptLayers renders the active system-prompt layer stack
-// (#459) for the /memory endpoint's first row — the operator-visible
-// answer to "what shape is the assembled prompt?" without reading
-// code. Mirrors agent.New's assembly rules: a full replace skips
-// layers 1–3; quirks key off the model identifier.
-func describePromptLayers(modelName string, replaced, appended bool, memorySources int) string {
+// (#459, #1608) for the /memory endpoint's first row — the
+// operator-visible answer to "what shape is the assembled prompt?"
+// without reading code. Mirrors agent.New's assembly rules: a full
+// replace skips layers 1–3; Gemini's parallelism quirk applies only when
+// the agent has tools available (toolsets are treated statically as
+// non-empty at /memory snapshot time, while agent.New omits the quirk if
+// all toolsets yield zero tools at turn time).
+func describePromptLayers(modelName string, replaced, appended, hasTools bool, memorySources int) string {
 	if replaced {
 		parts := []string{"REPLACED(system_prompt_file)", fmt.Sprintf("memory(%d sources)", memorySources)}
 		if appended {
@@ -35,7 +38,7 @@ func describePromptLayers(modelName string, replaced, appended bool, memorySourc
 		return strings.Join(parts, " + ")
 	}
 	parts := []string{"core"}
-	if strings.Contains(strings.ToLower(modelName), "gemini") {
+	if hasTools && strings.Contains(strings.ToLower(modelName), "gemini") {
 		parts = append(parts, "quirks(gemini-parallelism)")
 	}
 	parts = append(parts, "interactive-overlay", fmt.Sprintf("memory(%d sources)", memorySources))

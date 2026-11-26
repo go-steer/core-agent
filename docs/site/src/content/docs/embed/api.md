@@ -162,7 +162,7 @@ Options are applied in the order they're passed. Tools and toolsets accumulate a
 
 ### System prompt layers (v2.8)
 
-When `WithInstruction` is not used, the prompt assembles from ordered layers (#459): `agent.CoreInstruction` (harness contract — compaction/handover framing, tool-dispatch rules) → provider quirks selected from the model identifier (`agent.GeminiParallelismQuirk` for Gemini models, probe-backed; Claude gets none) → a mode overlay (`agent.InteractiveOverlay` default, `agent.AutonomousOverlay` via `WithMode`) → user memory (`WithUserInstruction`) → appends (`WithExtraInstruction`). Later layers win on conflict; the stable-first ordering keeps the cached core prefix intact across memory edits. To layer your own guidance on top rather than replacing:
+When `WithInstruction` is not used, the prompt assembles from ordered layers (#459): `agent.CoreInstruction` (harness contract — compaction/handover framing, tool-dispatch rules) → provider quirks selected from the model identifier and enabled tool surface (`agent.GeminiParallelismQuirk` for Gemini models, probe-backed and gated on which built-in tools are registered — omitting disabled file/grep/shell/edit examples and omitted altogether on tool-less agents; Claude gets none) → a mode overlay (`agent.InteractiveOverlay` default, `agent.AutonomousOverlay` via `WithMode`) → user memory (`WithUserInstruction`) → appends (`WithExtraInstruction`). Later layers win on conflict; the stable-first ordering keeps the cached core prefix intact across memory edits. To layer your own guidance on top rather than replacing:
 
 ```go
 agent.WithExtraInstruction(extraGuidance) // composes; the harness contract stays intact
@@ -201,7 +201,7 @@ func New(model adkmodel.LLM, opts ...agent.Option) (*agent.Agent, error) {
 
 `.agents/AGENTS.md` appends operator-/deploy-specific content on top of whatever the consumer wired (the `pkg/instruction` loader handles this — see [Configuration → memory loading](/reference/configuration/) for the full chain). A concrete example: [`examples/cloud-run-deploy/.agents/AGENTS.md`](https://github.com/go-steer/core-agent/blob/main/examples/cloud-run-deploy/.agents/AGENTS.md) carries Cloud Run operational context (what the agent can/can't reach) plus a Pro-tier-specific nudge to render code inline — none of which belongs in the substrate, all of which is correctly scoped to that one deploy.
 
-**Where model-class deltas live.** Since v2.8 (#459), *measured* provider workarounds get their own quirks layer — selected from the model identifier at `agent.New`, one const per probe-backed workaround (`GeminiParallelismQuirk` today), suppressible via `WithoutProviderQuirks`, and retired when the provider improves. Unmeasured, taste-level nudges still belong to consumers and operators in the upper layers — the quirks layer's admission bar (probe evidence + explicit model list) is what keeps the substrate from accreting carve-outs.
+**Where model-class deltas live.** Since v2.8 (#459), *measured* provider workarounds get their own quirks layer — selected from the model identifier and enabled tool surface at `agent.New`, one const per probe-backed workaround (`GeminiParallelismQuirk` today, tailored to registered tools per #1608), suppressible via `WithoutProviderQuirks`, and retired when the provider improves. Unmeasured, taste-level nudges still belong to consumers and operators in the upper layers — the quirks layer's admission bar (probe evidence + explicit model list) is what keeps the substrate from accreting carve-outs.
 
 ---
 

@@ -337,6 +337,11 @@ func mergeFacadeModelConfig(dst, src *config.ModelConfig) {
 	if src.BuiltinTools != nil {
 		dst.BuiltinTools = mergeFacadeBuiltinToolsConfig(dst.BuiltinTools, src.BuiltinTools)
 	}
+	// A blank level means "inherit" (as in SubagentThinkingLevel), so it
+	// keeps the base's.
+	if strings.TrimSpace(src.ThinkingLevel) != "" {
+		dst.ThinkingLevel = src.ThinkingLevel
+	}
 }
 
 func mergeFacadeVertexConfig(base, over *config.VertexConfig) *config.VertexConfig {

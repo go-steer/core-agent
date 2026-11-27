@@ -20,6 +20,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1664,5 +1665,106 @@ func TestRunOneShot_DeclarativeSubagentOmitsRouterDescriptionFromChildPrompt(t *
 				}
 			}
 		})
+	}
+}
+
+func TestMergeFacadeConfig_ThinkingLevel(t *testing.T) {
+	t.Parallel()
+
+	base := config.DefaultConfig()
+	base.Model.ThinkingLevel = "high"
+
+	got := mergeFacadeConfig(base, &config.Config{Model: config.ModelConfig{ThinkingLevel: "low"}})
+	if got.Model.ThinkingLevel != "low" {
+		t.Errorf("override thinking_level: got %q, want low", got.Model.ThinkingLevel)
+	}
+	got = mergeFacadeConfig(base, &config.Config{Model: config.ModelConfig{Name: "gemini-2.5-pro"}})
+	if got.Model.ThinkingLevel != "high" {
+		t.Errorf("override without thinking_level: got %q, want the base's high", got.Model.ThinkingLevel)
+	}
+}
+
+// TestMergeFacadeModelConfig_OverridesEveryField fails when a field is
+// added to config.ModelConfig, or to a block nested in it, without a line
+// in the matching merge function: the merge would silently drop that
+// field from a facade caller's Config override. Base and override set
+// every field to distinct values, so a field copied from the wrong source
+// fails too.
+func TestMergeFacadeModelConfig_OverridesEveryField(t *testing.T) {
+	t.Parallel()
+
+	var base, over config.ModelConfig
+	fillDistinct(t, reflect.ValueOf(&base).Elem(), "base")
+	fillDistinct(t, reflect.ValueOf(&over).Elem(), "over")
+	baseCopy := base
+	mergeFacadeModelConfig(&base, &over)
+	assertOverridden(t, "ModelConfig", reflect.ValueOf(base), reflect.ValueOf(over))
+
+	// A blank override keeps the base's level, as a blank level means
+	// "inherit" elsewhere (SubagentThinkingLevel).
+	blank := baseCopy
+	mergeFacadeModelConfig(&blank, &config.ModelConfig{ThinkingLevel: "  "})
+	if blank.ThinkingLevel != baseCopy.ThinkingLevel {
+		t.Errorf("blank thinking_level override: got %q, want the base's %q", blank.ThinkingLevel, baseCopy.ThinkingLevel)
+	}
+}
+
+// fillDistinct sets every field under v to a non-zero value derived from
+// tag and the field's path.
+func fillDistinct(t *testing.T, v reflect.Value, tag string) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(tag)
+	case reflect.Bool:
+		v.SetBool(tag == "over")
+	case reflect.Int, reflect.Int64:
+		v.SetInt(int64(len(tag)))
+	case reflect.Float64:
+		v.SetFloat(float64(len(tag)))
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillDistinct(t, v.Elem(), tag)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			fillDistinct(t, v.Field(i), tag+"."+v.Type().Field(i).Name)
+		}
+	case reflect.Map:
+		k := reflect.New(v.Type().Key()).Elem()
+		fillDistinct(t, k, tag)
+		e := reflect.New(v.Type().Elem()).Elem()
+		fillDistinct(t, e, tag)
+		v.Set(reflect.MakeMap(v.Type()))
+		v.SetMapIndex(k, e)
+	default:
+		t.Fatalf("%s: kind %s: teach fillDistinct to set it", tag, v.Kind())
+	}
+}
+
+// assertOverridden checks that every value set in want reached got. Maps
+// merge, so want's entries must be present; other fields must match.
+func assertOverridden(t *testing.T, path string, got, want reflect.Value) {
+	t.Helper()
+	switch want.Kind() {
+	case reflect.Pointer:
+		if got.IsNil() {
+			t.Errorf("%s: dropped", path)
+			return
+		}
+		assertOverridden(t, path, got.Elem(), want.Elem())
+	case reflect.Struct:
+		for i := range want.NumField() {
+			assertOverridden(t, path+"."+want.Type().Field(i).Name, got.Field(i), want.Field(i))
+		}
+	case reflect.Map:
+		for _, k := range want.MapKeys() {
+			if g := got.MapIndex(k); !g.IsValid() || !reflect.DeepEqual(g.Interface(), want.MapIndex(k).Interface()) {
+				t.Errorf("%s[%v]: override entry missing", path, k)
+			}
+		}
+	default:
+		if !reflect.DeepEqual(got.Interface(), want.Interface()) {
+			t.Errorf("%s = %v, want the override's %v", path, got.Interface(), want.Interface())
+		}
 	}
 }

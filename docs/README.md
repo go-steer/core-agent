@@ -54,6 +54,7 @@ live in [`archive/`](archive/).
   - [`assessments/2026-10-27-v3-good-bad-ugly.md`](assessments/2026-10-27-v3-good-bad-ugly.md) — five-lane post-GA review of v3.0.0; seeded v3.1 and v3.2
   - [`assessments/2026-10-27-innovations.md`](assessments/2026-10-27-innovations.md) — what `core-agent` does that peer harnesses don't document
   - [`assessments/2026-11-16-issue-triage.md`](assessments/2026-11-16-issue-triage.md) — open-issue triage at v3.2.0-rc.1: closed 29, seeded v3.3, v3.4 and Backlog
+  - [`assessments/2026-11-28-issue-assessment.md`](assessments/2026-11-28-issue-assessment.md) — post-v3.2.0 open-issue assessment (84 open): dedup/open-PR closes, hybrid release + theme-track milestones, and 4-wave execution plan
 
 ## Archived design docs, plans & smoke records (`docs/archive/`)
 
